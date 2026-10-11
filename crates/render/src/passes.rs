@@ -1,5 +1,8 @@
 //! The passes of the frame graph, in frame order:
-//! build_tlas -> trace -> tonemap -> present.
+//! build_tlas -> trace -> accumulate -> tonemap -> present.
+//!
+//! build_tlas, trace, and accumulate make one sample of the picture. They do no GPU
+//! work when the accumulation has all its samples ([`Accumulation::sampling`]).
 //!
 //! To add a pass: write a struct with the [`Pass`] trait (here or in a new file), put its
 //! shader in `shaders/`, and add it to the graph (`build_graph` below, or
@@ -14,17 +17,27 @@ use maki_gpu::{
 use crate::graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc,
 };
-use crate::{ExtractedCamera, ExtractedInstances, GpuMeshes, shader_spirv};
+use crate::{
+    Accumulation, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights, GpuMeshes,
+    Light, shader_spirv,
+};
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
 pub const MAX_INSTANCES: u32 = 4096;
 
 /// Adds the built-in images and passes. The order of the `add_pass` calls is the frame order.
 pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
-    // Linear color with values above 1.0, at the internal resolution.
-    let hdr = graph.add_transient(TransientDesc {
-        name: "hdr",
-        format: Format::Rgba16Float,
+    // The light that each pixel gets, from one random path: the sample of this frame.
+    // Linear color with values far above 1.0 (the light itself), at the internal resolution.
+    let radiance = graph.add_transient(TransientDesc {
+        name: "radiance",
+        format: Format::Rgba32Float,
+        size: SizeMode::Internal,
+    });
+    // The mean of the `radiance` images of all frames since the last reset.
+    let accumulated = graph.add_transient(TransientDesc {
+        name: "accumulated",
+        format: Format::Rgba32Float,
         size: SizeMode::Internal,
     });
     // The frame as the display shows it: sRGB-encoded, 8 bits, at window size.
@@ -63,10 +76,17 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("trace.comp"))
             .expect("trace pipeline"),
-        hdr,
+        radiance,
         depth,
         normal,
         motion,
+    });
+    graph.add_pass(Accumulate {
+        pipeline: gpu
+            .create_compute_pipeline(shader_spirv!("accumulate.comp"))
+            .expect("accumulate pipeline"),
+        radiance,
+        accumulated,
     });
     graph.add_pass(Tonemap {
         pipeline: gpu
@@ -78,7 +98,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
                 repeat: false,
             })
             .expect("tonemap sampler"),
-        hdr,
+        accumulated,
         output,
     });
     graph.add_pass(Present { output });
@@ -102,6 +122,7 @@ fn groups((width, height): (u32, u32)) -> [u32; 3] {
 /// A full build each frame costs GPU time also when nothing moves. In return, an object
 /// that moves, appears, or goes away needs no other code path: it is only a different
 /// instance list. The BLAS of each mesh, the expensive part, is built one time.
+/// No build when the accumulation is complete: a changed instance list resets it.
 // It uses no image, so the graph plans no barrier for it: `Gpu::build_tlas` orders
 // itself against the ray queries.
 struct BuildTlas {
@@ -120,6 +141,9 @@ impl Pass for BuildTlas {
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
+        if !ctx.world.resource::<Accumulation>().sampling() {
+            return;
+        }
         let meshes = ctx.world.resource::<GpuMeshes>();
         let extracted = &ctx.world.resource::<ExtractedInstances>().0;
         let mut instances = Vec::with_capacity(extracted.len());
@@ -151,11 +175,11 @@ impl Pass for BuildTlas {
     }
 }
 
-/// Traces one ray per pixel from the camera. Shows the world normal of the hit as color.
-/// The path tracer replaces the color later; the other three images stay.
+/// The path tracer: follows one random light path per pixel from the camera and writes
+/// the light that it brings (`radiance`). See `shaders/trace.comp` for the steps.
 struct Trace {
     pipeline: ComputePipelineHandle,
-    hdr: ResourceId,
+    radiance: ResourceId,
     depth: ResourceId,
     normal: ResourceId,
     motion: ResourceId,
@@ -167,46 +191,108 @@ impl Pass for Trace {
     }
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        [self.hdr, self.depth, self.normal, self.motion]
+        [self.radiance, self.depth, self.normal, self.motion]
             .map(|image| (image, Access::StorageWrite))
             .to_vec()
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
+        // The mean has all its samples: one more would cost GPU time and change nothing.
+        if !ctx.world.resource::<Accumulation>().sampling() {
+            return;
+        }
         let camera = ctx.world.resource::<ExtractedCamera>().0;
+        let frame = ctx.world.resource::<ExtractedFrame>();
         // The picture is scaled to the window, so the rays use the shape of the window
         // and not that of the internal image. A resize thus does not stretch the scene.
-        let (width, height) = ctx.gpu.swapchain_extent();
+        // The extracted size and not the swapchain size: the swapchain can change one
+        // frame before the window size message, and that frame has no accumulation reset.
+        let (width, height) = frame.window_size;
         let [right, up, forward] = camera.ray_basis(width as f32 / height as f32);
         let mesh_table = ctx
             .gpu
             .buffer_index(ctx.world.resource::<GpuMeshes>().table())
             .expect("the mesh table is alive");
-        // Field order as in the `Push` block of the shader: a vec3, then a uint.
-        let vec3_uint = |v: Vec3, u: u32| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), u];
+        // ponytail: the shader gets one light, in the push constants. For more lights,
+        // put them in a buffer (one copy for each frame in flight, because the CPU
+        // writes it each frame) and let the shader pick one at random for each shadow ray.
+        // No light: a radius of zero makes the light sphere impossible to hit.
+        let (light_position, light_radius, light_radiance) =
+            ctx.world.resource::<ExtractedLights>().0.first().map_or(
+                (Vec3::ZERO, 0.0, Vec3::ZERO),
+                |light| {
+                    (
+                        light.position,
+                        light.radius.max(Light::MIN_RADIUS),
+                        light.radiance(),
+                    )
+                },
+            );
+        // Field order as in the `Push` block of the shader: a vec3, then one 32-bit value.
+        let vec3_bits = |v: Vec3, last: u32| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), last];
         let mut fields = [
-            vec3_uint(camera.position, mesh_table),
-            vec3_uint(right, ctx.bindless_index(self.hdr)),
-            vec3_uint(up, ctx.bindless_index(self.depth)),
-            vec3_uint(forward, ctx.bindless_index(self.normal)),
+            vec3_bits(camera.position, mesh_table),
+            vec3_bits(right, ctx.bindless_index(self.radiance)),
+            vec3_bits(up, ctx.bindless_index(self.depth)),
+            vec3_bits(forward, ctx.bindless_index(self.normal)),
+            vec3_bits(light_position, light_radius.to_bits()),
+            vec3_bits(light_radiance, ctx.bindless_index(self.motion)),
         ]
         .concat();
-        fields.push(ctx.bindless_index(self.motion));
+        fields.push(frame.frame);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,
                 &push_constants(&fields),
-                groups(ctx.extent(self.hdr)),
+                groups(ctx.extent(self.radiance)),
             )
             .expect("trace dispatch");
     }
 }
 
-/// HDR to display color, scaled from the internal resolution to the window size.
+/// Blends the sample of this frame into the mean of all samples since the last reset.
+struct Accumulate {
+    pipeline: ComputePipelineHandle,
+    radiance: ResourceId,
+    accumulated: ResourceId,
+}
+
+impl Pass for Accumulate {
+    fn name(&self) -> &'static str {
+        "accumulate"
+    }
+
+    fn accesses(&self) -> Vec<(ResourceId, Access)> {
+        vec![
+            (self.radiance, Access::StorageRead),
+            (self.accumulated, Access::StorageReadWrite),
+        ]
+    }
+
+    fn execute(&mut self, ctx: &mut PassContext) {
+        let accumulation = ctx.world.resource::<Accumulation>();
+        // No new sample in this frame: the mean stays as it is.
+        if !accumulation.sampling() {
+            return;
+        }
+        let push = push_constants(&[
+            ctx.bindless_index(self.radiance),
+            ctx.bindless_index(self.accumulated),
+            accumulation.samples(),
+        ]);
+        ctx.gpu
+            .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.accumulated)))
+            .expect("accumulate dispatch");
+    }
+}
+
+/// The accumulated image to display color, scaled from the internal resolution to the
+/// window size. Runs in each frame, also when the accumulation is complete: the window
+/// needs a picture in each frame, and this pass is cheap.
 struct Tonemap {
     pipeline: ComputePipelineHandle,
     sampler: SamplerHandle,
-    hdr: ResourceId,
+    accumulated: ResourceId,
     output: ResourceId,
 }
 
@@ -217,7 +303,7 @@ impl Pass for Tonemap {
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
         vec![
-            (self.hdr, Access::Sampled),
+            (self.accumulated, Access::Sampled),
             (self.output, Access::StorageWrite),
         ]
     }
@@ -228,9 +314,10 @@ impl Pass for Tonemap {
             .sampler_index(self.sampler)
             .expect("tonemap sampler is alive");
         let push = push_constants(&[
-            ctx.bindless_index(self.hdr),
+            ctx.bindless_index(self.accumulated),
             sampler,
             ctx.bindless_index(self.output),
+            ctx.world.resource::<ExtractedFrame>().exposure.to_bits(),
         ]);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.output)))

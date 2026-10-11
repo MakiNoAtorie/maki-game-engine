@@ -1,8 +1,10 @@
 //! The scene: the room, the model, and the camera as entities, and the copy of the
 //! mesh instances into the render world.
 
+use bevy_ecs::change_detection::{DetectChanges, Ref};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use glam::Vec3;
 use maki_assets::{Assets, Handle, LoadState, Mesh, Model, load_gltf};
@@ -88,9 +90,18 @@ fn spawn_loaded_models(
 
 /// Copies each mesh instance into the render world. The renderer never reads the entities.
 fn extract_instances(
-    instances: Query<(&Transform, &MeshInstance)>,
+    instances: Query<(Ref<Transform>, Ref<MeshInstance>)>,
+    mut removed: RemovedComponents<MeshInstance>,
     mut render_world: ResMut<RenderWorld>,
 ) {
+    // An instance is new, moved, got another mesh, or went away: the old samples of
+    // the renderer show another scene.
+    let changed = |(transform, instance): (Ref<Transform>, Ref<MeshInstance>)| {
+        transform.is_changed() || instance.is_changed()
+    };
+    if removed.read().count() > 0 || instances.iter().any(changed) {
+        render_world.reset_accumulation();
+    }
     let mut extracted = render_world.0.resource_mut::<ExtractedInstances>();
     extracted.0.clear();
     extracted.0.extend(

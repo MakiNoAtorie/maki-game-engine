@@ -9,20 +9,26 @@
 //!
 //! Meshes: see the `meshes` module. It uploads the mesh assets and keeps the mesh table.
 //! The game writes [`ExtractedInstances`] in `Extract`, and spawns one [`Camera`].
-//! The passes (`passes` module) trace one ray per pixel against these instances.
+//! The game also spawns [`Light`] entities. The passes (`passes` module) trace one light
+//! path per pixel and frame, and keep the mean over frames (`accumulation` module).
 //!
 //! A module adds to the renderer in two places: an `Extract` system that writes a
 //! resource into the render world, and a pass in the frame graph (from a `Startup`
-//! system that runs `.after(setup_renderer)`).
+//! system that runs `.after(setup_renderer)`). If the data of the module changes what
+//! the picture shows, its `Extract` system also calls
+//! [`RenderWorld::reset_accumulation`] when that data changes.
 //!
 //! Shaders: GLSL files in `shaders/` are compiled to SPIR-V by `build.rs` at build time
 //! and embedded with [`shader_spirv!`]. See `build.rs` for the rules.
 
+mod accumulation;
 mod camera;
 mod graph;
+mod light;
 mod meshes;
 mod passes;
 
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Res, ResMut};
@@ -31,8 +37,10 @@ use maki_core::{App, Config, Extract, Module, Present, Render, Startup, Time};
 use maki_gpu::{Gpu, GpuDesc};
 use maki_platform::{Window, WindowSize};
 
+pub use accumulation::Accumulation;
 pub use camera::{Camera, ExtractedCamera};
 pub use graph::{BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc};
+pub use light::{ExtractedLights, Light};
 pub use maki_gpu::Access;
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
 pub use passes::MAX_INSTANCES;
@@ -54,8 +62,25 @@ pub struct RenderGpu(pub Gpu);
 /// A second `bevy_ecs` world and not a struct with fixed fields: a world stores
 /// resources by type, so a new module adds its own extracted type and the render crate
 /// does not change. Later, extracted objects can be entities of this world.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct RenderWorld(pub World);
+
+impl Default for RenderWorld {
+    fn default() -> Self {
+        let mut world = World::new();
+        // Here and not in a `Startup` system: `Extract` systems of all modules use it.
+        world.init_resource::<Accumulation>();
+        Self(world)
+    }
+}
+
+impl RenderWorld {
+    /// Starts the accumulated image again. Call from an `Extract` system when
+    /// something that the picture shows has changed: the old samples are then wrong.
+    pub fn reset_accumulation(&mut self) {
+        self.0.resource_mut::<Accumulation>().request_reset();
+    }
+}
 
 /// The per-frame values that the built-in passes need. A resource of the render world.
 #[derive(Resource, Debug, Clone, Copy)]
@@ -64,6 +89,13 @@ pub struct ExtractedFrame {
     pub internal_resolution: (u32, u32),
     /// Size of the window in physical pixels.
     pub window_size: (u32, u32),
+    /// Number of the app frame. Part of the seed of the random numbers, so each
+    /// frame makes a different sample.
+    pub frame: u32,
+    /// The accumulation stops at this number of samples.
+    pub max_samples: u32,
+    /// The tonemap pass multiplies the picture by this.
+    pub exposure: f32,
 }
 
 /// Set this environment variable to change the internal resolution every few frames.
@@ -80,7 +112,8 @@ impl Module for RenderModule {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderWorld>()
             // Extract systems of different modules write different resources of the
-            // render world, so their order has no effect.
+            // render world, so their order has no effect. The one shared write, the
+            // accumulation reset, only sets a flag.
             .allow_ambiguous_resource::<RenderWorld>()
             .add_systems(Startup, setup_renderer)
             .add_systems(Extract, extract_frame)
@@ -92,8 +125,10 @@ impl Module for RenderModule {
             );
             app.add_systems(Extract, selftest_resolution.after(extract_frame));
         }
+        accumulation::build(app);
         meshes::build(app);
         camera::build(app);
+        light::build(app);
     }
 }
 
@@ -123,16 +158,30 @@ pub fn setup_renderer(
 fn extract_frame(
     config: Res<Config>,
     size: Res<WindowSize>,
+    time: Res<Time>,
     mut render_world: ResMut<RenderWorld>,
 ) {
+    // The config holds the internal resolution: a new size gives new, empty images.
+    // The window size sets the shape of the camera rays (see `Trace` in `passes`).
+    if config.is_changed() || size.is_changed() {
+        render_world.reset_accumulation();
+    }
     render_world.0.insert_resource(ExtractedFrame {
         internal_resolution: (config.render_width, config.render_height),
         window_size: (size.width, size.height),
+        // Only the low bits are necessary: the number must differ from frame to frame.
+        frame: time.frame as u32,
+        max_samples: config.max_samples,
+        exposure: config.exposure,
     });
 }
 
 /// Halves the internal resolution in every second block of `SELFTEST_PERIOD` frames.
 fn selftest_resolution(time: Res<Time>, mut render_world: ResMut<RenderWorld>) {
+    // The first frame of a block has a new resolution.
+    if time.frame.is_multiple_of(SELFTEST_PERIOD) {
+        render_world.reset_accumulation();
+    }
     if (time.frame / SELFTEST_PERIOD).is_multiple_of(2) {
         let mut frame = render_world.0.resource_mut::<ExtractedFrame>();
         let (width, height) = frame.internal_resolution;
@@ -144,14 +193,18 @@ fn selftest_resolution(time: Res<Time>, mut render_world: ResMut<RenderWorld>) {
 fn render_frame(
     mut gpu: ResMut<RenderGpu>,
     mut graph: ResMut<FrameGraph>,
-    render_world: Res<RenderWorld>,
+    mut render_world: ResMut<RenderWorld>,
 ) {
-    let world = &render_world.0;
+    let world = &mut render_world.0;
     let frame = *world.resource::<ExtractedFrame>();
     let gpu = &mut gpu.0;
     gpu.resize(frame.window_size.0, frame.window_size.1);
     // False: no frame now (the swapchain is being built again, or the window has no area).
     if gpu.begin_frame().expect("begin_frame") {
+        // Only for a frame that is drawn: a reset request waits over a skipped frame.
+        world
+            .resource_mut::<Accumulation>()
+            .start_frame(frame.max_samples);
         graph.execute(gpu, world, frame.internal_resolution);
     }
 }

@@ -1,6 +1,8 @@
 //! The camera: a component of the game world, and its copy in the render world.
 
+use bevy_ecs::change_detection::{DetectChanges, Ref};
 use bevy_ecs::component::Component;
+use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Query, ResMut};
 use glam::Vec3;
@@ -63,8 +65,16 @@ pub(crate) fn build(app: &mut App) {
 }
 
 // ponytail: the first camera wins. Add an "active" marker when the game has more than one.
-fn extract_camera(cameras: Query<&Camera>, mut render_world: ResMut<RenderWorld>) {
-    let camera = cameras.iter().next().copied().unwrap_or_default();
+fn extract_camera(
+    cameras: Query<Ref<Camera>>,
+    mut removed: RemovedComponents<Camera>,
+    mut render_world: ResMut<RenderWorld>,
+) {
+    // A camera is new, was written, or went away: the old samples show another view.
+    if removed.read().count() > 0 || cameras.iter().any(|camera| camera.is_changed()) {
+        render_world.reset_accumulation();
+    }
+    let camera = cameras.iter().next().map_or_else(Camera::default, |c| *c);
     render_world.0.insert_resource(ExtractedCamera(camera));
 }
 

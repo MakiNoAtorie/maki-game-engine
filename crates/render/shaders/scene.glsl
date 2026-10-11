@@ -1,12 +1,12 @@
 // The scene on the GPU: the acceleration structure and the mesh data.
 // Must agree with crates/render/src/meshes.rs. Include after bindless.glsl.
 //
-// From a ray hit to a normal:
+// From a ray hit to a normal and a color:
 // 1. Each instance of the acceleration structure carries the mesh table index of its
 //    mesh as its custom index. The ray query gives this index, the triangle number,
 //    and the barycentric coordinates of the hit.
 // 2. mesh_normal() below reads the three corner indices of the triangle, then the
-//    three corner normals, and blends them.
+//    three corner normals, and blends them. mesh_base_color() reads the color.
 // 3. The result is in the space of the mesh. The ray query also gives the
 //    world-to-object matrix of the instance, which turns it into a world normal.
 // trace.comp does these steps.
@@ -47,6 +47,11 @@ struct MeshEntry {
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer MeshTable {
     MeshEntry meshes[];
 } mesh_tables[];
+
+// The base color of a mesh, linear RGB.
+vec3 mesh_base_color(uint table, uint mesh) {
+    return mesh_tables[nonuniformEXT(table)].meshes[mesh].base_color.rgb;
+}
 
 // The normal at a point of a triangle, in the space of the mesh. Not normalized.
 // `barycentrics` are the weights of the second and third corner, as a ray query gives them.

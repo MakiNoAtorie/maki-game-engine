@@ -1,18 +1,34 @@
 #version 460
-// Pass "trace": one ray per pixel from the camera into the scene.
-// Writes four images at the internal resolution:
-// - hdr:    the world normal of the hit as a color (0.5 + 0.5 * normal). Black on a miss.
-// - depth:  the distance from the camera to the hit along the ray, in meters. T_MAX on a miss.
-// - normal: the world normal in xyz, and 1.0 in w. All zeros on a miss.
-// - motion: how far the point moved on the screen since the last frame. Zeros for now.
+// Pass "trace": the path tracer. For each pixel it follows one random light path from
+// the camera and writes the light that the path brings. One frame is one noisy sample;
+// the pass "accumulate" takes the mean over frames.
+//
+// The path of a pixel:
+// 1. A camera ray finds the first surface. If the sphere light is nearer, the pixel
+//    shows the light itself.
+// 2. Direct light at that surface: one shadow ray toward a random point of the light.
+//    The point is random, so a surface that sees a part of the light is lit in a part
+//    of the frames: the mean is a soft shadow.
+// 3. One bounce: a ray in a random direction from the surface finds a second surface.
+//    The direct light there (one more shadow ray) comes back to the first surface.
+//    This is the light that fills the shadows.
+// All surfaces are diffuse (Lambert): they send the light back equally in all directions.
+//
+// Images written, at the internal resolution:
+// - radiance: the light of the path, linear RGB. Black on a miss.
+// - depth:    the distance from the camera to the hit along the ray, in meters. T_MAX on a miss.
+// - normal:   the world normal in xyz, and 1.0 in w. All zeros on a miss.
+// - motion:   how far the point moved on the screen since the last frame. Zeros for now.
 
 #include "bindless.glsl"
 #include "scene.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-// A storage image array names one format. These three arrays are the same binding,
-// seen with three formats: each image index is valid only in the array of its format.
+// A storage image array names one format. These four arrays are the same binding,
+// seen with four formats: each image index is valid only in the array of its format.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
+    uniform writeonly image2D images_rgba32f[];
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform writeonly image2D images_rgba16f[];
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, r32f)
@@ -21,63 +37,238 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
     uniform writeonly image2D images_rg16f[];
 
 // Must agree with `Trace::execute` in src/passes.rs.
-// A vec3 has 12 bytes and an alignment of 16, so a uint fits after each one.
+// A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
 layout(push_constant) uniform Push {
-    vec3 origin;     // camera position, world space
-    uint mesh_table; // index in `mesh_tables`
+    vec3 origin;          // camera position, world space
+    uint mesh_table;      // index in `mesh_tables`
     // The ray of a pixel is `forward + x * right + y * up`, x and y from -1 to 1.
     // See `Camera::ray_basis` in src/camera.rs.
     vec3 right;
-    uint hdr;        // index in `images_rgba16f`
+    uint radiance;        // index in `images_rgba32f`
     vec3 up;
-    uint depth;      // index in `images_r32f`
+    uint depth;           // index in `images_r32f`
     vec3 forward;
-    uint normal;     // index in `images_rgba16f`
-    uint motion;     // index in `images_rg16f`
+    uint normal;          // index in `images_rgba16f`
+    vec3 light_position;  // center of the sphere light, world space
+    float light_radius;   // meters. Zero: the scene has no light.
+    vec3 light_radiance;  // the light that each point of the sphere sends out
+    uint motion;          // index in `images_rg16f`
+    uint frame;           // number of the frame, for the random numbers
 } push;
 
-// The part of a ray that can hit, in meters from the camera.
+const float PI = 3.14159265;
+const float TAU = 6.28318531;
+
+// The part of a camera ray that can hit, in meters from the camera.
 const float T_MIN = 0.01;
 const float T_MAX = 1000.0;
+// A ray that starts on a surface starts this far above it, in meters. Without the
+// gap, rounding errors would let the ray hit the surface that it starts on.
+const float SURFACE_GAP = 0.001;
+
+// ---- Random numbers ----
+//
+// A GPU has no random source. A hash function turns a number into another number that
+// looks random; a chain of hashes is the sequence of random numbers of one pixel.
+// The start value (the seed) comes from the pixel position and the frame number:
+// - the pixel, so that neighbor pixels get different samples (noise, not a pattern);
+// - the frame, so that each frame gets different samples. With the same samples in
+//   each frame, the mean over frames would be the same noisy picture forever.
+
+uint rng_state;
+
+// The PCG hash (Jarzynski and Olano, "Hash Functions for GPU Rendering", 2020).
+uint hash(uint value) {
+    uint state = value * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// The next random number of this pixel, from 0.0 (possible) to 1.0 (not possible).
+float random() {
+    rng_state = hash(rng_state);
+    // The top 24 bits: a float holds 24 bits without rounding.
+    return float(rng_state >> 8u) / 16777216.0;
+}
+
+// ---- Directions ----
+
+// The direction at the angle theta from `axis`, turned by the angle `phi` around it.
+// `axis` has length 1, and so has the result.
+vec3 direction_around(vec3 axis, float cos_theta, float phi) {
+    // Two vectors that are square to `axis` and to each other, with no special case
+    // (Duff et al., "Building an Orthonormal Basis, Revisited", 2017).
+    float s = axis.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (s + axis.z);
+    float b = axis.x * axis.y * a;
+    vec3 tangent = vec3(1.0 + s * axis.x * axis.x * a, s * b, -s * axis.x);
+    vec3 bitangent = vec3(b, s + axis.y * axis.y * a, -axis.y);
+
+    float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+    return sin_theta * (cos(phi) * tangent + sin(phi) * bitangent) + cos_theta * axis;
+}
+
+// ---- Rays ----
+
+// A point where a ray hit the scene.
+struct Surface {
+    vec3 position;  // world space
+    vec3 normal;    // world space, length 1, on the side that the ray came from
+    vec3 albedo;    // the part of the light that the surface sends back, for R, G, and B
+    float distance; // from the start of the ray, in meters
+};
+
+// Finds the nearest triangle on a ray. False if the ray hits nothing.
+// `flags` are added to the ray flags (0 for none).
+bool closest_hit(vec3 origin, vec3 direction, float t_min, uint flags, out Surface surface) {
+    // Opaque: all geometry is opaque, so the loop below never has to ask the shader.
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsOpaqueEXT | flags,
+        0xFFu, origin, t_min, direction, T_MAX);
+    // Each step moves the search forward. At the end the query holds the nearest hit.
+    while (rayQueryProceedEXT(query)) {}
+    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return false;
+    }
+    // The custom index of an instance is the mesh table index of its mesh.
+    uint mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+    uint triangle = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+    vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+    vec3 mesh_space = mesh_normal(push.mesh_table, mesh, triangle, barycentrics);
+    // A normal goes to world space with the transpose of the world-to-object
+    // matrix (vector * matrix). This is correct also for a non-uniform scale.
+    mat4x3 world_to_object = rayQueryGetIntersectionWorldToObjectEXT(query, true);
+    vec3 normal = normalize((mesh_space * world_to_object).xyz);
+    // The ray hit the back side of the triangle: the lit side is the other one.
+    if (!rayQueryGetIntersectionFrontFaceEXT(query, true)) {
+        normal = -normal;
+    }
+    surface.distance = rayQueryGetIntersectionTEXT(query, true);
+    surface.position = origin + surface.distance * direction;
+    surface.normal = normal;
+    surface.albedo = mesh_base_color(push.mesh_table, mesh);
+    return true;
+}
+
+// True if something is on the ray before the distance `t_max`. A shadow ray: only
+// "something or nothing" matters, so the search stops at the first triangle.
+bool occluded(vec3 origin, vec3 direction, float t_max) {
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene_tlas,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        0xFFu, origin, 0.0, direction, t_max);
+    while (rayQueryProceedEXT(query)) {}
+    return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// The distance along a ray to the front of the sphere light. Negative: no hit.
+// The light is not a mesh in the scene, so rays find it with this function only.
+float light_distance(vec3 origin, vec3 direction) {
+    vec3 to_center = push.light_position - origin;
+    float along = dot(to_center, direction);
+    float discriminant = along * along
+        - (dot(to_center, to_center) - push.light_radius * push.light_radius);
+    if (discriminant <= 0.0) {
+        return -1.0;
+    }
+    return along - sqrt(discriminant);
+}
+
+// ---- Light ----
+
+// Direct light of the sphere light at a surface point: the light that a white diffuse
+// surface sends out from there. Multiply by the albedo. One random sample.
+//
+// This is "next-event estimation": a random bounce ray would almost never hit a small
+// light, so the shader aims a ray at the light on purpose. From `position` the sphere
+// looks like a disk; all directions to the disk make a cone. The shadow ray takes a
+// random direction in that cone.
+vec3 direct_light(vec3 position, vec3 normal) {
+    vec3 to_center = push.light_position - position;
+    float distance_squared = dot(to_center, to_center);
+    float radius_squared = push.light_radius * push.light_radius;
+    // No light, or the point is in the light: the cone is not defined.
+    if (distance_squared <= radius_squared) {
+        return vec3(0.0);
+    }
+    float center_distance = sqrt(distance_squared);
+    // theta_max is the angle between the cone axis and the cone edge.
+    float sin2_max = radius_squared / distance_squared;
+    float cos_max = sqrt(1.0 - sin2_max);
+    // 1 - cos_max, in a form that keeps its digits for a small or far light.
+    float one_minus_cos_max = sin2_max / (1.0 + cos_max);
+
+    // A direction in the cone, with the same chance for each direction.
+    float cos_theta = 1.0 - random() * one_minus_cos_max;
+    vec3 direction = direction_around(to_center / center_distance, cos_theta, TAU * random());
+
+    // Light that comes in at a flat angle is spread over more surface (Lambert's law).
+    float cos_surface = dot(normal, direction);
+    if (cos_surface <= 0.0) {
+        return vec3(0.0); // The light is behind the surface.
+    }
+    // The shadow ray ends where it reaches the sphere.
+    float along = center_distance * cos_theta;
+    float to_light = along - sqrt(max(0.0, along * along - (distance_squared - radius_squared)));
+    if (occluded(position + normal * SURFACE_GAP, direction, to_light)) {
+        return vec3(0.0);
+    }
+    // The size of the cone, as a solid angle: how large the light looks from here.
+    float solid_angle = TAU * one_minus_cos_max;
+    // A diffuse surface sends out 1/pi of the light that it gets, in each direction.
+    return push.light_radiance * cos_surface * solid_angle / PI;
+}
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(images_rgba16f[push.hdr]);
+    ivec2 size = imageSize(images_rgba32f[push.radiance]);
     // The work groups cover full 8x8 blocks, so some invocations are out of the image.
     if (any(greaterThanEqual(pixel, size))) {
         return;
     }
-    // The center of the pixel, from -1 to 1. Image y goes down, `up` goes up.
-    vec2 screen = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
+    rng_state = hash(uint(pixel.x) + hash(uint(pixel.y) + hash(push.frame)));
+
+    // A random point in the pixel, from -1 to 1 across the image. Image y goes down,
+    // `up` goes up. The point changes with each frame, so the mean smooths the edges.
+    vec2 screen = (vec2(pixel) + vec2(random(), random())) / vec2(size) * 2.0 - 1.0;
     vec3 direction = normalize(push.forward + screen.x * push.right - screen.y * push.up);
 
-    // Opaque: all geometry is opaque, so the loop below never has to ask the shader.
-    // Cull back faces: the camera is outside of the room and looks in through the
-    // back side of the near walls. Only these camera rays cull; light rays will not.
-    rayQueryEXT query;
-    rayQueryInitializeEXT(query, scene_tlas,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT,
-        0xFFu, push.origin, T_MIN, direction, T_MAX);
-    // Each step moves the search forward. At the end the query holds the closest hit.
-    while (rayQueryProceedEXT(query)) {}
-
-    vec3 color = vec3(0.0);
+    vec3 radiance = vec3(0.0);
     vec4 normal = vec4(0.0);
     float depth = T_MAX;
-    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
-        // The custom index of an instance is the mesh table index of its mesh.
-        uint mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
-        uint triangle = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
-        vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
-        vec3 mesh_space = mesh_normal(push.mesh_table, mesh, triangle, barycentrics);
-        // A normal goes to world space with the transpose of the world-to-object
-        // matrix (vector * matrix). This is correct also for a non-uniform scale.
-        mat4x3 world_to_object = rayQueryGetIntersectionWorldToObjectEXT(query, true);
-        normal = vec4(normalize((mesh_space * world_to_object).xyz), 1.0);
-        color = 0.5 + 0.5 * normal.xyz;
-        depth = rayQueryGetIntersectionTEXT(query, true);
+
+    // Cull back faces: the camera is outside of the room and looks in through the
+    // back side of the near walls. Only camera rays cull; for all other rays the
+    // walls are solid from the two sides.
+    Surface first;
+    bool hit = closest_hit(push.origin, direction, T_MIN,
+        gl_RayFlagsCullBackFacingTrianglesEXT, first);
+    if (hit) {
+        depth = first.distance;
     }
-    imageStore(images_rgba16f[push.hdr], pixel, vec4(color, 1.0));
+
+    float light = light_distance(push.origin, direction);
+    if (light > 0.0 && light < depth) {
+        // The camera sees the light itself. Only camera rays do: for a surface, the
+        // shadow rays of `direct_light` already bring the light of the sphere.
+        radiance = push.light_radiance;
+        depth = light;
+        normal = vec4(normalize(push.origin + light * direction - push.light_position), 1.0);
+    } else if (hit) {
+        normal = vec4(first.normal, 1.0);
+        radiance = first.albedo * direct_light(first.position, first.normal);
+
+        // The bounce. A diffuse surface gets the most light from straight above and
+        // none from the side (Lambert's law again). The random direction has the same
+        // weight: more rays near the normal. Then each ray counts the same, and the
+        // light that it brings is only multiplied by the albedo.
+        vec3 bounce = direction_around(first.normal, sqrt(random()), TAU * random());
+        Surface second;
+        if (closest_hit(first.position + first.normal * SURFACE_GAP, bounce, 0.0, 0u, second)) {
+            radiance += first.albedo * second.albedo * direct_light(second.position, second.normal);
+        }
+    }
+    imageStore(images_rgba32f[push.radiance], pixel, vec4(radiance, 1.0));
     imageStore(images_r32f[push.depth], pixel, vec4(depth));
     imageStore(images_rgba16f[push.normal], pixel, normal);
     imageStore(images_rg16f[push.motion], pixel, vec4(0.0));

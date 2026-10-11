@@ -265,6 +265,8 @@ fn extract_meshes(
     if assets.is_changed() {
         let mut meshes = render_world.0.resource_mut::<GpuMeshes>();
         meshes.sync(&mut gpu.0, &assets);
+        // An instance whose mesh was not on the GPU can show now, or the reverse.
+        render_world.reset_accumulation();
     }
 }
 

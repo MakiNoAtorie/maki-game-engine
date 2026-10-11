@@ -31,6 +31,9 @@ pub struct BufferDesc<'a> {
 pub enum Format {
     Rgba8Unorm,
     Rgba16Float,
+    /// Four 32-bit float channels. For a mean over many frames: a 16-bit float is
+    /// too coarse for the small change that a late frame makes.
+    Rgba32Float,
     /// One 32-bit float channel.
     R32Float,
     /// Two 16-bit float channels.
@@ -42,6 +45,7 @@ impl Format {
         match self {
             Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
             Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
+            Format::Rgba32Float => vk::Format::R32G32B32A32_SFLOAT,
             Format::R32Float => vk::Format::R32_SFLOAT,
             Format::Rg16Float => vk::Format::R16G16_SFLOAT,
         }

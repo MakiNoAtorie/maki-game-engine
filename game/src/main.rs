@@ -1,4 +1,5 @@
 mod controls;
+mod light;
 mod scene;
 mod tick_logger;
 
@@ -37,6 +38,8 @@ fn main() -> anyhow::Result<()> {
         .add_module(maki_assets::AssetsModule)
         .add_module(maki_render::RenderModule)
         .add_module(scene::SceneModule)
+        .add_module(light::LightModule)
+        .add_module(light::LightControllerModule)
         .add_module(controls::ControlsModule)
         .add_module(tick_logger::TickLoggerModule);
 

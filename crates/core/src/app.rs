@@ -79,6 +79,21 @@ impl App {
                 .all(|size| size.is_finite() && *size > 0.0),
             "room_width, room_depth, and room_height must be positive numbers"
         );
+        // A radius of zero would make the brightness of the light surface infinite.
+        ensure!(
+            config.light_radius.is_finite() && config.light_radius > 0.0,
+            "light_radius must be a positive number"
+        );
+        ensure!(
+            config.light_intensity.is_finite() && config.light_intensity >= 0.0,
+            "light_intensity must be zero or a positive number"
+        );
+        // With no sample the accumulated image would never get content.
+        ensure!(config.max_samples > 0, "max_samples must be 1 or more");
+        ensure!(
+            config.exposure.is_finite() && config.exposure > 0.0,
+            "exposure must be a positive number"
+        );
 
         let mut world = World::new();
         // All schedules exist from the start, so running an empty one is not an error.
@@ -261,6 +276,10 @@ impl App {
         self.world.run_schedule(Extract);
         self.world.run_schedule(Render);
         self.world.run_schedule(Present);
+
+        // Drops the records of removed components (`RemovedComponents`) that are two
+        // frames old. Without this call the records stay in memory forever.
+        self.world.clear_trackers();
     }
 }
 
@@ -465,6 +484,20 @@ mod tests {
         assert!(
             App::new(Config {
                 room_height: f32::NAN,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            App::new(Config {
+                light_radius: 0.0,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            App::new(Config {
+                max_samples: 0,
                 ..Default::default()
             })
             .is_err()

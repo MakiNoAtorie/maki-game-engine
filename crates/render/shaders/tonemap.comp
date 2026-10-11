@@ -1,6 +1,10 @@
 #version 460
-// Pass "tonemap": reads the HDR image through a sampler and writes display color into
-// the output image. The output has the window size, so the sampler does the scaling.
+// Pass "tonemap": reads the accumulated image through a sampler and writes display color
+// into the output image. The output has the window size, so the sampler does the scaling.
+//
+// The accumulated image holds light: values from 0 to far above 1. A display shows 0 to 1.
+// Exposure sets which amount of light is "bright", and the tone curve bends all values
+// into 0..1 so that a bright area keeps some detail and does not go flat white.
 
 #include "bindless.glsl"
 
@@ -13,10 +17,17 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
 
 // Must agree with `Tonemap::execute` in src/passes.rs.
 layout(push_constant) uniform Push {
-    uint hdr;         // index in `textures`
+    uint hdr;         // index in `textures`: the accumulated image
     uint hdr_sampler; // index in `samplers`
     uint dst;         // index in `images`
+    float exposure;   // the light is multiplied by this before the curve
 } push;
+
+// The ACES filmic tone curve, in the short form of Krzysztof Narkowicz
+// ("ACES Filmic Tone Mapping Curve", 2016). Maps 0..infinity to 0..1.
+vec3 aces(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
 
 // Linear color to the sRGB transfer curve. The output image and the swapchain are
 // UNORM formats, so the encoding is done here and not by the GPU.
@@ -35,7 +46,6 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     // A compute shader has no automatic mip level, so the level is explicit.
     vec3 hdr = textureLod(sampler2D(textures[push.hdr], samplers[push.hdr_sampler]), uv, 0.0).rgb;
-    // Reinhard: maps 0..infinity to 0..1 and keeps dark values almost unchanged.
-    vec3 mapped = hdr / (1.0 + hdr);
+    vec3 mapped = aces(hdr * push.exposure);
     imageStore(images[push.dst], pixel, vec4(srgb_encode(mapped), 1.0));
 }

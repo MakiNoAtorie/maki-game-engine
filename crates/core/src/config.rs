@@ -31,6 +31,18 @@ pub struct Config {
     pub camera_target: [f32; 3],
     /// Vertical field of view of the camera, in degrees.
     pub camera_fov_degrees: f32,
+    /// Start position of the light, in meters. The light controller keeps it in the room.
+    pub light_position: [f32; 3],
+    /// Radius of the sphere light, in meters. A larger light gives softer shadows.
+    pub light_radius: f32,
+    /// Linear RGB.
+    pub light_color: [f32; 3],
+    /// Brightness of the light. See `Light::intensity` in the render crate for the unit.
+    pub light_intensity: f32,
+    /// The path tracer stops when the picture is the mean of this many frames.
+    pub max_samples: u32,
+    /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
+    pub exposure: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
     pub fixed_hz: f64,
     /// Limit of FixedUpdate steps in one frame. A longer frame counts as this many steps.
@@ -54,6 +66,13 @@ impl Default for Config {
             camera_position: [0.0, 9.0, 7.0],
             camera_target: [0.0, 0.5, 0.0],
             camera_fov_degrees: 45.0,
+            // In front of the two default objects, so their shadows fall to the back.
+            light_position: [0.0, 2.0, 2.0],
+            light_radius: 0.15,
+            light_color: [1.0, 0.9, 0.8],
+            light_intensity: 12.0,
+            max_samples: 1024,
+            exposure: 1.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,
         }

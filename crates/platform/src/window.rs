@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::ResMut;
@@ -62,11 +63,15 @@ pub(crate) fn update_window_size(
 ) {
     // Only the last size of a frame is important.
     if let Some(event) = resized.read().last() {
-        *size = WindowSize {
+        let new = WindowSize {
             width: event.width,
             height: event.height,
         };
-        tracing::debug!(size = ?*size, "window resized");
+        // Windows sends the old size again when a minimized window comes back. Only a
+        // different size is a change: systems that watch `WindowSize` do work on a change.
+        if size.set_if_neq(new) {
+            tracing::debug!(size = ?new, "window resized");
+        }
     }
 }
 
