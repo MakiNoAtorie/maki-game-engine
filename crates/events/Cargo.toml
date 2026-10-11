@@ -1,0 +1,14 @@
+[package]
+name = "maki-events"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+maki-core.workspace = true
+maki-platform.workspace = true
+maki-scene.workspace = true
+bevy_ecs.workspace = true
+glam.workspace = true
+serde.workspace = true
+ron.workspace = true
+tracing.workspace = true

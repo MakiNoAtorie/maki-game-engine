@@ -1338,6 +1338,7 @@ dependencies = [
  "glam 0.34.1",
  "gltf",
  "maki-core",
+ "serde",
  "slotmap",
  "tracing",
 ]
@@ -1355,6 +1356,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "maki-events"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "glam 0.34.1",
+ "maki-core",
+ "maki-platform",
+ "maki-scene",
+ "ron",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "maki-game"
 version = "0.1.0"
 dependencies = [
@@ -1363,8 +1378,10 @@ dependencies = [
  "glam 0.34.1",
  "maki-assets",
  "maki-core",
+ "maki-events",
  "maki-platform",
  "maki-render",
+ "maki-scene",
  "maki-ui",
  "tracing",
  "tracing-subscriber",
@@ -1406,6 +1423,21 @@ dependencies = [
  "maki-core",
  "maki-gpu",
  "maki-platform",
+ "maki-scene",
+ "tracing",
+]
+
+[[package]]
+name = "maki-scene"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "glam 0.34.1",
+ "maki-assets",
+ "maki-core",
+ "ron",
+ "serde",
  "tracing",
 ]
 
@@ -1420,6 +1452,7 @@ dependencies = [
  "maki-gpu",
  "maki-platform",
  "maki-render",
+ "maki-scene",
  "tracing",
 ]
 
@@ -2150,6 +2183,20 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "ron"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81116b9531d61eabc41aeb228e4b6b2435bcca3233b98cf3b3077d4e6e9debb3"
+dependencies = [
+ "bitflags 2.13.2",
+ "once_cell",
+ "serde",
+ "serde_derive",
+ "typeid",
+ "unicode-ident",
+]
 
 [[package]]
 name = "rustc-hash"

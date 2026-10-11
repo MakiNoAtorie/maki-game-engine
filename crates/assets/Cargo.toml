@@ -9,5 +9,6 @@ anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true
 gltf.workspace = true
+serde.workspace = true
 slotmap.workspace = true
 tracing.workspace = true

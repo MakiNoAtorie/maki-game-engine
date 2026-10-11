@@ -1,14 +1,14 @@
-//! The light: an entity with a `Light` component, and the system that moves it.
-//! Two modules, so a scene can have a light that the player does not control.
+//! The debug control of the light: the light actions move the first light of the room.
 
-use bevy_ecs::change_detection::DetectChangesMut;
-use bevy_ecs::component::Component;
-use bevy_ecs::query::With;
-use bevy_ecs::system::{Commands, Query, Res};
+use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::system::{Query, Res};
 use glam::Vec3;
-use maki_core::{App, Config, FixedUpdate, Module, Startup, Time};
+use maki_core::{App, FixedUpdate, Interpolated, Module, Time};
+use maki_events::run_events;
 use maki_platform::{Action, FixedActionState};
-use maki_render::{Camera, Light};
+use maki_scene::{Camera, CurrentRoom, Light, RoomDef};
+
+use crate::controls::{MoveTarget, move_direction};
 
 /// Light speed for the move actions, in meters per second.
 const MOVE_SPEED: f32 = 2.0;
@@ -18,93 +18,61 @@ const INTENSITY_STEP: f32 = 1.1;
 const MIN_INTENSITY: f32 = 0.1;
 const MAX_INTENSITY: f32 = 1000.0;
 
-/// Marks the light of the config: the light that the player (or the benchmark) moves.
-/// The lights of a model file do not have it and stay where they are.
-#[derive(Component)]
-pub struct PlayerLight;
-
-/// Spawns one light with the values of the config.
-pub struct LightModule;
-
-impl Module for LightModule {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_light);
-    }
-}
-
-fn spawn_light(mut commands: Commands, config: Res<Config>) {
-    commands.spawn((
-        PlayerLight,
-        Light {
-            position: config.light_position.into(),
-            radius: config.light_radius,
-            color: config.light_color.into(),
-            intensity: config.light_intensity,
-        },
-    ));
-}
-
-/// Moves the light of the config with the light actions.
+/// Moves the first light of the room file with the light actions, and with the move
+/// actions while the light has them (`MoveTarget::Light`). The lights of a model file
+/// stay where they are.
 pub struct LightControllerModule;
 
 impl Module for LightControllerModule {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, control_lights);
+        // After the events: the two write the same lights.
+        app.add_systems(FixedUpdate, control_lights.after(run_events));
     }
 }
 
 fn control_lights(
     actions: Res<FixedActionState>,
+    target: Res<MoveTarget>,
     time: Res<Time>,
-    config: Res<Config>,
+    room: Res<CurrentRoom>,
     cameras: Query<&Camera>,
-    mut lights: Query<&mut Light, With<PlayerLight>>,
+    // Only a light of the room file has a pose for fixed steps.
+    mut lights: Query<(&mut Interpolated, &mut Light)>,
 ) {
-    // 1.0, -1.0, or 0.0 from a pair of opposite actions.
-    let axis = |positive, negative| {
-        f32::from(actions.pressed(positive)) - f32::from(actions.pressed(negative))
+    let on_floor = if *target == MoveTarget::Light {
+        move_direction(&actions, cameras.iter().next())
+    } else {
+        Vec3::ZERO
     };
-    // "Forward" is the view direction of the camera along the floor, so the light
-    // moves up on the screen. A camera that looks straight down has no such
-    // direction: -Z is up on the screen then (see `Camera::ray_basis`).
-    let forward = cameras
-        .iter()
-        .next()
-        .and_then(|camera| {
-            (camera.target - camera.position)
-                .with_y(0.0)
-                .try_normalize()
-        })
-        .unwrap_or(Vec3::NEG_Z);
-    let right = forward.cross(Vec3::Y);
-    let direction = forward * axis(Action::MoveLightForward, Action::MoveLightBack)
-        + right * axis(Action::MoveLightRight, Action::MoveLightLeft)
-        + Vec3::Y * axis(Action::LightUp, Action::LightDown);
-    let step = direction.normalize_or_zero() * MOVE_SPEED * time.fixed_delta.as_secs_f32();
+    let up =
+        f32::from(actions.pressed(Action::LightUp)) - f32::from(actions.pressed(Action::LightDown));
+    let direction = (on_floor + Vec3::Y * up).normalize_or_zero();
+    let step = direction * MOVE_SPEED * time.fixed_delta.as_secs_f32();
 
     // A wheel step is a press of one frame: `just_pressed` shows it to one fixed step.
     let intensity_steps = f32::from(actions.just_pressed(Action::LightIntensityUp))
         - f32::from(actions.just_pressed(Action::LightIntensityDown));
 
-    for mut light in &mut lights {
-        let mut next = *light;
-        next.position = clamp_to_room(light.position + step, light.radius, &config);
+    if let Some((mut pose, mut light)) = lights.iter_mut().next() {
+        // Writes only a different value. Each write marks the component as changed,
+        // and a changed light is a change of the lighting for the renderer.
+        let position = clamp_to_room(pose.current.translation + step, light.radius, &room.def);
+        if pose.current.translation != position {
+            pose.current.translation = position;
+        }
         if intensity_steps != 0.0 {
-            next.intensity = (light.intensity * INTENSITY_STEP.powf(intensity_steps))
+            light.intensity = (light.intensity * INTENSITY_STEP.powf(intensity_steps))
                 .clamp(MIN_INTENSITY, MAX_INTENSITY);
         }
-        // Writes only a different value. Each write marks the light as changed, and
-        // a changed light starts the accumulation of the renderer again.
-        light.set_if_neq(next);
     }
 }
 
 /// The nearest position where the full sphere of the light is in the room.
-pub(crate) fn clamp_to_room(position: Vec3, radius: f32, config: &Config) -> Vec3 {
+pub(crate) fn clamp_to_room(position: Vec3, radius: f32, room: &RoomDef) -> Vec3 {
     // The floor has its center at the origin and is at y = 0.
-    let half = Vec3::new(config.room_width / 2.0, 0.0, config.room_depth / 2.0);
+    let half = Vec3::new(room.width / 2.0, 0.0, room.depth / 2.0);
     let low = -half + radius;
-    let high = half.with_y(config.room_height) - radius;
+    let high = half.with_y(room.height) - radius;
     // `max` then `min`, not `clamp`: `clamp` panics if the room is smaller than the light.
     position.max(low).min(high)
 }
@@ -115,8 +83,12 @@ mod tests {
 
     #[test]
     fn the_light_stays_in_the_room() {
-        // 8 x 8 x 3 meters.
-        let config = Config::default();
+        let config = RoomDef {
+            width: 8.0,
+            depth: 8.0,
+            height: 3.0,
+            ..RoomDef::default()
+        };
         let inside = Vec3::new(1.0, 2.0, -3.0);
         assert_eq!(clamp_to_room(inside, 0.5, &config), inside);
         assert_eq!(

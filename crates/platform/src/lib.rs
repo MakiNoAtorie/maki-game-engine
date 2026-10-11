@@ -9,6 +9,7 @@ use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
     Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, Key, RawInput,
+    ScriptedActions,
 };
 pub use window::{QuitRequested, RawWindowEvent, Window, WindowResized, WindowSize, run};
 
@@ -22,6 +23,7 @@ impl Module for PlatformModule {
             .add_message::<RawWindowEvent>()
             .init_resource::<Bindings>()
             .init_resource::<InputCapture>()
+            .init_resource::<ScriptedActions>()
             .init_resource::<ActionState>()
             .init_resource::<FixedActionState>()
             .init_resource::<QuitRequested>()
@@ -69,17 +71,17 @@ mod tests {
         };
 
         frame(&mut app, &[KeyDown(Key::W)]);
-        assert_eq!(state(&app, MoveLightForward), (true, true, false));
+        assert_eq!(state(&app, MoveForward), (true, true, false));
         frame(&mut app, &[]);
-        assert_eq!(state(&app, MoveLightForward), (true, false, false));
+        assert_eq!(state(&app, MoveForward), (true, false, false));
 
         // Two keys have this action: it stays pressed until both are up.
         frame(&mut app, &[KeyDown(Key::ArrowUp), KeyUp(Key::W)]);
-        assert_eq!(state(&app, MoveLightForward), (true, false, false));
+        assert_eq!(state(&app, MoveForward), (true, false, false));
         frame(&mut app, &[KeyUp(Key::ArrowUp)]);
-        assert_eq!(state(&app, MoveLightForward), (false, false, true));
+        assert_eq!(state(&app, MoveForward), (false, false, true));
         frame(&mut app, &[]);
-        assert_eq!(state(&app, MoveLightForward), (false, false, false));
+        assert_eq!(state(&app, MoveForward), (false, false, false));
 
         // Down and up between two frames (a wheel step) is a press of one frame.
         frame(&mut app, &[KeyDown(Key::WheelUp), KeyUp(Key::WheelUp)]);
@@ -119,7 +121,7 @@ mod tests {
         let wheel = [KeyDown(Key::WheelUp), KeyUp(Key::WheelUp)];
 
         frame(&mut app, &[KeyDown(Key::W)]);
-        assert!(pressed(&app, MoveLightForward));
+        assert!(pressed(&app, MoveForward));
 
         // The keyboard is captured: the held key is released and a new key starts
         // nothing. The wheel is not part of the keyboard.
@@ -128,7 +130,7 @@ mod tests {
             pointer: false,
         }));
         frame(&mut app, &[KeyDown(Key::Q), wheel[0], wheel[1]]);
-        assert!(!pressed(&app, MoveLightForward));
+        assert!(!pressed(&app, MoveForward));
         assert!(!pressed(&app, LightDown));
         assert!(pressed(&app, LightIntensityUp));
 
@@ -140,6 +142,44 @@ mod tests {
         frame(&mut app, &[KeyDown(Key::E), wheel[0], wheel[1]]);
         assert!(pressed(&app, LightUp));
         assert!(!pressed(&app, LightIntensityUp));
+    }
+
+    #[test]
+    fn a_scripted_action_is_pressed_as_a_key_is() {
+        use bevy_ecs::system::{Res, ResMut};
+        use maki_core::{Time, Update};
+
+        let mut app = App::new(Config::default()).unwrap();
+        // The script holds the action in the frames 2 and 3. It writes in `Update`,
+        // so the action state has it one frame later.
+        app.add_module(PlatformModule).add_systems(
+            Update,
+            |time: Res<Time>, mut scripted: ResMut<ScriptedActions>| {
+                scripted.0.clear();
+                if time.frame == 2 || time.frame == 3 {
+                    scripted.0.insert(Action::Interact);
+                }
+            },
+        );
+        let mut states = Vec::new();
+        for _ in 0..5 {
+            app.advance(Duration::from_millis(16));
+            let actions = app.world().resource::<ActionState>();
+            states.push((
+                actions.pressed(Action::Interact),
+                actions.just_pressed(Action::Interact),
+            ));
+        }
+        assert_eq!(
+            states,
+            [
+                (false, false),
+                (false, false),
+                (true, true),
+                (true, false),
+                (false, false)
+            ]
+        );
     }
 
     #[derive(bevy_ecs::resource::Resource, Default)]

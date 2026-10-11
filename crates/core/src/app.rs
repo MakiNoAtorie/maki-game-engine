@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
+use bevy_ecs::component::Component;
 use bevy_ecs::message::{Message, MessageRegistry, Messages, message_update_system};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{
@@ -22,6 +23,10 @@ pub struct Input;
 /// Simulation. Runs 0..N times in one frame, always with `Time::fixed_delta`.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FixedUpdate;
+/// Runs before each FixedUpdate step. For bookkeeping that must come before all
+/// simulation systems of the step.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FixedFirst;
 /// Runs after each FixedUpdate step. For bookkeeping that must follow all
 /// simulation systems of the step, such as clearing one-step flags.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
@@ -79,26 +84,10 @@ impl App {
             "max_fixed_steps must be 1 or more"
         );
         ensure!(
-            config.render_width > 0 && config.render_height > 0,
-            "render_width and render_height must be 1 or more"
+            (0.1..=1.0).contains(&config.render_scale),
+            "render_scale must be from 0.1 to 1.0"
         );
-        // `> 0.0` is false for NaN, so NaN is rejected too.
-        ensure!(
-            [config.room_width, config.room_depth, config.room_height]
-                .iter()
-                .all(|size| size.is_finite() && *size > 0.0),
-            "room_width, room_depth, and room_height must be positive numbers"
-        );
-        // A radius of zero would make the brightness of the light surface infinite.
-        ensure!(
-            config.light_radius.is_finite() && config.light_radius > 0.0,
-            "light_radius must be a positive number"
-        );
-        ensure!(
-            config.light_intensity.is_finite() && config.light_intensity >= 0.0,
-            "light_intensity must be zero or a positive number"
-        );
-        // With no sample the accumulated image would never get content.
+        // With no sample the picture would never get content.
         ensure!(config.max_samples > 0, "max_samples must be 1 or more");
         ensure!(
             config.samples_per_frame <= 64,
@@ -123,10 +112,22 @@ impl App {
             "exposure must be a positive number"
         );
 
+        ensure!(
+            [config.player_walk_speed, config.player_run_speed]
+                .iter()
+                .all(|speed| speed.is_finite() && *speed >= 0.0),
+            "player_walk_speed and player_run_speed must be zero or positive numbers"
+        );
+        ensure!(
+            config.camera_follow_time.is_finite() && config.camera_follow_time >= 0.0,
+            "camera_follow_time must be zero or a positive number"
+        );
+
         let mut world = World::new();
         // All schedules exist from the start, so running an empty one is not an error.
         add_schedule(&mut world, Startup);
         add_schedule(&mut world, Input);
+        add_schedule(&mut world, FixedFirst);
         add_schedule(&mut world, FixedUpdate);
         add_schedule(&mut world, FixedLast);
         add_schedule(&mut world, Update);
@@ -141,13 +142,20 @@ impl App {
         let max_fixed_steps = config.max_fixed_steps;
         world.insert_resource(config);
 
-        Ok(Self {
+        let mut app = Self {
             world,
             modules: HashSet::new(),
             max_fixed_steps,
             last_frame: None,
             fixed_step_since_message_update: false,
-        })
+        };
+        // Built in, as `Time` is: see the `interpolation` module. Each simulation
+        // system writes the pose of its own entities (the player, the movers), so
+        // their order has no effect.
+        app.allow_ambiguous_component::<crate::Interpolated>()
+            .add_systems(FixedFirst, crate::interpolation::shift_poses)
+            .add_systems(Update, crate::interpolation::interpolate_transforms);
+        Ok(app)
     }
 
     /// Read access for drivers and tests. Changes go through the `App` methods.
@@ -204,6 +212,13 @@ impl App {
         self
     }
 
+    /// Tells the ambiguity check that systems can use this component in any order.
+    /// Only for a component where each system writes its own entities.
+    pub fn allow_ambiguous_component<C: Component>(&mut self) -> &mut Self {
+        self.world.allow_ambiguous_component::<C>();
+        self
+    }
+
     /// Registers a buffered event type. bevy_ecs names these "messages":
     /// systems send with `MessageWriter<T>` and receive with `MessageReader<T>`.
     pub fn add_message<T: Message>(&mut self) -> &mut Self {
@@ -244,7 +259,14 @@ impl App {
         // The first frame has no previous frame, so its delta is zero.
         let delta = self.last_frame.map_or(Duration::ZERO, |last| now - last);
         self.last_frame = Some(now);
-        self.advance(delta);
+        let frame_time = self.world.resource::<Time>().frame_time;
+        self.advance(frame_time.unwrap_or(delta));
+    }
+
+    /// Sets `Time::frame_time` before the first frame.
+    pub fn set_frame_time(&mut self, frame_time: Option<Duration>) -> &mut Self {
+        self.world.resource_mut::<Time>().frame_time = frame_time;
+        self
     }
 
     /// Makes the delta of the next `update` zero. The driver calls this after a pause
@@ -291,6 +313,7 @@ impl App {
             let mut time = self.world.resource_mut::<Time>();
             time.accumulator -= fixed_delta;
             time.fixed_tick += 1;
+            run_schedule!(self.world, FixedFirst);
             run_schedule!(self.world, FixedUpdate);
             run_schedule!(self.world, FixedLast);
             steps += 1;
@@ -511,14 +534,7 @@ mod tests {
         );
         assert!(
             App::new(Config {
-                room_height: f32::NAN,
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            App::new(Config {
-                light_radius: 0.0,
+                exposure: f32::NAN,
                 ..Default::default()
             })
             .is_err()

@@ -9,7 +9,8 @@ compare  Prints a CSV with the medians of two stored runs and the change in perc
 reference Makes the reference picture of a scenario: a static light and 65536 samples
          for each pixel, in target/bench/reference/<scenario>.dump. Some minutes.
 quality  Runs a scenario with a static light (or `--moving`) and prints the error of the
-         last picture against the reference (relative mean squared error, `relmse`)
+         last picture against the reference. For `walk_720p` use `--frames 180`: the
+         picture of the last frame with motion (relative mean squared error, `relmse`)
          with the GPU time that the picture took. `--set key=value` changes config keys.
          Compare two settings at equal GPU time, not at equal frame count.
 same     Compares the pictures that two runs of one scenario dumped (exact labels):
@@ -75,8 +76,27 @@ SCENARIOS = {
     "idle_1080p": ((1920, 1080), None, {"max_samples": 8}, ["--bench-static"]),
     # Eight point lights in the file, and the light of the config: nine lights.
     "heavy_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, lights=8), {}),
+    # The player walks and the door opens (the walk script of game/src/bench.rs). The
+    # camera has no follow delay: at the end of the script nothing moves.
+    "walk_720p": ((1280, 720), None, {"camera_follow_time": 0.0}, ["--bench-script", "walk"]),
+    # The full loop of the game: room A, room B, the switch, and back (the trip script).
+    # Two room loads, with events, messages, and fades. Use `--frames 900 --warmup 0`.
+    "trip_720p": ((1280, 720), None, {}, ["--bench-script", "trip"]),
     "heavy_mixed_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {}),
 }
+
+
+# The room file of a scenario with a generated scene: room A of the game (its size, its
+# door, its light), with the scene file as the one prop. `MODEL` is the path, quoted.
+MODEL_ROOM = """(
+    width: 8.0, depth: 8.0, height: 3.0,
+    doorways: [(wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2)],
+    doors: [(doorway: 0)],
+    props: [(mesh: File(MODEL), collider: false)],
+    lights: [(position: (0.0, 2.0, 2.0), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)],
+    spawns: {"start": (-0.5, 0.0, 2.6)},
+)
+"""
 
 
 def summarize(values):
@@ -142,9 +162,14 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         if not scene_path.exists():
             write_scene(scene_path, **scene)
         triangles = triangle_count(scene["objects"], scene["segments"])
-        # A JSON string is a valid TOML basic string.
-        config.insert(0, f"model_path = {json.dumps(scene_path.as_posix())}")
+        # The room of the game, with the model in place of its props.
+        room_path = work / "room.ron"
+        room_path.write_text(MODEL_ROOM.replace("MODEL", json.dumps(scene_path.resolve().as_posix())))
         params += f";{scene_text};triangles={triangles}"
+    else:
+        room_path = ROOT / "game" / "assets" / "rooms" / "room_a.ron"
+    # A JSON string is a valid TOML basic string.
+    config.insert(0, f"start_room = {json.dumps(room_path.resolve().as_posix())}")
     (work / "config.toml").write_text("\n".join(config) + "\n")
     output = work / "bench.csv"
     output.unlink(missing_ok=True)
@@ -243,6 +268,8 @@ def relmse(picture, reference):
 
 
 REFERENCE_SAMPLES = 65536
+# `WALK_FRAMES` of game/src/bench.rs: the frame that shows the last motion of the walk script.
+WALK_FRAMES = 180
 
 
 def command_reference(args):
@@ -252,6 +279,9 @@ def command_reference(args):
     # 64 samples in a frame: the largest count, so the fewest frames.
     overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64}
     frames = REFERENCE_SAMPLES // 64
+    # The picture starts again when the walk script ends.
+    if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:
+        frames += WALK_FRAMES
     run_scenario(args.scenario, frames, 0, "reference", overrides, ["--bench-static"], path)
     print(f"{path.relative_to(ROOT).as_posix()}: {REFERENCE_SAMPLES} samples")
 

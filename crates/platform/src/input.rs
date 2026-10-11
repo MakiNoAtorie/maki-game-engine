@@ -13,10 +13,19 @@ use bevy_ecs::system::{Local, Res, ResMut};
 // change to action ids that modules register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
-    MoveLightForward,
-    MoveLightBack,
-    MoveLightLeft,
-    MoveLightRight,
+    /// The four move actions move the player, or the light: the game decides.
+    MoveForward,
+    MoveBack,
+    MoveLeft,
+    MoveRight,
+    Run,
+    Interact,
+    /// The move actions go to the light, or back to the player.
+    ToggleLightControl,
+    /// Debug: opens or closes all doors and movers.
+    ToggleMovers,
+    /// Debug: reads the file of the current room again.
+    ReloadRoom,
     LightUp,
     LightDown,
     LightIntensityUp,
@@ -37,11 +46,18 @@ pub enum Key {
     Q,
     E,
     R,
+    Z,
+    L,
+    O,
+    /// The left or the right Shift key.
+    Shift,
+    Enter,
     ArrowUp,
     ArrowDown,
     ArrowLeft,
     ArrowRight,
     F1,
+    F5,
     Escape,
     WheelUp,
     WheelDown,
@@ -63,11 +79,17 @@ impl Key {
             Key::Q => "Q",
             Key::E => "E",
             Key::R => "R",
+            Key::Z => "Z",
+            Key::L => "L",
+            Key::O => "O",
+            Key::Shift => "Shift",
+            Key::Enter => "Enter",
             Key::ArrowUp => "Up",
             Key::ArrowDown => "Down",
             Key::ArrowLeft => "Left",
             Key::ArrowRight => "Right",
             Key::F1 => "F1",
+            Key::F5 => "F5",
             Key::Escape => "Esc",
             Key::WheelUp => "Wheel up",
             Key::WheelDown => "Wheel down",
@@ -92,14 +114,19 @@ impl Default for Bindings {
     fn default() -> Self {
         use Action::*;
         let table = [
-            (Key::W, MoveLightForward, "Move light forward"),
-            (Key::ArrowUp, MoveLightForward, "Move light forward"),
-            (Key::S, MoveLightBack, "Move light back"),
-            (Key::ArrowDown, MoveLightBack, "Move light back"),
-            (Key::A, MoveLightLeft, "Move light left"),
-            (Key::ArrowLeft, MoveLightLeft, "Move light left"),
-            (Key::D, MoveLightRight, "Move light right"),
-            (Key::ArrowRight, MoveLightRight, "Move light right"),
+            (Key::W, MoveForward, "Move forward"),
+            (Key::ArrowUp, MoveForward, "Move forward"),
+            (Key::S, MoveBack, "Move back"),
+            (Key::ArrowDown, MoveBack, "Move back"),
+            (Key::A, MoveLeft, "Move left"),
+            (Key::ArrowLeft, MoveLeft, "Move left"),
+            (Key::D, MoveRight, "Move right"),
+            (Key::ArrowRight, MoveRight, "Move right"),
+            (Key::Shift, Run, "Run"),
+            (Key::Z, Interact, "Interact"),
+            (Key::Enter, Interact, "Interact"),
+            (Key::L, ToggleLightControl, "Move the light / the player"),
+            (Key::O, ToggleMovers, "Open or close all doors (debug)"),
             (Key::Q, LightDown, "Move light down"),
             (Key::E, LightUp, "Move light up"),
             (Key::WheelUp, LightIntensityUp, "Increase light intensity"),
@@ -109,6 +136,7 @@ impl Default for Bindings {
                 "Decrease light intensity",
             ),
             (Key::R, ResetAccumulation, "Reset accumulation"),
+            (Key::F5, ReloadRoom, "Reload the room file (debug)"),
             (Key::F1, ToggleHelp, "Toggle help panel"),
             (Key::Escape, Quit, "Quit"),
         ];
@@ -195,6 +223,12 @@ impl InputCapture {
     }
 }
 
+/// Actions that a script holds down. A benchmark or a test drives the game with them,
+/// as a player does with keys: an action is pressed while it is in the set or a key
+/// of it is down.
+#[derive(Resource, Debug, Default)]
+pub struct ScriptedActions(pub HashSet<Action>);
+
 /// Key changes from the OS. The window driver sends them between frames.
 #[derive(Message, Debug, Clone, Copy)]
 pub enum RawInput {
@@ -209,6 +243,7 @@ pub(crate) fn update_actions(
     mut held: Local<HashSet<Key>>,
     bindings: Res<Bindings>,
     capture: Res<InputCapture>,
+    scripted: Res<ScriptedActions>,
     mut state: ResMut<ActionState>,
     mut fixed: ResMut<FixedActionState>,
 ) {
@@ -241,6 +276,7 @@ pub(crate) fn update_actions(
         .iter()
         .filter(|binding| down.contains(&binding.key))
         .map(|binding| binding.action)
+        .chain(scripted.0.iter().copied())
         .collect();
     state.just_pressed = &pressed - &state.pressed;
     state.just_released = &state.pressed - &pressed;

@@ -1,8 +1,8 @@
 #version 460
-// Pass "tonemap": reads the accumulated image through a sampler and writes display color
-// into the output image. The output has the window size, so the sampler does the scaling.
+// Pass "tonemap": reads the picture through a sampler and writes display color into the
+// output image. With a debug view it shows another image in place of the picture. The output has the window size, so the sampler does the scaling.
 //
-// The accumulated image holds light: values from 0 to far above 1. A display shows 0 to 1.
+// The picture holds light: values from 0 to far above 1. A display shows 0 to 1.
 // Exposure sets which amount of light is "bright", and the tone curve bends all values
 // into 0..1 so that a bright area keeps some detail and does not go flat white.
 
@@ -17,11 +17,65 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
 
 // Must agree with `Tonemap::execute` in src/passes.rs.
 layout(push_constant) uniform Push {
-    uint hdr;         // index in `textures`: the accumulated image
+    uint hdr;         // index in `textures`: the picture
     uint hdr_sampler; // index in `samplers`
     uint dst;         // index in `images`
     float exposure;   // the light is multiplied by this before the curve
+    uint view;        // a VIEW_* value
+    // Indices in `textures`, for the debug views:
+    uint normal;      // normal in xyz (zero: no surface), distance in w
+    uint motion;      // screen motion in pixels
+    uint color;       // the mean light of the denoiser in rgb, its samples in a
+    uint moments;     // mean brightness of one frame, and mean of its square
+    uint radiance;    // the samples of this frame
 } push;
+
+// Must agree with `DebugView` in src/lib.rs.
+const uint VIEW_FINAL = 0u;
+const uint VIEW_MOTION = 1u;
+const uint VIEW_DEPTH = 2u;
+const uint VIEW_NORMALS = 3u;
+const uint VIEW_HISTORY_LENGTH = 4u;
+const uint VIEW_VARIANCE = 5u;
+const uint VIEW_RAW = 6u;
+
+// The picture through the sampler, which does the scaling to the window size.
+vec3 sampled(uint texture_index, vec2 uv) {
+    // A compute shader has no automatic mip level, so the level is explicit.
+    return textureLod(sampler2D(textures[texture_index], samplers[push.hdr_sampler]), uv, 0.0).rgb;
+}
+
+// The nearest pixel of an image, with no blend: a debug view shows true values. Also,
+// not each image format permits a blend.
+vec4 pixel_at(uint texture_index, vec2 uv) {
+    ivec2 size = textureSize(sampler2D(textures[texture_index], samplers[push.hdr_sampler]), 0);
+    return texelFetch(sampler2D(textures[texture_index], samplers[push.hdr_sampler]), ivec2(uv * vec2(size)), 0);
+}
+
+// The color of a debug view at `uv`, in display range.
+vec3 debug_color(vec2 uv) {
+    if (push.view == VIEW_MOTION) {
+        // Black for no motion. A motion of 1 pixel is well visible; 5 are almost full.
+        return 1.0 - exp(-0.5 * vec3(abs(pixel_at(push.motion, uv).xy), 0.0));
+    }
+    vec4 surface = pixel_at(push.normal, uv);
+    if (surface.xyz == vec3(0.0)) {
+        return vec3(0.0); // No surface.
+    }
+    if (push.view == VIEW_DEPTH) {
+        return vec3(exp(-0.08 * surface.w));
+    }
+    if (push.view == VIEW_HISTORY_LENGTH) {
+        // A log scale: 1 sample is dark, 32 are half, 1024 are white.
+        return vec3(log2(1.0 + pixel_at(push.color, uv).a) / 10.0);
+    }
+    if (push.view == VIEW_VARIANCE) {
+        vec2 moments = pixel_at(push.moments, uv).xy;
+        float deviation = sqrt(max(0.0, moments.y - moments.x * moments.x));
+        return vec3(deviation / (moments.x + 1e-3) * 0.25);
+    }
+    return surface.xyz * 0.5 + 0.5;
+}
 
 // The ACES filmic tone curve, in the short form of Krzysztof Narkowicz
 // ("ACES Filmic Tone Mapping Curve", 2016). Maps 0..infinity to 0..1.
@@ -44,8 +98,11 @@ void main() {
         return;
     }
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
-    // A compute shader has no automatic mip level, so the level is explicit.
-    vec3 hdr = textureLod(sampler2D(textures[push.hdr], samplers[push.hdr_sampler]), uv, 0.0).rgb;
+    if (push.view != VIEW_FINAL && push.view != VIEW_RAW) {
+        imageStore(images[push.dst], pixel, vec4(debug_color(uv), 1.0));
+        return;
+    }
+    vec3 hdr = sampled(push.view == VIEW_RAW ? push.radiance : push.hdr, uv);
     vec3 mapped = aces(hdr * push.exposure);
     imageStore(images[push.dst], pixel, vec4(srgb_encode(mapped), 1.0));
 }

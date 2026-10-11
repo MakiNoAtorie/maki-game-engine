@@ -16,7 +16,7 @@ use bevy_ecs::resource::Resource;
 use maki_core::{App, Module};
 use slotmap::{DefaultKey, SlotMap};
 
-pub use mesh::{Material, Mesh};
+pub use mesh::{Doorway, Material, Mesh, Wall};
 pub use model::{Model, ModelLight, load_gltf};
 
 /// A generational reference to an asset of type `T`. A handle of a removed asset never
@@ -153,7 +153,11 @@ pub struct AssetsModule;
 impl Module for AssetsModule {
     fn build(&self, app: &mut App) {
         app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<Model>>();
+            .init_resource::<Assets<Model>>()
+            // Each module adds its own assets and keeps the handles: the order of two
+            // modules changes nothing that they can see.
+            .allow_ambiguous_resource::<Assets<Mesh>>()
+            .allow_ambiguous_resource::<Assets<Model>>();
     }
 }
 

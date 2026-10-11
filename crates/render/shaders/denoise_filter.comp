@@ -11,30 +11,22 @@
 // - its brightness differs by more than the noise there (the variance) explains.
 //
 // rgb of the images is light without surface color, a is the variance of its brightness
-// (see denoise_prepare.comp). The last pass multiplies by the surface color again.
+// (see denoise_prepare.comp).
 
 #include "bindless.glsl"
+#include "denoise.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform image2D images_rgba16f[];
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
-    uniform readonly image2D images_rgba8[];
-
 // Must agree with `DenoiseFilter::execute` in src/denoise.rs.
 layout(push_constant) uniform Push {
     uint src;    // index in `images_rgba16f`
     uint dst;    // index in `images_rgba16f`
     uint normal; // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
-    uint albedo; // index in `images_rgba8`
     int step;    // pixels between two points of the pattern
-    uint last;   // 1: multiply the result by the surface color
 } push;
-
-// Must agree with denoise_prepare.comp.
-const float MIN_ALBEDO = 0.01;
-const float MAX_LIGHT = 60000.0;
 
 // A neighbor counts if its brightness differs by less than about this many standard
 // deviations of the noise. The value of the SVGF paper (Schied et al., 2017).
@@ -49,10 +41,6 @@ const float NORMAL_POWER = 64.0;
 
 // The weights of a smooth bell curve (a cubic B-spline) at -2, -1, 0, 1, 2.
 const float KERNEL[5] = float[](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
-
-float brightness(vec3 color) {
-    return dot(color, vec3(0.2126, 0.7152, 0.0722));
-}
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -101,10 +89,9 @@ void main() {
         }
     }
     light /= weights;
-    variance /= weights * weights;
-    if (push.last != 0) {
-        vec3 albedo = imageLoad(images_rgba8[push.albedo], pixel).rgb;
-        light = min(light * max(albedo, vec3(MIN_ALBEDO)), vec3(MAX_LIGHT));
-    }
+    // The limit keeps the value in the range of a 16-bit float. Past it the image
+    // would hold infinity, and infinity times a weight of zero is not a number: the
+    // next pass would spread that to each pixel around.
+    variance = min(variance / (weights * weights), MAX_LIGHT);
     imageStore(images_rgba16f[push.dst], pixel, vec4(light, variance));
 }

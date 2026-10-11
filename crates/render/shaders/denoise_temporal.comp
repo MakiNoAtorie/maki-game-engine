@@ -1,0 +1,139 @@
+#version 460
+// Pass "denoise_temporal": the mean over time. See src/denoise.rs for the full method.
+//
+// For each pixel:
+// 1. The samples of this frame (`radiance`) are divided by the surface color
+//    (`albedo`): the light that the surface gets. A mean of light keeps the detail of
+//    the surface color, which has no noise.
+// 2. The `motion` image tells where the surface point of the pixel was on the screen
+//    one frame before. The history of the pixel is read there, from the images of the
+//    frame before: the mean light, the number of samples in it, and the moments.
+//    The place is between four pixels. Each of the four counts only if it showed the
+//    same surface (normal and distance): at the edge of a moving object, the others
+//    show the object or what was behind it.
+// 3. The new mean is the old mean moved toward the samples of this frame by
+//    `samples of this frame / samples in the new mean`. With no history that is 1: the
+//    pixel starts again, alone.
+//
+// Written, for the next passes and as the history of the next frame:
+// - color:   rgb: the mean light. a: the number of samples in it.
+// - moments: r: the mean brightness of one frame. g: the mean of its square. The
+//            difference `g - r * r` is the variance: how noisy one frame is here.
+// A pixel with no surface (the background, the light itself) has no history: its
+// color is the radiance of this frame, and its sample count is zero.
+
+#include "bindless.glsl"
+#include "denoise.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The same binding, seen with the formats of the images.
+// No `readonly` or `writeonly`: the pass reads the history and writes the new mean.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
+    uniform image2D images_rgba32f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform readonly image2D images_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
+    uniform readonly image2D images_rgba8[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
+    uniform readonly image2D images_rg16f[];
+
+// Must agree with `DenoiseTemporal::execute` in src/denoise.rs.
+layout(push_constant) uniform Push {
+    uint radiance;         // index in `images_rgba16f`: the samples of this frame
+    uint albedo;           // index in `images_rgba8`
+    uint normal;           // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
+    uint previous_normal;  // the same image of the frame before
+    uint motion;           // index in `images_rg16f`: screen motion in pixels
+    uint previous_color;   // index in `images_rgba32f`
+    uint previous_moments; // index in `images_rgba32f`
+    uint color;            // index in `images_rgba32f`
+    uint moments;          // index in `images_rgba32f`
+    float frame_samples;   // samples in `radiance`, 1 or more
+    // The history of a pixel counts as this many samples at most. 0: no history is
+    // read (the first frame, a new image size). A low limit after a change of the
+    // lighting: the old light then fades in few frames.
+    float history_limit;
+    float max_samples;     // the mean never counts as more samples than this
+} push;
+
+// A pixel of the frame before shows the same surface if the cosine of the angle
+// between the two normals is not below this, ...
+const float SAME_NORMAL = 0.9;
+// ... and the two distances from the camera differ by less than this part.
+const float SAME_DISTANCE = 0.03;
+// A motion below this, in pixels, counts as none. A point at rest then reads its own
+// pixel and nothing of the pixels around it: rounding errors in the motion would blur
+// the picture a little in each frame.
+const float NO_MOTION = 0.01;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images_rgba32f[push.color]);
+    // The work groups cover full 8x8 blocks, so some invocations are out of the image.
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    vec3 radiance = imageLoad(images_rgba16f[push.radiance], pixel).rgb;
+    // A value that is not a number would stay in the mean.
+    if (any(isnan(radiance)) || any(isinf(radiance))) {
+        radiance = vec3(0.0);
+    }
+    vec4 surface = imageLoad(images_rgba16f[push.normal], pixel);
+    if (surface.xyz == vec3(0.0)) {
+        imageStore(images_rgba32f[push.color], pixel, vec4(radiance, 0.0));
+        imageStore(images_rgba32f[push.moments], pixel, vec4(0.0));
+        return;
+    }
+    vec3 albedo = imageLoad(images_rgba8[push.albedo], pixel).rgb;
+    vec3 light = min(radiance / max(albedo, vec3(MIN_ALBEDO)), vec3(MAX_LIGHT));
+    float value = brightness(light);
+
+    // The history: a blend of up to four pixels of the frame before.
+    vec4 old_color = vec4(0.0);
+    vec2 old_moments = vec2(0.0);
+    float weights = 0.0;
+    if (push.history_limit > 0.0) {
+        vec2 motion = imageLoad(images_rg16f[push.motion], pixel).xy;
+        if (all(lessThan(abs(motion), vec2(NO_MOTION)))) {
+            motion = vec2(0.0);
+        }
+        // Where the point was, in pixel units with pixel centers at whole numbers.
+        vec2 was = vec2(pixel) - motion;
+        ivec2 corner = ivec2(floor(was));
+        vec2 part = was - vec2(corner);
+        for (int y = 0; y <= 1; y++) {
+            for (int x = 0; x <= 1; x++) {
+                ivec2 tap = corner + ivec2(x, y);
+                float weight = (x == 0 ? 1.0 - part.x : part.x) * (y == 0 ? 1.0 - part.y : part.y);
+                if (weight == 0.0 || any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, size))) {
+                    continue;
+                }
+                vec4 tap_surface = imageLoad(images_rgba16f[push.previous_normal], tap);
+                if (dot(tap_surface.xyz, surface.xyz) < SAME_NORMAL
+                    || abs(tap_surface.w - surface.w) > SAME_DISTANCE * surface.w) {
+                    continue;
+                }
+                old_color += weight * imageLoad(images_rgba32f[push.previous_color], tap);
+                old_moments += weight * imageLoad(images_rgba32f[push.previous_moments], tap).xy;
+                weights += weight;
+            }
+        }
+    }
+    float old_samples = 0.0;
+    // A history from a small part of the four pixels is not used: it is mostly noise.
+    if (weights > 0.1) {
+        old_color /= weights;
+        old_moments /= weights;
+        old_samples = min(old_color.a, push.history_limit);
+    }
+    // The mean of N values from the mean of N - k and the mean of the k new ones:
+    // move k/N of the way to the new value. At the sample limit N stays the same, and
+    // each frame still replaces k/N of the mean.
+    float samples = min(old_samples + push.frame_samples, push.max_samples);
+    float step_to_new = push.frame_samples / samples;
+    vec3 mean = mix(old_color.rgb, light, step_to_new);
+    vec2 moments = mix(old_moments, vec2(value, value * value), step_to_new);
+    imageStore(images_rgba32f[push.color], pixel, vec4(mean, samples));
+    imageStore(images_rgba32f[push.moments], pixel, vec4(moments, 0.0, 0.0));
+}

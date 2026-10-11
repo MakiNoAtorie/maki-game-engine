@@ -1,0 +1,14 @@
+[package]
+name = "maki-scene"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+maki-core.workspace = true
+maki-assets.workspace = true
+bevy_ecs.workspace = true
+glam.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+ron.workspace = true

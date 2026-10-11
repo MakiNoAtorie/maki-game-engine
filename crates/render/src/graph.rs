@@ -135,6 +135,8 @@ pub struct PassTimings {
 #[derive(Resource)]
 pub struct FrameGraph {
     resources: Vec<GraphResource>,
+    /// Each image with history: the indices of "this frame" and "the frame before".
+    history: Vec<(usize, usize)>,
     /// In execution order.
     passes: Vec<PassNode>,
     /// The barriers of the frame before, to log only a changed plan.
@@ -156,6 +158,7 @@ impl Default for FrameGraph {
                 attachment: false,
                 state: None,
             }],
+            history: Vec::new(),
             passes: Vec::new(),
             last_plan: Vec::new(),
             slot_frames: [None; FRAMES_IN_FLIGHT],
@@ -180,6 +183,31 @@ impl FrameGraph {
             state: None,
         });
         ResourceId(self.resources.len() - 1)
+    }
+
+    /// Declares an image whose content of the frame before stays readable: two images
+    /// that change places at the start of each frame. Returns `(current, previous)`.
+    /// A pass writes `current` in each frame; in the next frame the same pixels are
+    /// `previous` (named `previous_name`), and `current` holds the frame before that.
+    ///
+    /// The content of `previous` is undefined in the first frame and after a size
+    /// change. The images change places only in a frame that asks for it (see
+    /// [`FrameGraph::execute`]), so `previous` is the last frame that wrote `current`.
+    // ponytail: no pass can draw into a history image (`Access::ColorAttachment`): the
+    // two images would be made again in each frame. Make the pair with one flag if a
+    // raster pass needs history.
+    pub fn add_history(
+        &mut self,
+        desc: TransientDesc,
+        previous_name: &'static str,
+    ) -> (ResourceId, ResourceId) {
+        let current = self.add_transient(desc);
+        let previous = self.add_transient(TransientDesc {
+            name: previous_name,
+            ..desc
+        });
+        self.history.push((current.0, previous.0));
+        (current, previous)
     }
 
     /// Finds a resource by name. A module uses this to reach an image of another module.
@@ -249,13 +277,16 @@ impl FrameGraph {
     /// Records the frame. Call between `Gpu::begin_frame` and `Gpu::end_frame`.
     /// `world` is the render world. `internal_resolution` is the size of
     /// [`SizeMode::Internal`] images. `frame` is the number of the app frame: it names
-    /// the frame in [`PassTimings`].
+    /// the frame in [`PassTimings`]. `advance_history`: the history images change
+    /// places. False for a frame whose passes write no history image: the content of
+    /// the frame before then stays the "frame before" of the next frame.
     pub fn execute(
         &mut self,
         gpu: &mut Gpu,
         world: &World,
         internal_resolution: (u32, u32),
         frame: u64,
+        advance_history: bool,
     ) {
         // The GPU has finished the frame that used this frame slot before, so its
         // timestamps are ready: one before the first pass and one after each pass.
@@ -270,6 +301,10 @@ impl FrameGraph {
                 frame,
                 passes: names.zip(spans).collect(),
             });
+        }
+
+        if advance_history {
+            swap_history(&mut self.resources, &self.history);
         }
 
         // Extension point, dead-pass culling: walk the passes from last to first and keep
@@ -385,6 +420,18 @@ impl FrameGraph {
     }
 }
 
+/// What was "this frame" becomes "the frame before", for each pair of `history`. The
+/// GPU image goes to the other name with its last use, so the barrier plan stays correct.
+fn swap_history(resources: &mut [GraphResource], history: &[(usize, usize)]) {
+    for &(current, previous) in history {
+        let (image, state) = (resources[current].image, resources[current].state);
+        resources[current].image = resources[previous].image;
+        resources[current].state = resources[previous].state;
+        resources[previous].image = image;
+        resources[previous].state = state;
+    }
+}
+
 /// Finds the barriers of one frame. `passes` holds the declared accesses of each pass,
 /// in execution order. `states` holds the last use of each resource (index =
 /// `ResourceId`); on return it holds the use at the end of the frame.
@@ -490,6 +537,47 @@ mod tests {
                 (2, HDR, Some(Sampled), StorageWrite),
                 (3, HDR, Some(StorageWrite), StorageWrite),
                 (4, BACKBUFFER, None, Present),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_history_image_is_the_previous_image_in_the_next_frame() {
+        let mut graph = FrameGraph::default();
+        let (current, previous) = graph.add_history(
+            TransientDesc {
+                name: "color",
+                format: Format::Rgba16Float,
+                size: SizeMode::Internal,
+            },
+            "color_previous",
+        );
+        assert_eq!(graph.resource("color_previous"), Some(previous));
+        assert_eq!(
+            graph.transient_desc(previous).unwrap().name,
+            "color_previous"
+        );
+
+        // One frame: a pass writes `current` and a later pass reads `previous`.
+        let passes: [&[(ResourceId, Access)]; 2] =
+            [&[(current, StorageWrite)], &[(previous, StorageRead)]];
+        let frame = |graph: &mut FrameGraph| {
+            swap_history(&mut graph.resources, &graph.history);
+            let mut states: Vec<_> = graph.resources.iter().map(|r| r.state).collect();
+            let plan = plan(&passes, &mut states);
+            for (resource, state) in graph.resources.iter_mut().zip(states) {
+                resource.state = state;
+            }
+            plan
+        };
+        frame(&mut graph);
+        // Frame 2: what frame 1 wrote is now `previous`, and its barrier starts at
+        // that write. `current` is the image that frame 1 read.
+        assert_eq!(
+            frame(&mut graph)[..2],
+            [
+                (0, current, Some(StorageRead), StorageWrite),
+                (1, previous, Some(StorageWrite), StorageRead),
             ]
         );
     }

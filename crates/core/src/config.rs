@@ -15,30 +15,43 @@ pub struct Config {
     /// Window size in logical pixels: the OS multiplies it by the display scale factor.
     pub window_width: u32,
     pub window_height: u32,
-    /// The path tracer renders at this size; the result is scaled to the window.
+    /// The path tracer renders at the window size multiplied by this, 0.1 to 1.0.
+    /// 1.0: one traced pixel for each pixel of the window. Lower: less GPU time, and
+    /// the result is scaled to the window.
+    pub render_scale: f32,
+    /// A fixed size for the path tracer, in pixels. It does not follow the window, and
+    /// `render_scale` has no effect: a benchmark does the same work on each display.
+    /// 0: the window size multiplied by `render_scale`.
     pub render_width: u32,
     pub render_height: u32,
     pub vsync: bool,
-    /// glTF file to show (`.gltf` or `.glb`). `None` shows a generated test scene.
-    pub model_path: Option<PathBuf>,
-    /// Inner size of the room in meters: X, Z, and Y.
-    pub room_width: f32,
-    pub room_depth: f32,
-    pub room_height: f32,
-    /// Where the camera is, in meters: X, Y (up), Z. The room floor has its center at the origin.
+    /// The room file that the game starts in. See `game/assets/rooms`.
+    pub start_room: PathBuf,
+    /// The spawn point of that room where the player starts.
+    pub start_spawn: String,
+    /// The view of the camera: where it is when it looks at `camera_target`, in
+    /// meters: X, Y (up), Z. The camera keeps this direction and distance when it
+    /// follows the player.
     pub camera_position: [f32; 3],
-    /// The point that the camera looks at.
+    /// The point that the camera looks at before it follows the player. Its height
+    /// stays the height of the point that the camera looks at.
     pub camera_target: [f32; 3],
     /// Vertical field of view of the camera, in degrees.
     pub camera_fov_degrees: f32,
-    /// Start position of the light, in meters. The light controller keeps it in the room.
-    pub light_position: [f32; 3],
-    /// Radius of the sphere light, in meters. A larger light gives softer shadows.
-    pub light_radius: f32,
-    /// Linear RGB.
-    pub light_color: [f32; 3],
-    /// Brightness of the light. See `Light::intensity` in the render crate for the unit.
-    pub light_intensity: f32,
+    /// The camera follows the player: its target moves most of the way to the player in
+    /// this time, in seconds. 0: no delay. The view direction and the distance stay
+    /// those of `camera_position` and `camera_target`.
+    pub camera_follow_time: f32,
+    /// The camera target stays this far from the walls, in meters, so the view shows
+    /// less of the outside of the room.
+    pub camera_margin: f32,
+    /// glTF file of the player (`.gltf` or `.glb`), with the feet at its origin.
+    /// `None` shows a generated capsule.
+    pub player_model_path: Option<PathBuf>,
+    /// Speed of the player, in meters per second.
+    pub player_walk_speed: f32,
+    /// Speed of the player with the run action.
+    pub player_run_speed: f32,
     /// The path tracer stops when the picture is the mean of this many samples.
     pub max_samples: u32,
     /// Light paths that the path tracer follows for each pixel in one frame. More
@@ -48,17 +61,18 @@ pub struct Config {
     /// GPU time for the path tracer in each frame, in milliseconds, when
     /// `samples_per_frame` is 0. Keep it well below the time of one display refresh.
     pub trace_budget_ms: f32,
-    /// When a light changes, the picture keeps at most this many samples of the old
-    /// lighting, and the new samples replace them step by step. More samples: less
-    /// noise while a light moves, and the lighting follows the light later.
-    /// 0: a light change starts the picture again.
+    /// When the lighting changes (a light, or an object that moves), each pixel keeps
+    /// at most this many samples of the old lighting, and the new samples replace
+    /// them step by step. More samples: less noise while something moves, and the
+    /// lighting follows later (a shadow leaves a trail).
+    /// 0: a change of the lighting starts the picture again.
     pub light_history_samples: u32,
     /// The largest number of rays in one light path. Mirrors that face each other and
     /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
     /// time, and deep reflections lose detail.
     pub max_path_rays: u32,
     /// Filter passes of the denoiser, 0 to 6. Each pass doubles the area that the
-    /// filter takes its mean from. 0: no denoiser. Read at startup.
+    /// filter takes its mean from. 0: no filter, only the mean over frames.
     pub denoise_passes: u32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
     pub exposure: f32,
@@ -74,22 +88,21 @@ impl Default for Config {
             window_title: "maki".to_owned(),
             window_width: 1280,
             window_height: 720,
-            render_width: 640,
-            render_height: 360,
+            render_scale: 1.0,
+            render_width: 0,
+            render_height: 0,
             vsync: true,
-            model_path: None,
-            room_width: 8.0,
-            room_depth: 8.0,
-            room_height: 3.0,
+            start_room: PathBuf::from("game/assets/rooms/room_a.ron"),
+            start_spawn: "start".to_owned(),
             // Above and in front of the room, looking down into it at an angle.
             camera_position: [0.0, 9.0, 7.0],
             camera_target: [0.0, 0.5, 0.0],
             camera_fov_degrees: 45.0,
-            // In front of the two default objects, so their shadows fall to the back.
-            light_position: [0.0, 2.0, 2.0],
-            light_radius: 0.15,
-            light_color: [1.0, 0.9, 0.8],
-            light_intensity: 12.0,
+            camera_follow_time: 0.25,
+            camera_margin: 3.0,
+            player_model_path: None,
+            player_walk_speed: 1.6,
+            player_run_speed: 3.6,
             max_samples: 1024,
             samples_per_frame: 0,
             trace_budget_ms: 6.0,
@@ -136,10 +149,10 @@ mod tests {
         assert_eq!(created, Config::default());
 
         // A partial file keeps defaults for the fields it omits.
-        fs::write(&path, "vsync = false\nmodel_path = \"a.glb\"\n").unwrap();
+        fs::write(&path, "vsync = false\nstart_room = \"a.ron\"\n").unwrap();
         let loaded = Config::load_or_create(&path).unwrap();
         assert!(!loaded.vsync);
-        assert_eq!(loaded.model_path, Some(PathBuf::from("a.glb")));
+        assert_eq!(loaded.start_room, PathBuf::from("a.ron"));
         assert_eq!(loaded.window_width, Config::default().window_width);
 
         fs::remove_file(&path).unwrap();

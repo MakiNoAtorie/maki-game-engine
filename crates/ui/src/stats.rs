@@ -1,8 +1,9 @@
 //! The stats panel: frame time, sample count, light, resolution, GPU time of each pass.
 //! It uses only the public panel API, as a panel of another crate does.
 
-use maki_core::{App, Module, Time};
-use maki_render::{Accumulation, ExtractedFrame, FrameGraph, Light, RenderWorld};
+use maki_core::{App, Module, Time, Transform};
+use maki_render::{Accumulation, ExtractedFrame, FrameGraph, RenderGpu, RenderWorld};
+use maki_scene::{Light, Player};
 
 use crate::add_panel;
 
@@ -38,8 +39,16 @@ impl Module for StatsPanelModule {
                 rows.push(("Samples per frame", frame.samples_per_frame.to_string()));
                 rows.push(("Internal resolution", format!("{width} x {height}")));
             }
-            for light in world.query::<&Light>().iter(world) {
-                let p = light.position;
+            let mut players = world.query_filtered::<&Transform, bevy_ecs::query::With<Player>>();
+            for transform in players.iter(world) {
+                let p = transform.translation;
+                rows.push((
+                    "Player position",
+                    format!("{:.2}, {:.2}, {:.2}", p.x, p.y, p.z),
+                ));
+            }
+            for (transform, light) in world.query::<(&Transform, &Light)>().iter(world) {
+                let p = transform.translation;
                 rows.push((
                     "Light position",
                     format!("{:.2}, {:.2}, {:.2}", p.x, p.y, p.z),
@@ -47,6 +56,10 @@ impl Module for StatsPanelModule {
                 rows.push(("Light intensity", format!("{:.2}", light.intensity)));
             }
 
+            if let Some(gpu) = world.get_resource::<RenderGpu>() {
+                let megabytes = gpu.0.allocated_bytes() as f64 / (1024.0 * 1024.0);
+                rows.push(("GPU memory", format!("{megabytes:.1} MB")));
+            }
             // Not a mean: the values of the newest frame that the GPU has finished.
             if let Some(timings) = world.get_resource::<FrameGraph>().and_then(|g| g.timings()) {
                 for (pass, ms) in &timings.passes {

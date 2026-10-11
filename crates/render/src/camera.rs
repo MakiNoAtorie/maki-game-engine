@@ -1,63 +1,44 @@
-//! The camera: a component of the game world, and its copy in the render world.
+//! The camera: the copy of the `Camera` component in the render world, and its rays.
 
 use bevy_ecs::change_detection::{DetectChanges, Ref};
-use bevy_ecs::component::Component;
 use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Query, ResMut};
 use glam::Vec3;
 use maki_core::{App, Extract};
+use maki_scene::Camera;
 
 use crate::RenderWorld;
 
-/// The point of view of the picture. The game spawns one entity with this component.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct Camera {
-    /// Where the camera is, in world space.
-    pub position: Vec3,
-    /// The point in world space that is in the center of the picture.
-    pub target: Vec3,
-    /// The angle between the top and the bottom edge of the picture, in degrees.
-    pub fov_y_degrees: f32,
-}
-
-/// At the origin, looking along -Z. In use only while the game has no camera.
-impl Default for Camera {
-    fn default() -> Self {
-        Self {
-            position: Vec3::ZERO,
-            target: Vec3::NEG_Z,
-            fov_y_degrees: 60.0,
-        }
-    }
-}
-
-impl Camera {
-    /// The vectors `[right, up, forward]` from which a shader makes the ray of a pixel:
-    /// `direction = forward + x * right + y * up`, with `x` and `y` from -1 to 1 across
-    /// the picture. `forward` has length 1. The lengths of `right` and `up` hold the
-    /// field of view. `aspect` is the width of the picture divided by its height.
-    pub fn ray_basis(&self, aspect: f32) -> [Vec3; 3] {
-        let forward = (self.target - self.position)
-            .try_normalize()
-            .unwrap_or(Vec3::NEG_Z);
-        // A camera that looks straight up or down gets no "right" from the Y axis.
-        let up_hint = if forward.cross(Vec3::Y).length_squared() < 1e-6 {
-            Vec3::NEG_Z
-        } else {
-            Vec3::Y
-        };
-        let right = forward.cross(up_hint).normalize();
-        let up = right.cross(forward);
-        // Half of the picture height, at a distance of 1 in front of the camera.
-        let half_height = (self.fov_y_degrees.to_radians() / 2.0).tan();
-        [right * half_height * aspect, up * half_height, forward]
-    }
+/// The vectors `[right, up, forward]` from which a shader makes the ray of a pixel:
+/// `direction = forward + x * right + y * up`, with `x` and `y` from -1 to 1 across
+/// the picture. `forward` has length 1. The lengths of `right` and `up` hold the
+/// field of view. `aspect` is the width of the picture divided by its height.
+pub fn ray_basis(camera: &Camera, aspect: f32) -> [Vec3; 3] {
+    let forward = (camera.target - camera.position)
+        .try_normalize()
+        .unwrap_or(Vec3::NEG_Z);
+    // A camera that looks straight up or down gets no "right" from the Y axis.
+    let up_hint = if forward.cross(Vec3::Y).length_squared() < 1e-6 {
+        Vec3::NEG_Z
+    } else {
+        Vec3::Y
+    };
+    let right = forward.cross(up_hint).normalize();
+    let up = right.cross(forward);
+    // Half of the picture height, at a distance of 1 in front of the camera.
+    let half_height = (camera.fov_y_degrees.to_radians() / 2.0).tan();
+    [right * half_height * aspect, up * half_height, forward]
 }
 
 /// The camera of the frame. A resource of the render world.
 #[derive(Resource, Debug, Clone, Copy, Default)]
-pub struct ExtractedCamera(pub Camera);
+pub struct ExtractedCamera {
+    pub current: Camera,
+    /// The camera of the frame before. Equal to `current` in the first frame. A pass
+    /// computes where a point was on the screen with it.
+    pub previous: Camera,
+}
 
 /// Adds the camera systems. Part of `RenderModule`.
 pub(crate) fn build(app: &mut App) {
@@ -70,17 +51,57 @@ fn extract_camera(
     mut removed: RemovedComponents<Camera>,
     mut render_world: ResMut<RenderWorld>,
 ) {
-    // A camera is new, was written, or went away: the old samples show another view.
+    // A camera is new, was written, or went away: the picture needs new samples. The
+    // old ones stay: the denoiser finds them at their new place in the picture.
     if removed.read().count() > 0 || cameras.iter().any(|camera| camera.is_changed()) {
-        render_world.reset_accumulation();
+        tracing::trace!("the camera changed");
+        render_world.wake_accumulation();
     }
-    let camera = cameras.iter().next().map_or_else(Camera::default, |c| *c);
-    render_world.0.insert_resource(ExtractedCamera(camera));
+    let current = cameras.iter().next().map_or_else(Camera::default, |c| *c);
+    // The resource still holds the camera of the frame before.
+    let previous = render_world
+        .0
+        .get_resource::<ExtractedCamera>()
+        .map_or(current, |camera| camera.current);
+    render_world
+        .0
+        .insert_resource(ExtractedCamera { current, previous });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_extracted_camera_carries_the_camera_of_the_frame_before() {
+        use bevy_ecs::schedule::Schedule;
+        use bevy_ecs::world::World;
+
+        let mut world = World::new();
+        world.insert_resource(RenderWorld::default());
+        let at = |x| Camera {
+            position: Vec3::new(x, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let entity = world.spawn(at(1.0)).id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(extract_camera);
+        let mut extract = |world: &mut World| {
+            schedule.run(world);
+            *world
+                .resource::<RenderWorld>()
+                .0
+                .resource::<ExtractedCamera>()
+        };
+
+        let first = extract(&mut world);
+        assert_eq!((first.current, first.previous), (at(1.0), at(1.0)));
+        *world.get_mut::<Camera>(entity).unwrap() = at(2.0);
+        let moved = extract(&mut world);
+        assert_eq!((moved.current, moved.previous), (at(2.0), at(1.0)));
+        let rest = extract(&mut world);
+        assert_eq!((rest.current, rest.previous), (at(2.0), at(2.0)));
+    }
 
     #[test]
     fn ray_basis_is_square_and_holds_the_field_of_view() {
@@ -95,7 +116,7 @@ mod tests {
             fov_y_degrees: 90.0,
         };
         for camera in [angled, down] {
-            let [right, up, forward] = camera.ray_basis(2.0);
+            let [right, up, forward] = ray_basis(&camera, 2.0);
             let to_target = (camera.target - camera.position).normalize();
             assert!((forward - to_target).length() < 1e-5);
             assert!(right.dot(up).abs() < 1e-5 && right.dot(forward).abs() < 1e-5);
@@ -104,6 +125,6 @@ mod tests {
             assert!((up.length() - 1.0).abs() < 1e-5 && (right.length() - 2.0).abs() < 1e-5);
         }
         // The top of the picture is up in the world.
-        assert!(angled.ray_basis(1.0)[1].y > 0.0);
+        assert!(ray_basis(&angled, 1.0)[1].y > 0.0);
     }
 }

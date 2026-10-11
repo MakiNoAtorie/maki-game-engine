@@ -1,9 +1,25 @@
-//! Benchmark mode (`--bench-frames N`): the light moves on a fixed path for N frames,
+//! Benchmark mode (`--bench-frames N`): the first light of the room moves on a fixed path for N frames,
 //! then the game writes the timing of each frame to a CSV file and stops.
+//!
+//! The "Bench" panel starts the same run in a game that runs, and the game goes on
+//! after it. Such a run starts from the state of the game at that moment, so only
+//! the command line gives numbers to compare between runs. A run with a script
+//! loads the start room again; the flags and variables stay.
 //!
 //! The path depends only on the frame number, so each run does the same work. The light
 //! moves in each frame, so each frame starts the accumulation again: no frame gets the
 //! low cost of a complete picture.
+//!
+//! Each frame counts as one fixed step of game time, whatever the real time was, so
+//! the simulation is also the same in each run.
+//!
+//! With `--bench-script NAME` the light does not move, and a script plays the game. A
+//! script holds actions down, as a player does with keys (`ScriptedActions`). The
+//! scripts are `WALK_SCRIPT` (in room A: the player walks, a door opens) and
+//! `TRIP_SCRIPT` (through room A to room B, the switch, and back to the locked door).
+//!
+//! The CSV has the column `room_load_ms`: for a frame that loaded a room, the time
+//! of the load (file, meshes, GPU upload), else zero.
 //!
 //! With `--bench-static` the light stays at the start of the path, so the picture
 //! accumulates. The path closes after `FRAMES_PER_TURN` frames: a run with a moving
@@ -12,48 +28,218 @@
 
 use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_core::{App, Config, Input, Module, Time, Update};
-use maki_platform::QuitRequested;
-use maki_render::{Format, FrameGraph, Light, RenderGpu};
+use maki_core::{App, Config, Input, Interpolated, Module, Time, Update, interpolate_transforms};
+use maki_platform::{Action, QuitRequested, ScriptedActions};
+use maki_render::{Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld};
+use maki_scene::{CurrentRoom, Light, RoomDef, RoomRequest, RoomTarget, load_requested_room};
+use maki_ui::{add_panel, egui};
 
-use crate::light::{PlayerLight, clamp_to_room};
+use crate::light::clamp_to_room;
 
 /// The CSV file, in the working directory.
 pub const OUTPUT_PATH: &str = "bench.csv";
+/// The picture file of a run from the panel, in the working directory.
+const PANEL_DUMP_PATH: &str = "bench.dump";
 /// Frames for one turn of the light around the room.
 const FRAMES_PER_TURN: u64 = 240;
 /// The GPU times of a frame arrive some frames later. After the last bench frame, the
 /// game waits this many frames for them, then stops without them.
 const MAX_WAIT_FRAMES: u64 = 8;
 
-/// Runs the benchmark for this many frames. Use it in place of `LightControllerModule`:
-/// the two would move the same light.
+/// Adds the "Bench" panel, which starts a benchmark run.
 pub struct BenchModule {
+    /// `Some`: this run starts with the game, and the game stops after it.
+    pub start: Option<BenchRun>,
+}
+
+/// One benchmark run.
+#[derive(Debug, Clone)]
+pub struct BenchRun {
     pub frames: u64,
     /// `Some`: write the picture of the last bench frame to this file. See `dump_picture`.
     pub dump: Option<PathBuf>,
     /// True: the light does not move.
     pub static_light: bool,
+    /// `Some`: the script runs, and the light does not move.
+    pub script: Option<Script>,
+}
+
+/// A script: from each frame number on, the actions that are held down. The actions
+/// of frame N move the player in the fixed step of frame N + 1, and the picture shows
+/// that step in frame N + 2 (see `maki_core::interpolation`).
+pub type Script = &'static [(u64, &'static [Action])];
+
+/// The script of a name of the command line.
+pub fn script(name: &str) -> Option<Script> {
+    match name {
+        "walk" => Some(WALK_SCRIPT),
+        "trip" => Some(TRIP_SCRIPT),
+        _ => None,
+    }
+}
+
+/// The walk script, in room A. The player walks to the left, then to the back between
+/// the cube and the left mirror, and the door opens. The last motion shows in frame
+/// `WALK_FRAMES`: `tools/bench.py` dumps the picture of that frame (`WALK_FRAMES`
+/// there) to measure the picture quality with motion.
+const WALK_SCRIPT: Script = &[
+    (40, &[Action::MoveLeft]),
+    (95, &[Action::MoveForward]),
+    // One frame: the door starts to open. It takes 1.2 s, 72 frames.
+    (100, &[Action::MoveForward, Action::ToggleMovers]),
+    (101, &[Action::MoveForward]),
+    (WALK_FRAMES - 1, &[]),
+];
+const WALK_FRAMES: u64 = 180;
+
+/// The trip script: the full loop of the game. Each line is one leg. The frame
+/// numbers come from the speeds of the default config (walk 1.6 m/s, run 3.6 m/s) at
+/// 60 steps in a second, and from the room files `room_a.ron` and `room_b.ron`: a
+/// change there needs a change here.
+const TRIP_SCRIPT: Script = {
+    use Action::*;
+    &[
+        // Room A: to the right past the glass ball, to the back, into the east passage.
+        (30, &[MoveRight, Run]),
+        (92, &[MoveForward, Run]),
+        (155, &[MoveRight, Run]),
+        // The transfer event has the control: fade out, room B, fade in.
+        (185, &[]),
+        // Room B: along the room, to the back, and to the switch.
+        (240, &[MoveRight, Run]),
+        (298, &[MoveForward, Run]),
+        (323, &[MoveRight]),
+        (345, &[]),
+        // The switch, and its message.
+        (350, &[Interact]),
+        (351, &[]),
+        (400, &[Interact]),
+        (401, &[]),
+        // Back to the west passage.
+        (410, &[MoveBack, Run]),
+        (435, &[MoveLeft, Run]),
+        (530, &[]),
+        // Room A again: to the door that was locked.
+        (590, &[MoveForward, Run]),
+        (640, &[]),
+        (645, &[Interact]),
+        (646, &[]),
+        (700, &[Interact]),
+        (701, &[]),
+        // The door opens. Through it.
+        (780, &[MoveForward]),
+        (820, &[]),
+    ]
+};
+
+/// The actions that a script holds in a frame.
+fn script_actions(script: Script, frame: u64) -> &'static [Action] {
+    let passed = script.iter().take_while(|(first, _)| *first <= frame);
+    passed.last().map_or(&[], |(_, actions)| actions)
+}
+
+fn run_script(
+    time: Res<Time>,
+    bench: Res<Bench>,
+    room: Res<CurrentRoom>,
+    players: Query<&Interpolated, bevy_ecs::query::With<maki_scene::Player>>,
+    mut scripted: ResMut<ScriptedActions>,
+) {
+    // No run, or a run with no script: nothing is held, also after a run that stopped.
+    let script = bench.active.as_ref().and_then(|active| {
+        let script = active.run.script?;
+        Some(script_actions(script, active.bench_frame(time.frame)))
+    });
+    let actions = script.unwrap_or(&[]);
+    // Only a change is a write.
+    if scripted.0.len() != actions.len() || !actions.iter().all(|a| scripted.0.contains(a)) {
+        let player = players.iter().next().map(|pose| pose.current.translation);
+        tracing::debug!(
+            frame = time.frame,
+            ?actions,
+            ?player,
+            room = %room.path.display(),
+            "script"
+        );
+        scripted.0 = actions.iter().copied().collect();
+    }
 }
 
 impl Module for BenchModule {
     fn build(&self, app: &mut App) {
         app.insert_resource(Bench {
-            rows: vec![Row::default(); self.frames as usize],
-            pass_names: Vec::new(),
-            last_start: None,
-            dump: self.dump.clone(),
-            static_light: self.static_light,
+            request: self.start.clone(),
+            active: None,
+            quit_at_end: self.start.is_some(),
+            status: String::new(),
         })
         .add_systems(Input, record_frame)
-        .add_systems(Update, move_lights);
+        .add_systems(
+            Update,
+            (
+                // The light jumps to its place of the frame: no blend between fixed steps.
+                move_lights.before(interpolate_transforms),
+                run_script,
+            )
+                .after(load_requested_room),
+        );
+        if self.start.is_some() {
+            // `record_frame` sets this at the start of a run, and that is too late
+            // for the first frame of the game.
+            let step = app.world().resource::<Time>().fixed_delta;
+            app.set_frame_time(Some(step));
+        }
+
+        // The values of the panel for the next run.
+        let (mut frames, mut script_name, mut static_light, mut dump) = (300, None, false, false);
+        add_panel(app, "Bench", true, move |ui, world| {
+            let frame = world.resource::<Time>().frame;
+            let bench = world.resource::<Bench>();
+            let progress = bench.active.as_ref().map(|active| {
+                let (frame, frames) = (active.bench_frame(frame), active.run.frames);
+                format!("frame {} of {frames}", frame.min(frames))
+            });
+            let busy = progress.is_some() || bench.request.is_some();
+            ui.label(progress.as_deref().unwrap_or(&bench.status));
+
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut frames).range(1..=1_000_000));
+                    ui.label("frames");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("script");
+                    ui.radio_value(&mut script_name, None, "none");
+                    for name in ["walk", "trip"] {
+                        ui.radio_value(&mut script_name, Some(name), name);
+                    }
+                });
+                // A script holds the light.
+                ui.add_enabled(
+                    script_name.is_none(),
+                    egui::Checkbox::new(&mut static_light, "the light does not move"),
+                );
+                ui.checkbox(
+                    &mut dump,
+                    format!("write the last picture to {PANEL_DUMP_PATH}"),
+                );
+                if ui.button("Start").clicked() {
+                    world.resource_mut::<Bench>().request = Some(BenchRun {
+                        frames,
+                        dump: dump.then(|| PathBuf::from(PANEL_DUMP_PATH)),
+                        static_light,
+                        script: script_name.and_then(script),
+                    });
+                }
+            });
+        });
     }
 }
 
@@ -61,74 +247,145 @@ impl Module for BenchModule {
 #[derive(Debug, Clone, Default)]
 struct Row {
     cpu_ms: Option<f32>,
-    /// One value for each name in `Bench::pass_names`.
+    /// One value for each name in `Active::pass_names`.
     gpu_ms: Option<Vec<f32>>,
+    /// Zero for a frame that loaded no room.
+    room_load_ms: f32,
 }
 
 #[derive(Resource)]
 struct Bench {
-    /// Row `i` is for frame `i + 1`: the first frame of the app has the number 1.
+    /// This run starts at the start of the next frame.
+    request: Option<BenchRun>,
+    /// The run that is in progress.
+    active: Option<Active>,
+    /// True: the game stops after the run.
+    quit_at_end: bool,
+    /// The result of the last run, for the panel.
+    status: String,
+}
+
+/// A run in progress. A bench frame is a frame of the run: the first one has the number 1.
+struct Active {
+    run: BenchRun,
+    /// The number of the app frame before the first bench frame.
+    frames_before: u64,
+    /// Row `i` is for bench frame `i + 1`.
     rows: Vec<Row>,
     /// The passes of the frame graph, in frame order.
     pass_names: Vec<&'static str>,
-    /// Number and start time of the frame before.
+    /// Number and start time of the bench frame before.
     last_start: Option<(u64, Instant)>,
-    dump: Option<PathBuf>,
-    static_light: bool,
+    /// `CurrentRoom::loads` at the start of the frame before.
+    loads: u64,
+    /// The vsync value of the config before the run.
+    vsync: bool,
 }
 
-impl Bench {
-    fn row(&mut self, frame: u64) -> Option<&mut Row> {
+impl Active {
+    /// The bench frame of an app frame. 0: a frame before the run.
+    fn bench_frame(&self, app_frame: u64) -> u64 {
+        app_frame.saturating_sub(self.frames_before)
+    }
+
+    fn row(&mut self, bench_frame: u64) -> Option<&mut Row> {
         self.rows
-            .get_mut(usize::try_from(frame.checked_sub(1)?).ok()?)
+            .get_mut(usize::try_from(bench_frame.checked_sub(1)?).ok()?)
     }
 }
 
 /// The position of the light in a frame: a circle around the center of the room, at
 /// half of the room height.
-fn path_position(frame: u64, light_radius: f32, config: &Config) -> Vec3 {
+fn path_position(frame: u64, light_radius: f32, room: &RoomDef) -> Vec3 {
     let angle = (frame % FRAMES_PER_TURN) as f32 / FRAMES_PER_TURN as f32 * TAU;
-    let reach = 0.3 * config.room_width.min(config.room_depth);
-    let position = Vec3::new(
-        angle.cos() * reach,
-        config.room_height / 2.0,
-        angle.sin() * reach,
-    );
-    clamp_to_room(position, light_radius, config)
+    let reach = 0.3 * room.width.min(room.depth);
+    let position = Vec3::new(angle.cos() * reach, room.height / 2.0, angle.sin() * reach);
+    clamp_to_room(position, light_radius, room)
 }
 
 fn move_lights(
     time: Res<Time>,
-    config: Res<Config>,
+    room: Res<CurrentRoom>,
     bench: Res<Bench>,
-    mut lights: Query<&mut Light, With<PlayerLight>>,
+    // The first light of the room file: only those have a pose for fixed steps.
+    mut lights: Query<(&mut Interpolated, &Light)>,
 ) {
-    let frame = if bench.static_light { 0 } else { time.frame };
-    for mut light in &mut lights {
-        let position = path_position(frame, light.radius, &config);
+    let Some(active) = &bench.active else { return };
+    // The light path depends on the frame number, a script on game time: a picture
+    // of the two together would differ from run to run.
+    let held = active.run.static_light || active.run.script.is_some();
+    let frame = if held {
+        0
+    } else {
+        active.bench_frame(time.frame)
+    };
+    if let Some((mut pose, light)) = lights.iter_mut().next() {
+        let position = path_position(frame, light.radius, &room.def);
         // A write marks the light as changed, and a changed light starts the picture again.
-        if light.position != position {
-            light.position = position;
+        if pose.current.translation != position {
+            let mut next = pose.current;
+            next.translation = position;
+            pose.snap(next);
         }
     }
 }
 
-/// Runs at the start of each frame (`Input` is the first schedule).
+/// Runs at the start of each frame (`Input` is the first schedule). Starts a run,
+/// records its frames, and stops it.
+// What it writes for other systems (`Time::frame_time`, the config, the room request)
+// is read in a later schedule or in the next frame.
+#[allow(clippy::too_many_arguments)]
 fn record_frame(
-    time: Res<Time>,
+    mut time: ResMut<Time>,
+    mut config: ResMut<Config>,
+    mut room_request: ResMut<RoomRequest>,
     graph: Option<Res<FrameGraph>>,
     gpu: Option<ResMut<RenderGpu>>,
+    room: Res<CurrentRoom>,
+    render_world: Option<Res<RenderWorld>>,
     mut bench: ResMut<Bench>,
     mut quit: ResMut<QuitRequested>,
 ) {
     let now = Instant::now();
     let bench = &mut *bench;
 
+    if bench.active.is_none()
+        && let Some(run) = bench.request.take()
+    {
+        // Each frame counts as one fixed step, and no frame waits for the display.
+        time.frame_time = Some(time.fixed_delta);
+        let vsync = config.vsync;
+        if vsync {
+            config.vsync = false;
+        }
+        if run.script.is_some() {
+            // The frame numbers of a script start at the spawn point of the start room.
+            room_request.0 = Some(RoomTarget {
+                path: config.start_room.clone(),
+                spawn: Some(config.start_spawn.clone()),
+            });
+        }
+        bench.active = Some(Active {
+            frames_before: time.frame - 1,
+            rows: vec![Row::default(); run.frames as usize],
+            pass_names: Vec::new(),
+            last_start: None,
+            loads: room.loads,
+            vsync,
+            run,
+        });
+    }
+    let Some(active) = &mut bench.active else {
+        return;
+    };
+    let frame = active.bench_frame(time.frame);
+    let frames = active.run.frames;
+
     // At the start of the frame after the last bench frame: the picture of that frame
     // is recorded and no newer frame has changed it. A fixed frame, so two runs dump
     // the same picture.
-    if time.frame == bench.rows.len() as u64 + 1
-        && let (Some(path), Some(graph), Some(mut gpu)) = (&bench.dump, &graph, gpu)
+    if frame == frames + 1
+        && let (Some(path), Some(graph), Some(mut gpu)) = (&active.run.dump, &graph, gpu)
     {
         match dump_picture(path, graph, &mut gpu) {
             Ok(()) => tracing::info!(path = %path.display(), "picture dumped"),
@@ -141,41 +398,62 @@ fn record_frame(
     // CPU time of a frame: from its start to the start of the next frame. It has all
     // schedules, and the time that the CPU waits for the GPU and for the display.
     // Not `Time::delta`: that value has an upper limit.
-    if let Some((frame, start)) = bench.last_start.replace((time.frame, now))
-        && let Some(row) = bench.row(frame)
+    // The frame before loaded a room: the time of the loader, and of the upload of
+    // the meshes of the room in the same frame.
+    let loaded = std::mem::replace(&mut active.loads, room.loads) != room.loads;
+    let upload = render_world
+        .as_ref()
+        .and_then(|world| world.0.get_resource::<GpuMeshes>())
+        .map_or(Duration::ZERO, GpuMeshes::last_sync_time);
+    if let Some((before, start)) = active.last_start.replace((frame, now))
+        && let Some(row) = active.row(before)
     {
         row.cpu_ms = Some((now - start).as_secs_f32() * 1000.0);
+        if loaded {
+            row.room_load_ms = (room.load_time + upload).as_secs_f32() * 1000.0;
+        }
     }
 
     // The GPU times name their frame. They stay in the graph until newer ones arrive,
     // so the same values can show in more than one frame.
-    if let Some(timings) = graph.as_ref().and_then(|graph| graph.timings())
-        && let Some(row) = bench.row(timings.frame)
-        && row.gpu_ms.is_none()
-    {
-        row.gpu_ms = Some(timings.passes.iter().map(|(_, ms)| *ms).collect());
-        bench.pass_names = timings.passes.iter().map(|(name, _)| *name).collect();
+    if let Some(timings) = graph.as_ref().and_then(|graph| graph.timings()) {
+        let timed = active.bench_frame(timings.frame);
+        let names = timings.passes.iter().map(|(name, _)| *name).collect();
+        if let Some(row) = active.row(timed)
+            && row.gpu_ms.is_none()
+        {
+            row.gpu_ms = Some(timings.passes.iter().map(|(_, ms)| *ms).collect());
+            active.pass_names = names;
+        }
     }
 
-    let frames = bench.rows.len() as u64;
-    let complete = bench.rows.last().is_some_and(|row| row.gpu_ms.is_some());
-    if !quit.0 && (complete || time.frame > frames + MAX_WAIT_FRAMES) {
-        match std::fs::write(OUTPUT_PATH, csv(&bench.pass_names, &bench.rows)) {
-            Ok(()) => tracing::info!(path = OUTPUT_PATH, frames, "benchmark written"),
-            Err(error) => tracing::error!(path = OUTPUT_PATH, %error, "cannot write the benchmark"),
+    let complete = active.rows.last().is_some_and(|row| row.gpu_ms.is_some());
+    if complete || frame > frames + MAX_WAIT_FRAMES {
+        bench.status = match std::fs::write(OUTPUT_PATH, csv(&active.pass_names, &active.rows)) {
+            Ok(()) => {
+                tracing::info!(path = OUTPUT_PATH, frames, "benchmark written");
+                format!("{OUTPUT_PATH} written: {frames} frames")
+            }
+            Err(error) => {
+                tracing::error!(path = OUTPUT_PATH, %error, "cannot write the benchmark");
+                format!("cannot write {OUTPUT_PATH}: {error}")
+            }
+        };
+        // The game goes on as before the run. `run_script` releases the actions.
+        time.frame_time = None;
+        if active.vsync {
+            config.vsync = true;
         }
-        quit.0 = true;
+        bench.active = None;
+        quit.0 |= bench.quit_at_end;
     }
 }
 
-/// Writes the picture before the tone curve (the result of the denoiser, or the
-/// `accumulated` image if the denoiser is off): two little-endian `u32` (width,
-/// height), then four `f32` (R, G, B, A) for each pixel. `tools/bench.py` reads the file.
+/// Writes the picture before the tone curve (the result of the denoiser): two
+/// little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel.
+/// `tools/bench.py` reads the file.
 fn dump_picture(path: &Path, graph: &FrameGraph, gpu: &mut RenderGpu) -> anyhow::Result<()> {
-    let id = graph
-        .resource("denoised")
-        .or_else(|| graph.resource("accumulated"))
-        .context("no picture image")?;
+    let id = graph.resource("denoised").context("no picture image")?;
     let format = graph.transient_desc(id).context("not an image")?.format;
     let (image, (width, height), state) = graph.image(id).context("no frame was drawn")?;
     let pixels = gpu.0.read_image(image, state)?;
@@ -210,16 +488,18 @@ fn half_to_f32(half: u16) -> f32 {
     }
 }
 
-/// One line for each frame: frame number, CPU milliseconds, GPU milliseconds of each pass.
+/// One line for each frame: frame number, CPU milliseconds, room load milliseconds, GPU
+/// milliseconds of each pass.
 fn csv(pass_names: &[&str], rows: &[Row]) -> String {
     let cell = |value: Option<f32>| value.map_or(String::new(), |value| format!("{value:.3}"));
-    let mut text = String::from("frame,cpu_ms");
+    let mut text = String::from("frame,cpu_ms,room_load_ms");
     for name in pass_names {
         text += &format!(",gpu_{name}_ms");
     }
     text.push('\n');
     for (index, row) in rows.iter().enumerate() {
-        text += &format!("{},{}", index + 1, cell(row.cpu_ms));
+        let load = cell(Some(row.room_load_ms));
+        text += &format!("{},{},{load}", index + 1, cell(row.cpu_ms));
         for pass in 0..pass_names.len() {
             let ms = row.gpu_ms.as_ref().and_then(|ms| ms.get(pass).copied());
             text += &format!(",{}", cell(ms));
@@ -246,34 +526,61 @@ mod tests {
     }
 
     #[test]
+    fn a_script_holds_the_actions_of_the_last_entry_that_started() {
+        let walk = |frame| script_actions(WALK_SCRIPT, frame);
+        assert_eq!(walk(1), &[]);
+        assert_eq!(walk(40), &[Action::MoveLeft]);
+        assert_eq!(walk(94), &[Action::MoveLeft]);
+        assert!(walk(100).contains(&Action::ToggleMovers));
+        assert_eq!(walk(WALK_FRAMES - 2), &[Action::MoveForward]);
+        // Nothing is held from the frame before the last one, and after the script.
+        assert_eq!(walk(WALK_FRAMES - 1), &[]);
+        assert_eq!(walk(WALK_FRAMES + 500), &[]);
+        // Each script is in frame order and ends with no action held.
+        for name in ["walk", "trip"] {
+            let script = script(name).unwrap();
+            assert!(script.is_sorted_by_key(|(first, _)| *first), "{name}");
+            assert_eq!(script.last().unwrap().1, &[], "{name}");
+        }
+        assert!(script("fly").is_none());
+    }
+
+    #[test]
     fn csv_has_one_line_for_each_frame_and_empty_cells_for_missing_values() {
         let rows = [
             Row {
                 cpu_ms: Some(16.5),
                 gpu_ms: Some(vec![0.25, 3.0]),
+                room_load_ms: 0.0,
             },
-            // The GPU times of this frame did not arrive.
+            // The GPU times of this frame did not arrive. It loaded a room.
             Row {
                 cpu_ms: Some(17.0),
                 gpu_ms: None,
+                room_load_ms: 2.5,
             },
         ];
         assert_eq!(
             csv(&["trace", "tonemap"], &rows),
-            "frame,cpu_ms,gpu_trace_ms,gpu_tonemap_ms\n1,16.500,0.250,3.000\n2,17.000,,\n"
+            "frame,cpu_ms,room_load_ms,gpu_trace_ms,gpu_tonemap_ms\n\
+             1,16.500,0.000,0.250,3.000\n2,17.000,2.500,,\n"
         );
     }
 
     #[test]
     fn the_light_path_is_the_same_in_each_run_and_stays_in_the_room() {
-        let config = Config::default();
-        let half = Vec3::new(config.room_width, 0.0, config.room_depth) / 2.0;
+        let config = RoomDef {
+            width: 8.0,
+            depth: 6.0,
+            height: 3.0,
+            ..RoomDef::default()
+        };
+        let half = Vec3::new(config.width, 0.0, config.depth) / 2.0;
         for frame in 0..2 * FRAMES_PER_TURN {
-            let position = path_position(frame, config.light_radius, &config);
-            assert_eq!(position, path_position(frame, config.light_radius, &config));
+            let position = path_position(frame, 0.15, &config);
+            assert_eq!(position, path_position(frame, 0.15, &config));
             assert!(
-                position.cmpge(-half).all()
-                    && position.cmple(half.with_y(config.room_height)).all()
+                position.cmpge(-half).all() && position.cmple(half.with_y(config.height)).all()
             );
         }
         // The light moves, and the path closes after one turn.

@@ -8,11 +8,13 @@ edition = "2024"
 
 # All versions live here; crates use `name.workspace = true`.
 [workspace.dependencies]
-# Dependency rule: core -> platform -> assets -> gpu -> render -> ui -> game.
+# Dependency rule: core -> platform -> assets -> scene -> events -> gpu -> render -> ui -> game.
 # A crate may depend only on crates to its left.
 maki-core = { path = "crates/core" }
 maki-platform = { path = "crates/platform" }
 maki-assets = { path = "crates/assets" }
+maki-scene = { path = "crates/scene" }
+maki-events = { path = "crates/events" }
 maki-gpu = { path = "crates/gpu" }
 maki-render = { path = "crates/render" }
 maki-ui = { path = "crates/ui" }
@@ -33,6 +35,8 @@ gltf = { version = "1.4.1", features = ["KHR_materials_transmission", "KHR_mater
 # `debug` puts system names in schedule error messages.
 bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "debug"] }
 serde = { version = "1.0.229", features = ["derive"] }
+# The format of the room files: Rust syntax for data, with line numbers in its errors.
+ron = "0.12.2"
 toml = "1.1.8"
 # Windows on Linux need the default x11/wayland features, so defaults stay on.
 winit = "0.30.12"

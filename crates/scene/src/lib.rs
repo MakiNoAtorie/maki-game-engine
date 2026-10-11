@@ -1,0 +1,109 @@
+//! The components that describe the world: what is where, with no word on how it is
+//! drawn. Gameplay crates write them; the render crate copies them in `Extract`.
+//!
+//! This crate must not depend on `gpu`, `render`, or `ui`.
+
+mod collision;
+mod mover;
+mod room;
+
+use bevy_ecs::component::Component;
+use bevy_ecs::schedule::IntoScheduleConfigs;
+use glam::Vec3;
+use maki_assets::{Handle, Mesh};
+use maki_core::{App, FixedUpdate, Module, Update, interpolate_transforms};
+
+pub use collision::{Collider, move_circle, room_colliders};
+pub use mover::{Door, Mover, MoverState, move_movers};
+pub use room::{
+    CurrentRoom, DoorDef, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef, RoomDef,
+    RoomEntity, RoomModels, RoomRequest, RoomTarget, RoomValidator, RoomValidators,
+    load_requested_room, parse_room, read_room, ron_options,
+};
+
+/// Adds the systems of the world components (movers, doors) and the room loader.
+pub struct SceneModule;
+
+impl Module for SceneModule {
+    fn build(&self, app: &mut App) {
+        // The stores normally come from `AssetsModule`. This keeps the loader
+        // independent of the order in which the modules are added.
+        app.init_resource::<maki_assets::Assets<Mesh>>()
+            .init_resource::<maki_assets::Assets<maki_assets::Model>>()
+            .init_resource::<CurrentRoom>()
+            .init_resource::<RoomRequest>()
+            .init_resource::<RoomModels>()
+            .init_resource::<RoomValidators>()
+            .init_resource::<ScreenFade>()
+            // Each writer asks for a room; the loader takes the last request.
+            .allow_ambiguous_resource::<RoomRequest>()
+            .add_systems(
+                FixedUpdate,
+                (mover::move_movers, mover::block_doors).chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    // Before the interpolation: a player that the loader moved to a
+                    // spawn point shows there in this frame.
+                    room::load_requested_room.before(interpolate_transforms),
+                    room::spawn_loaded_models.after(interpolate_transforms),
+                ),
+            );
+    }
+}
+
+/// A name for an entity of a room file. Events find doors and lights by it.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub struct Name(pub String);
+
+/// How dark a fade makes the picture: 0.0 is the picture, 1.0 is black. The renderer
+/// reads it. The user interface is drawn over the fade.
+#[derive(bevy_ecs::resource::Resource, Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScreenFade(pub f32);
+
+/// Marks the entity that the player controls.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Player;
+
+/// Draws a mesh at the `Transform` of the entity. Any module spawns entities with this
+/// component; the renderer finds them all.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct MeshInstance(pub Handle<Mesh>);
+
+/// A sphere that sends out the same light in all directions. Its center is the
+/// translation of the `Transform` of the entity.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct Light {
+    /// Radius of the sphere, in meters. A larger light gives softer shadows.
+    pub radius: f32,
+    /// Linear RGB.
+    pub color: Vec3,
+    /// Brightness as seen from far away: a surface that faces the light at a distance
+    /// of `d` meters gets `color * intensity / d²`. Does not change with `radius`.
+    pub intensity: f32,
+    /// False: the light gives no light and does not show.
+    pub on: bool,
+}
+
+/// The point of view of the picture. The game spawns one entity with this component.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct Camera {
+    /// Where the camera is, in world space.
+    pub position: Vec3,
+    /// The point in world space that is in the center of the picture.
+    pub target: Vec3,
+    /// The angle between the top and the bottom edge of the picture, in degrees.
+    pub fov_y_degrees: f32,
+}
+
+/// At the origin, looking along -Z. In use only while the game has no camera.
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            target: Vec3::NEG_Z,
+            fov_y_degrees: 60.0,
+        }
+    }
+}

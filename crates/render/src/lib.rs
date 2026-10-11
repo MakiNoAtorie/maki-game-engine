@@ -8,16 +8,18 @@
 //! 3. `Present` schedule: `end_frame` submits the frame and shows it.
 //!
 //! Meshes: see the `meshes` module. It uploads the mesh assets and keeps the mesh table.
-//! The game writes [`ExtractedInstances`] in `Extract`, and spawns one [`Camera`].
-//! The game also spawns [`Light`] entities. The passes (`passes` module) trace one light
+//! The game spawns entities with the components of the scene crate: `MeshInstance`,
+//! `Light`, and one `Camera`. The passes (`passes` module) trace one light
 //! path per pixel and frame, and keep the mean over frames (`accumulation` module).
 //!
 //! A module adds to the renderer in two places: an `Extract` system that writes a
 //! resource into the render world, and a pass in the frame graph (from a `Startup`
 //! system that runs `.after(setup_renderer)`). If the data of the module changes what
-//! the picture shows, its `Extract` system also calls
-//! [`RenderWorld::reset_accumulation`] when that data changes (or
-//! [`RenderWorld::soften_accumulation`] if only the lighting changes).
+//! the picture shows, its `Extract` system also tells the renderer when that data
+//! changes: [`RenderWorld::soften_accumulation`] for a change of the lighting,
+//! [`RenderWorld::wake_accumulation`] for a change of the view,
+//! [`RenderWorld::reset_accumulation`] if no old sample is of use (see the
+//! `accumulation` module).
 //!
 //! Shaders: GLSL files in `shaders/` are compiled to SPIR-V by `build.rs` at build time
 //! and embedded with `shader_spirv!`. See `build.rs` for the rules.
@@ -28,6 +30,7 @@ mod denoise;
 mod graph;
 mod light;
 mod meshes;
+mod motion;
 mod passes;
 
 use bevy_ecs::change_detection::DetectChanges;
@@ -38,14 +41,15 @@ use bevy_ecs::world::World;
 use maki_core::{App, Config, Extract, Module, Present, Render, Startup, Time};
 use maki_gpu::{Gpu, GpuDesc};
 use maki_platform::{Window, WindowSize};
+use maki_scene::{CurrentRoom, ScreenFade};
 
 pub use accumulation::Accumulation;
-pub use camera::{Camera, ExtractedCamera};
+pub use camera::{ExtractedCamera, ray_basis};
 pub use denoise::MAX_DENOISE_PASSES;
 pub use graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, PassTimings, ResourceId, SizeMode, TransientDesc,
 };
-pub use light::{ExtractedLights, Light, MAX_LIGHTS};
+pub use light::{ExtractedLight, ExtractedLights, MAX_LIGHTS};
 pub use maki_gpu::{Access, Format};
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
 pub use passes::MAX_INSTANCES;
@@ -80,17 +84,24 @@ impl Default for RenderWorld {
 }
 
 impl RenderWorld {
-    /// Starts the accumulated image again. Call from an `Extract` system when
-    /// something that the picture shows has changed: the old samples are then wrong.
+    /// Drops the history of each pixel. Call from an `Extract` system when the old
+    /// samples are of no use: the picture starts again, with all its noise.
     pub fn reset_accumulation(&mut self) {
         self.0.resource_mut::<Accumulation>().request_reset();
     }
 
-    /// Keeps a short history of the accumulated image (`light_history_samples` of the
-    /// config). Call from an `Extract` system when only the lighting has changed: each
-    /// pixel still shows the same surface point, so its old samples are almost correct.
+    /// Keeps a short history for each pixel (`light_history_samples` of the config).
+    /// Call from an `Extract` system when the lighting has changed: a light, or an
+    /// object that moved (its shadow moved too). The old samples are almost correct.
     pub fn soften_accumulation(&mut self) {
         self.0.resource_mut::<Accumulation>().request_soft_reset();
+    }
+
+    /// Makes new samples and keeps the history. Call from an `Extract` system when
+    /// the view has changed: the old samples are correct, and the denoiser finds them
+    /// at their new place in the picture.
+    pub fn wake_accumulation(&mut self) {
+        self.0.resource_mut::<Accumulation>().request_wake();
     }
 }
 
@@ -101,6 +112,8 @@ pub struct ExtractedFrame {
     pub internal_resolution: (u32, u32),
     /// Size of the window in physical pixels.
     pub window_size: (u32, u32),
+    /// True: a frame waits for the display refresh.
+    pub vsync: bool,
     /// Number of the app frame. Part of the seed of the random numbers, so each
     /// frame makes a different sample. Also names the frame in the pass timings.
     pub frame: u64,
@@ -112,10 +125,49 @@ pub struct ExtractedFrame {
     pub samples_per_frame: u32,
     /// The largest number of rays in one light path.
     pub max_path_rays: u32,
-    /// Samples that the mean keeps on a soft reset.
+    /// Samples that the mean of a pixel keeps on a soft reset.
     pub light_history_samples: u32,
+    /// Filter passes of the denoiser in this frame, 0 to `MAX_DENOISE_PASSES`.
+    pub denoise_passes: u32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
+    /// How dark the fade makes the picture: 0.0 is the picture, 1.0 is black.
+    pub fade: f32,
+    pub debug_view: DebugView,
+}
+
+/// What the window shows. A resource of the game world: a debug panel writes it.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugView {
+    /// The picture.
+    #[default]
+    Final,
+    /// Screen motion of each pixel since the frame before: red for X, green for Y.
+    Motion,
+    /// Distance from the camera: near is bright.
+    Depth,
+    /// World normal: X, Y, Z from -1 to 1 as red, green, blue from 0 to 1.
+    Normals,
+    /// Samples in the mean of each pixel: black for none, white for `max_samples`.
+    HistoryLength,
+    /// How noisy one frame is at each pixel: the standard deviation of its brightness
+    /// over time, as a part of the brightness.
+    Variance,
+    /// The samples of this frame alone, with no denoiser.
+    Raw,
+}
+
+impl DebugView {
+    /// Each view with its name, for a panel.
+    pub const ALL: [(Self, &str); 7] = [
+        (Self::Final, "Final"),
+        (Self::Raw, "Raw (one frame)"),
+        (Self::Motion, "Motion vectors"),
+        (Self::Depth, "Depth"),
+        (Self::Normals, "Normals"),
+        (Self::HistoryLength, "History length"),
+        (Self::Variance, "Variance"),
+    ];
 }
 
 /// Set this environment variable to change the internal resolution every few frames.
@@ -131,6 +183,7 @@ pub struct RenderModule;
 impl Module for RenderModule {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderWorld>()
+            .init_resource::<DebugView>()
             // Extract systems of different modules write different resources of the
             // render world, so their order has no effect. The one shared write, the
             // accumulation reset, only sets a flag.
@@ -153,6 +206,7 @@ impl Module for RenderModule {
         meshes::build(app);
         camera::build(app);
         light::build(app);
+        motion::build(app);
     }
 }
 
@@ -173,7 +227,7 @@ pub fn setup_renderer(
     let mut gpu =
         Gpu::new(&*window, &desc).unwrap_or_else(|error| panic!("cannot start the GPU: {error:#}"));
     let mut graph = FrameGraph::default();
-    passes::build_graph(&mut gpu, &mut graph, config.denoise_passes);
+    passes::build_graph(&mut gpu, &mut graph);
     commands.insert_resource(RenderGpu(gpu));
     commands.insert_resource(graph);
 }
@@ -183,24 +237,47 @@ pub(crate) fn extract_frame(
     config: Res<Config>,
     size: Res<WindowSize>,
     time: Res<Time>,
+    debug_view: Res<DebugView>,
+    // The two come from `maki_scene::SceneModule`. A game without it has no rooms.
+    room: Option<Res<CurrentRoom>>,
+    fade: Option<Res<ScreenFade>>,
     mut render_world: ResMut<RenderWorld>,
 ) {
-    // The config holds the internal resolution: a new size gives new, empty images.
+    // A new internal resolution gives new, empty images.
     // The window size sets the shape of the camera rays (see `Trace` in `passes`).
-    if config.is_changed() || size.is_changed() {
+    // ponytail: each config change is a reset, also one that needs none (the exposure).
+    // Compare the old and the new values that the picture depends on if that shows.
+    // Another room: the old samples show the old room, also where a wall of the new
+    // room is at the same place.
+    let new_room = room.is_some_and(|room| room.is_changed());
+    if config.is_changed() || size.is_changed() || new_room {
         render_world.reset_accumulation();
     }
     render_world.0.insert_resource(ExtractedFrame {
-        internal_resolution: (config.render_width, config.render_height),
+        internal_resolution: internal_resolution(&config, (size.width, size.height)),
         window_size: (size.width, size.height),
+        vsync: config.vsync,
         frame: time.frame,
         max_samples: config.max_samples,
         // Never 0: the passes divide by it.
         samples_per_frame: config.samples_per_frame.max(1),
         max_path_rays: config.max_path_rays,
         light_history_samples: config.light_history_samples,
+        denoise_passes: config.denoise_passes,
         exposure: config.exposure,
+        fade: fade.map_or(0.0, |fade| fade.0.clamp(0.0, 1.0)),
+        debug_view: *debug_view,
     });
+}
+
+/// The size of the path tracer images: the fixed size of the config, or the window
+/// size multiplied by `render_scale`. Never zero, also for a window with no area.
+fn internal_resolution(config: &Config, window: (u32, u32)) -> (u32, u32) {
+    if config.render_width > 0 && config.render_height > 0 {
+        return (config.render_width, config.render_height);
+    }
+    let scaled = |size: u32| ((size as f32 * config.render_scale).round() as u32).max(1);
+    (scaled(window.0), scaled(window.1))
 }
 
 /// Halves the internal resolution in every second block of `SELFTEST_PERIOD` frames.
@@ -226,6 +303,7 @@ fn render_frame(
     let frame = *world.resource::<ExtractedFrame>();
     let gpu = &mut gpu.0;
     gpu.resize(frame.window_size.0, frame.window_size.1);
+    gpu.set_vsync(frame.vsync);
     // False: no frame now (the swapchain is being built again, or the window has no area).
     if gpu.begin_frame().expect("begin_frame") {
         // Only for a frame that is drawn: a reset request waits over a skipped frame.
@@ -234,7 +312,9 @@ fn render_frame(
             frame.samples_per_frame,
             frame.light_history_samples,
         );
-        graph.execute(gpu, world, frame.internal_resolution, frame.frame);
+        // The history images change places only when the passes write them.
+        let sampling = world.resource::<Accumulation>().sampling();
+        graph.execute(gpu, world, frame.internal_resolution, frame.frame, sampling);
     }
 }
 

@@ -19,20 +19,24 @@
 //! Data flow, all in the `Extract` schedule:
 //! - `extract_meshes` (here) compares the mesh store with [`GpuMeshes`]: it uploads
 //!   new meshes and frees the buffers of removed ones.
-//! - A system of the game writes [`ExtractedInstances`]: which mesh is where.
+//! - `extract_instances` (here) copies each entity with a [`MeshInstance`] into
+//!   [`ExtractedInstances`]: which mesh is where, and where it was one frame before.
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, ensure};
-use bevy_ecs::change_detection::DetectChanges;
+use bevy_ecs::change_detection::{DetectChanges, Ref};
+use bevy_ecs::entity::Entity;
+use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Local, Res, ResMut};
+use bevy_ecs::system::{Local, Query, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::{Mat4, Vec3};
 use maki_assets::{Assets, Handle, Material, Mesh, Model};
-use maki_core::{App, Extract, Render, Startup};
+use maki_core::{App, Extract, Render, Startup, Transform};
 use maki_gpu::{BlasDesc, BlasGeometry, BlasHandle, BufferDesc, BufferHandle, Gpu};
+use maki_scene::MeshInstance;
 
 use crate::{RenderGpu, RenderWorld, setup_renderer};
 
@@ -49,12 +53,18 @@ const BUFFER_ALIGNMENT: u64 = 4;
 /// One mesh to draw. A resource of the render world holds the list.
 #[derive(Debug, Clone, Copy)]
 pub struct ExtractedInstance {
+    /// The same number in each frame for the same entity, so a pass can find the
+    /// instance of the frame before. Not an index: the order of the list can change.
+    pub id: u64,
     pub mesh: Handle<Mesh>,
     /// From the space of the mesh to world space.
     pub transform: Mat4,
+    /// `transform` of the frame before. Equal to `transform` for a new instance. A pass
+    /// computes the screen motion of a point from the two.
+    pub previous_transform: Mat4,
 }
 
-/// All mesh instances of the frame. The game writes the full list in each `Extract`.
+/// All mesh instances of the frame. `extract_instances` writes the full list in each `Extract`.
 #[derive(Resource, Default)]
 pub struct ExtractedInstances(pub Vec<ExtractedInstance>);
 
@@ -88,6 +98,8 @@ pub struct GpuMeshes {
     groups: HashMap<BlasHandle, Group>,
     /// True for each table index that a mesh uses.
     used: Vec<bool>,
+    /// The time of the last `sync`.
+    last_sync_time: std::time::Duration,
 }
 
 impl GpuMeshes {
@@ -102,6 +114,7 @@ impl GpuMeshes {
             meshes: HashMap::new(),
             groups: HashMap::new(),
             used: vec![false; MAX_MESHES as usize],
+            last_sync_time: std::time::Duration::ZERO,
         })
     }
 
@@ -113,6 +126,12 @@ impl GpuMeshes {
     /// `None` if the mesh is not on the GPU: not loaded yet, removed, or failed to upload.
     pub fn get(&self, mesh: Handle<Mesh>) -> Option<&GpuMesh> {
         self.meshes.get(&mesh)
+    }
+
+    /// The time that the last change of the mesh store took here: the uploads and the
+    /// BLAS builds, with their wait for the GPU. For a benchmark.
+    pub fn last_sync_time(&self) -> std::time::Duration {
+        self.last_sync_time
     }
 
     pub fn len(&self) -> usize {
@@ -130,6 +149,7 @@ impl GpuMeshes {
 
     /// Makes the GPU meshes agree with the stores.
     fn sync(&mut self, gpu: &mut Gpu, assets: &Assets<Mesh>, models: &Assets<Model>) {
+        let start = std::time::Instant::now();
         // This is where the GPU memory of a mesh is freed while the game runs.
         // `destroy_buffer` waits until no frame in flight can read the buffer.
         // At shutdown, `Gpu` frees all buffers that are left.
@@ -184,6 +204,7 @@ impl GpuMeshes {
                 self.upload_logged(gpu, &[mesh]);
             }
         }
+        self.last_sync_time = start.elapsed();
     }
 
     fn upload_logged(&mut self, gpu: &mut Gpu, group: &[(Handle<Mesh>, &Mesh)]) {
@@ -359,7 +380,7 @@ pub(crate) fn build(app: &mut App) {
     app.init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<Model>>()
         .add_systems(Startup, setup_meshes.after(setup_renderer))
-        .add_systems(Extract, extract_meshes)
+        .add_systems(Extract, (extract_meshes, extract_instances))
         .add_systems(Render, log_scene);
 }
 
@@ -383,6 +404,41 @@ fn extract_meshes(
         // An instance whose mesh was not on the GPU can show now, or the reverse.
         render_world.reset_accumulation();
     }
+}
+
+/// Copies each mesh instance into the render world. The renderer never reads the entities.
+fn extract_instances(
+    instances: Query<(Entity, Ref<Transform>, Ref<MeshInstance>)>,
+    mut removed: RemovedComponents<MeshInstance>,
+    mut render_world: ResMut<RenderWorld>,
+    // The transform that each entity had in the last frame.
+    mut last: Local<HashMap<Entity, Mat4>>,
+) {
+    // An instance is new, moved, got another mesh, or went away. The denoiser finds
+    // the old samples of the object itself with the `motion` image. The light on all
+    // other surfaces changed too (the shadow of the object moved): a short history.
+    let changed = |(_, transform, instance): (Entity, Ref<Transform>, Ref<MeshInstance>)| {
+        transform.is_changed() || instance.is_changed()
+    };
+    if removed.read().count() > 0 || instances.iter().any(changed) {
+        tracing::trace!("an instance changed");
+        render_world.soften_accumulation();
+    }
+    let mut extracted = render_world.0.resource_mut::<ExtractedInstances>();
+    extracted.0.clear();
+    // A new map and not an update of `last`: an entity that went away drops out.
+    let mut current = HashMap::with_capacity(last.len());
+    for (entity, transform, instance) in &instances {
+        let transform = transform.matrix();
+        extracted.0.push(ExtractedInstance {
+            id: entity.to_bits(),
+            mesh: instance.0,
+            transform,
+            previous_transform: last.get(&entity).copied().unwrap_or(transform),
+        });
+        current.insert(entity, transform);
+    }
+    *last = current;
 }
 
 /// What the renderer has to draw, for the log.
@@ -454,6 +510,48 @@ mod tests {
         assert_eq!(f32_at(&entry, 12), 1.5);
         assert_eq!(f32_at(&entry, 16), mesh.base_color()[0]);
         assert_eq!(f32_at(&entry, 28), mesh.base_color()[3]);
+    }
+
+    #[test]
+    fn an_instance_keeps_its_id_and_carries_the_transform_of_the_frame_before() {
+        use bevy_ecs::schedule::Schedule;
+
+        let mut world = World::new();
+        let mut render_world = RenderWorld::default();
+        render_world.0.init_resource::<ExtractedInstances>();
+        world.insert_resource(render_world);
+        let mesh = Assets::<Mesh>::default().add(Mesh::cube(1.0));
+        let at = |x| Transform::from_translation(Vec3::new(x, 0.0, 0.0));
+        let entity = world.spawn((at(1.0), MeshInstance(mesh))).id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(extract_instances);
+        let mut extract = |world: &mut World| {
+            schedule.run(world);
+            let render_world = &world.resource::<RenderWorld>().0;
+            render_world.resource::<ExtractedInstances>().0.clone()
+        };
+
+        // New: no frame before, so no motion.
+        let first = extract(&mut world);
+        assert_eq!(first[0].previous_transform, at(1.0).matrix());
+
+        *world.get_mut::<Transform>(entity).unwrap() = at(3.0);
+        let moved = extract(&mut world);
+        assert_eq!(moved[0].id, first[0].id);
+        assert_eq!(moved[0].transform, at(3.0).matrix());
+        assert_eq!(moved[0].previous_transform, at(1.0).matrix());
+
+        // At rest: the two transforms agree again.
+        let rest = extract(&mut world);
+        assert_eq!(rest[0].previous_transform, at(3.0).matrix());
+
+        // Another entity gets another id, and the old one drops out.
+        world.despawn(entity);
+        world.spawn((at(5.0), MeshInstance(mesh)));
+        let other = extract(&mut world);
+        assert_eq!(other.len(), 1);
+        assert_ne!(other[0].id, first[0].id);
+        assert_eq!(other[0].previous_transform, at(5.0).matrix());
     }
 
     #[test]

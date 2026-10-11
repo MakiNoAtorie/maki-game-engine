@@ -1,50 +1,44 @@
-//! Lights: a component of the game world, the copies in the render world, and the
-//! light buffer that the trace shader reads.
+//! Lights: the copies of the `Light` components in the render world, and the light
+//! buffer that the trace shader reads.
 
 use std::f32::consts::PI;
 
 use bevy_ecs::change_detection::{DetectChanges, Ref};
-use bevy_ecs::component::Component;
 use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, ResMut};
 use glam::Vec3;
-use maki_core::{App, Extract, Startup};
+use maki_core::{App, Extract, Startup, Transform};
 use maki_gpu::{BufferDesc, BufferHandle, FRAMES_IN_FLIGHT};
+use maki_scene::Light;
 
 use crate::{RenderGpu, RenderWorld, setup_renderer};
 
-/// A sphere that sends out the same light in all directions.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct Light {
+/// A light of the frame: the `Light` component with the position of its entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtractedLight {
     /// Center of the sphere, in world space.
     pub position: Vec3,
-    /// Radius of the sphere, in meters. A larger light gives softer shadows.
-    pub radius: f32,
-    /// Linear RGB.
-    pub color: Vec3,
-    /// Brightness as seen from far away: a surface that faces the light at a distance
-    /// of `d` meters gets `color * intensity / d²`. Does not change with `radius`.
-    pub intensity: f32,
+    pub light: Light,
 }
 
-impl Light {
-    /// The renderer uses this radius for a smaller light.
-    pub const MIN_RADIUS: f32 = 0.001;
+/// The renderer uses this radius for a smaller light.
+const MIN_RADIUS: f32 = 0.001;
 
+impl ExtractedLight {
     /// The light that each point of the sphere surface sends out (radiance).
     /// From each side the sphere looks like a disk of area `pi * r²`, and this value
     /// times that area is `color * intensity`.
     pub fn radiance(&self) -> Vec3 {
-        let radius = self.radius.max(Self::MIN_RADIUS);
-        self.color * self.intensity / (PI * radius * radius)
+        let radius = self.light.radius.max(MIN_RADIUS);
+        self.light.color * self.light.intensity / (PI * radius * radius)
     }
 }
 
 /// All lights of the frame. A resource of the render world.
 #[derive(Resource, Debug, Clone, Default)]
-pub struct ExtractedLights(pub Vec<Light>);
+pub struct ExtractedLights(pub Vec<ExtractedLight>);
 
 /// The light buffer has room for this many lights. More are not used by the renderer.
 pub const MAX_LIGHTS: usize = 256;
@@ -58,14 +52,14 @@ const LIGHT_BYTES: usize = 32;
 pub(crate) struct LightBuffers(pub [BufferHandle; FRAMES_IN_FLIGHT]);
 
 /// `LightData` of `shaders/trace.comp` for each light, in std430 layout.
-pub(crate) fn light_bytes(lights: &[Light]) -> Vec<u8> {
+pub(crate) fn light_bytes(lights: &[ExtractedLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len() * LIGHT_BYTES);
     for light in lights.iter().take(MAX_LIGHTS) {
         let (p, r) = (light.position, light.radiance());
         // One number for the brightness: the shader picks a light for a shadow ray
         // with a chance in proportion to it.
-        let power = light.intensity * light.color.max_element();
-        let radius = light.radius.max(Light::MIN_RADIUS);
+        let power = light.light.intensity * light.light.color.max_element();
+        let radius = light.light.radius.max(MIN_RADIUS);
         let fields = [p.x, p.y, p.z, radius, r.x, r.y, r.z, power];
         bytes.extend(fields.into_iter().flat_map(f32::to_ne_bytes));
     }
@@ -92,16 +86,28 @@ fn setup_lights(mut gpu: ResMut<RenderGpu>, mut render_world: ResMut<RenderWorld
 }
 
 fn extract_lights(
-    lights: Query<Ref<Light>>,
+    lights: Query<(Ref<Transform>, Ref<Light>)>,
     mut removed: RemovedComponents<Light>,
     mut render_world: ResMut<RenderWorld>,
 ) {
-    // A light is new, was written, or went away: the old samples show other lighting,
-    // but the same surfaces. The mean keeps a short history.
-    if removed.read().count() > 0 || lights.iter().any(|light| light.is_changed()) {
+    // A light is new, was written, moved, or went away: the old samples show other
+    // lighting, but the same surfaces. The mean keeps a short history.
+    let changed = |(transform, light): (Ref<Transform>, Ref<Light>)| {
+        transform.is_changed() || light.is_changed()
+    };
+    if removed.read().count() > 0 || lights.iter().any(changed) {
+        tracing::trace!("a light changed");
         render_world.soften_accumulation();
     }
-    let lights = lights.iter().map(|light| *light).collect();
+    let lights = lights
+        .iter()
+        // A light that is off is no light for the renderer.
+        .filter(|(_, light)| light.on)
+        .map(|(transform, light)| ExtractedLight {
+            position: transform.translation,
+            light: *light,
+        })
+        .collect();
     render_world.0.insert_resource(ExtractedLights(lights));
 }
 
@@ -117,11 +123,14 @@ mod tests {
 
     #[test]
     fn light_bytes_follow_the_shader_layout() {
-        let light = Light {
+        let light = ExtractedLight {
             position: Vec3::new(1.0, 2.0, 3.0),
-            radius: 0.5,
-            color: Vec3::new(1.0, 0.5, 0.25),
-            intensity: 8.0,
+            light: Light {
+                radius: 0.5,
+                color: Vec3::new(1.0, 0.5, 0.25),
+                intensity: 8.0,
+                on: true,
+            },
         };
         let bytes = light_bytes(&[light; MAX_LIGHTS + 1]);
         // More lights than the buffer holds are cut off.
@@ -153,19 +162,22 @@ mod tests {
         // Not `build`: `setup_lights` needs a GPU.
         app.add_systems(Extract, extract_lights);
         app.add_systems(Startup, |mut commands: Commands| {
-            commands.spawn(Light {
-                position: Vec3::ZERO,
-                radius: 0.1,
-                color: Vec3::ONE,
-                intensity: 1.0,
-            });
+            commands.spawn((
+                Transform::IDENTITY,
+                Light {
+                    radius: 0.1,
+                    color: Vec3::ONE,
+                    intensity: 1.0,
+                    on: true,
+                },
+            ));
         })
         // The light moves in the fixed steps 3 and 4 only.
         .add_systems(
             FixedUpdate,
-            |mut lights: Query<&mut Light>, time: Res<Time>| {
+            |mut lights: Query<&mut Transform, bevy_ecs::query::With<Light>>, time: Res<Time>| {
                 if time.fixed_tick == 3 || time.fixed_tick == 4 {
-                    lights.single_mut().unwrap().position.x += 1.0;
+                    lights.single_mut().unwrap().translation.x += 1.0;
                 }
             },
         )

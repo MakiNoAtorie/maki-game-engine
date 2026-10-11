@@ -1,0 +1,88 @@
+// Room A: the test room. A cube and a sphere of 1 m on the floor, a glass ball in
+// front of them, two mirrors, a locked door in the back wall, and the way to room B
+// in the east wall.
+// The format is `RoomDef` in crates/scene/src/room.rs, and `EventDef` in
+// crates/events/src/model.rs for the events. Lengths are meters, angles degrees.
+(
+    width: 8.0,
+    depth: 8.0,
+    height: 3.0,
+    doorways: [
+        // In the back wall, at the right. The passage behind it leads nowhere.
+        (wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2),
+        // In the east wall: the way to room B.
+        (wall: PosX, offset: -1.0, width: 1.2, height: 2.1, depth: 1.5),
+    ],
+    doors: [
+        (name: "door", doorway: 0),
+    ],
+    props: [
+        (mesh: Cube(1.0), pose: (position: (-1.0, 0.5, 0.0))),
+        (mesh: Sphere(radius: 0.5, segments: 32, rings: 16), pose: (position: (1.0, 0.5, 0.0))),
+        // Many triangles: light that goes through shows the flat triangles more than
+        // light that a diffuse surface sends back.
+        (
+            mesh: Sphere(radius: 0.6, segments: 96, rings: 48),
+            pose: (position: (1.6, 0.6, 1.9)),
+            look: (color: (1.0, 1.0, 1.0), material: Glass(ior: 1.5)),
+        ),
+        // A mirror is a cube of 1 m, made thin and wide by its scale.
+        // Behind the objects, with the top tilted back, so it faces the camera.
+        (
+            mesh: Cube(1.0),
+            pose: (position: (0.0, 1.3, -2.2), rotation: (-14.0, 0.0, 0.0), scale: (4.5, 2.6, 0.06)),
+            look: (color: (0.9, 0.9, 0.9), material: Mirror),
+        ),
+        // At the left, turned to face the objects.
+        (
+            mesh: Cube(1.0),
+            pose: (position: (-3.0, 1.1, 0.8), rotation: (0.0, 63.0, 0.0), scale: (2.4, 2.2, 0.06)),
+            look: (color: (0.9, 0.9, 0.9), material: Mirror),
+        ),
+    ],
+    lights: [
+        // In front of the objects, so their shadows fall to the back.
+        (name: "lamp", position: (0.0, 2.0, 2.0), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0),
+    ],
+    spawns: {
+        "start": (-0.5, 0.0, 2.6),
+        "east": (3.2, 0.0, -1.0),
+    },
+    events: [
+        (
+            name: "locked door",
+            area: (center: (3.0, -3.5), size: (1.0, 0.8)),
+            pages: [
+                (trigger: Interact, commands: [Message("The door is locked. Something hums behind it.")]),
+                (
+                    conditions: [Flag("power_off")],
+                    trigger: Interact,
+                    commands: [Message("The lock is dead. The door gives way."), OpenDoor("door")],
+                ),
+            ],
+        ),
+        (
+            name: "to room b",
+            area: (center: (4.9, -1.0), size: (0.8, 1.2)),
+            pages: [
+                (trigger: Touch, commands: [FadeOut(0.4), Transfer("room_b.ron", "west"), FadeIn(0.4)]),
+            ],
+        ),
+        // With the power off, the lamp runs on what is left.
+        (
+            name: "flicker",
+            pages: [
+                (
+                    conditions: [Flag("power_off")],
+                    trigger: Parallel,
+                    commands: [
+                        LightIntensity("lamp", 3.0), Wait(0.06),
+                        LightIntensity("lamp", 12.0), Wait(0.9),
+                        LightIntensity("lamp", 6.0), Wait(0.05),
+                        LightIntensity("lamp", 12.0), Wait(1.7),
+                    ],
+                ),
+            ],
+        ),
+    ],
+)

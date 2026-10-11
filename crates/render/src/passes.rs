@@ -1,9 +1,10 @@
 //! The passes of the frame graph, in frame order:
-//! build_tlas -> trace -> accumulate -> the denoiser passes -> tonemap -> present.
+//! build_tlas -> trace -> the denoiser passes -> tonemap -> present.
 //! Other crates add passes between them: the ui crate puts `ui_overlay` before `present`.
 //!
-//! build_tlas, trace, and accumulate make one sample of the picture. They do no GPU
-//! work when the accumulation has all its samples ([`Accumulation::sampling`]).
+//! build_tlas and trace make the samples of the frame, and the denoiser passes (the
+//! `denoise` module) make the picture from them. All of them do no GPU work when the
+//! picture has all its samples ([`Accumulation::sampling`]).
 //!
 //! To add a pass: write a struct with the [`Pass`] trait (here or in a new file), put its
 //! shader in `shaders/`, and add it to the graph (`build_graph` below, or
@@ -21,31 +22,26 @@ use crate::graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc,
 };
 use crate::light::{LightBuffers, light_bytes};
+use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
 use crate::{
     Accumulation, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights, GpuMeshes,
-    MAX_LIGHTS, denoise, shader_spirv,
+    MAX_LIGHTS, denoise, ray_basis, shader_spirv,
 };
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
 pub const MAX_INSTANCES: u32 = 4096;
 
 /// Adds the built-in images and passes. The order of the `add_pass` calls is the frame order.
-/// `denoise_passes`: filter passes of the denoiser (see the `denoise` module). 0: no denoiser.
-pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph, denoise_passes: u32) {
-    // The light that each pixel gets, from one random path: the sample of this frame.
+pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
+    let internal = |name, format| TransientDesc {
+        name,
+        format,
+        size: SizeMode::Internal,
+    };
+    // The light that each pixel gets: the mean of the samples of this frame.
     // Linear color with values far above 1.0 (the light itself), at the internal resolution.
     // 16-bit floats: one frame needs no more, and the smaller image is faster to read.
-    let radiance = graph.add_transient(TransientDesc {
-        name: "radiance",
-        format: Format::Rgba16Float,
-        size: SizeMode::Internal,
-    });
-    // The mean of the `radiance` images of all frames since the last reset.
-    let accumulated = graph.add_transient(TransientDesc {
-        name: "accumulated",
-        format: Format::Rgba32Float,
-        size: SizeMode::Internal,
-    });
+    let radiance = graph.add_transient(internal("radiance", Format::Rgba16Float));
     // The frame as the display shows it: sRGB-encoded, 8 bits, at window size.
     let output = graph.add_transient(TransientDesc {
         name: "output",
@@ -54,20 +50,15 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph, denoise_passes:
     });
 
     // The surface that each pixel shows, for the denoiser: see `shaders/trace.comp`.
-    // World normal in xyz, distance from the camera in w.
-    let normal = graph.add_transient(TransientDesc {
-        name: "normal",
-        format: Format::Rgba16Float,
-        size: SizeMode::Internal,
-    });
+    // World normal in xyz, distance from the camera in w. With history: the denoiser
+    // compares it with the surface of the frame before.
+    let (normal, previous_normal) =
+        graph.add_history(internal("normal", Format::Rgba16Float), "normal_previous");
     // The color of that surface.
-    let albedo = graph.add_transient(TransientDesc {
-        name: "albedo",
-        format: Format::Rgba8Unorm,
-        size: SizeMode::Internal,
-    });
-    // No `motion` image yet: the stage that computes screen motion adds it. An image
-    // of zeros costs a store for each pixel.
+    let albedo = graph.add_transient(internal("albedo", Format::Rgba8Unorm));
+    // How far the surface of each pixel moved on the screen since the frame before, in
+    // pixels: see the `motion` module.
+    let motion = graph.add_transient(internal("motion", Format::Rg16Float));
 
     graph.add_pass(BuildTlas {
         tlas: gpu.create_tlas(MAX_INSTANCES).expect("TLAS"),
@@ -82,21 +73,20 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph, denoise_passes:
         radiance,
         normal,
         albedo,
+        motion,
         lights_logged: false,
     });
-    graph.add_pass(Accumulate {
-        pipeline: gpu
-            .create_compute_pipeline(shader_spirv!("accumulate.comp"))
-            .expect("accumulate pipeline"),
-        radiance,
-        accumulated,
-    });
-    // The picture that goes to the display: the mean, or the mean without its noise.
-    let hdr = if denoise_passes > 0 {
-        denoise::add_passes(gpu, graph, accumulated, normal, albedo, denoise_passes)
-    } else {
-        accumulated
-    };
+    let denoise = denoise::add_passes(
+        gpu,
+        graph,
+        denoise::TraceImages {
+            radiance,
+            albedo,
+            normal,
+            previous_normal,
+            motion,
+        },
+    );
     graph.add_pass(Tonemap {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("tonemap.comp"))
@@ -107,7 +97,8 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph, denoise_passes:
                 repeat: false,
             })
             .expect("tonemap sampler"),
-        hdr,
+        hdr: denoise.denoised,
+        views: [normal, motion, denoise.color, denoise.moments, radiance],
         output,
     });
     graph.add_pass(Present { output });
@@ -164,6 +155,8 @@ impl Pass for BuildTlas {
         let meshes = ctx.world.resource::<GpuMeshes>();
         let extracted = &ctx.world.resource::<ExtractedInstances>().0;
         let mut instances = Vec::with_capacity(extracted.len());
+        // The transform of the frame before for each TLAS instance, in the same order.
+        let mut previous = Vec::with_capacity(extracted.len());
         // For each TLAS instance of a group of more than one mesh: how many mesh
         // instances asked for it.
         let mut group_counts: HashMap<(maki_gpu::BlasHandle, [u32; 12]), u32> = HashMap::new();
@@ -172,9 +165,7 @@ impl Pass for BuildTlas {
             let Some(mesh) = meshes.get(instance.mesh) else {
                 continue;
             };
-            // The first three rows of the matrix, row by row.
-            let rows = instance.transform.transpose().to_cols_array();
-            let transform: [f32; 12] = rows[..12].try_into().expect("12 of 16 values");
+            let transform = matrix_rows(instance.transform);
             if mesh.group_len > 1 {
                 let count = group_counts
                     .entry((mesh.blas, transform.map(f32::to_bits)))
@@ -191,6 +182,7 @@ impl Pass for BuildTlas {
                 // On a hit, the shader gets this number and finds the mesh data with it.
                 custom_index: mesh.group_first,
             });
+            previous.push(matrix_rows(instance.previous_transform));
         }
         // ponytail: the BLAS of a model draws all its meshes. If the game draws only a
         // part of a model, or moves one of its meshes alone, the rest shows too. Give
@@ -210,6 +202,15 @@ impl Pass for BuildTlas {
             );
         }
         instances.truncate(MAX_INSTANCES as usize);
+        previous.truncate(MAX_INSTANCES as usize);
+        // In each frame, also with no build: an instance that stopped has the same
+        // transform as in the last build, and its previous transform is now that one.
+        if !previous.is_empty() {
+            let buffer = ctx.world.resource::<MotionBuffers>().instances[ctx.gpu.frame_slot()];
+            ctx.gpu
+                .write_buffer(buffer, 0, &instance_bytes(&previous))
+                .expect("instance buffer write");
+        }
         // A new BLAS has a new handle, so a mesh change also makes the lists differ.
         if self.built.as_ref() == Some(&instances) {
             return;
@@ -228,6 +229,7 @@ struct Trace {
     radiance: ResourceId,
     normal: ResourceId,
     albedo: ResourceId,
+    motion: ResourceId,
     /// True after the "too many lights" error, to log it one time.
     lights_logged: bool,
 }
@@ -238,7 +240,7 @@ impl Pass for Trace {
     }
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        [self.radiance, self.normal, self.albedo]
+        [self.radiance, self.normal, self.albedo, self.motion]
             .map(|image| (image, Access::StorageWrite))
             .to_vec()
     }
@@ -249,14 +251,29 @@ impl Pass for Trace {
         if frame_samples == 0 {
             return;
         }
-        let camera = ctx.world.resource::<ExtractedCamera>().0;
+        let cameras = *ctx.world.resource::<ExtractedCamera>();
+        let camera = cameras.current;
         let frame = ctx.world.resource::<ExtractedFrame>();
         // The picture is scaled to the window, so the rays use the shape of the window
         // and not that of the internal image. A resize thus does not stretch the scene.
         // The extracted size and not the swapchain size: the swapchain can change one
         // frame before the window size message, and that frame has no accumulation reset.
         let (width, height) = frame.window_size;
-        let [right, up, forward] = camera.ray_basis(width as f32 / height as f32);
+        let aspect = width as f32 / height as f32;
+        let [right, up, forward] = ray_basis(&camera, aspect);
+        // The camera of the frame before, for the motion of each pixel.
+        let slot = ctx.gpu.frame_slot();
+        let buffers = ctx.world.resource::<MotionBuffers>();
+        let (camera_buffer, instance_buffer) = (buffers.camera[slot], buffers.instances[slot]);
+        let previous = Projection::new(
+            cameras.previous.position,
+            ray_basis(&cameras.previous, aspect),
+        );
+        ctx.gpu
+            .write_buffer(camera_buffer, 0, &previous.bytes())
+            .expect("camera buffer write");
+        let buffer_index =
+            |gpu: &Gpu, buffer| gpu.buffer_index(buffer).expect("the buffer is alive");
         let mesh_table = ctx
             .gpu
             .buffer_index(ctx.world.resource::<GpuMeshes>().table())
@@ -297,6 +314,9 @@ impl Pass for Trace {
             frame.max_path_rays,
             light_index,
             lights.len().min(MAX_LIGHTS) as u32,
+            ctx.bindless_index(self.motion),
+            buffer_index(ctx.gpu, camera_buffer),
+            buffer_index(ctx.gpu, instance_buffer),
         ]);
         ctx.gpu
             .dispatch_compute(
@@ -308,51 +328,17 @@ impl Pass for Trace {
     }
 }
 
-/// Blends the samples of this frame into the mean of all samples since the last reset.
-struct Accumulate {
-    pipeline: ComputePipelineHandle,
-    radiance: ResourceId,
-    accumulated: ResourceId,
-}
-
-impl Pass for Accumulate {
-    fn name(&self) -> &'static str {
-        "accumulate"
-    }
-
-    fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        vec![
-            (self.radiance, Access::StorageRead),
-            (self.accumulated, Access::StorageReadWrite),
-        ]
-    }
-
-    fn execute(&mut self, ctx: &mut PassContext) {
-        let accumulation = ctx.world.resource::<Accumulation>();
-        // No new sample in this frame: the mean stays as it is.
-        if !accumulation.sampling() {
-            return;
-        }
-        let push = push_constants(&[
-            ctx.bindless_index(self.radiance),
-            ctx.bindless_index(self.accumulated),
-            accumulation.samples(),
-            accumulation.frame_samples(),
-            u32::from(accumulation.soft_frame()),
-        ]);
-        ctx.gpu
-            .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.accumulated)))
-            .expect("accumulate dispatch");
-    }
-}
-
-/// The picture (the accumulated image, or the result of the denoiser) to display color, scaled from the internal resolution to the
-/// window size. Runs in each frame, also when the accumulation is complete: the window
+/// The picture (the result of the denoiser) to display color, scaled from the internal
+/// resolution to the window size. With a debug view
+/// ([`DebugView`](crate::DebugView)) it shows another image of the graph in its place. Runs in each frame, also when the accumulation is complete: the window
 /// needs a picture in each frame, and this pass is cheap.
 struct Tonemap {
     pipeline: ComputePipelineHandle,
     sampler: SamplerHandle,
     hdr: ResourceId,
+    /// The images of the debug views: normal, motion, the mean of the denoiser, its
+    /// moments, and the radiance of this frame.
+    views: [ResourceId; 5],
     output: ResourceId,
 }
 
@@ -366,6 +352,9 @@ impl Pass for Tonemap {
             (self.hdr, Access::Sampled),
             (self.output, Access::StorageWrite),
         ]
+        .into_iter()
+        .chain(self.views.map(|image| (image, Access::Sampled)))
+        .collect()
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
@@ -373,12 +362,18 @@ impl Pass for Tonemap {
             .gpu
             .sampler_index(self.sampler)
             .expect("tonemap sampler is alive");
-        let push = push_constants(&[
+        let frame = ctx.world.resource::<ExtractedFrame>();
+        let mut push = vec![
             ctx.bindless_index(self.hdr),
             sampler,
             ctx.bindless_index(self.output),
-            ctx.world.resource::<ExtractedFrame>().exposure.to_bits(),
-        ]);
+            // A fade is a lower exposure: at zero the tone curve gives black.
+            (frame.exposure * (1.0 - frame.fade)).to_bits(),
+            // The `VIEW_*` numbers of the shader.
+            frame.debug_view as u32,
+        ];
+        push.extend(self.views.map(|image| ctx.bindless_index(image)));
+        let push = push_constants(&push);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.output)))
             .expect("tonemap dispatch");

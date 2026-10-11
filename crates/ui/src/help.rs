@@ -1,19 +1,21 @@
 //! The help panel: the controls, made from the binding table. No shortcut text is
 //! written here, so a changed binding changes the panel.
 
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use bevy_ecs::world::World;
 use maki_core::{App, Update};
 use maki_platform::{Action, ActionState, Bindings};
 
-use crate::{Panels, add_panel};
+use crate::{Panels, add_panel, run_ui};
 
 pub(crate) const HELP: &str = "Help";
 
 /// Adds the help panel and its toggle. Part of `UiModule`.
 pub(crate) fn build(app: &mut App) {
     add_panel(app, HELP, true, help_panel);
-    app.add_systems(Update, toggle_help);
+    // Before the egui frame: the panel opens or closes in the frame of the key press.
+    app.add_systems(Update, toggle_help.before(run_ui));
 }
 
 fn toggle_help(actions: Res<ActionState>, mut panels: ResMut<Panels>) {

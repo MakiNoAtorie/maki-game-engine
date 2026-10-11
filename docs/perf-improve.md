@@ -106,6 +106,26 @@ Notes:
 - T4: the mixed load has 41 % more rays and each ray costs 29 % more. This is above the limit of 1.2 that section 6 sets for S1.
 - The pass columns moved: `tonemap` is 0.027 ms after the denoiser (0.073 before), and `trace` took a part of the difference. Judge by `gpu_total` (section 2.6).
 
+### 0.31 Stage 12: temporal reprojection (D3)
+
+Done in part 2, stage 12 (`docs/part2/stage-12-denoiser.md`). The `accumulate` pass is gone: `denoise_temporal` keeps the mean of each pixel and finds it again with the `motion` image. A camera change keeps the full history; a change of the lighting (a light, a moving object) keeps `light_history_samples` for each pixel.
+
+`relmse` at `samples_per_frame = 1`, 1280 x 720, against 65536 samples (`bench.py quality`):
+
+| Scenario | Before (spatial filter, reset on each change) | Stage 12 |
+|---|---|---|
+| `walk_720p`, frame 180 (player walks, door opens, camera follows) | 0.515 | 0.00703 |
+| `test_720p`, 64 frames at rest | 0.00545 | 0.00453 |
+| `test_720p`, 1024 samples at rest | 0.000924 | 0.00103 |
+
+The variance for the filter is the larger one of the variance over time and the variance of the 3x3 block. Measured, in the same order as the table: over time alone 0.00700, 0.00838, 0.00464; the 3x3 block alone 0.0104, 0.00474, 0.00104. The variance over time alone misses the rare bright samples that a neighbor pixel got.
+
+Glass is now a surface of its own for the denoiser (normal of the glass, white color). With the surface behind the glass, which differs from frame to frame, the history was lost in half of the frames: 0.0111 at 1024 samples.
+
+The 12 % rise at 1024 samples at rest is not explained. Probable cause: the filter blurs inside glass now.
+
+GPU time of the denoiser passes, median (run `stage12`): 0.13 ms at 640 x 360, 0.76 ms at 1280 x 720, 1.34 ms at 1920 x 1080 (`denoise_temporal` 0.375, `denoise_prepare` 0.205, four filter passes 0.668, `denoise_resolve` 0.091). Before, `accumulate`, `denoise_prepare` and four filter passes: 0.95 ms at 1920 x 1080.
+
 ### 0.35 Pass over the interactions (run `loop4`)
 
 A check of the parts against each other, after round 3. `gpu_total` against `loop3`: -2 % to -8 % at 1080p and 2160p, -15 % to -20 % at 720p.
@@ -122,7 +142,6 @@ The denoiser is now 0.95 ms at 1080p. Nothing else was found: the CPU frame is e
 | Item | Why |
 |---|---|
 | S1 | T4 gives the case (1.29 times the time for each ray). The test needs a ray tracing pipeline, which changes the stack of `CLAUDE.md`: a decision of the user. The form with two dispatches does not sort the threads, so it cannot show the gain |
-| D3 | Reprojection has no use and no test until something moves on the screen: the camera is fixed and no object moves. It needs Appendix A item 1 (instance id, old transform) and a camera path in the benchmark |
 | D4 | Large, and it changes the picture (a cache is biased). The measured upper limit is -15 % of `gpu_trace`. With D2 in place its value is the light of many bounces, not the time. Decide after D3: ReSTIR GI needs D3 |
 | D5 step 3 | Only for hundreds of lights |
 | C1, C2, C3, C5, S2 | Their conditions (section 10) are not true yet |
@@ -754,6 +773,8 @@ Looked at, no action:
 ## 14. Appendix A: places that need rework
 
 The content of this file before the audit, not changed: the foundation review of stage 9. Each place works for the MVP. Each one blocks a planned feature. Nothing here is fixed yet. D1 and D3 refer to these items.
+
+Stage 10 (`docs/part2/stage-10-review-fixes.md`) fixed these lines: item 1, the first two (the component and the extract system are in the render crate; `ExtractedInstance` has `id` and `previous_transform`); item 2, the third and the fifth (`FrameGraph::add_history`; `ExtractedCamera::previous`).
 
 ### 1. Instance extraction (blocks dynamic objects)
 

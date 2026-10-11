@@ -456,6 +456,12 @@ impl Gpu {
         self.slot
     }
 
+    /// Bytes of GPU memory that the buffers, images, and acceleration structures of
+    /// this `Gpu` use now. A resource that waits for its deferred destruction counts.
+    pub fn allocated_bytes(&self) -> u64 {
+        self.allocator.generate_report().total_allocated_bytes
+    }
+
     /// Deferred destruction: the handle is invalid at once, but the GPU object stays
     /// until the GPU has finished every frame that could use it. Its bindless index
     /// is free for a new resource only after that.
@@ -533,6 +539,14 @@ impl Gpu {
     pub fn resize(&mut self, width: u32, height: u32) {
         if self.window_size != (width, height) {
             self.window_size = (width, height);
+            self.swapchain_dirty = true;
+        }
+    }
+
+    /// Sets vsync on or off. The swapchain is built again before the next frame.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        if self.vsync != vsync {
+            self.vsync = vsync;
             self.swapchain_dirty = true;
         }
     }

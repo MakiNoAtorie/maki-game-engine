@@ -51,6 +51,13 @@ impl Panels {
         self.0.iter().any(|panel| panel.name == name && panel.open)
     }
 
+    /// Shows or hides a panel. Does nothing if no panel has the name.
+    pub fn set_open(&mut self, name: &str, open: bool) {
+        for panel in self.0.iter_mut().filter(|panel| panel.name == name) {
+            panel.open = open;
+        }
+    }
+
     /// Shows a hidden panel, hides a shown one. Does nothing if no panel has the name.
     pub fn toggle(&mut self, name: &str) {
         for panel in self.0.iter_mut().filter(|panel| panel.name == name) {
@@ -181,8 +188,11 @@ fn run_ui(world: &mut World) {
                         continue;
                     }
                     egui::Window::new(panel.name)
-                        // Side by side at the first start. The user can move them.
-                        .default_pos([12.0 + 360.0 * index as f32, 12.0])
+                        // In rows of three at the first start. The user can move them.
+                        .default_pos([
+                            12.0 + 360.0 * (index % 3) as f32,
+                            12.0 + 280.0 * (index / 3) as f32,
+                        ])
                         .show(root.ctx(), |ui| (panel.draw)(ui, world));
                 }
             });

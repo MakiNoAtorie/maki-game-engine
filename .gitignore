@@ -3,3 +3,4 @@
 /config.toml
 # Written by `--bench-frames`.
 /bench.csv
+/bench.dump

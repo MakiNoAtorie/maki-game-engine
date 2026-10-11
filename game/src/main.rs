@@ -1,7 +1,11 @@
 mod bench;
+mod camera;
 mod controls;
+mod debug;
+mod events_ui;
 mod light;
-mod scene;
+mod player;
+mod rooms;
 mod tick_logger;
 
 use std::ffi::OsString;
@@ -16,8 +20,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// Log filter variable, same syntax as `RUST_LOG` (for example `debug` or `maki_core=trace`).
 const LOG_ENV: &str = "MAKI_LOG";
 
-const USAGE: &str =
-    "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE] [--bench-static]]";
+const USAGE: &str = "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE] [--bench-static] [--bench-script walk|trip]]";
 
 fn init_logging() {
     let filter = EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -39,13 +42,15 @@ struct Args {
     bench_dump: Option<PathBuf>,
     /// With `bench_frames`: the light does not move.
     bench_static: bool,
+    /// With `bench_frames`: the name of a script that plays the game. See the `bench` module.
+    bench_script: Option<String>,
 }
 
 /// `args` is the command line without the program name.
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> {
     let mut args = args.into_iter();
     let (mut config_path, mut bench_frames, mut bench_dump) = (None, None, None);
-    let mut bench_static = false;
+    let (mut bench_static, mut bench_script) = (false, None);
     while let Some(arg) = args.next() {
         if arg == "--bench-frames" {
             // The limit keeps a typing error from a table of rows that fills the memory.
@@ -59,6 +64,12 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
             bench_frames = Some(frames);
         } else if arg == "--bench-static" {
             bench_static = true;
+        } else if arg == "--bench-script" {
+            let name = args.next().and_then(|name| name.into_string().ok());
+            let name = name.filter(|name| bench::script(name).is_some());
+            let name =
+                name.with_context(|| format!("--bench-script needs a script name. {USAGE}"))?;
+            bench_script = Some(name);
         } else if arg == "--bench-dump" {
             let path = args
                 .next()
@@ -70,14 +81,15 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
             bail!("more than one config path. {USAGE}");
         }
     }
-    if (bench_dump.is_some() || bench_static) && bench_frames.is_none() {
-        bail!("--bench-dump and --bench-static need --bench-frames. {USAGE}");
+    if (bench_dump.is_some() || bench_static || bench_script.is_some()) && bench_frames.is_none() {
+        bail!("--bench-dump, --bench-static, and --bench-script need --bench-frames. {USAGE}");
     }
     Ok(Args {
         config_path: config_path.unwrap_or_else(|| PathBuf::from(Config::DEFAULT_PATH)),
         bench_frames,
         bench_dump,
         bench_static,
+        bench_script,
     })
 }
 
@@ -92,25 +104,34 @@ fn main() -> anyhow::Result<()> {
     }
     tracing::info!(path = %args.config_path.display(), ?config, "config loaded");
 
+    // A bad start room: the game does not start. The error has the file and the line.
+    let checks = maki_scene::RoomValidators(vec![maki_events::validate_events]);
+    maki_scene::read_room(&config.start_room, &checks)?;
+
     let mut app = App::new(config)?;
     app.add_module(maki_platform::PlatformModule)
         .add_module(maki_assets::AssetsModule)
         .add_module(maki_render::RenderModule)
         .add_module(maki_ui::UiModule)
         .add_module(maki_ui::StatsPanelModule)
-        .add_module(scene::SceneModule)
-        .add_module(light::LightModule)
+        .add_module(debug::DebugPanelModule)
+        .add_module(maki_scene::SceneModule)
+        .add_module(maki_events::EventsModule)
+        .add_module(events_ui::EventsUiModule)
+        .add_module(rooms::RoomsModule)
         .add_module(controls::ControlsModule)
-        .add_module(tick_logger::TickLoggerModule);
-    // The benchmark moves the light by itself, so the keyboard does not.
-    match args.bench_frames {
-        Some(frames) => app.add_module(bench::BenchModule {
-            frames,
-            dump: args.bench_dump,
-            static_light: args.bench_static,
-        }),
-        None => app.add_module(light::LightControllerModule),
-    };
+        .add_module(camera::CameraModule)
+        .add_module(player::PlayerControllerModule)
+        .add_module(tick_logger::TickLoggerModule)
+        .add_module(light::LightControllerModule)
+        .add_module(bench::BenchModule {
+            start: args.bench_frames.map(|frames| bench::BenchRun {
+                frames,
+                dump: args.bench_dump,
+                static_light: args.bench_static,
+                script: args.bench_script.as_deref().and_then(bench::script),
+            }),
+        });
 
     maki_platform::run(app)
 }
@@ -133,6 +154,7 @@ mod tests {
                 bench_frames: None,
                 bench_dump: None,
                 bench_static: false,
+                bench_script: None,
             }
         );
         // In any order.
@@ -147,6 +169,7 @@ mod tests {
                     bench_frames: Some(300),
                     bench_dump: None,
                     bench_static: false,
+                    bench_script: None,
                 }
             );
         }
@@ -156,6 +179,13 @@ mod tests {
                 .bench_dump,
             Some(PathBuf::from("a.bin"))
         );
+        assert_eq!(
+            parse(&["--bench-frames", "3", "--bench-script", "trip"])
+                .unwrap()
+                .bench_script
+                .as_deref(),
+            Some("trip")
+        );
         for bad in [
             &["--bench-frames"][..],
             &["--bench-frames", "0"],
@@ -163,6 +193,9 @@ mod tests {
             &["--bench"],
             &["--bench-dump", "a.bin"],
             &["--bench-static"],
+            &["--bench-script", "walk"],
+            &["--bench-frames", "3", "--bench-script"],
+            &["--bench-frames", "3", "--bench-script", "fly"],
             &["--bench-frames", "3", "--bench-dump"],
             &["a.toml", "b.toml"],
         ] {

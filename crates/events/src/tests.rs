@@ -1,0 +1,296 @@
+//! Tests of the interpreter with a fixed step: a headless app, a room file that the
+//! test writes, and one fixed step for each frame.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use bevy_ecs::query::With;
+use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use glam::Vec3;
+use maki_core::{App, Config, FixedUpdate, Interpolated, Startup, Time, Transform};
+use maki_platform::{Key, PlatformModule, RawInput};
+use maki_scene::{
+    CurrentRoom, Light, Mover, MoverState, Name, Player, RoomRequest, RoomTarget, SceneModule,
+    ScreenFade,
+};
+
+use super::*;
+
+/// 50 Hz: one fixed step of 20 ms for each frame.
+const STEP: Duration = Duration::from_millis(20);
+
+/// A room of 8 x 8 m with a lamp, a door in the back wall, and these events.
+fn room(events: &str) -> String {
+    format!(
+        r#"(
+            width: 8, depth: 8, height: 3,
+            doorways: [(wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)],
+            doors: [(name: "door", doorway: 0, seconds: 0.1)],
+            lights: [(name: "lamp", position: (0, 2, 0), radius: 0.1, color: (1, 1, 1), intensity: 5.0)],
+            spawns: {{ "start": (0, 0, 0), "east": (2, 0, 0) }},
+            events: [{events}],
+        )"#
+    )
+}
+
+/// The directory of the room files of one test.
+fn directory(test: &str) -> PathBuf {
+    let directory = std::env::temp_dir().join(format!("maki-events-{test}-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+/// A headless game in the room `a.ron` of `directory`, with the player at "start".
+/// The first step with the events of the room is that of the second frame.
+fn game(directory: &std::path::Path) -> App {
+    let path = directory.join("a.ron");
+    let mut app = App::new(Config {
+        fixed_hz: 50.0,
+        ..Config::default()
+    })
+    .unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule)
+        .add_systems(
+            Startup,
+            move |mut commands: Commands, mut request: ResMut<RoomRequest>| {
+                commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
+                request.0 = Some(RoomTarget {
+                    path: path.clone(),
+                    spawn: Some("start".to_owned()),
+                });
+            },
+        );
+    app
+}
+
+fn flag(app: &App, name: &str) -> bool {
+    app.world().resource::<GameState>().flag(name)
+}
+
+fn running(app: &App) -> usize {
+    app.world().resource::<EventRunner>().running().len()
+}
+
+fn steps(app: &mut App, count: u32) {
+    for _ in 0..count {
+        app.advance(STEP);
+    }
+}
+
+/// One frame with a tap of the interact key in it.
+fn interact(app: &mut App) {
+    app.write_message(RawInput::KeyDown(Key::Z))
+        .write_message(RawInput::KeyUp(Key::Z));
+    app.advance(STEP);
+}
+
+#[test]
+fn a_wait_takes_its_seconds_in_steps_and_the_game_goes_on() {
+    let directory = directory("wait");
+    let events = r#"(name: "timer", pages: [(trigger: Autorun, commands: [
+        SetFlag("started", true), Wait(1.0), SetFlag("ended", true)])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    let app = game(&directory);
+    app.run(|mut app| {
+        // Frame 1 loads the room, the step of frame 2 starts the event, and the step
+        // of frame 3 runs its first commands.
+        steps(&mut app, 3);
+        assert!(flag(&app, "started") && !flag(&app, "ended"));
+        // An autorun event takes the control from the player.
+        assert!(app.world().resource::<EventRunner>().blocks_player());
+        // 1 s is 50 steps. The step of frame 3 was the first one.
+        steps(&mut app, 48);
+        assert!(!flag(&app, "ended"));
+        steps(&mut app, 1);
+        assert!(flag(&app, "ended"));
+        assert_eq!(running(&app), 0);
+        // The game made a fixed step in each frame: no frame waited for the event.
+        assert_eq!(app.world().resource::<Time>().fixed_tick, 52);
+        // Autorun: one time, not again.
+        steps(&mut app, 5);
+        assert_eq!(running(&app), 0);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_branch_takes_the_side_of_its_flag_and_a_later_page_takes_over() {
+    let directory = directory("branch");
+    let events = r#"
+        (name: "first", pages: [(trigger: Autorun, commands: [
+            If("seen", [SetVariable("side", 1)], [SetVariable("side", 2)]),
+            AddVariable("side", 10),
+            SetFlag("seen", true)])]),
+        (name: "second", pages: [(conditions: [Flag("seen")], trigger: Autorun, commands: [
+            If("seen", [SetVariable("again", 1)], [SetVariable("again", 2)])])]),
+        (name: "loop", pages: [
+            (trigger: Parallel, commands: [AddVariable("count", 1), Wait(0.04)]),
+            (conditions: [VariableAtLeast("count", 3)], trigger: Parallel, commands: [])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    let app = game(&directory);
+    app.run(|mut app| {
+        steps(&mut app, 12);
+        let state = app.world().resource::<GameState>();
+        // The flag was not set: the second list, then the commands after the branch.
+        assert_eq!(state.variable("side"), 12);
+        // The page of the second event became active when the flag was set.
+        assert_eq!(state.variable("again"), 1);
+        // The parallel event started again each time it ended, until its second page
+        // (with no commands) took over. It did not take the control from the player.
+        assert_eq!(state.variable("count"), 3);
+        assert!(!app.world().resource::<EventRunner>().blocks_player());
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn interact_starts_the_event_that_the_player_faces_and_a_message_waits_for_a_press() {
+    let directory = directory("interact");
+    // The player is at the origin and faces +Z.
+    let events = r#"
+        (name: "behind", area: (center: (0, -1), size: (1, 1)),
+            pages: [(trigger: Interact, commands: [SetFlag("behind", true)])]),
+        (name: "far", area: (center: (0, 3), size: (1, 1)),
+            pages: [(trigger: Interact, commands: [SetFlag("far", true)])]),
+        (name: "sign", area: (center: (0, 1), size: (1, 1)),
+            pages: [(trigger: Interact, commands: [Message("Hello."), SetFlag("read", true)])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    let app = game(&directory);
+    let message = |app: &App| app.world().resource::<MessageBox>().0.clone();
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        assert_eq!(running(&app), 0);
+        interact(&mut app);
+        steps(&mut app, 1);
+        // Only the event in front of the player, in reach.
+        assert_eq!(message(&app).as_deref(), Some("Hello."));
+        assert!(app.world().resource::<EventRunner>().blocks_player());
+        steps(&mut app, 30);
+        assert_eq!(message(&app).as_deref(), Some("Hello."));
+        assert!(!flag(&app, "read"));
+        // The press that closes the message starts no event again.
+        interact(&mut app);
+        assert_eq!(message(&app), None);
+        assert!(flag(&app, "read"));
+        steps(&mut app, 3);
+        assert_eq!(message(&app), None);
+        assert!(!flag(&app, "behind") && !flag(&app, "far"));
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn touch_starts_when_the_player_walks_into_the_area() {
+    let directory = directory("touch");
+    // The first area is around the start of the player, the second one is at x = 2.
+    let events = r#"
+        (name: "here", area: (center: (0, 0), size: (1, 1)),
+            pages: [(trigger: Touch, commands: [AddVariable("here", 1)])]),
+        (name: "plate", area: (center: (2, 0), size: (1, 1)),
+            pages: [(trigger: Touch, commands: [AddVariable("plate", 1)])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    let mut app = game(&directory);
+    // The player walks 0.25 m along X in each step from step 10 to step 21: over the
+    // plate and past it.
+    app.add_systems(
+        FixedUpdate,
+        (|time: Res<Time>, mut players: Query<&mut Interpolated, With<Player>>| {
+            if (10..22).contains(&time.fixed_tick) {
+                players.single_mut().unwrap().current.translation.x += 0.25;
+            }
+        })
+        .before(run_events),
+    );
+    app.run(|mut app| {
+        steps(&mut app, 30);
+        let state = app.world().resource::<GameState>();
+        // The player started in the first area: it did not walk into it.
+        assert_eq!(state.variable("here"), 0);
+        // One time, when the player came in. Not in each step in the area.
+        assert_eq!(state.variable("plate"), 1);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn commands_reach_the_door_the_light_the_fade_and_the_next_room() {
+    let directory = directory("world");
+    let events = r#"(name: "show", pages: [(trigger: Autorun, commands: [
+        OpenDoor("door"), SetFlag("open", true),
+        LightIntensity("lamp", 2.0), LightOff("lamp"),
+        FadeOut(0.1), SetFlag("dark", true),
+        Transfer("b.ron", "east"),
+        SetFlag("there", true), FadeIn(0.1), CloseDoor("door"), LightOn("nothing")])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    std::fs::write(directory.join("b.ron"), room("")).unwrap();
+    let app = game(&directory);
+    let door = |app: &App| {
+        let mut movers = app.world().try_query::<(&Name, &Mover)>().unwrap();
+        movers.single(app.world()).unwrap().1.state
+    };
+    let lamp = |app: &App| {
+        let mut lights = app.world().try_query::<&Light>().unwrap();
+        *lights.single(app.world()).unwrap()
+    };
+    let fade = |app: &App| app.world().resource::<ScreenFade>().0;
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        // The door takes 0.1 s, some steps. The command waits for it.
+        assert!(matches!(door(&app), MoverState::ToB(_)));
+        assert!(!flag(&app, "open"));
+        steps(&mut app, 8);
+        assert_eq!(door(&app), MoverState::AtB);
+        assert!(flag(&app, "open"));
+        assert_eq!((lamp(&app).intensity, lamp(&app).on), (2.0, false));
+        // The fade out has started, and it also takes some steps.
+        assert!(fade(&app) > 0.0 && !flag(&app, "there"));
+
+        // The fade ends, then the transfer: the loader runs in the frame of the
+        // request, and the event goes on in the next step, in the new room.
+        steps(&mut app, 8);
+        assert!(flag(&app, "dark") && flag(&app, "there"));
+        let world = app.world();
+        assert!(world.resource::<CurrentRoom>().path.ends_with("b.ron"));
+        let mut players = world
+            .try_query_filtered::<&Interpolated, With<Player>>()
+            .unwrap();
+        let player = players.single(world).unwrap().current.translation;
+        assert_eq!(player, Vec3::new(2.0, 0.0, 0.0));
+        // The new room has its own door and lamp, as its file says: closed and on.
+        assert_eq!(door(&app), MoverState::AtA);
+        assert!(lamp(&app).on);
+        // The fade in, a door that is closed already, and a light that is not there:
+        // the event ends.
+        steps(&mut app, 10);
+        assert_eq!(fade(&app), 0.0);
+        assert_eq!(running(&app), 0);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_transfer_to_a_bad_room_does_not_happen_and_the_event_goes_on() {
+    let directory = directory("bad");
+    let events = r#"(name: "go", pages: [(trigger: Autorun, commands: [
+        Transfer("b.ron", "start"), SetFlag("after", true)])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    // A command that does not exist.
+    let bad = r#"(name: "x", pages: [(trigger: Autorun, commands: [Explode])])"#;
+    std::fs::write(directory.join("b.ron"), room(bad)).unwrap();
+    let app = game(&directory);
+    app.run(|mut app| {
+        steps(&mut app, 6);
+        assert!(
+            app.world()
+                .resource::<CurrentRoom>()
+                .path
+                .ends_with("a.ron")
+        );
+        assert!(flag(&app, "after"));
+        assert_eq!(running(&app), 0);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
