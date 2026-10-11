@@ -99,6 +99,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
             .expect("tonemap sampler"),
         hdr: denoise.denoised,
         views: [normal, motion, denoise.color, denoise.moments, radiance],
+        denoise,
         output,
     });
     graph.add_pass(Present { output });
@@ -110,6 +111,23 @@ pub(crate) fn push_constants(fields: &[u32]) -> Vec<u8> {
         .iter()
         .flat_map(|field| field.to_ne_bytes())
         .collect()
+}
+
+/// A vec3 and one 32-bit value, as the fields of a push constant block: a vec3 has 12
+/// bytes and an alignment of 16, so the value fills the gap after it.
+pub(crate) fn vec3_bits(v: Vec3, last: u32) -> [u32; 4] {
+    [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), last]
+}
+
+/// `[right, up, forward]` of the camera of this frame: see [`ray_basis`].
+pub(crate) fn frame_ray_basis(world: &bevy_ecs::world::World) -> [Vec3; 3] {
+    // The picture is scaled to the window, so the rays use the shape of the window
+    // and not that of the internal image. A resize thus does not stretch the scene.
+    // The extracted size and not the swapchain size: the swapchain can change one
+    // frame before the window size message, and that frame has no accumulation reset.
+    let (width, height) = world.resource::<ExtractedFrame>().window_size;
+    let camera = world.resource::<ExtractedCamera>().current;
+    ray_basis(&camera, width as f32 / height as f32)
 }
 
 /// Work group counts for a shader with 8x8 groups: rounded up, so the groups cover the image.
@@ -254,13 +272,9 @@ impl Pass for Trace {
         let cameras = *ctx.world.resource::<ExtractedCamera>();
         let camera = cameras.current;
         let frame = ctx.world.resource::<ExtractedFrame>();
-        // The picture is scaled to the window, so the rays use the shape of the window
-        // and not that of the internal image. A resize thus does not stretch the scene.
-        // The extracted size and not the swapchain size: the swapchain can change one
-        // frame before the window size message, and that frame has no accumulation reset.
         let (width, height) = frame.window_size;
         let aspect = width as f32 / height as f32;
-        let [right, up, forward] = ray_basis(&camera, aspect);
+        let [right, up, forward] = frame_ray_basis(ctx.world);
         // The camera of the frame before, for the motion of each pixel.
         let slot = ctx.gpu.frame_slot();
         let buffers = ctx.world.resource::<MotionBuffers>();
@@ -299,7 +313,6 @@ impl Pass for Trace {
             .buffer_index(light_buffer)
             .expect("the light buffer is alive");
         // Field order as in the `Push` block of the shader: a vec3, then one 32-bit value.
-        let vec3_bits = |v: Vec3, last: u32| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), last];
         let mut fields = [
             vec3_bits(camera.position, mesh_table),
             vec3_bits(right, ctx.bindless_index(self.radiance)),
@@ -317,6 +330,7 @@ impl Pass for Trace {
             ctx.bindless_index(self.motion),
             buffer_index(ctx.gpu, camera_buffer),
             buffer_index(ctx.gpu, instance_buffer),
+            frame.indirect_clamp.to_bits(),
         ]);
         ctx.gpu
             .dispatch_compute(
@@ -339,6 +353,8 @@ struct Tonemap {
     /// The images of the debug views: normal, motion, the mean of the denoiser, its
     /// moments, and the radiance of this frame.
     views: [ResourceId; 5],
+    /// For the views of the filter input and output.
+    denoise: denoise::DenoiseImages,
     output: ResourceId,
 }
 
@@ -354,6 +370,14 @@ impl Pass for Tonemap {
         ]
         .into_iter()
         .chain(self.views.map(|image| (image, Access::Sampled)))
+        .chain(
+            [
+                self.denoise.input,
+                self.denoise.work[0],
+                self.denoise.work[1],
+            ]
+            .map(|image| (image, Access::Sampled)),
+        )
         .collect()
     }
 
@@ -373,6 +397,8 @@ impl Pass for Tonemap {
             frame.debug_view as u32,
         ];
         push.extend(self.views.map(|image| ctx.bindless_index(image)));
+        push.push(ctx.bindless_index(self.denoise.input));
+        push.push(ctx.bindless_index(self.denoise.filter_output(ctx)));
         let push = push_constants(&push);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.output)))

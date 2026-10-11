@@ -7,8 +7,12 @@
 // area with few reads ("a-trous", with holes). A neighbor gets a small weight if it is
 // probably another surface or another lighting, so edges stay sharp:
 // - its normal points another way;
-// - its distance from the camera differs;
+// - it is not on the plane of the center pixel (the plane through its point, square
+//   to its normal);
 // - its brightness differs by more than the noise there (the variance) explains.
+//
+// A pass does nothing for a pixel whose mean has many samples (`reach`): little
+// noise is left there, and a wide filter would only soften the light.
 //
 // rgb of the images is light without surface color, a is the variance of its brightness
 // (see denoise_prepare.comp).
@@ -20,27 +24,47 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform image2D images_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
+    uniform readonly image2D images_rgba32f[];
 // Must agree with `DenoiseFilter::execute` in src/denoise.rs.
+// A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
 layout(push_constant) uniform Push {
+    // The ray of a pixel is `forward + x * right + y * up`, as in trace.comp.
+    vec3 right;
     uint src;    // index in `images_rgba16f`
+    vec3 up;
     uint dst;    // index in `images_rgba16f`
+    vec3 forward;
     uint normal; // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
     int step;    // pixels between two points of the pattern
+    uint color;  // index in `images_rgba32f`: the samples in the mean, in a
+    // The pass runs for a pixel while `step * step * samples` is at most this.
+    // 0: for each pixel.
+    float reach;
 } push;
 
 // A neighbor counts if its brightness differs by less than about this many standard
 // deviations of the noise. The value of the SVGF paper (Schied et al., 2017).
 const float SIGMA_BRIGHTNESS = 4.0;
-// A neighbor counts if its distance from the camera differs by less than about this
-// part of the distance, for each pixel between the two. A floor that the camera sees
-// at a flat angle changes its distance by about a third of this from pixel to pixel.
-const float SIGMA_DISTANCE = 0.003;
+// A neighbor counts if its distance to the plane of the center pixel is less than
+// about this part of the distance from the camera: 5 cm at 10 m. The difference of
+// the two camera distances would not do: on a floor that the camera sees at a flat
+// angle, it is large between two points of the floor, and small between the floor
+// and the foot of an object that stands on it.
+const float SIGMA_PLANE = 0.005;
 // The normal weight is the cosine of the angle between the normals to this power:
 // 0.5 at 8 degrees.
 const float NORMAL_POWER = 64.0;
 
 // The weights of a smooth bell curve (a cubic B-spline) at -2, -1, 0, 1, 2.
 const float KERNEL[5] = float[](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
+
+// The point that a pixel shows, from the camera: the direction of its camera ray
+// times the distance.
+vec3 from_camera(ivec2 pixel, ivec2 size, float distance) {
+    vec2 screen = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
+    return normalize(push.forward + screen.x * push.right - screen.y * push.up) * distance;
+}
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -51,10 +75,15 @@ void main() {
     vec4 center = imageLoad(images_rgba16f[push.src], pixel);
     vec4 surface = imageLoad(images_rgba16f[push.normal], pixel);
     // No surface: the value is a full color, and it stays as it is.
-    if (surface.xyz == vec3(0.0)) {
+    // Many samples: the mean stays as it is.
+    float samples = imageLoad(images_rgba32f[push.color], pixel).a;
+    if (surface.xyz == vec3(0.0)
+        || (push.reach > 0.0 && float(push.step * push.step) * samples > push.reach)) {
         imageStore(images_rgba16f[push.dst], pixel, center);
         return;
     }
+    vec3 point = from_camera(pixel, size, surface.w);
+    float plane_scale = SIGMA_PLANE * surface.w;
     float center_brightness = brightness(center.rgb);
     // The standard deviation of the noise, and a small number against a division by zero.
     // With no noise left (a picture of many samples), only equal neighbors count: the
@@ -76,10 +105,10 @@ void main() {
             // Zero for a tap with no surface: its normal is zero.
             float weight = KERNEL[x + 2] * KERNEL[y + 2]
                 * pow(max(0.0, dot(surface.xyz, tap_surface.xyz)), NORMAL_POWER);
-            float pixels = length(vec2(x, y)) * float(push.step);
             vec4 tap_value = imageLoad(images_rgba16f[push.src], tap);
+            float off_plane = abs(dot(surface.xyz, from_camera(tap, size, tap_surface.w) - point));
             // The two tests as one exponential: a product of two is the sum of the exponents.
-            weight *= exp(-abs(surface.w - tap_surface.w) / (SIGMA_DISTANCE * surface.w * pixels)
+            weight *= exp(-off_plane / plane_scale
                 - abs(center_brightness - brightness(tap_value.rgb)) / brightness_scale);
 
             light += tap_value.rgb * weight;

@@ -28,6 +28,8 @@ layout(push_constant) uniform Push {
     uint color;       // the mean light of the denoiser in rgb, its samples in a
     uint moments;     // mean brightness of one frame, and mean of its square
     uint radiance;    // the samples of this frame
+    uint filter_input;  // the light that the filter passes get in rgb, its variance in a
+    uint filter_output; // the same after the last filter pass
 } push;
 
 // Must agree with `DebugView` in src/lib.rs.
@@ -38,6 +40,9 @@ const uint VIEW_NORMALS = 3u;
 const uint VIEW_HISTORY_LENGTH = 4u;
 const uint VIEW_VARIANCE = 5u;
 const uint VIEW_RAW = 6u;
+const uint VIEW_FILTER_INPUT = 7u;
+const uint VIEW_FILTER_VARIANCE = 8u;
+const uint VIEW_FILTER_OUTPUT = 9u;
 
 // The picture through the sampler, which does the scaling to the window size.
 vec3 sampled(uint texture_index, vec2 uv) {
@@ -74,6 +79,12 @@ vec3 debug_color(vec2 uv) {
         float deviation = sqrt(max(0.0, moments.y - moments.x * moments.x));
         return vec3(deviation / (moments.x + 1e-3) * 0.25);
     }
+    if (push.view == VIEW_FILTER_VARIANCE) {
+        // The noise that the filter takes the mean to have, as a part of its
+        // brightness. Black: the filter changes nothing here.
+        vec4 light = pixel_at(push.filter_input, uv);
+        return vec3(sqrt(light.a) / (dot(light.rgb, vec3(0.2126, 0.7152, 0.0722)) + 1e-3));
+    }
     return surface.xyz * 0.5 + 0.5;
 }
 
@@ -98,11 +109,19 @@ void main() {
         return;
     }
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
-    if (push.view != VIEW_FINAL && push.view != VIEW_RAW) {
+    // The views that show light go through the tone curve, as the picture does.
+    uint light = push.hdr;
+    if (push.view == VIEW_RAW) {
+        light = push.radiance;
+    } else if (push.view == VIEW_FILTER_INPUT) {
+        light = push.filter_input;
+    } else if (push.view == VIEW_FILTER_OUTPUT) {
+        light = push.filter_output;
+    } else if (push.view != VIEW_FINAL) {
         imageStore(images[push.dst], pixel, vec4(debug_color(uv), 1.0));
         return;
     }
-    vec3 hdr = sampled(push.view == VIEW_RAW ? push.radiance : push.hdr, uv);
+    vec3 hdr = sampled(light, uv);
     vec3 mapped = aces(hdr * push.exposure);
     imageStore(images[push.dst], pixel, vec4(srgb_encode(mapped), 1.0));
 }

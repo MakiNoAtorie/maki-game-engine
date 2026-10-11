@@ -67,6 +67,15 @@ impl Module for DebugPanelModule {
                         .text("filter passes"),
                 );
                 ui.add(
+                    egui::Slider::new(&mut config.denoise_reach, 0.0..=4096.0)
+                        .logarithmic(true)
+                        .text("filter reach (0: all passes at each pixel)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut config.indirect_clamp, 0.0..=64.0)
+                        .text("bounce light limit (0: none)"),
+                );
+                ui.add(
                     egui::Slider::new(&mut config.light_history_samples, 0..=1024)
                         .logarithmic(true)
                         .text("samples kept on a light change"),

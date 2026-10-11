@@ -74,6 +74,18 @@ pub struct Config {
     /// Filter passes of the denoiser, 0 to 6. Each pass doubles the area that the
     /// filter takes its mean from. 0: no filter, only the mean over frames.
     pub denoise_passes: u32,
+    /// The denoiser filter gets narrower as the mean of a pixel gets more samples: a
+    /// filter pass whose pattern has `s` pixels between its points runs for a pixel
+    /// while `s * s * samples` is at most this. 4096: up to 64 samples get all four
+    /// passes, and 4096 samples get none. 0: each pass runs at each pixel.
+    pub denoise_reach: f32,
+    /// The largest light that one bounce ray adds to a pixel, in units of the light at
+    /// the surface that the pixel shows (before its color). A rare path that finds the
+    /// light by way of a mirror or through glass is some thousand times brighter than
+    /// the others (a "firefly"): the limit keeps it from the denoiser. It makes such
+    /// light (caustics) darker. Direct light and what the camera sees have no limit.
+    /// 0: no limit.
+    pub indirect_clamp: f32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
     pub exposure: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
@@ -109,6 +121,8 @@ impl Default for Config {
             light_history_samples: 32,
             max_path_rays: 8,
             denoise_passes: 4,
+            denoise_reach: 4096.0,
+            indirect_clamp: 8.0,
             exposure: 1.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,

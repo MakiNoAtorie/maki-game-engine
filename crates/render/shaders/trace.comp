@@ -28,7 +28,7 @@
 // - motion:   how far the point that the camera ray hit moved on the screen since the
 //             frame before, in pixels: its position now minus its position then.
 //             Zero for no hit. See src/motion.rs.
-// The first path of a pixel goes through the center of the pixel, so these three
+// Each path of a pixel goes through the center of the pixel, so these three
 // images do not change from frame to frame while nothing moves.
 // "The surface that the pixel shows" is the first surface on the first path of the
 // pixel that is not a mirror: behind a mirror it is the surface that shows there, and
@@ -40,6 +40,7 @@
 
 #include "bindless.glsl"
 #include "scene.glsl"
+#include "denoise.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -73,6 +74,9 @@ layout(push_constant) uniform Push {
     uint motion;          // index in `images_rg16f`
     uint previous_camera; // index in `camera_buffers`
     uint instances;       // index in `instance_buffers`
+    // The largest light that a bounce ray adds, in units of the light at the surface
+    // that the pixel shows (the light divided by `albedo`). 0: no limit.
+    float indirect_clamp;
 } push;
 
 // A sphere light. 32 bytes. Must agree with `light_bytes` in src/light.rs.
@@ -359,15 +363,30 @@ vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_l
     return light.radiance * (cos_surface * solid_angle / PI * scale);
 }
 
+// Bounce light with the limit `push.indirect_clamp`. `albedo` is the color of the
+// surface that the pixel shows: the denoiser divides the light by it, so the limit
+// is in the units that the denoiser sees.
+// Most bounce rays bring a little light. A rare one finds the light itself by way of
+// a mirror or through glass and brings some thousand times more (a "firefly"). The
+// mean of such samples needs thousands of frames, and the filter spreads each one to
+// a soft dot. The limit makes that light darker than it is: a small, steady error in
+// place of a large, random one.
+vec3 limited(vec3 light, vec3 albedo) {
+    float value = brightness(light / max(albedo, vec3(MIN_ALBEDO)));
+    return push.indirect_clamp > 0.0 && value > push.indirect_clamp
+        ? light * (push.indirect_clamp / value)
+        : light;
+}
+
 // The light that one random path through the pixel brings to the camera.
 // `first`: also write the normal, albedo, and motion images.
 vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
-    // A point in the pixel, from -1 to 1 across the image. Image y goes down, `up`
-    // goes up. The first path takes the center, so the surface images are stable. The
-    // others take a random point: it changes with each sample, so the mean smooths
-    // the edges.
-    vec2 in_pixel = first ? vec2(0.5) : vec2(random(), random());
-    vec2 screen = (vec2(pixel) + in_pixel) / vec2(size) * 2.0 - 1.0;
+    // The center of the pixel, from -1 to 1 across the image. Image y goes down, `up`
+    // goes up. Each path of the pixel takes the same point: the light then belongs to
+    // the surface that the normal and albedo images hold. With a random point for
+    // each path, a pixel on an edge would hold the light of two surfaces, divided by
+    // the color of one.
+    vec2 screen = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
     vec3 direction = normalize(push.forward + screen.x * push.right - screen.y * push.up);
 
     vec3 radiance = vec3(0.0);
@@ -396,6 +415,9 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
     uint segment = 0;     // number of the path ray, from 0
     // The normal and albedo images still need the surface of this pixel.
     bool surface_missing = first;
+    // The color of the surface that the pixel shows (the value of the albedo image).
+    vec3 surface_albedo = vec3(1.0);
+    bool surface_found = false;
 
     // State of a shadow ray.
     bool shadow = false;   // the ray to trace is a shadow ray
@@ -443,7 +465,9 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
         bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
         if ((sees_light && light_is_nearer) || !hit) {
             if (sees_light && light_is_nearer) {
-                radiance += throughput * light_radiance;
+                // After a bounce, the ray found the light by way of a mirror or glass.
+                vec3 light = throughput * light_radiance;
+                radiance += bounced ? limited(light, surface_albedo) : light;
             }
             // The path ends with no surface: the pixel shows the light itself or the
             // background.
@@ -467,6 +491,10 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
             direction = reflect(direction, surface.normal);
             sees_light = true;
         } else if (surface.material == MATERIAL_GLASS && !last) {
+            if (!surface_found) {
+                surface_found = true;
+                surface_albedo = throughput;
+            }
             if (surface_missing) {
                 surface_missing = false;
                 float from_camera = distance(surface.position, push.origin);
@@ -507,6 +535,10 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
             // Diffuse. All rays from here start a small gap above the surface.
             origin = surface.position + surface.normal * SURFACE_GAP;
             throughput *= surface.albedo;
+            if (!surface_found) {
+                surface_found = true;
+                surface_albedo = throughput;
+            }
             if (surface_missing) {
                 surface_missing = false;
                 // The surface that the pixel shows. Stored here and not after the
@@ -520,6 +552,10 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
             float to_light;
             shadow_light = throughput
                 * light_sample(surface.position, surface.normal, light_direction, to_light);
+            // The second diffuse surface: its direct light is the bounce light of the first.
+            if (bounced) {
+                shadow_light = limited(shadow_light, surface_albedo);
+            }
             // The path ends at the second diffuse surface, and at the last ray.
             continues = !bounced && !last;
             if (continues) {

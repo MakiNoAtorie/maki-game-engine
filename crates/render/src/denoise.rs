@@ -15,7 +15,8 @@
 //! 3. `denoise_filter_1` to `_N` (`denoise_passes` of the config): each one blurs with
 //!    a wider pattern. The `normal` image (normal and distance) and the variance tell
 //!    which neighbors count. With no noise left, only equal neighbors count: the
-//!    filter turns itself off.
+//!    filter turns itself off. A pixel whose mean has many samples also gets fewer
+//!    passes (`denoise_reach` of the config): the filter is as wide as the noise needs.
 //! 4. `denoise_resolve`: multiplies by the surface color again and writes `denoised`.
 //!
 //! The mean of step 1 and the surface image are history images of the frame graph: the
@@ -35,7 +36,7 @@
 use maki_gpu::{Access, ComputePipelineHandle, Format, Gpu};
 
 use crate::graph::{FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc};
-use crate::passes::{groups, push_constants};
+use crate::passes::{frame_ray_basis, groups, push_constants, vec3_bits};
 use crate::{Accumulation, ExtractedFrame, shader_spirv};
 
 /// The largest number of filter passes (`denoise_passes` of the config).
@@ -62,6 +63,7 @@ pub(crate) struct TraceImages {
 }
 
 /// The images that the denoiser makes.
+#[derive(Clone, Copy)]
 pub(crate) struct DenoiseImages {
     /// The picture.
     pub denoised: ResourceId,
@@ -69,6 +71,22 @@ pub(crate) struct DenoiseImages {
     pub color: ResourceId,
     /// The mean brightness of one frame and the mean of its square.
     pub moments: ResourceId,
+    /// What the filter passes get: the mean light, with its variance in the fourth
+    /// channel.
+    pub input: ResourceId,
+    /// The filter passes write these two, in turns.
+    pub work: [ResourceId; 2],
+}
+
+impl DenoiseImages {
+    /// The image that the last filter pass of this frame wrote. With no filter pass,
+    /// that of `denoise_prepare`.
+    pub fn filter_output(&self, ctx: &PassContext) -> ResourceId {
+        match filter_passes(ctx) {
+            0 => self.input,
+            passes => self.work[(passes as usize - 1) % 2],
+        }
+    }
 }
 
 /// Adds the denoiser passes at the end of the graph: call after the pass that writes
@@ -97,7 +115,9 @@ pub(crate) fn add_passes(
         "denoise_moments_previous",
     );
     // 16 bits are sufficient: these images are made again in each frame.
-    // The filter passes read one work image and write the other, in turns.
+    // The first filter pass reads `input`. Then the passes read one work image and
+    // write the other, in turns. `input` stays as it is, for its debug views.
+    let input = graph.add_transient(internal("denoise_input", Format::Rgba16Float));
     let work = [
         graph.add_transient(internal("denoise_work_a", Format::Rgba16Float)),
         graph.add_transient(internal("denoise_work_b", Format::Rgba16Float)),
@@ -121,7 +141,7 @@ pub(crate) fn add_passes(
         color,
         moments,
         normal: trace.normal,
-        dst: work[0],
+        dst: input,
     });
     let filter = pipeline(shader_spirv!("denoise_filter.comp"));
     for (index, name) in FILTER_NAMES.into_iter().enumerate() {
@@ -129,23 +149,30 @@ pub(crate) fn add_passes(
             name,
             pipeline: filter,
             index: index as u32,
-            src: work[index % 2],
-            dst: work[(index + 1) % 2],
+            src: if index == 0 {
+                input
+            } else {
+                work[(index - 1) % 2]
+            },
+            dst: work[index % 2],
             normal: trace.normal,
+            color,
         });
     }
-    graph.add_pass(DenoiseResolve {
-        pipeline: pipeline(shader_spirv!("denoise_resolve.comp")),
-        work,
-        normal: trace.normal,
-        albedo: trace.albedo,
-        dst: denoised,
-    });
-    DenoiseImages {
+    let images = DenoiseImages {
         denoised,
         color,
         moments,
-    }
+        input,
+        work,
+    };
+    graph.add_pass(DenoiseResolve {
+        pipeline: pipeline(shader_spirv!("denoise_resolve.comp")),
+        images,
+        normal: trace.normal,
+        albedo: trace.albedo,
+    });
+    images
 }
 
 /// The number of filter passes of this frame.
@@ -270,6 +297,8 @@ struct DenoiseFilter {
     src: ResourceId,
     dst: ResourceId,
     normal: ResourceId,
+    /// The mean of the temporal pass: the filter reads the sample count of each pixel.
+    color: ResourceId,
 }
 
 impl Pass for DenoiseFilter {
@@ -281,6 +310,7 @@ impl Pass for DenoiseFilter {
         vec![
             (self.src, Access::StorageRead),
             (self.normal, Access::StorageRead),
+            (self.color, Access::StorageRead),
             (self.dst, Access::StorageWrite),
         ]
     }
@@ -289,12 +319,23 @@ impl Pass for DenoiseFilter {
         if !ctx.world.resource::<Accumulation>().sampling() || self.index >= filter_passes(ctx) {
             return;
         }
-        let push = push_constants(&[
-            ctx.bindless_index(self.src),
-            ctx.bindless_index(self.dst),
-            ctx.bindless_index(self.normal),
+        // The camera rays: the filter computes the point that each pixel shows.
+        let [right, up, forward] = frame_ray_basis(ctx.world);
+        let mut push = [
+            vec3_bits(right, ctx.bindless_index(self.src)),
+            vec3_bits(up, ctx.bindless_index(self.dst)),
+            vec3_bits(forward, ctx.bindless_index(self.normal)),
+        ]
+        .concat();
+        push.extend([
             1 << self.index,
+            ctx.bindless_index(self.color),
+            ctx.world
+                .resource::<ExtractedFrame>()
+                .denoise_reach
+                .to_bits(),
         ]);
+        let push = push_constants(&push);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.dst)))
             .expect("denoise_filter dispatch");
@@ -303,11 +344,9 @@ impl Pass for DenoiseFilter {
 
 struct DenoiseResolve {
     pipeline: ComputePipelineHandle,
-    /// The two work images of the filter passes.
-    work: [ResourceId; 2],
+    images: DenoiseImages,
     normal: ResourceId,
     albedo: ResourceId,
-    dst: ResourceId,
 }
 
 impl Pass for DenoiseResolve {
@@ -317,11 +356,12 @@ impl Pass for DenoiseResolve {
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
         vec![
-            (self.work[0], Access::StorageRead),
-            (self.work[1], Access::StorageRead),
+            (self.images.input, Access::StorageRead),
+            (self.images.work[0], Access::StorageRead),
+            (self.images.work[1], Access::StorageRead),
             (self.normal, Access::StorageRead),
             (self.albedo, Access::StorageRead),
-            (self.dst, Access::StorageWrite),
+            (self.images.denoised, Access::StorageWrite),
         ]
     }
 
@@ -329,17 +369,15 @@ impl Pass for DenoiseResolve {
         if !ctx.world.resource::<Accumulation>().sampling() {
             return;
         }
-        // The image that the last filter pass of this frame wrote. With no filter
-        // pass, that of `denoise_prepare`.
-        let src = self.work[filter_passes(ctx) as usize % 2];
+        let dst = self.images.denoised;
         let push = push_constants(&[
-            ctx.bindless_index(src),
-            ctx.bindless_index(self.dst),
+            ctx.bindless_index(self.images.filter_output(ctx)),
+            ctx.bindless_index(dst),
             ctx.bindless_index(self.normal),
             ctx.bindless_index(self.albedo),
         ]);
         ctx.gpu
-            .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.dst)))
+            .dispatch_compute(self.pipeline, &push, groups(ctx.extent(dst)))
             .expect("denoise_resolve dispatch");
     }
 }

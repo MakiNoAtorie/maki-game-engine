@@ -129,6 +129,11 @@ pub struct ExtractedFrame {
     pub light_history_samples: u32,
     /// Filter passes of the denoiser in this frame, 0 to `MAX_DENOISE_PASSES`.
     pub denoise_passes: u32,
+    /// `denoise_reach` of the config: a filter pass runs for a pixel while
+    /// `step * step * samples` is at most this. 0: for each pixel.
+    pub denoise_reach: f32,
+    /// `indirect_clamp` of the config: the limit for the light of one bounce ray.
+    pub indirect_clamp: f32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
     /// How dark the fade makes the picture: 0.0 is the picture, 1.0 is black.
@@ -155,18 +160,28 @@ pub enum DebugView {
     Variance,
     /// The samples of this frame alone, with no denoiser.
     Raw,
+    /// What the filter passes get: the mean light over time, without the surface color.
+    FilterInput,
+    /// The noise that the filter takes that mean to have, as a part of its brightness.
+    /// The filter blurs where this is bright.
+    FilterVariance,
+    /// The light after the last filter pass, without the surface color.
+    FilterOutput,
 }
 
 impl DebugView {
     /// Each view with its name, for a panel.
-    pub const ALL: [(Self, &str); 7] = [
+    pub const ALL: [(Self, &str); 10] = [
         (Self::Final, "Final"),
         (Self::Raw, "Raw (one frame)"),
         (Self::Motion, "Motion vectors"),
         (Self::Depth, "Depth"),
         (Self::Normals, "Normals"),
         (Self::HistoryLength, "History length"),
-        (Self::Variance, "Variance"),
+        (Self::Variance, "Variance (one frame)"),
+        (Self::FilterInput, "Filter input"),
+        (Self::FilterVariance, "Filter variance"),
+        (Self::FilterOutput, "Filter output"),
     ];
 }
 
@@ -264,6 +279,8 @@ pub(crate) fn extract_frame(
         max_path_rays: config.max_path_rays,
         light_history_samples: config.light_history_samples,
         denoise_passes: config.denoise_passes,
+        denoise_reach: config.denoise_reach,
+        indirect_clamp: config.indirect_clamp,
         exposure: config.exposure,
         fade: fade.map_or(0.0, |fade| fade.0.clamp(0.0, 1.0)),
         debug_view: *debug_view,

@@ -5,15 +5,14 @@
 // Reads the mean of the temporal pass and writes, for each pixel:
 // - rgb: the mean light (without the surface color), in a 16-bit image.
 // - a: the variance of that mean: how much noise is left in it. The filter passes blur
-//   more where this is large. It is the larger one of two measures:
+//   more where this is large. Two measures:
 //   1. Over time: the moments give the variance of one frame, and the mean of N frames
-//      has 1/N of it. Exact for the pixel, but it needs some frames, and a pixel that
-//      got no rare bright sample yet does not know that its neighbors did.
+//      has 1/N of it. Exact for the pixel, but it needs some frames.
 //   2. Over space: the variance of the mean in the 3x3 block around the pixel. It
-//      works from the first frame and sees the bright neighbors, but it also takes a
-//      shadow edge for noise.
-//   Measured (`docs/perf-improve.md`): the two together give a lower error than each
-//   one alone, with motion and at rest.
+//      works from the first frame, but it also takes each edge of the light (a shadow
+//      edge, a contact shadow) for noise: with it the filter never turns off there.
+//   So, as in SVGF: the larger one of the two while the mean has fewer than
+//   `SPATIAL_FRAMES` frames, then the measure over time alone.
 // A pixel with no surface (the background, the light itself) is copied as it is.
 
 #include "bindless.glsl"
@@ -36,6 +35,9 @@ layout(push_constant) uniform Push {
     float frame_samples; // samples that one frame adds to the mean
 } push;
 
+// The measure over space counts while the mean has fewer frames than this.
+const float SPATIAL_FRAMES = 4.0;
+
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(images_rgba16f[push.dst]);
@@ -53,6 +55,10 @@ void main() {
     float frames = max(1.0, center.a / push.frame_samples);
     vec2 moments = imageLoad(images_rgba32f[push.moments], pixel).xy;
     float over_time = max(0.0, moments.y - moments.x * moments.x) / frames;
+    if (frames >= SPATIAL_FRAMES) {
+        imageStore(images_rgba16f[push.dst], pixel, vec4(light, min(over_time, MAX_LIGHT)));
+        return;
+    }
 
     // Over space: mean and mean of squares of the brightness, over the pixels of a 3x3
     // block that are on a surface with almost the same normal.

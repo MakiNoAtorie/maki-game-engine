@@ -102,6 +102,8 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `light_history_samples` | 32 | When the lighting changes (a light, or an object that moves), each pixel keeps at most this many old samples for some frames, and new samples replace them. More: less noise while something moves, and the lighting follows later (a shadow leaves a trail). 0: a change of the lighting starts the picture again |
 | `max_path_rays` | 8 | The largest number of rays in one light path, 2 to 32. Only mirror and glass make long paths. A lower limit costs less GPU time and gives less noise; the last mirror or glass surface of a cut path shows as a diffuse surface, so deep reflections lose detail. Measured in `docs/perf-improve.md`, section 0 |
 | `denoise_passes` | 4 | Filter passes of the denoiser, 0 to 6. Each pass doubles the area that the filter takes its mean from. 0: no filter, only the mean over frames. The filter does less as a pixel gets more samples |
+| `denoise_reach` | 4096.0 | The filter gets narrower as the mean of a pixel gets more samples: a pass with `s` pixels between its points runs for a pixel while `s * s * samples` is at most this. 0: each pass runs at each pixel |
+| `indirect_clamp` | 8.0 | The largest light that one bounce ray adds to a pixel, in units of the light at the surface that the pixel shows. It removes the bright speckle of rare paths, and it makes light that comes by way of a mirror or through glass (caustics) darker. 0: no limit |
 | `exposure` | 1.0 | The picture is multiplied by this before the tone curve |
 | `fixed_hz` | 60.0 | Rate of the simulation steps (`FixedUpdate`), in steps per second |
 | `max_fixed_steps` | 8 | Limit of simulation steps in one frame |
@@ -128,12 +130,12 @@ A mesh made in code gets its material with `Mesh::with_material`. A mesh from a 
 
 Textures are not read.
 
-Known limit: light that reaches a diffuse surface by way of a mirror or through glass (a caustic) shows as bright speckle that goes away very slowly. The shadow ray finds only light that comes straight from the light.
+Known limit: light that reaches a diffuse surface by way of a mirror or through glass (a caustic) is too dark. The shadow ray finds only light that comes straight from the light, so such light comes from a bounce ray that finds the light by chance: a rare, very bright sample. `indirect_clamp` limits it. With `indirect_clamp = 0` the light is correct in the mean, and shows as bright speckle that goes away very slowly.
 
 One frame is noisy. The denoiser makes the picture from the frames (`crates/render/src/denoise.rs`):
 
 1. The mean over time. Each pixel keeps the mean of its samples, up to `max_samples`. The renderer knows where the surface point of each pixel was on the screen one frame before (the motion image), so the mean follows a moving object and a moving camera. Where the frame before showed another surface, the pixel starts again.
-2. The filter (`denoise_passes`). Each pixel gets the mean of the pixels around it that show the same surface (equal normal and distance) with a similar brightness. The less noise a pixel has left, the less the filter does. The filter works on the light without the surface color, so surface detail stays sharp.
+2. The filter (`denoise_passes`). Each pixel gets the mean of the pixels around it that show the same surface (equal normal, on the same plane) with a similar brightness. The less noise a pixel has left, the less the filter does. The filter works on the light without the surface color, so surface detail stays sharp.
 
 A change of the camera keeps the samples of each pixel. A change of the lighting (a light, an object that moves and so its shadow) cuts the mean of each pixel to `light_history_samples` for some frames: the new light replaces the old one. A change of the internal resolution, the window size, the room, or the mesh store starts the picture again, and so does R. While nothing changes and each pixel has `max_samples`, only the tonemap pass and the copy to the window run.
 
