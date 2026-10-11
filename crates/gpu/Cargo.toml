@@ -1,0 +1,6 @@
+[package]
+name = "maki-gpu"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

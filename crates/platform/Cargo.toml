@@ -1,0 +1,6 @@
+[package]
+name = "maki-platform"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

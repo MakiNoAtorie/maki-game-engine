@@ -1,0 +1,15 @@
+[package]
+name = "maki-game"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Sends tracing spans to the Tracy profiler.
+profile = ["dep:tracing-tracy"]
+
+[dependencies]
+maki-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-tracy = { workspace = true, optional = true }

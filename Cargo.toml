@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "game"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+# All versions live here; crates use `name.workspace = true`.
+[workspace.dependencies]
+# Dependency rule: core -> platform -> assets -> gpu -> render -> ui -> game.
+# A crate may depend only on crates to its left.
+maki-core = { path = "crates/core" }
+maki-platform = { path = "crates/platform" }
+maki-assets = { path = "crates/assets" }
+maki-gpu = { path = "crates/gpu" }
+maki-render = { path = "crates/render" }
+maki-ui = { path = "crates/ui" }
+
+anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-tracy = "0.12.0"

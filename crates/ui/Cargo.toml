@@ -1,0 +1,6 @@
+[package]
+name = "maki-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
