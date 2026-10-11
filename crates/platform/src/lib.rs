@@ -7,8 +7,10 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::common_conditions::resource_exists;
 use maki_core::{App, FixedLast, Input, Module};
 
-pub use input::{Action, ActionState, Binding, Bindings, FixedActionState, Key, RawInput};
-pub use window::{QuitRequested, Window, WindowResized, WindowSize, run};
+pub use input::{
+    Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, Key, RawInput,
+};
+pub use window::{QuitRequested, RawWindowEvent, Window, WindowResized, WindowSize, run};
 
 /// Adds input actions and window data to the app. `run` opens the window.
 pub struct PlatformModule;
@@ -17,7 +19,9 @@ impl Module for PlatformModule {
     fn build(&self, app: &mut App) {
         app.add_message::<RawInput>()
             .add_message::<WindowResized>()
+            .add_message::<RawWindowEvent>()
             .init_resource::<Bindings>()
+            .init_resource::<InputCapture>()
             .init_resource::<ActionState>()
             .init_resource::<FixedActionState>()
             .init_resource::<QuitRequested>()
@@ -86,6 +90,56 @@ mod tests {
         frame(&mut app, &[KeyDown(Key::Q)]);
         frame(&mut app, &[FocusLost]);
         assert_eq!(state(&app, LightDown), (false, false, true));
+    }
+
+    #[derive(bevy_ecs::message::Message, Clone, Copy)]
+    struct SetCapture(InputCapture);
+
+    #[test]
+    fn captured_input_starts_no_action() {
+        use Action::*;
+        use RawInput::*;
+        use bevy_ecs::message::MessageReader;
+        use bevy_ecs::system::ResMut;
+
+        let mut app = App::new(Config::default()).unwrap();
+        // The system stands in for the UI, which writes the capture.
+        app.add_module(PlatformModule)
+            .add_message::<SetCapture>()
+            .add_systems(
+                Input,
+                (|mut events: MessageReader<SetCapture>, mut capture: ResMut<InputCapture>| {
+                    if let Some(event) = events.read().last() {
+                        *capture = event.0;
+                    }
+                })
+                .before(input::update_actions),
+            );
+        let pressed = |app: &App, action| app.world().resource::<ActionState>().pressed(action);
+        let wheel = [KeyDown(Key::WheelUp), KeyUp(Key::WheelUp)];
+
+        frame(&mut app, &[KeyDown(Key::W)]);
+        assert!(pressed(&app, MoveLightForward));
+
+        // The keyboard is captured: the held key is released and a new key starts
+        // nothing. The wheel is not part of the keyboard.
+        app.write_message(SetCapture(InputCapture {
+            keyboard: true,
+            pointer: false,
+        }));
+        frame(&mut app, &[KeyDown(Key::Q), wheel[0], wheel[1]]);
+        assert!(!pressed(&app, MoveLightForward));
+        assert!(!pressed(&app, LightDown));
+        assert!(pressed(&app, LightIntensityUp));
+
+        // The mouse is captured: the wheel starts nothing, a key does.
+        app.write_message(SetCapture(InputCapture {
+            keyboard: false,
+            pointer: true,
+        }));
+        frame(&mut app, &[KeyDown(Key::E), wheel[0], wheel[1]]);
+        assert!(pressed(&app, LightUp));
+        assert!(!pressed(&app, LightIntensityUp));
     }
 
     #[derive(bevy_ecs::resource::Resource, Default)]

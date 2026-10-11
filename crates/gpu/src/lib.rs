@@ -6,7 +6,7 @@
 //! One frame:
 //! 1. [`Gpu::begin_frame`]: waits for a free frame slot and gets a swapchain image.
 //! 2. Draw calls ([`Gpu::image_barrier`], [`Gpu::build_tlas`], [`Gpu::dispatch_compute`],
-//!    [`Gpu::blit_to_swapchain`]) record commands.
+//!    [`Gpu::begin_rendering`], [`Gpu::draw`], [`Gpu::blit_to_swapchain`]) record commands.
 //! 3. [`Gpu::end_frame`]: submits the commands and presents the image.
 //!
 //! The CPU records frame N+1 while the GPU still draws frame N (`FRAMES_IN_FLIGHT`).
@@ -20,6 +20,7 @@
 mod accel;
 mod bindless;
 mod device;
+mod raster;
 mod resources;
 mod swapchain;
 
@@ -36,19 +37,21 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use slotmap::SlotMap;
 
 use accel::{Blas, Tlas};
-use bindless::{Bindless, PUSH_CONSTANT_BYTES};
+use bindless::{Bindless, PUSH_CONSTANT_BYTES, PUSH_STAGES};
 use device::DeviceContext;
 use resources::{Buffer, COLOR_RANGE, Garbage, Image, Sampler};
 use swapchain::Swapchain;
 
 pub use accel::{BlasDesc, TlasInstance};
+pub use raster::GraphicsPipelineDesc;
 pub use resources::{
-    Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format, ImageDesc,
-    ImageHandle, ImageTarget, SamplerDesc, SamplerHandle, TlasHandle,
+    Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format,
+    GraphicsPipelineHandle, ImageDesc, ImageHandle, ImageTarget, SamplerDesc, SamplerHandle,
+    TlasHandle,
 };
 
-/// How many frames the CPU can record ahead of the GPU.
-const FRAMES_IN_FLIGHT: usize = 2;
+/// How many frames the CPU can record ahead of the GPU. See [`Gpu::frame_slot`].
+pub const FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct GpuDesc {
@@ -74,6 +77,8 @@ struct FrameSlot {
 /// State of the frame between `begin_frame` and `end_frame`.
 struct ActiveFrame {
     image_index: u32,
+    /// Size of the image that is drawn into, between `begin_rendering` and `end_rendering`.
+    rendering: Option<vk::Extent2D>,
 }
 
 pub struct Gpu {
@@ -90,6 +95,7 @@ pub struct Gpu {
     images: SlotMap<ImageHandle, Image>,
     samplers: SlotMap<SamplerHandle, Sampler>,
     pipelines: SlotMap<ComputePipelineHandle, vk::Pipeline>,
+    graphics_pipelines: SlotMap<GraphicsPipelineHandle, vk::Pipeline>,
     /// The functions of the acceleration structure extension.
     accel: khr::acceleration_structure::Device,
     /// The GPU needs the address of a scratch buffer to be a multiple of this.
@@ -162,6 +168,7 @@ impl Gpu {
             images: SlotMap::with_key(),
             samplers: SlotMap::with_key(),
             pipelines: SlotMap::with_key(),
+            graphics_pipelines: SlotMap::with_key(),
             accel: khr::acceleration_structure::Device::new(&ctx.instance, device),
             scratch_alignment: u64::from(
                 accel_properties.min_acceleration_structure_scratch_offset_alignment,
@@ -268,6 +275,7 @@ impl Gpu {
                 width: desc.width,
                 height: desc.height,
             },
+            texel_bytes: desc.format.texel_bytes(),
             bindless_index: self.bindless.image_slots.alloc()?,
         };
         // Same error handling as `create_buffer`.
@@ -294,6 +302,9 @@ impl Gpu {
         }
         if desc.sampled {
             usage |= vk::ImageUsageFlags::SAMPLED;
+        }
+        if desc.color_attachment {
+            usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
         }
         let info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
@@ -360,10 +371,7 @@ impl Gpu {
     /// The shader uses the bindless set (set 0) and up to 128 bytes of push constants.
     pub fn create_compute_pipeline(&mut self, spirv: &[u8]) -> Result<ComputePipelineHandle> {
         let device = &self.ctx.device;
-        // `read_spv` checks the size and copies the bytes into aligned words.
-        let code = ash::util::read_spv(&mut Cursor::new(spirv)).context("invalid SPIR-V")?;
-        let module_info = vk::ShaderModuleCreateInfo::default().code(&code);
-        let module = unsafe { device.create_shader_module(&module_info, None) }?;
+        let module = shader_module(device, spirv)?;
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(module)
@@ -401,6 +409,14 @@ impl Gpu {
     /// The index of the sampler in the bindless sampler array.
     pub fn sampler_index(&self, sampler: SamplerHandle) -> Option<u32> {
         self.samplers.get(sampler).map(|s| s.bindless_index)
+    }
+
+    /// The index of the frame slot that the current frame uses, in `0..FRAMES_IN_FLIGHT`.
+    /// When a frame starts, the GPU has finished the frame before it that used the same
+    /// slot. A caller that writes a buffer in each frame keeps one buffer for each slot:
+    /// the GPU then never reads a buffer while the CPU writes it.
+    pub fn frame_slot(&self) -> usize {
+        self.slot
     }
 
     /// Deferred destruction: the handle is invalid at once, but the GPU object stays
@@ -547,7 +563,10 @@ impl Gpu {
             device.reset_command_pool(frame.pool, vk::CommandPoolResetFlags::empty())?;
             device.begin_command_buffer(frame.cmd, &begin_info)?;
         }
-        self.active = Some(ActiveFrame { image_index });
+        self.active = Some(ActiveFrame {
+            image_index,
+            rendering: None,
+        });
         Ok(true)
     }
 
@@ -609,11 +628,7 @@ impl Gpu {
         groups: [u32; 3],
     ) -> Result<()> {
         ensure!(self.active.is_some(), "dispatch_compute outside of a frame");
-        ensure!(
-            push_constants.len() <= PUSH_CONSTANT_BYTES as usize
-                && push_constants.len().is_multiple_of(4),
-            "push constants must be a multiple of 4 bytes and at most {PUSH_CONSTANT_BYTES} bytes"
-        );
+        check_push_constants(push_constants)?;
         let pipeline = *self
             .pipelines
             .get(pipeline)
@@ -627,13 +642,7 @@ impl Gpu {
             device.cmd_bind_pipeline(cmd, compute, pipeline);
             device.cmd_bind_descriptor_sets(cmd, compute, layout, 0, &[self.bindless.set], &[]);
             if !push_constants.is_empty() {
-                device.cmd_push_constants(
-                    cmd,
-                    layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    push_constants,
-                );
+                device.cmd_push_constants(cmd, layout, PUSH_STAGES, 0, push_constants);
             }
             device.cmd_dispatch(cmd, groups[0], groups[1], groups[2]);
         }
@@ -736,6 +745,23 @@ impl Gpu {
     }
 }
 
+/// Makes a shader module from SPIR-V bytes. The caller destroys it.
+fn shader_module(device: &ash::Device, spirv: &[u8]) -> Result<vk::ShaderModule> {
+    // `read_spv` checks the size and copies the bytes into aligned words.
+    let code = ash::util::read_spv(&mut Cursor::new(spirv)).context("invalid SPIR-V")?;
+    let info = vk::ShaderModuleCreateInfo::default().code(&code);
+    Ok(unsafe { device.create_shader_module(&info, None) }?)
+}
+
+fn check_push_constants(push_constants: &[u8]) -> Result<()> {
+    ensure!(
+        push_constants.len() <= PUSH_CONSTANT_BYTES as usize
+            && push_constants.len().is_multiple_of(4),
+        "push constants must be a multiple of 4 bytes and at most {PUSH_CONSTANT_BYTES} bytes"
+    );
+    Ok(())
+}
+
 impl Drop for Gpu {
     fn drop(&mut self) {
         unsafe {
@@ -755,6 +781,8 @@ impl Drop for Gpu {
             garbage.extend(self.images.drain().map(|(_, i)| Garbage::Image(i)));
             garbage.extend(self.samplers.drain().map(|(_, s)| Garbage::Sampler(s)));
             garbage.extend(self.pipelines.drain().map(|(_, p)| Garbage::Pipeline(p)));
+            let graphics = self.graphics_pipelines.drain();
+            garbage.extend(graphics.map(|(_, p)| Garbage::Pipeline(p)));
             for garbage in garbage {
                 self.destroy_now(garbage);
             }

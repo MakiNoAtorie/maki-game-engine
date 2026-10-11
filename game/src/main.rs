@@ -37,6 +37,8 @@ fn main() -> anyhow::Result<()> {
     app.add_module(maki_platform::PlatformModule)
         .add_module(maki_assets::AssetsModule)
         .add_module(maki_render::RenderModule)
+        .add_module(maki_ui::UiModule)
+        .add_module(maki_ui::StatsPanelModule)
         .add_module(scene::SceneModule)
         .add_module(light::LightModule)
         .add_module(light::LightControllerModule)

@@ -1,5 +1,6 @@
 //! The passes of the frame graph, in frame order:
 //! build_tlas -> trace -> accumulate -> tonemap -> present.
+//! Other crates add passes between them: the ui crate puts `ui_overlay` before `present`.
 //!
 //! build_tlas, trace, and accumulate make one sample of the picture. They do no GPU
 //! work when the accumulation has all its samples ([`Accumulation::sampling`]).

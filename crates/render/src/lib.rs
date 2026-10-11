@@ -115,6 +115,10 @@ impl Module for RenderModule {
             // render world, so their order has no effect. The one shared write, the
             // accumulation reset, only sets a flag.
             .allow_ambiguous_resource::<RenderWorld>()
+            // Systems of different modules make their own GPU resources (buffers,
+            // pipelines), so their order has no effect. Without this, a module would
+            // have to name the private systems of another module to declare an order.
+            .allow_ambiguous_resource::<RenderGpu>()
             .add_systems(Startup, setup_renderer)
             .add_systems(Extract, extract_frame)
             .add_systems(Render, render_frame)

@@ -26,15 +26,22 @@ If the config file does not exist, the game writes one with default values.
 
 ## Controls
 
-| Key | Action |
-|---|---|
-| W A S D, arrow keys | Move the light along the floor. Forward is away from the camera |
-| Q, E | Move the light down, up |
-| Mouse wheel | Light intensity, 10 % for each step |
-| R | Reset the accumulation |
-| Esc | Quit |
+The help panel in the game lists all controls. It is open at start; F1 hides and shows it. The list is made from the binding table (`Bindings::default` in `crates/platform/src/input.rs`): to change a key, change the table.
 
-The light stays in the room.
+The light moves along the floor, forward is away from the camera. It stays in the room. One wheel step changes the intensity by 10 %.
+
+## Debug panels
+
+The panels are egui windows on top of the picture. Drag the title bar to move a panel, click the arrow to fold it.
+
+| Panel | Content |
+|---|---|
+| Help | Key and description of each binding |
+| Stats | Frame time (mean), FPS, sample count, internal resolution, position and intensity of each light |
+
+While the mouse pointer is on a panel, the mouse wheel starts no action. While a text field of a panel has the keyboard focus, keys start no action.
+
+To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the window and the game world. `crates/ui/src/stats.rs` is an example.
 
 ## Config
 
@@ -85,9 +92,9 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | Crate | Role |
 |---|---|
 | `crates/core` | Config, app and schedules, time, transform |
-| `crates/platform` | Window and input actions |
+| `crates/platform` | Window, input actions, input capture |
 | `crates/assets` | Asset stores and handles, mesh asset with its material, glTF loader, mesh generators |
-| `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures); the only crate that shows Vulkan types |
+| `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, accumulation, tonemap), camera, lights, meshes and their acceleration structures |
-| `crates/ui` | egui panels |
+| `crates/ui` | egui integration, panel registry, the overlay render pass, help and stats panels |
 | `game` | The binary |

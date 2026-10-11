@@ -94,6 +94,8 @@ struct GraphResource {
     desc: Option<TransientDesc>,
     /// The GPU image and its size. `None` for the backbuffer and before the first frame.
     image: Option<(ImageHandle, (u32, u32))>,
+    /// True: `image` was made for use as a color attachment.
+    attachment: bool,
     /// The last use of the image. `None`: the content is undefined.
     // Kept from one frame to the next: the first barrier of a frame starts at the last
     // use of the frame before, so it also waits for that frame.
@@ -132,6 +134,7 @@ impl Default for FrameGraph {
                 name: "backbuffer",
                 desc: None,
                 image: None,
+                attachment: false,
                 state: None,
             }],
             passes: Vec::new(),
@@ -152,6 +155,7 @@ impl FrameGraph {
             name: desc.name,
             desc: Some(desc),
             image: None,
+            attachment: false,
             state: None,
         });
         ResourceId(self.resources.len() - 1)
@@ -163,6 +167,11 @@ impl FrameGraph {
             .iter()
             .position(|resource| resource.name == name)
             .map(ResourceId)
+    }
+
+    /// The description of a transient image. `None` for [`BACKBUFFER`].
+    pub fn transient_desc(&self, id: ResourceId) -> Option<TransientDesc> {
+        self.resources[id.0].desc
     }
 
     /// Adds a pass at the end of the frame.
@@ -216,7 +225,7 @@ impl FrameGraph {
         // and size agree can share one image. A shared image must start each range with
         // `state: None`, because the other user changed its content.
         let output = gpu.swapchain_extent();
-        for resource in &mut self.resources {
+        for (index, resource) in self.resources.iter_mut().enumerate() {
             let Some(desc) = resource.desc else {
                 // The swapchain gives a different image each frame.
                 resource.state = None;
@@ -226,7 +235,15 @@ impl FrameGraph {
                 SizeMode::Internal => internal_resolution,
                 SizeMode::Output => output,
             };
-            if resource.image.is_some_and(|(_, current)| current == size) {
+            // An image gets the color attachment use only if a pass draws into it. A
+            // pass that was added after the image was made causes a new image.
+            let attachment = self.passes.iter().any(|node| {
+                node.accesses
+                    .contains(&(ResourceId(index), Access::ColorAttachment))
+            });
+            if resource.image.is_some_and(|(_, current)| current == size)
+                && resource.attachment == attachment
+            {
                 continue;
             }
             if let Some((old, _)) = resource.image {
@@ -243,10 +260,12 @@ impl FrameGraph {
                     // flags from the declared accesses if a format does not permit both.
                     storage: true,
                     sampled: true,
+                    color_attachment: attachment,
                 })
                 .unwrap_or_else(|error| panic!("transient image `{}`: {error:#}", desc.name));
             tracing::debug!(name = desc.name, ?size, "transient image created");
             resource.image = Some((image, size));
+            resource.attachment = attachment;
             resource.state = None;
         }
 

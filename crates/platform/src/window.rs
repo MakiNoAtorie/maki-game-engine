@@ -1,5 +1,6 @@
 //! The OS window and the winit event loop that drives the app.
-//! winit types stay in this file.
+//! winit types stay in this file, with one exception for the UI: `egui-winit` reads
+//! winit events, so [`RawWindowEvent`] and [`Window::winit`] show them to the ui crate.
 
 use std::sync::Arc;
 
@@ -25,6 +26,14 @@ use crate::input::{Key, RawInput};
 /// The gpu crate makes its surface from the two `raw-window-handle` traits.
 #[derive(Resource)]
 pub struct Window(Arc<winit::window::Window>);
+
+impl Window {
+    /// The winit window. Only for code that hands it to a winit-based library
+    /// (`egui-winit`). Other code uses `WindowSize` and the input actions.
+    pub fn winit(&self) -> &winit::window::Window {
+        &self.0
+    }
+}
 
 impl HasWindowHandle for Window {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
@@ -52,6 +61,11 @@ pub struct WindowResized {
     pub width: u32,
     pub height: u32,
 }
+
+/// Each window event as winit sent it. Only for a winit-based library (`egui-winit`):
+/// gameplay code reads the input actions.
+#[derive(Message, Debug, Clone)]
+pub struct RawWindowEvent(pub WindowEvent);
 
 /// Set `0` to true to end the app after the current frame.
 #[derive(Resource, Debug, Default)]
@@ -138,6 +152,10 @@ impl ApplicationHandler for Runner {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         // No app: window creation failed and the loop is on its way out.
         let Some(app) = &mut self.app else { return };
+        // RedrawRequested is the frame itself, not input.
+        if event != WindowEvent::RedrawRequested {
+            app.write_message(RawWindowEvent(event.clone()));
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {

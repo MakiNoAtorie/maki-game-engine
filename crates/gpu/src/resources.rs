@@ -10,6 +10,7 @@ slotmap::new_key_type! {
     pub struct ImageHandle;
     pub struct SamplerHandle;
     pub struct ComputePipelineHandle;
+    pub struct GraphicsPipelineHandle;
     pub struct BlasHandle;
     pub struct TlasHandle;
 }
@@ -41,6 +42,15 @@ pub enum Format {
 }
 
 impl Format {
+    /// Bytes of one pixel.
+    pub fn texel_bytes(self) -> u32 {
+        match self {
+            Format::Rgba8Unorm | Format::R32Float | Format::Rg16Float => 4,
+            Format::Rgba16Float => 8,
+            Format::Rgba32Float => 16,
+        }
+    }
+
     pub(crate) fn to_vk(self) -> vk::Format {
         match self {
             Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
@@ -63,6 +73,8 @@ pub struct ImageDesc<'a> {
     pub storage: bool,
     /// Shaders can sample it (`texture2D`, bindless binding 2).
     pub sampled: bool,
+    /// A graphics pipeline can draw into it ([`Gpu::begin_rendering`](crate::Gpu::begin_rendering)).
+    pub color_attachment: bool,
 }
 
 /// How a pass uses an image. Each use has one image layout, one pipeline stage, and
@@ -76,11 +88,13 @@ pub enum Access {
     StorageWrite,
     /// A compute shader reads and writes it.
     StorageReadWrite,
-    /// A compute shader reads it through a sampler.
+    /// A compute or fragment shader reads it through a sampler.
     Sampled,
+    /// A graphics pipeline draws into it, with blending.
+    ColorAttachment,
     /// Source of a blit.
     TransferSrc,
-    /// Destination of a blit.
+    /// Destination of a blit or of [`Gpu::write_image`](crate::Gpu::write_image).
     TransferDst,
     /// The window shows it. For the swapchain image only.
     Present,
@@ -91,7 +105,10 @@ impl Access {
     pub fn writes(self) -> bool {
         matches!(
             self,
-            Access::StorageWrite | Access::StorageReadWrite | Access::TransferDst
+            Access::StorageWrite
+                | Access::StorageReadWrite
+                | Access::ColorAttachment
+                | Access::TransferDst
         )
     }
 
@@ -110,11 +127,18 @@ impl Access {
             ),
             Access::Sampled => (
                 L::SHADER_READ_ONLY_OPTIMAL,
-                S::COMPUTE_SHADER,
+                S::COMPUTE_SHADER | S::FRAGMENT_SHADER,
                 A::SHADER_SAMPLED_READ,
             ),
-            Access::TransferSrc => (L::TRANSFER_SRC_OPTIMAL, S::BLIT, A::TRANSFER_READ),
-            Access::TransferDst => (L::TRANSFER_DST_OPTIMAL, S::BLIT, A::TRANSFER_WRITE),
+            // Blending reads the old color, so the use is a read and a write.
+            Access::ColorAttachment => (
+                L::COLOR_ATTACHMENT_OPTIMAL,
+                S::COLOR_ATTACHMENT_OUTPUT,
+                A::COLOR_ATTACHMENT_READ | A::COLOR_ATTACHMENT_WRITE,
+            ),
+            // ALL_TRANSFER: blits and copies.
+            Access::TransferSrc => (L::TRANSFER_SRC_OPTIMAL, S::ALL_TRANSFER, A::TRANSFER_READ),
+            Access::TransferDst => (L::TRANSFER_DST_OPTIMAL, S::ALL_TRANSFER, A::TRANSFER_WRITE),
             // Present is not a pipeline stage: the queue submit orders it with a semaphore.
             Access::Present => (L::PRESENT_SRC_KHR, S::NONE, A::NONE),
         }
@@ -151,6 +175,8 @@ pub(crate) struct Image {
     pub view: vk::ImageView,
     pub allocation: Allocation,
     pub extent: vk::Extent2D,
+    /// Bytes of one pixel, to check the size of uploaded data.
+    pub texel_bytes: u32,
     pub bindless_index: u32,
 }
 

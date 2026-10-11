@@ -48,6 +48,11 @@ pub enum Key {
 }
 
 impl Key {
+    /// True for an input of the mouse, false for a key of the keyboard.
+    pub fn is_pointer(self) -> bool {
+        matches!(self, Key::WheelUp | Key::WheelDown)
+    }
+
     /// Name to show to the user.
     pub fn label(self) -> &'static str {
         match self {
@@ -170,6 +175,26 @@ pub(crate) fn clear_fixed_changes(mut fixed: ResMut<FixedActionState>) {
     fixed.0.just_released.clear();
 }
 
+/// Tells that some other consumer has the keyboard or the mouse: the UI, when the pointer
+/// is on a panel or a text field has the focus. Input that is captured starts no action.
+/// The consumer writes it; `update_actions` reads it in the next `Input` schedule.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct InputCapture {
+    pub keyboard: bool,
+    /// The mouse: buttons and wheel.
+    pub pointer: bool,
+}
+
+impl InputCapture {
+    fn has(self, key: Key) -> bool {
+        if key.is_pointer() {
+            self.pointer
+        } else {
+            self.keyboard
+        }
+    }
+}
+
 /// Key changes from the OS. The window driver sends them between frames.
 #[derive(Message, Debug, Clone, Copy)]
 pub enum RawInput {
@@ -183,6 +208,7 @@ pub(crate) fn update_actions(
     mut events: MessageReader<RawInput>,
     mut held: Local<HashSet<Key>>,
     bindings: Res<Bindings>,
+    capture: Res<InputCapture>,
     mut state: ResMut<ActionState>,
     mut fixed: ResMut<FixedActionState>,
 ) {
@@ -190,11 +216,16 @@ pub(crate) fn update_actions(
     // A key that went down and up between two frames thus is down for one frame.
     // The mouse wheel uses this: one wheel step is a key-down then a key-up.
     let mut down = HashSet::new();
+    // A key that was held when the capture started is released: its key-up can go
+    // to the other consumer.
+    held.retain(|key| !capture.has(*key));
     for event in events.read() {
         match *event {
             RawInput::KeyDown(key) => {
-                held.insert(key);
-                down.insert(key);
+                if !capture.has(key) {
+                    held.insert(key);
+                    down.insert(key);
+                }
             }
             RawInput::KeyUp(key) => {
                 held.remove(&key);

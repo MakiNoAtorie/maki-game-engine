@@ -1,11 +1,15 @@
 //! Compiles the GLSL shaders in `shaders/` to SPIR-V with `glslc` (Vulkan SDK).
 //!
 //! - Each file in `shaders/` that is not `.glsl` is one shader. The extension gives the
-//!   stage (`.comp` = compute). `name.comp` becomes `$OUT_DIR/name.comp.spv`.
+//!   stage (`.comp` = compute, `.vert` = vertex, `.frag` = fragment). `name.comp` becomes `$OUT_DIR/name.comp.spv`.
 //! - `.glsl` files are shared code for `#include`.
 //! - Rust code embeds the result with `shader_spirv!("name.comp")` (see `src/lib.rs`).
 //!
 //! To add a shader, add the file. No change here is necessary.
+//!
+//! The ui crate uses this file as its build script too (`build` in its `Cargo.toml`), so
+//! the two crates have the same rules. The working directory is that of the crate that
+//! is built.
 
 use std::env;
 use std::path::PathBuf;
@@ -14,6 +18,7 @@ use std::process::Command;
 fn main() {
     // Run again when a shader changes or when the SDK location changes.
     println!("cargo::rerun-if-changed=shaders");
+    println!("cargo::rerun-if-changed=../render/shaders/bindless.glsl");
     println!("cargo::rerun-if-env-changed=VULKAN_SDK");
 
     // Without VULKAN_SDK, `glslc` must be on PATH.
@@ -38,6 +43,9 @@ fn main() {
             .arg("--target-env=vulkan1.3")
             .arg("-I")
             .arg("shaders")
+            // `bindless.glsl` is here. The path is also correct from the ui crate.
+            .arg("-I")
+            .arg("../render/shaders")
             .arg(&path)
             .arg("-o")
             .arg(out_dir.join(format!("{name}.spv")))

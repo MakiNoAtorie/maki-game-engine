@@ -35,6 +35,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 # Windows on Linux need the default x11/wayland features, so defaults stay on.
 winit = "0.30.12"
+# No default fonts means no text, so that feature stays on.
+egui = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
+# No clipboard and no link opening: the debug panels do not need them.
+egui-winit = { version = "0.36.2", default-features = false }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing-tracy = "0.12.0"

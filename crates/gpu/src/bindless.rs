@@ -27,6 +27,13 @@ const MAX_SAMPLERS: u32 = 64;
 
 /// All pipelines can use this many bytes of push constants.
 pub(crate) const PUSH_CONSTANT_BYTES: u32 = 128;
+/// The stages that can read the push constants. Vulkan requires that each push
+/// constant command names all stages of the range, so all commands use this value.
+pub(crate) const PUSH_STAGES: vk::ShaderStageFlags = vk::ShaderStageFlags::from_raw(
+    vk::ShaderStageFlags::COMPUTE.as_raw()
+        | vk::ShaderStageFlags::VERTEX.as_raw()
+        | vk::ShaderStageFlags::FRAGMENT.as_raw(),
+);
 
 /// Gives out array indices. A freed index is used again.
 pub(crate) struct Slots {
@@ -134,7 +141,7 @@ impl Bindless {
         let set = unsafe { device.allocate_descriptor_sets(&set_info) }?[0];
 
         let push_ranges = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .stage_flags(PUSH_STAGES)
             .size(PUSH_CONSTANT_BYTES)];
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&set_layouts)

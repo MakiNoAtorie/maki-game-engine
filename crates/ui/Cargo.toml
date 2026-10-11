@@ -2,5 +2,15 @@
 name = "maki-ui"
 version.workspace = true
 edition.workspace = true
+# The shader rules of the render crate: the same script compiles `shaders/` of this crate.
+build = "../render/build.rs"
 
 [dependencies]
+maki-core.workspace = true
+maki-platform.workspace = true
+maki-gpu.workspace = true
+maki-render.workspace = true
+bevy_ecs.workspace = true
+egui.workspace = true
+egui-winit.workspace = true
+tracing.workspace = true

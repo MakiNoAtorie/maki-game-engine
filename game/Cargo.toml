@@ -12,6 +12,7 @@ maki-core.workspace = true
 maki-platform.workspace = true
 maki-assets.workspace = true
 maki-render.workspace = true
+maki-ui.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true
