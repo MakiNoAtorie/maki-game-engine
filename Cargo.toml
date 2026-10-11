@@ -19,7 +19,8 @@ maki-ui = { path = "crates/ui" }
 
 anyhow = "1.0.104"
 # No reflection and no thread pool: schedules run on the calling thread.
-bevy_ecs = { version = "0.20.0", default-features = false, features = ["std"] }
+# `debug` puts system names in schedule error messages.
+bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "debug"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 tracing = "0.1.44"

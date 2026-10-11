@@ -1,9 +1,13 @@
+use std::any::{TypeId, type_name};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
-use bevy_ecs::message::{Message, MessageRegistry, message_update_system};
+use bevy_ecs::message::{Message, MessageRegistry, Messages, message_update_system};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, Schedules};
+use bevy_ecs::schedule::{
+    IntoScheduleConfigs, LogLevel, Schedule, ScheduleBuildSettings, ScheduleLabel, Schedules,
+};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::{FromWorld, World};
 
@@ -39,7 +43,9 @@ pub trait Module {
 
 /// Owns the ECS world and runs the schedules in a fixed order.
 pub struct App {
-    pub world: World,
+    // Private: with `&mut World` a module could replace a schedule or run one out of order.
+    world: World,
+    modules: HashSet<TypeId>,
     max_fixed_steps: u32,
     last_frame: Option<Instant>,
     /// True when a fixed step ran after the last message buffer swap.
@@ -61,13 +67,13 @@ impl App {
 
         let mut world = World::new();
         // All schedules exist from the start, so running an empty one is not an error.
-        world.add_schedule(Schedule::new(Startup));
-        world.add_schedule(Schedule::new(Input));
-        world.add_schedule(Schedule::new(FixedUpdate));
-        world.add_schedule(Schedule::new(Update));
-        world.add_schedule(Schedule::new(Extract));
-        world.add_schedule(Schedule::new(Render));
-        world.add_schedule(Schedule::new(Present));
+        add_schedule(&mut world, Startup);
+        add_schedule(&mut world, Input);
+        add_schedule(&mut world, FixedUpdate);
+        add_schedule(&mut world, Update);
+        add_schedule(&mut world, Extract);
+        add_schedule(&mut world, Render);
+        add_schedule(&mut world, Present);
 
         world.insert_resource(Time {
             fixed_delta: Duration::from_secs_f64(1.0 / config.fixed_hz),
@@ -78,13 +84,26 @@ impl App {
 
         Ok(Self {
             world,
+            modules: HashSet::new(),
             max_fixed_steps,
             last_frame: None,
             fixed_step_since_message_update: false,
         })
     }
 
-    pub fn add_module(&mut self, module: impl Module) -> &mut Self {
+    /// Read access for drivers and tests. Changes go through the `App` methods.
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// Panics if a module of the same type was added before:
+    /// its systems would run two times per frame.
+    pub fn add_module<M: Module + 'static>(&mut self, module: M) -> &mut Self {
+        assert!(
+            self.modules.insert(TypeId::of::<M>()),
+            "module {} was added two times",
+            type_name::<M>()
+        );
         module.build(self);
         self
     }
@@ -114,7 +133,14 @@ impl App {
     /// Registers a buffered event type. bevy_ecs names these "messages":
     /// systems send with `MessageWriter<T>` and receive with `MessageReader<T>`.
     pub fn add_message<T: Message>(&mut self) -> &mut Self {
-        MessageRegistry::register_message::<T>(&mut self.world);
+        // Two modules can register the same type. A second registration would swap
+        // the buffer two times per frame and drop messages too early.
+        if !self.world.contains_resource::<Messages<T>>() {
+            MessageRegistry::register_message::<T>(&mut self.world);
+            // Many systems can send the same message type. Their order changes only
+            // the order of messages in the buffer, so it is not an ambiguity error.
+            self.world.allow_ambiguous_resource::<Messages<T>>();
+        }
         self
     }
 
@@ -187,6 +213,18 @@ impl App {
     }
 }
 
+fn add_schedule(world: &mut World, label: impl ScheduleLabel) {
+    let mut schedule = Schedule::new(label);
+    // Two systems that use the same data in a conflicting way, without a declared order,
+    // make the schedule fail on its first run. The error names the two systems.
+    // Fix with `.before()` / `.after()`, or `.ambiguous_with()` if the order has no effect.
+    schedule.set_build_settings(ScheduleBuildSettings {
+        ambiguity_detection: LogLevel::Error,
+        ..Default::default()
+    });
+    world.add_schedule(schedule);
+}
+
 #[cfg(test)]
 mod tests {
     use bevy_ecs::system::{Res, ResMut};
@@ -208,8 +246,8 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        app.world.init_resource::<Order>();
-        app.add_systems(Startup, push("startup"))
+        app.init_resource::<Order>()
+            .add_systems(Startup, push("startup"))
             .add_systems(Input, push("input"))
             .add_systems(FixedUpdate, push("fixed"))
             .add_systems(Update, push("update"))
@@ -288,6 +326,65 @@ mod tests {
             app.advance(Duration::from_millis(20));
         }
         assert_eq!(app.world.resource::<Received>().0, 1);
+    }
+
+    #[test]
+    fn a_message_type_registered_by_two_modules_keeps_its_lifetime() {
+        use bevy_ecs::message::{MessageReader, MessageWriter};
+
+        let mut app = App::new(Config {
+            fixed_hz: 50.0,
+            ..Default::default()
+        })
+        .unwrap();
+        app.add_message::<Ping>()
+            .add_message::<Ping>()
+            .init_resource::<Received>()
+            .add_systems(Update, |mut pings: MessageWriter<Ping>, time: Res<Time>| {
+                if time.frame == 1 {
+                    pings.write(Ping);
+                }
+            })
+            .add_systems(
+                FixedUpdate,
+                |mut pings: MessageReader<Ping>, mut received: ResMut<Received>| {
+                    received.0 += pings.read().count() as u32;
+                },
+            );
+
+        // Frame 1 sends after its fixed step. Frame 2 swaps the buffers once, then reads.
+        app.advance(Duration::from_millis(20));
+        app.advance(Duration::from_millis(20));
+        assert_eq!(app.world.resource::<Received>().0, 1);
+    }
+
+    struct Empty;
+    impl Module for Empty {
+        fn build(&self, _app: &mut App) {}
+    }
+
+    #[test]
+    #[should_panic(expected = "added two times")]
+    fn duplicate_module_is_rejected() {
+        let mut app = App::new(Config::default()).unwrap();
+        app.add_module(Empty).add_module(Empty);
+    }
+
+    #[test]
+    fn conflicting_systems_need_a_declared_order() {
+        // `IntoScheduleConfigs` is in scope from `super`, for `.chain()`.
+        let frame = |systems_are_ordered: bool| {
+            let mut app = App::new(Config::default()).unwrap();
+            app.init_resource::<Order>();
+            if systems_are_ordered {
+                app.add_systems(Update, (push("a"), push("b")).chain());
+            } else {
+                app.add_systems(Update, (push("a"), push("b")));
+            }
+            app.advance(Duration::ZERO);
+        };
+        frame(true);
+        assert!(std::panic::catch_unwind(|| frame(false)).is_err());
     }
 
     #[test]
