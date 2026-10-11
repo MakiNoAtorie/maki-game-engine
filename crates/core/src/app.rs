@@ -68,6 +68,10 @@ impl App {
             config.max_fixed_steps > 0,
             "max_fixed_steps must be 1 or more"
         );
+        ensure!(
+            config.render_width > 0 && config.render_height > 0,
+            "render_width and render_height must be 1 or more"
+        );
 
         let mut world = World::new();
         // All schedules exist from the start, so running an empty one is not an error.
@@ -139,6 +143,14 @@ impl App {
     /// Adds a resource with its default value. Keeps the value if the resource already exists.
     pub fn init_resource<R: Resource + FromWorld>(&mut self) -> &mut Self {
         self.world.init_resource::<R>();
+        self
+    }
+
+    /// Tells the ambiguity check that systems can use this resource in any order.
+    /// Only for a resource where the order has no effect on the result, such as a
+    /// container in which each system writes its own part.
+    pub fn allow_ambiguous_resource<R: Resource>(&mut self) -> &mut Self {
+        self.world.allow_ambiguous_resource::<R>();
         self
     }
 

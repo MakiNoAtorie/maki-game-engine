@@ -172,15 +172,23 @@ impl Bindless {
         storage: bool,
         sampled: bool,
     ) {
-        // Images stay in the GENERAL layout (see `Gpu::create_image`).
-        let info = [vk::DescriptorImageInfo::default()
-            .image_view(view)
-            .image_layout(vk::ImageLayout::GENERAL)];
+        // A descriptor names the layout that the image has when a shader uses it.
+        // The layouts agree with `Access::to_vk`.
+        use vk::DescriptorType as T;
+        use vk::ImageLayout as L;
         let targets = [
-            (storage, STORAGE_IMAGES, vk::DescriptorType::STORAGE_IMAGE),
-            (sampled, SAMPLED_IMAGES, vk::DescriptorType::SAMPLED_IMAGE),
+            (storage, STORAGE_IMAGES, T::STORAGE_IMAGE, L::GENERAL),
+            (
+                sampled,
+                SAMPLED_IMAGES,
+                T::SAMPLED_IMAGE,
+                L::SHADER_READ_ONLY_OPTIMAL,
+            ),
         ];
-        for (_, binding, ty) in targets.into_iter().filter(|target| target.0) {
+        for (_, binding, ty, layout) in targets.into_iter().filter(|target| target.0) {
+            let info = [vk::DescriptorImageInfo::default()
+                .image_view(view)
+                .image_layout(layout)];
             let write = self.write(binding, index, ty).image_info(&info);
             unsafe { device.update_descriptor_sets(&[write], &[]) };
         }

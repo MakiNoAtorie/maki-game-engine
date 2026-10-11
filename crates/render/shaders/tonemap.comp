@@ -1,0 +1,41 @@
+#version 460
+// Pass "tonemap": reads the HDR image through a sampler and writes display color into
+// the output image. The output has the window size, so the sampler does the scaling.
+
+#include "bindless.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = BINDLESS_SET, binding = BINDLESS_SAMPLED_IMAGES) uniform texture2D textures[];
+layout(set = BINDLESS_SET, binding = BINDLESS_SAMPLERS) uniform sampler samplers[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
+    uniform writeonly image2D images[];
+
+// Must agree with `Tonemap::execute` in src/passes.rs.
+layout(push_constant) uniform Push {
+    uint hdr;         // index in `textures`
+    uint hdr_sampler; // index in `samplers`
+    uint dst;         // index in `images`
+} push;
+
+// Linear color to the sRGB transfer curve. The output image and the swapchain are
+// UNORM formats, so the encoding is done here and not by the GPU.
+vec3 srgb_encode(vec3 linear) {
+    vec3 low = linear * 12.92;
+    vec3 high = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+    return mix(low, high, step(vec3(0.0031308), linear));
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images[push.dst]);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    // A compute shader has no automatic mip level, so the level is explicit.
+    vec3 hdr = textureLod(sampler2D(textures[push.hdr], samplers[push.hdr_sampler]), uv, 0.0).rgb;
+    // Reinhard: maps 0..infinity to 0..1 and keeps dark values almost unchanged.
+    vec3 mapped = hdr / (1.0 + hdr);
+    imageStore(images[push.dst], pixel, vec4(srgb_encode(mapped), 1.0));
+}

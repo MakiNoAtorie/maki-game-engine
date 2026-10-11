@@ -72,10 +72,18 @@ impl DeviceContext {
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"maki")
             .api_version(vk::API_VERSION_1_3);
-        let instance_info = vk::InstanceCreateInfo::default()
+        // Synchronization validation is off by default in the layer. It finds missing
+        // and wrong barriers.
+        let sync_validation = [vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION];
+        let mut validation_features =
+            vk::ValidationFeaturesEXT::default().enabled_validation_features(&sync_validation);
+        let mut instance_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions);
+        if !layers.is_empty() {
+            instance_info = instance_info.push_next(&mut validation_features);
+        }
         let instance = unsafe { entry.create_instance(&instance_info, None) }?;
 
         let debug = if layers.is_empty() {

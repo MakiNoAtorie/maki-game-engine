@@ -59,13 +59,15 @@ impl Swapchain {
             ctx.surface_loader
                 .get_physical_device_surface_formats(physical_device, surface)
         }?;
-        // An sRGB format: the GPU encodes linear color values on write.
+        // A UNORM format: the GPU stores the values as they are. The renderer writes
+        // sRGB-encoded color (see the tonemap pass), so 8 bits are sufficient for dark
+        // colors. With an sRGB format, the blit would encode a second time.
         let format = formats
             .iter()
             .find(|f| {
                 matches!(
                     f.format,
-                    vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB
+                    vk::Format::B8G8R8A8_UNORM | vk::Format::R8G8B8A8_UNORM
                 ) && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
             })
             .unwrap_or(&formats[0]);

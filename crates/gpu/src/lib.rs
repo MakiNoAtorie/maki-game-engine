@@ -5,11 +5,16 @@
 //!
 //! One frame:
 //! 1. [`Gpu::begin_frame`]: waits for a free frame slot and gets a swapchain image.
-//! 2. Draw calls ([`Gpu::dispatch_compute`], [`Gpu::blit_to_swapchain`]) record commands.
+//! 2. Draw calls ([`Gpu::image_barrier`], [`Gpu::dispatch_compute`],
+//!    [`Gpu::blit_to_swapchain`]) record commands.
 //! 3. [`Gpu::end_frame`]: submits the commands and presents the image.
 //!
 //! The CPU records frame N+1 while the GPU still draws frame N (`FRAMES_IN_FLIGHT`).
 //! For this reason a destroyed resource is not freed at once: see [`Gpu::destroy_buffer`].
+//!
+//! Synchronization is the caller's task: this crate records no barrier by itself.
+//! The caller tells each change of use with [`Gpu::image_barrier`] (the frame graph of
+//! the render crate does this).
 
 mod bindless;
 mod device;
@@ -34,8 +39,8 @@ use resources::{Buffer, COLOR_RANGE, Garbage, Image, Sampler};
 use swapchain::Swapchain;
 
 pub use resources::{
-    BufferDesc, BufferHandle, ComputePipelineHandle, Format, ImageDesc, ImageHandle, SamplerDesc,
-    SamplerHandle,
+    Access, BufferDesc, BufferHandle, ComputePipelineHandle, Format, ImageDesc, ImageHandle,
+    ImageTarget, SamplerDesc, SamplerHandle,
 };
 
 /// How many frames the CPU can record ahead of the GPU.
@@ -65,7 +70,6 @@ struct FrameSlot {
 /// State of the frame between `begin_frame` and `end_frame`.
 struct ActiveFrame {
     image_index: u32,
-    swapchain_layout: vk::ImageLayout,
 }
 
 pub struct Gpu {
@@ -82,8 +86,6 @@ pub struct Gpu {
     images: SlotMap<ImageHandle, Image>,
     samplers: SlotMap<SamplerHandle, Sampler>,
     pipelines: SlotMap<ComputePipelineHandle, vk::Pipeline>,
-    /// Images that are not yet in the GENERAL layout.
-    new_images: Vec<ImageHandle>,
     frames: [FrameSlot; FRAMES_IN_FLIGHT],
     /// Index in `frames` of the current frame, or of the last one between frames.
     slot: usize,
@@ -140,7 +142,6 @@ impl Gpu {
             images: SlotMap::with_key(),
             samplers: SlotMap::with_key(),
             pipelines: SlotMap::with_key(),
-            new_images: Vec::new(),
             frames: frames
                 .try_into()
                 .ok()
@@ -219,6 +220,7 @@ impl Gpu {
     }
 
     /// The image is in the storage and/or sampled image array at one index.
+    /// The content is undefined: the first [`Gpu::image_barrier`] has `from: None`.
     pub fn create_image(&mut self, desc: &ImageDesc) -> Result<ImageHandle> {
         ensure!(
             desc.width > 0 && desc.height > 0,
@@ -247,13 +249,7 @@ impl Gpu {
             desc.storage,
             desc.sampled,
         );
-        let handle = self.images.insert(image);
-        // ponytail: all images stay in the GENERAL layout. A bindless shader can use any
-        // image, so the layout that each pass needs is not known here. GENERAL is valid for
-        // all uses; sampling can be a little slower on some GPUs. Track layouts per pass
-        // when a render graph exists.
-        self.new_images.push(handle);
-        Ok(handle)
+        Ok(self.images.insert(image))
     }
 
     fn init_image(&mut self, image: &mut Image, desc: &ImageDesc) -> Result<()> {
@@ -433,6 +429,11 @@ impl Gpu {
 
     // ---- Frame ----
 
+    /// Size of the swapchain images in pixels. Valid during a frame.
+    pub fn swapchain_extent(&self) -> (u32, u32) {
+        (self.swapchain.extent.width, self.swapchain.extent.height)
+    }
+
     /// Tells the new window size. The swapchain is built again before the next frame.
     pub fn resize(&mut self, width: u32, height: u32) {
         if self.window_size != (width, height) {
@@ -504,16 +505,61 @@ impl Gpu {
             device.reset_command_pool(frame.pool, vk::CommandPoolResetFlags::empty())?;
             device.begin_command_buffer(frame.cmd, &begin_info)?;
         }
-        self.active = Some(ActiveFrame {
-            image_index,
-            // UNDEFINED: the old content of the swapchain image is not kept.
-            swapchain_layout: vk::ImageLayout::UNDEFINED,
-        });
-        self.init_new_images();
+        self.active = Some(ActiveFrame { image_index });
         Ok(true)
     }
 
+    /// Records a change of use of an image: later commands that use the image as `to`
+    /// wait for the earlier commands that used it as `from`, and the image layout changes
+    /// if the two uses need different layouts.
+    /// `from: None` means that the old content is not necessary (a new image, or the
+    /// swapchain image at the start of a frame).
+    pub fn image_barrier(
+        &mut self,
+        target: ImageTarget,
+        from: Option<Access>,
+        to: Access,
+    ) -> Result<()> {
+        let active = self
+            .active
+            .as_ref()
+            .context("image_barrier outside of a frame")?;
+        let image = match target {
+            ImageTarget::Image(handle) => {
+                self.images.get(handle).context("stale image handle")?.raw
+            }
+            ImageTarget::Swapchain => self.swapchain.images[active.image_index as usize],
+        };
+        // No earlier use: no stage to wait for, and UNDEFINED lets the driver drop the content.
+        let (old_layout, src_stage, src_access) = from.map_or(
+            (
+                vk::ImageLayout::UNDEFINED,
+                vk::PipelineStageFlags2::NONE,
+                vk::AccessFlags2::NONE,
+            ),
+            Access::to_vk,
+        );
+        let (new_layout, dst_stage, dst_access) = to.to_vk();
+        let barriers = [vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(src_stage)
+            .src_access_mask(src_access)
+            .dst_stage_mask(dst_stage)
+            .dst_access_mask(dst_access)
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .image(image)
+            .subresource_range(COLOR_RANGE)];
+        unsafe {
+            self.ctx.device.cmd_pipeline_barrier2(
+                self.frames[self.slot].cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&barriers),
+            );
+        }
+        Ok(())
+    }
+
     /// Runs a compute shader. `push_constants` is the shader's push constant block as bytes.
+    /// Each image that the shader uses must be in the matching [`Access`] state.
     pub fn dispatch_compute(
         &mut self,
         pipeline: ComputePipelineHandle,
@@ -530,20 +576,11 @@ impl Gpu {
             .pipelines
             .get(pipeline)
             .context("stale compute pipeline handle")?;
-        self.init_new_images();
 
         let device = &self.ctx.device;
         let cmd = self.frames[self.slot].cmd;
         let layout = self.bindless.pipeline_layout;
         let compute = vk::PipelineBindPoint::COMPUTE;
-        // ponytail: the shader can write any bindless resource, so this barrier makes all
-        // later commands wait for all writes of this dispatch. Replace with per-resource
-        // barriers when passes declare what they read and write.
-        let barriers = [vk::MemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)];
         unsafe {
             device.cmd_bind_pipeline(cmd, compute, pipeline);
             device.cmd_bind_descriptor_sets(cmd, compute, layout, 0, &[self.bindless.set], &[]);
@@ -557,29 +594,21 @@ impl Gpu {
                 );
             }
             device.cmd_dispatch(cmd, groups[0], groups[1], groups[2]);
-            device.cmd_pipeline_barrier2(
-                cmd,
-                &vk::DependencyInfo::default().memory_barriers(&barriers),
-            );
         }
         Ok(())
     }
 
     /// Copies the image to the full window, scaled with a linear filter.
+    /// The image must be in [`Access::TransferSrc`], the swapchain in [`Access::TransferDst`].
     pub fn blit_to_swapchain(&mut self, image: ImageHandle) -> Result<()> {
-        self.init_new_images();
         let active = self
             .active
-            .as_mut()
+            .as_ref()
             .context("blit_to_swapchain outside of a frame")?;
         let source = self.images.get(image).context("stale image handle")?;
         let device = &self.ctx.device;
         let cmd = self.frames[self.slot].cmd;
         let target = self.swapchain.images[active.image_index as usize];
-
-        let target_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-        transition(device, cmd, target, active.swapchain_layout, target_layout);
-        active.swapchain_layout = target_layout;
 
         let layers = vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -607,9 +636,9 @@ impl Gpu {
             device.cmd_blit_image(
                 cmd,
                 source.raw,
-                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 target,
-                target_layout,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[region],
                 vk::Filter::LINEAR,
             );
@@ -618,6 +647,7 @@ impl Gpu {
     }
 
     /// Submits the commands of the frame and shows the swapchain image.
+    /// The swapchain image must be in [`Access::Present`].
     pub fn end_frame(&mut self) -> Result<()> {
         let active = self
             .active
@@ -627,17 +657,10 @@ impl Gpu {
         let frame = &self.frames[self.slot];
         let image = active.image_index as usize;
 
-        transition(
-            device,
-            frame.cmd,
-            self.swapchain.images[image],
-            active.swapchain_layout,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-        );
         unsafe { device.end_command_buffer(frame.cmd) }?;
 
-        // The commands start when the swapchain image is available. ALL_COMMANDS agrees
-        // with the stage of the first barrier on that image (see `transition`).
+        // ALL_COMMANDS: no command of the frame starts before the swapchain image is
+        // available, so the first barrier on that image needs no source stage.
         let wait = [vk::SemaphoreSubmitInfo::default()
             .semaphore(frame.image_available)
             .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
@@ -668,54 +691,6 @@ impl Gpu {
             Err(error) => return Err(error.into()),
         }
         Ok(())
-    }
-
-    /// Moves new images from the UNDEFINED layout to GENERAL. Needs an active frame.
-    fn init_new_images(&mut self) {
-        if self.active.is_none() {
-            return;
-        }
-        for handle in self.new_images.drain(..) {
-            // `None`: the image was destroyed before its first frame.
-            if let Some(image) = self.images.get(handle) {
-                transition(
-                    &self.ctx.device,
-                    self.frames[self.slot].cmd,
-                    image.raw,
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageLayout::GENERAL,
-                );
-            }
-        }
-    }
-}
-
-/// Records a layout change of a color image.
-fn transition(
-    device: &ash::Device,
-    cmd: vk::CommandBuffer,
-    image: vk::Image,
-    old_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
-) {
-    // ponytail: the masks name all stages and all access types, so the barrier waits for
-    // all earlier commands and blocks all later ones. Correct for each layout pair, not
-    // the fastest. Use exact masks per layout pair if a profile shows barrier stalls.
-    let everything = vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE;
-    let barriers = [vk::ImageMemoryBarrier2::default()
-        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_access_mask(everything)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .dst_access_mask(everything)
-        .old_layout(old_layout)
-        .new_layout(new_layout)
-        .image(image)
-        .subresource_range(COLOR_RANGE)];
-    unsafe {
-        device.cmd_pipeline_barrier2(
-            cmd,
-            &vk::DependencyInfo::default().image_memory_barriers(&barriers),
-        );
     }
 }
 

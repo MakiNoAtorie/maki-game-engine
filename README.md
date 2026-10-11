@@ -19,6 +19,8 @@ If the config file does not exist, the game writes one with default values.
 
 - Log level: set `MAKI_LOG` (default `info`). Example: `MAKI_LOG=debug`.
 - Tracy profiler: `cargo run -p maki-game --features profile`.
+- Render self-test: set `MAKI_RENDER_SELFTEST`. The internal resolution changes every 7 frames; validation must stay clean.
+- Frame graph barriers: with `MAKI_LOG=debug`, the log shows the barrier list each time it changes.
 
 ## Config
 
@@ -40,6 +42,6 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/platform` | Window and input actions |
 | `crates/assets` | Asset loading (glTF) |
 | `crates/gpu` | Vulkan backend; the only crate that shows Vulkan types |
-| `crates/render` | Path-traced renderer |
+| `crates/render` | Render world, frame graph, render passes |
 | `crates/ui` | egui panels |
 | `game` | The binary |

@@ -46,10 +46,74 @@ pub struct ImageDesc<'a> {
     pub width: u32,
     pub height: u32,
     pub format: Format,
-    /// Shaders can write it (`image2D`, bindless binding 1).
+    /// Shaders can read and write it (`image2D`, bindless binding 1).
     pub storage: bool,
     /// Shaders can sample it (`texture2D`, bindless binding 2).
     pub sampled: bool,
+}
+
+/// How a pass uses an image. Each use has one image layout, one pipeline stage, and
+/// one access type in Vulkan: [`Gpu::image_barrier`](crate::Gpu::image_barrier) moves
+/// an image from one use to the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// A compute shader reads it with `imageLoad`.
+    StorageRead,
+    /// A compute shader writes it with `imageStore`.
+    StorageWrite,
+    /// A compute shader reads and writes it.
+    StorageReadWrite,
+    /// A compute shader reads it through a sampler.
+    Sampled,
+    /// Source of a blit.
+    TransferSrc,
+    /// Destination of a blit.
+    TransferDst,
+    /// The window shows it. For the swapchain image only.
+    Present,
+}
+
+impl Access {
+    /// True if the use changes the content of the image.
+    pub fn writes(self) -> bool {
+        matches!(
+            self,
+            Access::StorageWrite | Access::StorageReadWrite | Access::TransferDst
+        )
+    }
+
+    pub(crate) fn to_vk(self) -> (vk::ImageLayout, vk::PipelineStageFlags2, vk::AccessFlags2) {
+        use vk::AccessFlags2 as A;
+        use vk::ImageLayout as L;
+        use vk::PipelineStageFlags2 as S;
+        match self {
+            // GENERAL is the only layout that permits storage image access.
+            Access::StorageRead => (L::GENERAL, S::COMPUTE_SHADER, A::SHADER_STORAGE_READ),
+            Access::StorageWrite => (L::GENERAL, S::COMPUTE_SHADER, A::SHADER_STORAGE_WRITE),
+            Access::StorageReadWrite => (
+                L::GENERAL,
+                S::COMPUTE_SHADER,
+                A::SHADER_STORAGE_READ | A::SHADER_STORAGE_WRITE,
+            ),
+            Access::Sampled => (
+                L::SHADER_READ_ONLY_OPTIMAL,
+                S::COMPUTE_SHADER,
+                A::SHADER_SAMPLED_READ,
+            ),
+            Access::TransferSrc => (L::TRANSFER_SRC_OPTIMAL, S::BLIT, A::TRANSFER_READ),
+            Access::TransferDst => (L::TRANSFER_DST_OPTIMAL, S::BLIT, A::TRANSFER_WRITE),
+            // Present is not a pipeline stage: the queue submit orders it with a semaphore.
+            Access::Present => (L::PRESENT_SRC_KHR, S::NONE, A::NONE),
+        }
+    }
+}
+
+/// The image of an [`Access`] change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageTarget {
+    Image(ImageHandle),
+    /// The swapchain image of the current frame.
+    Swapchain,
 }
 
 #[derive(Debug, Clone, Copy)]
