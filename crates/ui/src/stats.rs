@@ -35,6 +35,7 @@ impl Module for StatsPanelModule {
                 let samples = render_world.0.resource::<Accumulation>().samples();
                 let (width, height) = frame.internal_resolution;
                 rows.push(("Samples", format!("{samples} / {}", frame.max_samples)));
+                rows.push(("Samples per frame", frame.samples_per_frame.to_string()));
                 rows.push(("Internal resolution", format!("{width} x {height}")));
             }
             for light in world.query::<&Light>().iter(world) {

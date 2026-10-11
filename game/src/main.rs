@@ -16,7 +16,8 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// Log filter variable, same syntax as `RUST_LOG` (for example `debug` or `maki_core=trace`).
 const LOG_ENV: &str = "MAKI_LOG";
 
-const USAGE: &str = "usage: maki-game [CONFIG] [--bench-frames N]";
+const USAGE: &str =
+    "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE] [--bench-static]]";
 
 fn init_logging() {
     let filter = EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -34,12 +35,17 @@ struct Args {
     config_path: PathBuf,
     /// `Some`: benchmark mode, for this many frames. See the `bench` module.
     bench_frames: Option<u64>,
+    /// With `bench_frames`: the file for the picture of the last frame.
+    bench_dump: Option<PathBuf>,
+    /// With `bench_frames`: the light does not move.
+    bench_static: bool,
 }
 
 /// `args` is the command line without the program name.
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> {
     let mut args = args.into_iter();
-    let (mut config_path, mut bench_frames) = (None, None);
+    let (mut config_path, mut bench_frames, mut bench_dump) = (None, None, None);
+    let mut bench_static = false;
     while let Some(arg) = args.next() {
         if arg == "--bench-frames" {
             // The limit keeps a typing error from a table of rows that fills the memory.
@@ -51,15 +57,27 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
                     format!("--bench-frames needs a number from 1 to 1000000. {USAGE}")
                 })?;
             bench_frames = Some(frames);
+        } else if arg == "--bench-static" {
+            bench_static = true;
+        } else if arg == "--bench-dump" {
+            let path = args
+                .next()
+                .with_context(|| format!("--bench-dump needs a file. {USAGE}"))?;
+            bench_dump = Some(PathBuf::from(path));
         } else if arg.to_string_lossy().starts_with("--") {
             bail!("unknown option {arg:?}. {USAGE}");
         } else if config_path.replace(PathBuf::from(arg)).is_some() {
             bail!("more than one config path. {USAGE}");
         }
     }
+    if (bench_dump.is_some() || bench_static) && bench_frames.is_none() {
+        bail!("--bench-dump and --bench-static need --bench-frames. {USAGE}");
+    }
     Ok(Args {
         config_path: config_path.unwrap_or_else(|| PathBuf::from(Config::DEFAULT_PATH)),
         bench_frames,
+        bench_dump,
+        bench_static,
     })
 }
 
@@ -86,7 +104,11 @@ fn main() -> anyhow::Result<()> {
         .add_module(tick_logger::TickLoggerModule);
     // The benchmark moves the light by itself, so the keyboard does not.
     match args.bench_frames {
-        Some(frames) => app.add_module(bench::BenchModule { frames }),
+        Some(frames) => app.add_module(bench::BenchModule {
+            frames,
+            dump: args.bench_dump,
+            static_light: args.bench_static,
+        }),
         None => app.add_module(light::LightControllerModule),
     };
 
@@ -108,7 +130,9 @@ mod tests {
             parse(&[]).unwrap(),
             Args {
                 config_path: default_path.clone(),
-                bench_frames: None
+                bench_frames: None,
+                bench_dump: None,
+                bench_static: false,
             }
         );
         // In any order.
@@ -120,15 +144,26 @@ mod tests {
                 parse(&args).unwrap(),
                 Args {
                     config_path: PathBuf::from("my.toml"),
-                    bench_frames: Some(300)
+                    bench_frames: Some(300),
+                    bench_dump: None,
+                    bench_static: false,
                 }
             );
         }
+        assert_eq!(
+            parse(&["--bench-frames", "3", "--bench-dump", "a.bin"])
+                .unwrap()
+                .bench_dump,
+            Some(PathBuf::from("a.bin"))
+        );
         for bad in [
             &["--bench-frames"][..],
             &["--bench-frames", "0"],
             &["--bench-frames", "many"],
             &["--bench"],
+            &["--bench-dump", "a.bin"],
+            &["--bench-static"],
+            &["--bench-frames", "3", "--bench-dump"],
             &["a.toml", "b.toml"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");

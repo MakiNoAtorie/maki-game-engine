@@ -16,13 +16,15 @@
 //! resource into the render world, and a pass in the frame graph (from a `Startup`
 //! system that runs `.after(setup_renderer)`). If the data of the module changes what
 //! the picture shows, its `Extract` system also calls
-//! [`RenderWorld::reset_accumulation`] when that data changes.
+//! [`RenderWorld::reset_accumulation`] when that data changes (or
+//! [`RenderWorld::soften_accumulation`] if only the lighting changes).
 //!
 //! Shaders: GLSL files in `shaders/` are compiled to SPIR-V by `build.rs` at build time
 //! and embedded with `shader_spirv!`. See `build.rs` for the rules.
 
 mod accumulation;
 mod camera;
+mod denoise;
 mod graph;
 mod light;
 mod meshes;
@@ -39,11 +41,12 @@ use maki_platform::{Window, WindowSize};
 
 pub use accumulation::Accumulation;
 pub use camera::{Camera, ExtractedCamera};
+pub use denoise::MAX_DENOISE_PASSES;
 pub use graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, PassTimings, ResourceId, SizeMode, TransientDesc,
 };
-pub use light::{ExtractedLights, Light};
-pub use maki_gpu::Access;
+pub use light::{ExtractedLights, Light, MAX_LIGHTS};
+pub use maki_gpu::{Access, Format};
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
 pub use passes::MAX_INSTANCES;
 
@@ -82,6 +85,13 @@ impl RenderWorld {
     pub fn reset_accumulation(&mut self) {
         self.0.resource_mut::<Accumulation>().request_reset();
     }
+
+    /// Keeps a short history of the accumulated image (`light_history_samples` of the
+    /// config). Call from an `Extract` system when only the lighting has changed: each
+    /// pixel still shows the same surface point, so its old samples are almost correct.
+    pub fn soften_accumulation(&mut self) {
+        self.0.resource_mut::<Accumulation>().request_soft_reset();
+    }
 }
 
 /// The per-frame values that the built-in passes need. A resource of the render world.
@@ -96,6 +106,14 @@ pub struct ExtractedFrame {
     pub frame: u64,
     /// The accumulation stops at this number of samples.
     pub max_samples: u32,
+    /// Samples that the trace pass makes for each pixel in one frame, 1 or more.
+    /// `extract_frame` writes the config value; if that is 0 (automatic), the
+    /// accumulation module writes its choice after it.
+    pub samples_per_frame: u32,
+    /// The largest number of rays in one light path.
+    pub max_path_rays: u32,
+    /// Samples that the mean keeps on a soft reset.
+    pub light_history_samples: u32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
 }
@@ -155,13 +173,13 @@ pub fn setup_renderer(
     let mut gpu =
         Gpu::new(&*window, &desc).unwrap_or_else(|error| panic!("cannot start the GPU: {error:#}"));
     let mut graph = FrameGraph::default();
-    passes::build_graph(&mut gpu, &mut graph);
+    passes::build_graph(&mut gpu, &mut graph, config.denoise_passes);
     commands.insert_resource(RenderGpu(gpu));
     commands.insert_resource(graph);
 }
 
 /// The only place where the built-in renderer reads the game world.
-fn extract_frame(
+pub(crate) fn extract_frame(
     config: Res<Config>,
     size: Res<WindowSize>,
     time: Res<Time>,
@@ -177,6 +195,10 @@ fn extract_frame(
         window_size: (size.width, size.height),
         frame: time.frame,
         max_samples: config.max_samples,
+        // Never 0: the passes divide by it.
+        samples_per_frame: config.samples_per_frame.max(1),
+        max_path_rays: config.max_path_rays,
+        light_history_samples: config.light_history_samples,
         exposure: config.exposure,
     });
 }
@@ -207,9 +229,11 @@ fn render_frame(
     // False: no frame now (the swapchain is being built again, or the window has no area).
     if gpu.begin_frame().expect("begin_frame") {
         // Only for a frame that is drawn: a reset request waits over a skipped frame.
-        world
-            .resource_mut::<Accumulation>()
-            .start_frame(frame.max_samples);
+        world.resource_mut::<Accumulation>().start_frame(
+            frame.max_samples,
+            frame.samples_per_frame,
+            frame.light_history_samples,
+        );
         graph.execute(gpu, world, frame.internal_resolution, frame.frame);
     }
 }

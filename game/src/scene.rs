@@ -9,7 +9,7 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use glam::{Quat, Vec3};
 use maki_assets::{Assets, Handle, LoadState, Material, Mesh, Model, load_gltf};
 use maki_core::{App, Config, Extract, Module, Startup, Transform, Update};
-use maki_render::{Camera, ExtractedInstance, ExtractedInstances, RenderWorld};
+use maki_render::{Camera, ExtractedInstance, ExtractedInstances, Light, RenderWorld};
 
 /// Draws a mesh at the `Transform` of the entity.
 #[derive(Component, Debug, Clone, Copy)]
@@ -100,12 +100,14 @@ fn spawn_scene(
     }
 }
 
+/// Each point light of a model becomes a sphere light with the radius of the config.
 /// Polls the pending models. This system does not know if the loader is synchronous
 /// (the model is ready in the first frame) or not (it is ready some frames later).
 fn spawn_loaded_models(
     mut commands: Commands,
     pending: Query<(Entity, &Transform, &PendingModel)>,
     models: Res<Assets<Model>>,
+    config: Res<Config>,
 ) {
     for (entity, transform, PendingModel(handle)) in &pending {
         match models.state(*handle) {
@@ -114,6 +116,14 @@ fn spawn_loaded_models(
                 let model = models.get(*handle).expect("the state is Ready");
                 for mesh in &model.meshes {
                     commands.spawn((*transform, MeshInstance(*mesh)));
+                }
+                for light in &model.lights {
+                    commands.spawn(Light {
+                        position: transform.matrix().transform_point3(light.position),
+                        radius: config.light_radius,
+                        color: light.color,
+                        intensity: light.intensity,
+                    });
                 }
             }
             // The loader logged the reason. The room stays empty.

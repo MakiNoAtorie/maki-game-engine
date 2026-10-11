@@ -1,5 +1,5 @@
 //! The passes of the frame graph, in frame order:
-//! build_tlas -> trace -> accumulate -> tonemap -> present.
+//! build_tlas -> trace -> accumulate -> the denoiser passes -> tonemap -> present.
 //! Other crates add passes between them: the ui crate puts `ui_overlay` before `present`.
 //!
 //! build_tlas, trace, and accumulate make one sample of the picture. They do no GPU
@@ -8,6 +8,8 @@
 //! To add a pass: write a struct with the [`Pass`] trait (here or in a new file), put its
 //! shader in `shaders/`, and add it to the graph (`build_graph` below, or
 //! `FrameGraph::add_pass_before` from another module).
+
+use std::collections::HashMap;
 
 use glam::Vec3;
 use maki_gpu::{
@@ -18,21 +20,24 @@ use maki_gpu::{
 use crate::graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc,
 };
+use crate::light::{LightBuffers, light_bytes};
 use crate::{
     Accumulation, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights, GpuMeshes,
-    Light, shader_spirv,
+    MAX_LIGHTS, denoise, shader_spirv,
 };
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
 pub const MAX_INSTANCES: u32 = 4096;
 
 /// Adds the built-in images and passes. The order of the `add_pass` calls is the frame order.
-pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
+/// `denoise_passes`: filter passes of the denoiser (see the `denoise` module). 0: no denoiser.
+pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph, denoise_passes: u32) {
     // The light that each pixel gets, from one random path: the sample of this frame.
     // Linear color with values far above 1.0 (the light itself), at the internal resolution.
+    // 16-bit floats: one frame needs no more, and the smaller image is faster to read.
     let radiance = graph.add_transient(TransientDesc {
         name: "radiance",
-        format: Format::Rgba32Float,
+        format: Format::Rgba16Float,
         size: SizeMode::Internal,
     });
     // The mean of the `radiance` images of all frames since the last reset.
@@ -48,39 +53,36 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         size: SizeMode::Output,
     });
 
-    // The next three have no reader yet. Later passes (denoiser, upscaler) find them
-    // by name with `FrameGraph::resource`.
-    // Distance from the camera to the surface along the ray, in meters.
-    let depth = graph.add_transient(TransientDesc {
-        name: "depth",
-        format: Format::R32Float,
-        size: SizeMode::Internal,
-    });
-    // World normal of the surface.
+    // The surface that each pixel shows, for the denoiser: see `shaders/trace.comp`.
+    // World normal in xyz, distance from the camera in w.
     let normal = graph.add_transient(TransientDesc {
         name: "normal",
         format: Format::Rgba16Float,
         size: SizeMode::Internal,
     });
-    // Screen motion of the surface since the last frame.
-    let motion = graph.add_transient(TransientDesc {
-        name: "motion",
-        format: Format::Rg16Float,
+    // The color of that surface.
+    let albedo = graph.add_transient(TransientDesc {
+        name: "albedo",
+        format: Format::Rgba8Unorm,
         size: SizeMode::Internal,
     });
+    // No `motion` image yet: the stage that computes screen motion adds it. An image
+    // of zeros costs a store for each pixel.
 
     graph.add_pass(BuildTlas {
         tlas: gpu.create_tlas(MAX_INSTANCES).expect("TLAS"),
         full_logged: false,
+        partial_logged: false,
+        built: None,
     });
     graph.add_pass(Trace {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("trace.comp"))
             .expect("trace pipeline"),
         radiance,
-        depth,
         normal,
-        motion,
+        albedo,
+        lights_logged: false,
     });
     graph.add_pass(Accumulate {
         pipeline: gpu
@@ -89,6 +91,12 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         radiance,
         accumulated,
     });
+    // The picture that goes to the display: the mean, or the mean without its noise.
+    let hdr = if denoise_passes > 0 {
+        denoise::add_passes(gpu, graph, accumulated, normal, albedo, denoise_passes)
+    } else {
+        accumulated
+    };
     graph.add_pass(Tonemap {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("tonemap.comp"))
@@ -99,14 +107,14 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
                 repeat: false,
             })
             .expect("tonemap sampler"),
-        accumulated,
+        hdr,
         output,
     });
     graph.add_pass(Present { output });
 }
 
 /// A push constant block of 32-bit fields, as bytes.
-fn push_constants(fields: &[u32]) -> Vec<u8> {
+pub(crate) fn push_constants(fields: &[u32]) -> Vec<u8> {
     fields
         .iter()
         .flat_map(|field| field.to_ne_bytes())
@@ -114,15 +122,19 @@ fn push_constants(fields: &[u32]) -> Vec<u8> {
 }
 
 /// Work group counts for a shader with 8x8 groups: rounded up, so the groups cover the image.
-fn groups((width, height): (u32, u32)) -> [u32; 3] {
+pub(crate) fn groups((width, height): (u32, u32)) -> [u32; 3] {
     [width.div_ceil(8), height.div_ceil(8), 1]
 }
 
-/// Builds the TLAS from the extracted instances, in each frame.
+/// Builds the TLAS from the extracted instances, in each frame where the list differs
+/// from the list of the last build.
 ///
-/// A full build each frame costs GPU time also when nothing moves. In return, an object
-/// that moves, appears, or goes away needs no other code path: it is only a different
-/// instance list. The BLAS of each mesh, the expensive part, is built one time.
+/// A full build, so an object that moves, appears, or goes away needs no other code
+/// path: it is only a different instance list. The BLAS of each mesh group, the
+/// expensive part, is built one time.
+///
+/// A BLAS holds all meshes of a model (see the `meshes` module), so the mesh instances
+/// of one model with one transform are one TLAS instance. A light is not in the TLAS, so a light that moves costs no build.
 /// No build when the accumulation is complete: a changed instance list resets it.
 // It uses no image, so the graph plans no barrier for it: `Gpu::build_tlas` orders
 // itself against the ray queries.
@@ -130,6 +142,10 @@ struct BuildTlas {
     tlas: TlasHandle,
     /// True after the "too many instances" error, to log it one time.
     full_logged: bool,
+    /// True after the "a part of a model" warning, to log it one time.
+    partial_logged: bool,
+    /// The instances that the TLAS holds. `None` before the first build.
+    built: Option<Vec<TlasInstance>>,
 }
 
 impl Pass for BuildTlas {
@@ -148,6 +164,9 @@ impl Pass for BuildTlas {
         let meshes = ctx.world.resource::<GpuMeshes>();
         let extracted = &ctx.world.resource::<ExtractedInstances>().0;
         let mut instances = Vec::with_capacity(extracted.len());
+        // For each TLAS instance of a group of more than one mesh: how many mesh
+        // instances asked for it.
+        let mut group_counts: HashMap<(maki_gpu::BlasHandle, [u32; 12]), u32> = HashMap::new();
         for instance in extracted {
             // A mesh that is not on the GPU (still loading, or the upload failed) is not drawn.
             let Some(mesh) = meshes.get(instance.mesh) else {
@@ -155,12 +174,33 @@ impl Pass for BuildTlas {
             };
             // The first three rows of the matrix, row by row.
             let rows = instance.transform.transpose().to_cols_array();
+            let transform: [f32; 12] = rows[..12].try_into().expect("12 of 16 values");
+            if mesh.group_len > 1 {
+                let count = group_counts
+                    .entry((mesh.blas, transform.map(f32::to_bits)))
+                    .or_default();
+                *count += 1;
+                // Another mesh of the group, with this transform, made the instance.
+                if *count > 1 {
+                    continue;
+                }
+            }
             instances.push(TlasInstance {
                 blas: mesh.blas,
-                transform: rows[..12].try_into().expect("12 of 16 values"),
+                transform,
                 // On a hit, the shader gets this number and finds the mesh data with it.
-                custom_index: mesh.index,
+                custom_index: mesh.group_first,
             });
+        }
+        // ponytail: the BLAS of a model draws all its meshes. If the game draws only a
+        // part of a model, or moves one of its meshes alone, the rest shows too. Give
+        // such a mesh its own BLAS (a flag of the model asset) when objects can move.
+        let partial = |((blas, _), count): (&(maki_gpu::BlasHandle, _), &u32)| {
+            meshes.get_group_len(*blas) > *count
+        };
+        if !self.partial_logged && group_counts.iter().any(partial) {
+            self.partial_logged = true;
+            tracing::warn!("an instance of a part of a model draws the full model");
         }
         if instances.len() > MAX_INSTANCES as usize && !self.full_logged {
             self.full_logged = true;
@@ -170,20 +210,26 @@ impl Pass for BuildTlas {
             );
         }
         instances.truncate(MAX_INSTANCES as usize);
+        // A new BLAS has a new handle, so a mesh change also makes the lists differ.
+        if self.built.as_ref() == Some(&instances) {
+            return;
+        }
         ctx.gpu
             .build_tlas(self.tlas, &instances)
             .expect("build_tlas");
+        self.built = Some(instances);
     }
 }
 
-/// The path tracer: follows one random light path per pixel from the camera and writes
-/// the light that it brings (`radiance`). See `shaders/trace.comp` for the steps.
+/// The path tracer: follows random light paths from the camera for each pixel and
+/// writes the mean of the light that they bring (`radiance`). See `shaders/trace.comp` for the steps.
 struct Trace {
     pipeline: ComputePipelineHandle,
     radiance: ResourceId,
-    depth: ResourceId,
     normal: ResourceId,
-    motion: ResourceId,
+    albedo: ResourceId,
+    /// True after the "too many lights" error, to log it one time.
+    lights_logged: bool,
 }
 
 impl Pass for Trace {
@@ -192,14 +238,15 @@ impl Pass for Trace {
     }
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        [self.radiance, self.depth, self.normal, self.motion]
+        [self.radiance, self.normal, self.albedo]
             .map(|image| (image, Access::StorageWrite))
             .to_vec()
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
         // The mean has all its samples: one more would cost GPU time and change nothing.
-        if !ctx.world.resource::<Accumulation>().sampling() {
+        let frame_samples = ctx.world.resource::<Accumulation>().frame_samples();
+        if frame_samples == 0 {
             return;
         }
         let camera = ctx.world.resource::<ExtractedCamera>().0;
@@ -214,34 +261,43 @@ impl Pass for Trace {
             .gpu
             .buffer_index(ctx.world.resource::<GpuMeshes>().table())
             .expect("the mesh table is alive");
-        // ponytail: the shader gets one light, in the push constants. For more lights,
-        // put them in a buffer (one copy for each frame in flight, because the CPU
-        // writes it each frame) and let the shader pick one at random for each shadow ray.
-        // No light: a radius of zero makes the light sphere impossible to hit.
-        let (light_position, light_radius, light_radiance) =
-            ctx.world.resource::<ExtractedLights>().0.first().map_or(
-                (Vec3::ZERO, 0.0, Vec3::ZERO),
-                |light| {
-                    (
-                        light.position,
-                        light.radius.max(Light::MIN_RADIUS),
-                        light.radiance(),
-                    )
-                },
+        // The lights go into the light buffer of this frame slot.
+        let lights = &ctx.world.resource::<ExtractedLights>().0;
+        if lights.len() > MAX_LIGHTS && !self.lights_logged {
+            self.lights_logged = true;
+            tracing::error!(
+                lights = lights.len(),
+                "more than MAX_LIGHTS ({MAX_LIGHTS}) lights: the rest gives no light"
             );
+        }
+        let light_buffer = ctx.world.resource::<LightBuffers>().0[ctx.gpu.frame_slot()];
+        let light_data = light_bytes(lights);
+        if !light_data.is_empty() {
+            ctx.gpu
+                .write_buffer(light_buffer, 0, &light_data)
+                .expect("light buffer write");
+        }
+        let light_index = ctx
+            .gpu
+            .buffer_index(light_buffer)
+            .expect("the light buffer is alive");
         // Field order as in the `Push` block of the shader: a vec3, then one 32-bit value.
         let vec3_bits = |v: Vec3, last: u32| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), last];
         let mut fields = [
             vec3_bits(camera.position, mesh_table),
             vec3_bits(right, ctx.bindless_index(self.radiance)),
-            vec3_bits(up, ctx.bindless_index(self.depth)),
+            vec3_bits(up, ctx.bindless_index(self.albedo)),
             vec3_bits(forward, ctx.bindless_index(self.normal)),
-            vec3_bits(light_position, light_radius.to_bits()),
-            vec3_bits(light_radiance, ctx.bindless_index(self.motion)),
         ]
         .concat();
-        // Only the low bits: the number must differ from frame to frame.
-        fields.push(frame.frame as u32);
+        fields.extend([
+            // Only the low bits: the number must differ from frame to frame.
+            frame.frame as u32,
+            frame_samples,
+            frame.max_path_rays,
+            light_index,
+            lights.len().min(MAX_LIGHTS) as u32,
+        ]);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,
@@ -252,7 +308,7 @@ impl Pass for Trace {
     }
 }
 
-/// Blends the sample of this frame into the mean of all samples since the last reset.
+/// Blends the samples of this frame into the mean of all samples since the last reset.
 struct Accumulate {
     pipeline: ComputePipelineHandle,
     radiance: ResourceId,
@@ -281,6 +337,8 @@ impl Pass for Accumulate {
             ctx.bindless_index(self.radiance),
             ctx.bindless_index(self.accumulated),
             accumulation.samples(),
+            accumulation.frame_samples(),
+            u32::from(accumulation.soft_frame()),
         ]);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.accumulated)))
@@ -288,13 +346,13 @@ impl Pass for Accumulate {
     }
 }
 
-/// The accumulated image to display color, scaled from the internal resolution to the
+/// The picture (the accumulated image, or the result of the denoiser) to display color, scaled from the internal resolution to the
 /// window size. Runs in each frame, also when the accumulation is complete: the window
 /// needs a picture in each frame, and this pass is cheap.
 struct Tonemap {
     pipeline: ComputePipelineHandle,
     sampler: SamplerHandle,
-    accumulated: ResourceId,
+    hdr: ResourceId,
     output: ResourceId,
 }
 
@@ -305,7 +363,7 @@ impl Pass for Tonemap {
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
         vec![
-            (self.accumulated, Access::Sampled),
+            (self.hdr, Access::Sampled),
             (self.output, Access::StorageWrite),
         ]
     }
@@ -316,7 +374,7 @@ impl Pass for Tonemap {
             .sampler_index(self.sampler)
             .expect("tonemap sampler is alive");
         let push = push_constants(&[
-            ctx.bindless_index(self.accumulated),
+            ctx.bindless_index(self.hdr),
             sampler,
             ctx.bindless_index(self.output),
             ctx.world.resource::<ExtractedFrame>().exposure.to_bits(),

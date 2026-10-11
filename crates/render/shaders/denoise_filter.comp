@@ -1,0 +1,110 @@
+#version 460
+// Pass "denoise_filter_N": one blur step of the denoiser. See src/denoise.rs for the
+// full method.
+//
+// Each pixel becomes a weighted mean of 25 pixels: a 5x5 pattern with `step` pixels
+// between its points. The passes run with step 1, 2, 4, 8: together they cover a wide
+// area with few reads ("a-trous", with holes). A neighbor gets a small weight if it is
+// probably another surface or another lighting, so edges stay sharp:
+// - its normal points another way;
+// - its distance from the camera differs;
+// - its brightness differs by more than the noise there (the variance) explains.
+//
+// rgb of the images is light without surface color, a is the variance of its brightness
+// (see denoise_prepare.comp). The last pass multiplies by the surface color again.
+
+#include "bindless.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform image2D images_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
+    uniform readonly image2D images_rgba8[];
+
+// Must agree with `DenoiseFilter::execute` in src/denoise.rs.
+layout(push_constant) uniform Push {
+    uint src;    // index in `images_rgba16f`
+    uint dst;    // index in `images_rgba16f`
+    uint normal; // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
+    uint albedo; // index in `images_rgba8`
+    int step;    // pixels between two points of the pattern
+    uint last;   // 1: multiply the result by the surface color
+} push;
+
+// Must agree with denoise_prepare.comp.
+const float MIN_ALBEDO = 0.01;
+const float MAX_LIGHT = 60000.0;
+
+// A neighbor counts if its brightness differs by less than about this many standard
+// deviations of the noise. The value of the SVGF paper (Schied et al., 2017).
+const float SIGMA_BRIGHTNESS = 4.0;
+// A neighbor counts if its distance from the camera differs by less than about this
+// part of the distance, for each pixel between the two. A floor that the camera sees
+// at a flat angle changes its distance by about a third of this from pixel to pixel.
+const float SIGMA_DISTANCE = 0.003;
+// The normal weight is the cosine of the angle between the normals to this power:
+// 0.5 at 8 degrees.
+const float NORMAL_POWER = 64.0;
+
+// The weights of a smooth bell curve (a cubic B-spline) at -2, -1, 0, 1, 2.
+const float KERNEL[5] = float[](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
+
+float brightness(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images_rgba16f[push.dst]);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    vec4 center = imageLoad(images_rgba16f[push.src], pixel);
+    vec4 surface = imageLoad(images_rgba16f[push.normal], pixel);
+    // No surface: the value is a full color, and it stays as it is.
+    if (surface.xyz == vec3(0.0)) {
+        imageStore(images_rgba16f[push.dst], pixel, center);
+        return;
+    }
+    float center_brightness = brightness(center.rgb);
+    // The standard deviation of the noise, and a small number against a division by zero.
+    // With no noise left (a picture of many samples), only equal neighbors count: the
+    // filter then changes nothing.
+    float brightness_scale = SIGMA_BRIGHTNESS * sqrt(center.a) + 1e-4;
+
+    float center_weight = KERNEL[2] * KERNEL[2];
+    vec3 light = center.rgb * center_weight;
+    float variance = center.a * center_weight * center_weight;
+    float weights = center_weight;
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            ivec2 tap = pixel + ivec2(x, y) * push.step;
+            if ((x == 0 && y == 0)
+                || any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, size))) {
+                continue;
+            }
+            vec4 tap_surface = imageLoad(images_rgba16f[push.normal], tap);
+            // Zero for a tap with no surface: its normal is zero.
+            float weight = KERNEL[x + 2] * KERNEL[y + 2]
+                * pow(max(0.0, dot(surface.xyz, tap_surface.xyz)), NORMAL_POWER);
+            float pixels = length(vec2(x, y)) * float(push.step);
+            vec4 tap_value = imageLoad(images_rgba16f[push.src], tap);
+            // The two tests as one exponential: a product of two is the sum of the exponents.
+            weight *= exp(-abs(surface.w - tap_surface.w) / (SIGMA_DISTANCE * surface.w * pixels)
+                - abs(center_brightness - brightness(tap_value.rgb)) / brightness_scale);
+
+            light += tap_value.rgb * weight;
+            // The variance of a weighted sum: each part counts with its weight squared.
+            variance += tap_value.a * weight * weight;
+            weights += weight;
+        }
+    }
+    light /= weights;
+    variance /= weights * weights;
+    if (push.last != 0) {
+        vec3 albedo = imageLoad(images_rgba8[push.albedo], pixel).rgb;
+        light = min(light * max(albedo, vec3(MIN_ALBEDO)), vec3(MAX_LIGHT));
+    }
+    imageStore(images_rgba16f[push.dst], pixel, vec4(light, variance));
+}

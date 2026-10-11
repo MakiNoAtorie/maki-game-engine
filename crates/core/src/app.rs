@@ -101,6 +101,24 @@ impl App {
         // With no sample the accumulated image would never get content.
         ensure!(config.max_samples > 0, "max_samples must be 1 or more");
         ensure!(
+            config.samples_per_frame <= 64,
+            "samples_per_frame must be from 0 (automatic) to 64"
+        );
+        ensure!(
+            config.trace_budget_ms.is_finite() && config.trace_budget_ms > 0.0,
+            "trace_budget_ms must be a positive number"
+        );
+        // Two rays: a camera ray and one bounce.
+        ensure!(
+            (2..=32).contains(&config.max_path_rays),
+            "max_path_rays must be from 2 to 32"
+        );
+        // `MAX_DENOISE_PASSES` of the render crate.
+        ensure!(
+            config.denoise_passes <= 6,
+            "denoise_passes must be from 0 to 6"
+        );
+        ensure!(
             config.exposure.is_finite() && config.exposure > 0.0,
             "exposure must be a positive number"
         );
@@ -508,6 +526,20 @@ mod tests {
         assert!(
             App::new(Config {
                 max_samples: 0,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            App::new(Config {
+                samples_per_frame: 65,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            App::new(Config {
+                max_path_rays: 1,
                 ..Default::default()
             })
             .is_err()

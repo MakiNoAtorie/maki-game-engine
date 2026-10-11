@@ -195,6 +195,14 @@ impl FrameGraph {
         self.resources[id.0].desc
     }
 
+    /// The GPU image of a transient, its size, and its use at the end of the last frame.
+    /// `None` for [`BACKBUFFER`] and before the first frame. For `Gpu::read_image`.
+    pub fn image(&self, id: ResourceId) -> Option<(ImageHandle, (u32, u32), Access)> {
+        let resource = &self.resources[id.0];
+        let (image, size) = resource.image?;
+        Some((image, size, resource.state?))
+    }
+
     /// The pass timings of the newest frame that the GPU has finished.
     /// `None` in the first frames, and on a GPU without timestamps.
     pub fn timings(&self) -> Option<&PassTimings> {

@@ -17,7 +17,7 @@ use maki_core::{App, Module};
 use slotmap::{DefaultKey, SlotMap};
 
 pub use mesh::{Material, Mesh};
-pub use model::{Model, load_gltf};
+pub use model::{Model, ModelLight, load_gltf};
 
 /// A generational reference to an asset of type `T`. A handle of a removed asset never
 /// matches a new asset.

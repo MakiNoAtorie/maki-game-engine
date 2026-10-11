@@ -1,43 +1,47 @@
 #version 460
-// Pass "trace": the path tracer. For each pixel it follows one random light path from
-// the camera and writes the light that the path brings. One frame is one noisy sample;
-// the pass "accumulate" takes the mean over frames.
+// Pass "trace": the path tracer. For each pixel it follows some random light paths
+// (samples) from the camera and writes the mean of the light that the paths bring.
+// One frame is noisy; the pass "accumulate" takes the mean over frames.
 //
 // The path of a pixel starts with a camera ray. At each surface that a ray finds:
 // - Mirror: the ray continues in the mirror direction.
 // - Glass: the ray is reflected or goes through and bends, at random, with the chance
 //   that the Fresnel law gives for the angle.
 // - Diffuse (Lambert: sends light back equally in all directions):
-//   1. Direct light: one shadow ray toward a random point of the light. The point is
+//   1. Direct light: one shadow ray toward a random point of one light. With more
+//      than one light, the light is picked at random, with a larger chance for a
+//      light that is bright and near. The point is
 //      random, so a surface that sees a part of the light is lit in a part of the
 //      frames: the mean is a soft shadow.
 //   2. One bounce: the ray continues in a random direction. The light that the next
 //      diffuse surface gets comes back to this one. This is the light that fills the
 //      shadows. The path ends at the second diffuse surface.
-// A ray that comes from the camera, a mirror, or glass and finds the sphere light
+// A ray that comes from the camera, a mirror, or glass and finds a sphere light
 // brings the light itself: the light shows in the picture, in a mirror, and through glass.
 //
 // Images written, at the internal resolution:
-// - radiance: the light of the path, linear RGB. Black on a miss.
-// - depth:    the distance from the camera to the hit along the ray, in meters. T_MAX on a miss.
-// - normal:   the world normal in xyz, and 1.0 in w. All zeros on a miss.
-// - motion:   how far the point moved on the screen since the last frame. Zeros for now.
+// - radiance: the mean light of the paths, linear RGB. Black on a miss. Alpha is 1.0
+//             if a path saw the light itself, else 0.0 (for accumulate.comp).
+// - normal:   the surface that the pixel shows, for the denoiser: the world normal in
+//             xyz and the distance from the camera in w, in meters. All zeros: no surface.
+// - albedo:   the color of that surface: the part of the light that it sends on to
+//             the camera. White for no surface.
+// "The surface that the pixel shows" is the first diffuse surface on the first path of
+// the pixel. Behind a mirror or glass it is the surface that shows there, and its
+// color has the tint of the mirror or the glass. The radiance of the pixel is this
+// color times the light that the surface gets, so a filter can work on the light alone.
 
 #include "bindless.glsl"
 #include "scene.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-// A storage image array names one format. These four arrays are the same binding,
-// seen with four formats: each image index is valid only in the array of its format.
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
-    uniform writeonly image2D images_rgba32f[];
+// A storage image array names one format. These two arrays are the same binding,
+// seen with two formats: each image index is valid only in the array of its format.
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform writeonly image2D images_rgba16f[];
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, r32f)
-    uniform writeonly image2D images_r32f[];
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
-    uniform writeonly image2D images_rg16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
+    uniform writeonly image2D images_rgba8[];
 
 // Must agree with `Trace::execute` in src/passes.rs.
 // A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
@@ -47,17 +51,34 @@ layout(push_constant) uniform Push {
     // The ray of a pixel is `forward + x * right + y * up`, x and y from -1 to 1.
     // See `Camera::ray_basis` in src/camera.rs.
     vec3 right;
-    uint radiance;        // index in `images_rgba32f`
+    uint radiance;        // index in `images_rgba16f`
     vec3 up;
-    uint depth;           // index in `images_r32f`
+    uint albedo;          // index in `images_rgba8`
     vec3 forward;
     uint normal;          // index in `images_rgba16f`
-    vec3 light_position;  // center of the sphere light, world space
-    float light_radius;   // meters. Zero: the scene has no light.
-    vec3 light_radiance;  // the light that each point of the sphere sends out
-    uint motion;          // index in `images_rg16f`
     uint frame;           // number of the frame, for the random numbers
+    uint frame_samples;   // paths for each pixel in this frame, 1 or more
+    uint max_path_rays;   // the largest number of rays in one path
+    uint lights;          // index in `light_buffers`
+    uint light_count;     // number of lights in the buffer
 } push;
+
+// A sphere light. 32 bytes. Must agree with `light_bytes` in src/light.rs.
+struct LightData {
+    vec3 position;  // center, world space
+    float radius;   // meters
+    vec3 radiance;  // the light that each point of the sphere sends out
+    float power;    // brightness as one number, for the pick of a light
+};
+
+// The lights are a buffer of the bindless array, as the mesh table is (scene.glsl).
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer LightBuffer {
+    LightData lights[];
+} light_buffers[];
+
+LightData light_at(uint index) {
+    return light_buffers[nonuniformEXT(push.lights)].lights[index];
+}
 
 const float PI = 3.14159265;
 const float TAU = 6.28318531;
@@ -68,9 +89,6 @@ const float T_MAX = 1000.0;
 // A ray that starts on a surface starts this far above it, in meters. Without the
 // gap, rounding errors would let the ray hit the surface that it starts on.
 const float SURFACE_GAP = 0.001;
-// The largest number of rays in one path. Mirrors that face each other and the
-// inside of glass can reflect a ray many times; the path stops here (as black).
-const int MAX_SEGMENTS = 12;
 
 // ---- Random numbers ----
 //
@@ -82,6 +100,9 @@ const int MAX_SEGMENTS = 12;
 //   each frame, the mean over frames would be the same noisy picture forever.
 
 uint rng_state;
+
+// True if a path of the pixel found the light itself.
+bool saw_light = false;
 
 // The PCG hash (Jarzynski and Olano, "Hash Functions for GPU Rendering", 2020).
 uint hash(uint value) {
@@ -127,20 +148,14 @@ struct Surface {
     bool front;     // the ray hit the front side of the triangle (for glass: it goes in)
 };
 
-// Finds the nearest triangle on a ray. False if the ray hits nothing.
-// `flags` are added to the ray flags (0 for none).
-bool closest_hit(vec3 origin, vec3 direction, float t_min, uint flags, out Surface surface) {
-    // Opaque: all geometry is opaque, so the loop below never has to ask the shader.
-    rayQueryEXT query;
-    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsOpaqueEXT | flags,
-        0xFFu, origin, t_min, direction, T_MAX);
-    // Each step moves the search forward. At the end the query holds the nearest hit.
-    while (rayQueryProceedEXT(query)) {}
-    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
-        return false;
-    }
-    // The custom index of an instance is the mesh table index of its mesh.
-    uint mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+// The surface at the hit of a ray query that found a triangle. `origin` and
+// `direction` are those of the ray.
+Surface hit_surface(rayQueryEXT query, vec3 origin, vec3 direction) {
+    Surface surface;
+    // The mesh table index: the first mesh of the instance plus the place of the hit
+    // mesh in the instance.
+    uint mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true)
+        + rayQueryGetIntersectionGeometryIndexEXT(query, true);
     uint triangle = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
     vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
     vec3 mesh_space = mesh_normal(push.mesh_table, mesh, triangle, barycentrics);
@@ -157,50 +172,117 @@ bool closest_hit(vec3 origin, vec3 direction, float t_min, uint flags, out Surfa
     surface.position = origin + surface.distance * direction;
     surface.normal = normal;
     mesh_material(push.mesh_table, mesh, surface.albedo, surface.material, surface.ior);
-    return true;
+    return surface;
 }
 
-// True if something is on the ray before the distance `t_max`. A shadow ray: only
-// "something or nothing" matters, so the search stops at the first triangle.
-bool occluded(vec3 origin, vec3 direction, float t_max) {
-    rayQueryEXT query;
-    rayQueryInitializeEXT(query, scene_tlas,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-        0xFFu, origin, 0.0, direction, t_max);
-    while (rayQueryProceedEXT(query)) {}
-    return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
-}
-
-// The distance along a ray to the front of the sphere light. Negative: no hit.
-// The light is not a mesh in the scene, so rays find it with this function only.
-float light_distance(vec3 origin, vec3 direction) {
-    vec3 to_center = push.light_position - origin;
-    float along = dot(to_center, direction);
-    float discriminant = along * along
-        - (dot(to_center, to_center) - push.light_radius * push.light_radius);
-    if (discriminant <= 0.0) {
-        return -1.0;
+// The distance along a ray to the nearest sphere light, and the radiance of that
+// light. Negative: the ray hits no light.
+// The lights are not meshes in the scene, so rays find them with this function only.
+// ponytail: tests each light. With some hundreds of lights, put the spheres in the
+// TLAS (an instance mask keeps them out of the shadow rays).
+float light_distance(vec3 origin, vec3 direction, out vec3 radiance) {
+    float nearest = -1.0;
+    for (uint index = 0; index < push.light_count; index++) {
+        LightData light = light_at(index);
+        vec3 to_center = light.position - origin;
+        float along = dot(to_center, direction);
+        float discriminant = along * along
+            - (dot(to_center, to_center) - light.radius * light.radius);
+        if (discriminant <= 0.0) {
+            continue;
+        }
+        float front = along - sqrt(discriminant);
+        if (front > 0.0 && (nearest < 0.0 || front < nearest)) {
+            nearest = front;
+            radiance = light.radiance;
+        }
     }
-    return along - sqrt(discriminant);
+    return nearest;
 }
 
 // ---- Light ----
 
-// Direct light of the sphere light at a surface point: the light that a white diffuse
-// surface sends out from there. Multiply by the albedo. One random sample.
+// How much a light matters at a surface point, before shadows: its brightness, over
+// the distance squared, times the cosine of the angle at the surface. The cosine is
+// that of the point of the sphere that is highest above the surface, so the result is
+// zero only for a light that is fully behind the surface.
+float light_importance(LightData light, vec3 position, vec3 normal) {
+    vec3 to_center = light.position - position;
+    float distance_squared = dot(to_center, to_center);
+    // The point is in the light.
+    if (distance_squared <= light.radius * light.radius) {
+        return 0.0;
+    }
+    float center_distance = sqrt(distance_squared);
+    float cosine = min(1.0, (dot(normal, to_center) + light.radius) / center_distance);
+    return light.power * max(cosine, 0.0) / distance_squared;
+}
+
+// A shadow ray to each light at each surface would make the cost of a frame grow with
+// the number of lights. The shader traces one shadow ray, to one light, and divides
+// the result by the chance of that light. A pick with the same chance for each light
+// would be noisy: most picks would be lights that are far away or behind the surface.
+// So the shader looks at this many lights and picks one of them with a chance in
+// proportion to `light_importance` ("resampled importance sampling", the first step
+// of ReSTIR; Bitterli et al., 2020). Looking at a light costs no ray.
+const uint LIGHT_CANDIDATES = 8u;
+
+// One random sample of the direct light at a surface point.
+// Gives the shadow ray to trace: its direction and its length. Returns the light that
+// a white diffuse surface sends out from the point if nothing is on that ray; multiply
+// by the albedo. Zero: the sample brings no light, and no ray is necessary.
 //
 // This is "next-event estimation": a random bounce ray would almost never hit a small
-// light, so the shader aims a ray at the light on purpose. From `position` the sphere
+// light, so the shader aims a ray at a light on purpose. From `position` the sphere
 // looks like a disk; all directions to the disk make a cone. The shadow ray takes a
 // random direction in that cone.
-vec3 direct_light(vec3 position, vec3 normal) {
-    vec3 to_center = push.light_position - position;
-    float distance_squared = dot(to_center, to_center);
-    float radius_squared = push.light_radius * push.light_radius;
-    // No light, or the point is in the light: the cone is not defined.
-    if (distance_squared <= radius_squared) {
+vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_light) {
+    // 1. Pick a light. With few lights, each one is a candidate; else the candidates
+    // are random lights.
+    bool all = push.light_count <= LIGHT_CANDIDATES;
+    uint candidates = all ? push.light_count : LIGHT_CANDIDATES;
+    // One random number makes the pick: each candidate takes the place of the pick
+    // before it with the chance `its importance / sum so far`. This gives each
+    // candidate the chance `its importance / sum of all`.
+    float pick = random();
+    float sum = 0.0;
+    uint chosen = 0u;
+    float chosen_importance = 0.0;
+    for (uint candidate = 0u; candidate < candidates; candidate++) {
+        uint index = all
+            ? candidate
+            : min(uint(random() * float(push.light_count)), push.light_count - 1u);
+        float importance = light_importance(light_at(index), position, normal);
+        if (importance <= 0.0) {
+            continue;
+        }
+        sum += importance;
+        if (pick * sum < importance) {
+            chosen = index;
+            chosen_importance = importance;
+            // Stretch the two parts of the range back to 0..1: `pick` stays a random
+            // number that is independent of the decision.
+            pick = pick * sum / importance;
+        } else {
+            pick = (pick * sum - importance) / (sum - importance);
+        }
+    }
+    // No light, or all lights are behind the surface.
+    if (sum == 0.0) {
         return vec3(0.0);
     }
+    // One over the chance of the chosen light. For random candidates, their mean
+    // importance stands for the mean of all lights.
+    float scale = sum / chosen_importance;
+    if (!all) {
+        scale *= float(push.light_count) / float(LIGHT_CANDIDATES);
+    }
+    LightData light = light_at(chosen);
+
+    // 2. A direction to that light.
+    vec3 to_center = light.position - position;
+    float distance_squared = dot(to_center, to_center);
+    float radius_squared = light.radius * light.radius;
     float center_distance = sqrt(distance_squared);
     // theta_max is the angle between the cone axis and the cone edge.
     float sin2_max = radius_squared / distance_squared;
@@ -210,89 +292,119 @@ vec3 direct_light(vec3 position, vec3 normal) {
 
     // A direction in the cone, with the same chance for each direction.
     float cos_theta = 1.0 - random() * one_minus_cos_max;
-    vec3 direction = direction_around(to_center / center_distance, cos_theta, TAU * random());
+    direction = direction_around(to_center / center_distance, cos_theta, TAU * random());
 
     // Light that comes in at a flat angle is spread over more surface (Lambert's law).
     float cos_surface = dot(normal, direction);
     if (cos_surface <= 0.0) {
-        return vec3(0.0); // The light is behind the surface.
+        return vec3(0.0); // This point of the light is behind the surface.
     }
     // The shadow ray ends where it reaches the sphere.
     float along = center_distance * cos_theta;
-    float to_light = along - sqrt(max(0.0, along * along - (distance_squared - radius_squared)));
-    if (occluded(position + normal * SURFACE_GAP, direction, to_light)) {
-        return vec3(0.0);
-    }
+    to_light = along - sqrt(max(0.0, along * along - (distance_squared - radius_squared)));
     // The size of the cone, as a solid angle: how large the light looks from here.
     float solid_angle = TAU * one_minus_cos_max;
     // A diffuse surface sends out 1/pi of the light that it gets, in each direction.
-    return push.light_radiance * cos_surface * solid_angle / PI;
+    return light.radiance * (cos_surface * solid_angle / PI * scale);
 }
 
-void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(images_rgba32f[push.radiance]);
-    // The work groups cover full 8x8 blocks, so some invocations are out of the image.
-    if (any(greaterThanEqual(pixel, size))) {
-        return;
-    }
-    rng_state = hash(uint(pixel.x) + hash(uint(pixel.y) + hash(push.frame)));
-
+// The light that one random path through the pixel brings to the camera.
+// `first`: also write the depth and normal images.
+vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
     // A random point in the pixel, from -1 to 1 across the image. Image y goes down,
-    // `up` goes up. The point changes with each frame, so the mean smooths the edges.
+    // `up` goes up. The point changes with each sample, so the mean smooths the edges.
     vec2 screen = (vec2(pixel) + vec2(random(), random())) / vec2(size) * 2.0 - 1.0;
     vec3 direction = normalize(push.forward + screen.x * push.right - screen.y * push.up);
 
     vec3 radiance = vec3(0.0);
-    vec4 normal = vec4(0.0);
-    float depth = T_MAX;
 
+    // The ray to trace next. A path has two kinds of ray: path rays, which find the
+    // next surface, and shadow rays, which only test if the light is visible.
+    // The loop below has one place that traces a ray, for the two kinds. A GPU runs
+    // the pixels of a group in step: with two places, the pixels that wait for a
+    // shadow ray would stand still while the others trace a path ray.
     vec3 origin = push.origin;
     float t_min = T_MIN;
+    float t_max = T_MAX;
+    // Opaque: all geometry is opaque, so the ray query never has to ask the shader.
     // Cull back faces: the camera is outside of the room and looks in through the
     // back side of the near walls. Only camera rays cull; for all other rays the
     // walls are solid from the two sides.
-    uint flags = gl_RayFlagsCullBackFacingTrianglesEXT;
+    uint flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT;
+
     // The part of the light at the end of the path that reaches the camera. Each
     // surface on the way takes a part away.
     vec3 throughput = vec3(1.0);
     // True if the ray can bring the light of the sphere light itself. False after a
-    // diffuse surface: its shadow ray (`direct_light`) already counted that light.
+    // diffuse surface: its shadow ray already counted that light.
     bool sees_light = true;
     bool bounced = false; // the path has left a diffuse surface
+    uint segment = 0;     // number of the path ray, from 0
 
-    for (int segment = 0; segment < MAX_SEGMENTS; segment++) {
-        Surface surface;
-        bool hit = closest_hit(origin, direction, t_min, flags, surface);
-        float light = light_distance(origin, direction);
-        bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
-        if (segment == 0) {
-            // The first surface that the camera sees, for the depth and normal images.
-            if (light_is_nearer) {
-                depth = light;
-                normal = vec4(normalize(origin + light * direction - push.light_position), 1.0);
-            } else if (hit) {
-                depth = surface.distance;
-                normal = vec4(surface.normal, 1.0);
+    // State of a shadow ray.
+    bool shadow = false;   // the ray to trace is a shadow ray
+    vec3 shadow_light;     // the light that the path gets if the shadow ray hits nothing
+    bool continues;        // a path ray follows the shadow ray
+    vec3 bounce_direction; // its direction. It starts where the shadow ray starts.
+
+    while (true) {
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, scene_tlas, flags, 0xFFu, origin, t_min, direction, t_max);
+        // Each step moves the search forward. At the end the query holds the nearest
+        // hit, or for a shadow ray the first hit that the search found.
+        while (rayQueryProceedEXT(query)) {}
+        bool hit = rayQueryGetIntersectionTypeEXT(query, true)
+            == gl_RayQueryCommittedIntersectionTriangleEXT;
+
+        if (shadow) {
+            if (!hit) {
+                radiance += shadow_light;
             }
+            if (!continues) {
+                break;
+            }
+            // The bounce ray, from the same point.
+            shadow = false;
+            direction = bounce_direction;
+            t_max = T_MAX;
+            flags = gl_RayFlagsOpaqueEXT;
+            continue;
         }
-        if (sees_light && light_is_nearer) {
-            radiance += throughput * push.light_radiance;
-            break;
+
+        Surface surface;
+        if (hit) {
+            surface = hit_surface(query, origin, direction);
         }
-        if (!hit) {
+        vec3 light_radiance;
+        float light = light_distance(origin, direction, light_radiance);
+        bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
+        if ((sees_light && light_is_nearer) || !hit) {
+            if (sees_light && light_is_nearer) {
+                radiance += throughput * light_radiance;
+                saw_light = true;
+            }
+            // The path ends with no diffuse surface: the pixel shows the light itself
+            // or the background.
+            if (first && !bounced) {
+                imageStore(images_rgba16f[push.normal], pixel, vec4(0.0));
+                imageStore(images_rgba8[push.albedo], pixel, vec4(1.0));
+            }
             break;
         }
         // The next ray starts on this surface.
         t_min = 0.0;
-        flags = 0u;
+        flags = gl_RayFlagsOpaqueEXT;
 
-        if (surface.material == MATERIAL_MIRROR) {
+        // The last ray of the path: a mirror or glass cannot send the ray on. The
+        // surface counts as diffuse, so it gets direct light and is not a black hole.
+        segment++;
+        bool last = segment == push.max_path_rays;
+        if (surface.material == MATERIAL_MIRROR && !last) {
             throughput *= surface.albedo;
             origin = surface.position + surface.normal * SURFACE_GAP;
             direction = reflect(direction, surface.normal);
             sees_light = true;
-        } else if (surface.material == MATERIAL_GLASS) {
+        } else if (surface.material == MATERIAL_GLASS && !last) {
             // The ratio of the two indices of refraction: air (1.0) to glass on the
             // way in, glass to air on the way out.
             float eta = surface.front ? 1.0 / surface.ior : surface.ior;
@@ -313,7 +425,7 @@ void main() {
                 reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_air, 5.0);
             }
             // One ray cannot split. It takes one of the two ways at random, with the
-            // reflectance as the chance: the mean over frames has the two parts.
+            // reflectance as the chance: the mean over samples has the two parts.
             if (random() < reflectance) {
                 origin = surface.position + surface.normal * SURFACE_GAP;
                 direction = reflect(direction, surface.normal);
@@ -324,24 +436,65 @@ void main() {
             }
             sees_light = true;
         } else {
-            radiance += throughput * surface.albedo
-                * direct_light(surface.position, surface.normal);
-            if (bounced) {
+            // Diffuse. All rays from here start a small gap above the surface.
+            origin = surface.position + surface.normal * SURFACE_GAP;
+            throughput *= surface.albedo;
+            if (first && !bounced) {
+                // The surface that the pixel shows. Stored here and not after the
+                // loop: the values then do not have to stay alive through all rays,
+                // which made the pass 8 % slower.
+                float from_camera = distance(surface.position, push.origin);
+                imageStore(images_rgba16f[push.normal], pixel, vec4(surface.normal, from_camera));
+                imageStore(images_rgba8[push.albedo], pixel, vec4(throughput, 1.0));
+            }
+            vec3 light_direction;
+            float to_light;
+            shadow_light = throughput
+                * light_sample(surface.position, surface.normal, light_direction, to_light);
+            // The path ends at the second diffuse surface, and at the last ray.
+            continues = !bounced && !last;
+            if (continues) {
+                // The bounce. A diffuse surface gets the most light from straight above
+                // and none from the side (Lambert's law again). The random direction has
+                // the same weight: more rays near the normal. Then each ray counts the
+                // same, and the light that it brings is only multiplied by the albedo.
+                bounce_direction = direction_around(surface.normal, sqrt(random()), TAU * random());
+                bounced = true;
+                sees_light = false;
+            }
+            if (shadow_light != vec3(0.0)) {
+                // Only "something or nothing" matters for a shadow ray, so the search
+                // stops at the first triangle.
+                shadow = true;
+                direction = light_direction;
+                t_max = to_light;
+                flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
+            } else if (continues) {
+                direction = bounce_direction;
+            } else {
                 break;
             }
-            bounced = true;
-            // The bounce. A diffuse surface gets the most light from straight above
-            // and none from the side (Lambert's law again). The random direction has
-            // the same weight: more rays near the normal. Then each ray counts the
-            // same, and the light that it brings is only multiplied by the albedo.
-            throughput *= surface.albedo;
-            origin = surface.position + surface.normal * SURFACE_GAP;
-            direction = direction_around(surface.normal, sqrt(random()), TAU * random());
-            sees_light = false;
         }
     }
-    imageStore(images_rgba32f[push.radiance], pixel, vec4(radiance, 1.0));
-    imageStore(images_r32f[push.depth], pixel, vec4(depth));
-    imageStore(images_rgba16f[push.normal], pixel, normal);
-    imageStore(images_rg16f[push.motion], pixel, vec4(0.0));
+    return radiance;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images_rgba16f[push.radiance]);
+    // The work groups cover full 8x8 blocks, so some invocations are out of the image.
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    rng_state = hash(uint(pixel.x) + hash(uint(pixel.y) + hash(push.frame)));
+
+    // The random chain of the pixel continues from one sample to the next.
+    vec3 radiance = vec3(0.0);
+    for (uint s = 0; s < push.frame_samples; s++) {
+        radiance += path_radiance(pixel, size, s == 0);
+    }
+    radiance /= float(push.frame_samples);
+    // The image has 16-bit floats, whose largest value is 65504: a small light is
+    // brighter than that and would be stored as infinity.
+    imageStore(images_rgba16f[push.radiance], pixel, vec4(min(radiance, vec3(60000.0)), float(saw_light)));
 }

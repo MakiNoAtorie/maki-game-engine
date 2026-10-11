@@ -1,13 +1,16 @@
 //! Acceleration structures: the search trees that a ray query walks to find a hit.
 //!
 //! Two levels:
-//! - A BLAS (bottom level) holds the triangles of one mesh, in the space of the mesh.
+//! - A BLAS (bottom level) holds the triangles of one or more meshes ("geometries"),
+//!   in one common space. Rays are faster against one BLAS with many geometries than
+//!   against many BLAS that overlap, so meshes that never move apart share one.
 //! - The TLAS (top level) holds instances. An instance is a BLAS, a transform, and a
-//!   number that the shader gets back on a hit. Shaders trace against the TLAS
-//!   (bindless binding 4).
+//!   number that the shader gets back on a hit, together with the number of the
+//!   geometry in the BLAS. Shaders trace against the TLAS (bindless binding 4).
 //!
-//! A BLAS is built one time ([`Gpu::create_blas`]). The TLAS is built again in each
-//! frame ([`Gpu::build_tlas`]), so it follows objects that move, appear, or go away.
+//! A BLAS is built one time ([`Gpu::create_blas`]). The TLAS is built again
+//! ([`Gpu::build_tlas`]) when the caller has a new instance list, so it follows objects
+//! that move, appear, or go away.
 
 use anyhow::{Context, Result, ensure};
 use ash::vk;
@@ -20,23 +23,23 @@ const INSTANCE_BYTES: u64 = size_of::<vk::AccelerationStructureInstanceKHR>() as
 /// Vulkan requires this alignment for the address of the instance data.
 const INSTANCE_ALIGNMENT: u64 = 16;
 
-/// The triangles of one mesh. The buffers must stay alive as long as the BLAS is built;
-/// after that the BLAS has its own copy of the positions.
+/// The triangles of one mesh.
+#[derive(Debug, Clone, Copy)]
+pub struct BlasGeometry<'a> {
+    pub positions: &'a [[f32; 3]],
+    /// Three for each triangle.
+    pub indices: &'a [u32],
+}
+
+/// The content of a BLAS. A hit names the geometry by its place in the list.
 #[derive(Debug, Clone, Copy)]
 pub struct BlasDesc<'a> {
     pub name: &'a str,
-    /// The position is the first 12 bytes (three `f32`) of each vertex.
-    pub vertices: BufferHandle,
-    pub vertex_count: u32,
-    /// Bytes from the start of one vertex to the start of the next.
-    pub vertex_stride: u64,
-    /// Three `u32` for each triangle.
-    pub indices: BufferHandle,
-    pub triangle_count: u32,
+    pub geometries: &'a [BlasGeometry<'a>],
 }
 
 /// One object in the TLAS.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TlasInstance {
     pub blas: BlasHandle,
     /// From the space of the BLAS to world space: the first three rows of the 4x4
@@ -88,46 +91,81 @@ fn tlas_build_info<'a>(
 }
 
 impl Gpu {
-    /// Builds the BLAS of a mesh. The build is complete when the function returns.
+    /// Builds a BLAS. The build is complete when the function returns: the BLAS has
+    /// its own copy of the triangles.
     pub fn create_blas(&mut self, desc: &BlasDesc) -> Result<BlasHandle> {
         ensure!(
-            desc.vertex_count > 0 && desc.triangle_count > 0,
-            "BLAS `{}` has no triangles",
+            !desc.geometries.is_empty(),
+            "BLAS `{}` has no geometry",
             desc.name
         );
-        let vertices = self
-            .buffers
-            .get(desc.vertices)
-            .context("stale vertex buffer handle")?;
+        for geometry in desc.geometries {
+            let vertex_count = geometry.positions.len();
+            ensure!(
+                vertex_count > 0 && geometry.indices.len() >= 3,
+                "BLAS `{}` has a geometry with no triangles",
+                desc.name
+            );
+            // The GPU does not check the indices: a wrong one reads memory out of the buffer.
+            ensure!(
+                geometry
+                    .indices
+                    .iter()
+                    .all(|index| (*index as usize) < vertex_count),
+                "BLAS `{}` has an index that is not a vertex",
+                desc.name
+            );
+        }
+        // All geometries in one vertex buffer and one index buffer, each at its own
+        // address. The two buffers live only for the build.
+        let positions: Vec<[f32; 3]> = desc
+            .geometries
+            .iter()
+            .flat_map(|g| g.positions)
+            .copied()
+            .collect();
+        let indices: Vec<u32> = desc
+            .geometries
+            .iter()
+            .flat_map(|g| g.indices)
+            .copied()
+            .collect();
+        let vertices = self.create_build_input(desc.name, as_bytes(&positions))?;
         let indices = self
-            .buffers
-            .get(desc.indices)
-            .context("stale index buffer handle")?;
-        // The GPU does not check the counts: a wrong count reads memory out of the buffer.
-        ensure!(
-            u64::from(desc.vertex_count) * desc.vertex_stride <= vertices.size
-                && u64::from(desc.triangle_count) * 12 <= indices.size,
-            "BLAS `{}`: the counts are larger than the buffers",
-            desc.name
-        );
+            .create_build_input(desc.name, as_bytes(&indices))
+            .inspect_err(|_| self.destroy_unused_buffer(vertices))?;
 
-        let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-            .vertex_format(vk::Format::R32G32B32_SFLOAT)
-            .vertex_data(vk::DeviceOrHostAddressConstKHR {
-                device_address: vertices.address,
-            })
-            .vertex_stride(desc.vertex_stride)
-            .max_vertex(desc.vertex_count - 1)
-            .index_type(vk::IndexType::UINT32)
-            .index_data(vk::DeviceOrHostAddressConstKHR {
-                device_address: indices.address,
-            });
-        let geometries = [vk::AccelerationStructureGeometryKHR::default()
-            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-            .geometry(vk::AccelerationStructureGeometryDataKHR { triangles })
-            // Opaque: the first hit is final. The ray query does not ask the shader
-            // if a triangle counts (the method for cut-out textures).
-            .flags(vk::GeometryFlagsKHR::OPAQUE)];
+        let mut vertex_address = self.buffers[vertices].address;
+        let mut index_address = self.buffers[indices].address;
+        let mut geometries = Vec::with_capacity(desc.geometries.len());
+        let mut ranges = Vec::with_capacity(desc.geometries.len());
+        for geometry in desc.geometries {
+            let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: vertex_address,
+                })
+                .vertex_stride(12)
+                .max_vertex(geometry.positions.len() as u32 - 1)
+                .index_type(vk::IndexType::UINT32)
+                .index_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: index_address,
+                });
+            geometries.push(
+                vk::AccelerationStructureGeometryKHR::default()
+                    .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                    .geometry(vk::AccelerationStructureGeometryDataKHR { triangles })
+                    // Opaque: the first hit is final. The ray query does not ask the shader
+                    // if a triangle counts (the method for cut-out textures).
+                    .flags(vk::GeometryFlagsKHR::OPAQUE),
+            );
+            ranges.push(
+                vk::AccelerationStructureBuildRangeInfoKHR::default()
+                    .primitive_count(geometry.indices.len() as u32 / 3),
+            );
+            vertex_address += size_of_val(geometry.positions) as u64;
+            index_address += size_of_val(geometry.indices) as u64;
+        }
         let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             // Built one time and traced in every frame.
@@ -135,21 +173,26 @@ impl Gpu {
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(&geometries);
 
-        let (raw, storage, scratch) =
-            self.create_accel(desc.name, &mut info, desc.triangle_count)?;
-        let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
-            .primitive_count(desc.triangle_count);
-        let built = self.run_now(|cmd| unsafe {
-            self.accel
-                .cmd_build_acceleration_structures(cmd, &[info], &[&[range]]);
-        });
-        // Only the build uses the scratch buffer.
-        self.destroy_buffer(scratch);
-        if let Err(error) = built {
-            self.defer(Garbage::Accel(raw));
-            self.destroy_buffer(storage);
-            return Err(error);
-        }
+        let counts: Vec<u32> = ranges.iter().map(|range| range.primitive_count).collect();
+        let built =
+            self.create_accel(desc.name, &mut info, &counts)
+                .and_then(|(raw, storage, scratch)| {
+                    let built = self.run_now(|cmd| unsafe {
+                        self.accel
+                            .cmd_build_acceleration_structures(cmd, &[info], &[&ranges]);
+                    });
+                    // Only the build uses the scratch buffer.
+                    self.destroy_unused_buffer(scratch);
+                    if let Err(error) = built {
+                        self.defer(Garbage::Accel(raw));
+                        self.destroy_buffer(storage);
+                        return Err(error);
+                    }
+                    Ok((raw, storage))
+                });
+        self.destroy_unused_buffer(vertices);
+        self.destroy_unused_buffer(indices);
+        let (raw, storage) = built?;
 
         let address_info =
             vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(raw);
@@ -162,6 +205,27 @@ impl Gpu {
             storage,
             address,
         }))
+    }
+
+    /// A buffer with `data` as its content, for the input of a BLAS build.
+    fn create_build_input(&mut self, name: &str, data: &[u8]) -> Result<BufferHandle> {
+        let buffer = self.create_buffer(&BufferDesc {
+            name,
+            size: data.len() as u64,
+            cpu_writable: true,
+        })?;
+        self.write_buffer(buffer, 0, data)
+            .inspect_err(|_| self.destroy_unused_buffer(buffer))?;
+        Ok(buffer)
+    }
+
+    /// Frees a buffer at once. Only for a buffer that no frame has used and whose last
+    /// GPU work is complete (`run_now` waits for it). Not deferred, so a load of many
+    /// meshes does not hold all its work buffers until the next frame.
+    fn destroy_unused_buffer(&mut self, buffer: BufferHandle) {
+        if let Some(buffer) = self.buffers.remove(buffer) {
+            self.destroy_now(Garbage::Buffer(buffer));
+        }
     }
 
     /// Deferred, as [`Gpu::destroy_buffer`]. The next [`Gpu::build_tlas`] must not name the BLAS.
@@ -200,7 +264,7 @@ impl Gpu {
         // The size depends on the instance count only, so the address can be empty here.
         let geometries = [instances_geometry(0)];
         let mut info = tlas_build_info(&geometries);
-        let (raw, _storage, scratch) = self.create_accel("tlas", &mut info, max_instances)?;
+        let (raw, _storage, scratch) = self.create_accel("tlas", &mut info, &[max_instances])?;
         self.bindless
             .write_acceleration_structure(&self.ctx.device, raw);
         Ok(self.tlases.insert(Tlas {
@@ -300,21 +364,21 @@ impl Gpu {
         Ok(())
     }
 
-    /// Makes an acceleration structure with room for `max_primitives` of the geometry
-    /// in `info`, and a scratch buffer (work memory) for its build. Sets the two as the
+    /// Makes an acceleration structure with room for `max_primitives` of each geometry
+    /// in `info` (one count for each), and a scratch buffer (work memory) for its build. Sets the two as the
     /// targets of `info`. Returns the structure, its storage buffer, and the scratch buffer.
     fn create_accel(
         &mut self,
         name: &str,
         info: &mut vk::AccelerationStructureBuildGeometryInfoKHR<'_>,
-        max_primitives: u32,
+        max_primitives: &[u32],
     ) -> Result<(vk::AccelerationStructureKHR, BufferHandle, BufferHandle)> {
         let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
         unsafe {
             self.accel.get_acceleration_structure_build_sizes(
                 vk::AccelerationStructureBuildTypeKHR::DEVICE,
                 info,
-                &[max_primitives],
+                max_primitives,
                 &mut sizes,
             );
         }
@@ -357,7 +421,7 @@ impl Gpu {
     /// Runs commands outside of the frame and waits until the GPU has finished them.
     // ponytail: the caller stops until the queue is idle. Record the commands into the
     // command buffer of the frame when an upload during play shows as a stall.
-    fn run_now(&self, record: impl FnOnce(vk::CommandBuffer)) -> Result<()> {
+    pub(crate) fn run_now(&self, record: impl FnOnce(vk::CommandBuffer)) -> Result<()> {
         let device = &self.ctx.device;
         let pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::TRANSIENT)
@@ -386,4 +450,11 @@ impl Gpu {
         unsafe { device.destroy_command_pool(pool, None) };
         result
     }
+}
+
+/// The bytes of a slice of plain numbers.
+fn as_bytes<T: Copy>(values: &[T]) -> &[u8] {
+    // SAFETY: the callers use `u32` and `[f32; 3]`, which have no padding bytes, and
+    // each byte pattern is a valid `u8`.
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values)) }
 }

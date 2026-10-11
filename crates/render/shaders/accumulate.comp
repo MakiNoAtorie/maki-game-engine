@@ -2,24 +2,36 @@
 // Pass "accumulate": keeps the mean of the `radiance` images of all frames since the
 // last reset, in the `accumulated` image.
 //
-// One frame of the path tracer is noisy: each pixel holds one random sample. The mean
-// of N samples has less noise (it falls with the square root of N), so the picture
+// One frame of the path tracer is noisy: each pixel holds the mean of a few random
+// samples. The mean of N samples has less noise (it falls with the square root of N), so the picture
 // gets clean while nothing changes.
 
 #include "bindless.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-// No `readonly` or `writeonly`: the pass reads one image and reads and writes the other.
+// The same binding, seen with the formats of the two images.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform readonly image2D images_rgba16f[];
+// No `readonly` or `writeonly`: the pass reads and writes the mean.
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
     uniform image2D images[];
 
 // Must agree with `Accumulate::execute` in src/passes.rs.
 layout(push_constant) uniform Push {
-    uint radiance;    // index in `images`: the sample of this frame
-    uint accumulated; // index in `images`: the mean
-    uint samples;     // number of samples in the mean, with this one. 1 starts a new mean.
+    uint radiance;      // index in `images_rgba16f`: the mean of the samples of this frame
+    uint accumulated;   // index in `images`: the mean
+    uint samples;       // number of samples in the mean, with those of this frame
+    uint frame_samples; // number of samples in `radiance`. Equal to `samples`: a new mean.
+    uint soft_reset;    // 1: the lighting changed, and the mean was cut to a short history
 } push;
+
+// The alpha channel of the two images is a mark: 1.0 if a path of the pixel saw the
+// light itself (directly, in a mirror, or through glass), else 0.0. In `accumulated`:
+// if a sample of the mean did.
+// The light itself is much brighter than a lit surface. After a light change, the
+// history of such a pixel would show a bright ghost of the light at its old place. So
+// a soft reset drops the history of the marked pixels, and keeps it for the others.
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -27,17 +39,23 @@ void main() {
     if (any(greaterThanEqual(pixel, size))) {
         return;
     }
-    vec3 radiance = imageLoad(images[push.radiance], pixel).rgb;
+    vec4 sample_and_mark = imageLoad(images_rgba16f[push.radiance], pixel);
+    vec3 radiance = sample_and_mark.rgb;
     // A value that is not a number would stay in the mean until the next reset.
     if (any(isnan(radiance)) || any(isinf(radiance))) {
         radiance = vec3(0.0);
     }
     vec3 mean = radiance;
-    // The first sample replaces the old content, which is undefined in a new image.
-    if (push.samples > 1) {
-        // The mean of N values from the mean of N - 1: move 1/N of the way to the new value.
-        vec3 old = imageLoad(images[push.accumulated], pixel).rgb;
-        mean = old + (radiance - old) / float(push.samples);
+    float mark = sample_and_mark.a;
+    // The first frame replaces the old content, which is undefined in a new image.
+    if (push.samples > push.frame_samples) {
+        vec4 old = imageLoad(images[push.accumulated], pixel);
+        if (push.soft_reset == 0 || old.a == 0.0) {
+            // The mean of N values from the mean of N - k and the mean of the k new
+            // ones: move k/N of the way to the new value.
+            mean = old.rgb + (radiance - old.rgb) * (float(push.frame_samples) / float(push.samples));
+            mark = max(mark, old.a);
+        }
     }
-    imageStore(images[push.accumulated], pixel, vec4(mean, 1.0));
+    imageStore(images[push.accumulated], pixel, vec4(mean, mark));
 }

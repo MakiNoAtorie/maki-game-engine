@@ -39,8 +39,27 @@ pub struct Config {
     pub light_color: [f32; 3],
     /// Brightness of the light. See `Light::intensity` in the render crate for the unit.
     pub light_intensity: f32,
-    /// The path tracer stops when the picture is the mean of this many frames.
+    /// The path tracer stops when the picture is the mean of this many samples.
     pub max_samples: u32,
+    /// Light paths that the path tracer follows for each pixel in one frame. More
+    /// samples cost more GPU time for each frame and give a clean picture in fewer frames.
+    /// 0: the renderer chooses the count in each frame, to fill `trace_budget_ms`.
+    pub samples_per_frame: u32,
+    /// GPU time for the path tracer in each frame, in milliseconds, when
+    /// `samples_per_frame` is 0. Keep it well below the time of one display refresh.
+    pub trace_budget_ms: f32,
+    /// When a light changes, the picture keeps at most this many samples of the old
+    /// lighting, and the new samples replace them step by step. More samples: less
+    /// noise while a light moves, and the lighting follows the light later.
+    /// 0: a light change starts the picture again.
+    pub light_history_samples: u32,
+    /// The largest number of rays in one light path. Mirrors that face each other and
+    /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
+    /// time, and deep reflections lose detail.
+    pub max_path_rays: u32,
+    /// Filter passes of the denoiser, 0 to 6. Each pass doubles the area that the
+    /// filter takes its mean from. 0: no denoiser. Read at startup.
+    pub denoise_passes: u32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
     pub exposure: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
@@ -72,6 +91,11 @@ impl Default for Config {
             light_color: [1.0, 0.9, 0.8],
             light_intensity: 12.0,
             max_samples: 1024,
+            samples_per_frame: 0,
+            trace_budget_ms: 6.0,
+            light_history_samples: 32,
+            max_path_rays: 8,
+            denoise_passes: 4,
             exposure: 1.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,

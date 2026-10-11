@@ -2,6 +2,8 @@
 //! Two modules, so a scene can have a light that the player does not control.
 
 use bevy_ecs::change_detection::DetectChangesMut;
+use bevy_ecs::component::Component;
+use bevy_ecs::query::With;
 use bevy_ecs::system::{Commands, Query, Res};
 use glam::Vec3;
 use maki_core::{App, Config, FixedUpdate, Module, Startup, Time};
@@ -16,6 +18,11 @@ const INTENSITY_STEP: f32 = 1.1;
 const MIN_INTENSITY: f32 = 0.1;
 const MAX_INTENSITY: f32 = 1000.0;
 
+/// Marks the light of the config: the light that the player (or the benchmark) moves.
+/// The lights of a model file do not have it and stay where they are.
+#[derive(Component)]
+pub struct PlayerLight;
+
 /// Spawns one light with the values of the config.
 pub struct LightModule;
 
@@ -26,15 +33,18 @@ impl Module for LightModule {
 }
 
 fn spawn_light(mut commands: Commands, config: Res<Config>) {
-    commands.spawn(Light {
-        position: config.light_position.into(),
-        radius: config.light_radius,
-        color: config.light_color.into(),
-        intensity: config.light_intensity,
-    });
+    commands.spawn((
+        PlayerLight,
+        Light {
+            position: config.light_position.into(),
+            radius: config.light_radius,
+            color: config.light_color.into(),
+            intensity: config.light_intensity,
+        },
+    ));
 }
 
-/// Moves each light with the light actions.
+/// Moves the light of the config with the light actions.
 pub struct LightControllerModule;
 
 impl Module for LightControllerModule {
@@ -48,7 +58,7 @@ fn control_lights(
     time: Res<Time>,
     config: Res<Config>,
     cameras: Query<&Camera>,
-    mut lights: Query<&mut Light>,
+    mut lights: Query<&mut Light, With<PlayerLight>>,
 ) {
     // 1.0, -1.0, or 0.0 from a pair of opposite actions.
     let axis = |positive, negative| {

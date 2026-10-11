@@ -44,7 +44,7 @@ use device::DeviceContext;
 use resources::{Buffer, COLOR_RANGE, Garbage, Image, Sampler};
 use swapchain::Swapchain;
 
-pub use accel::{BlasDesc, TlasInstance};
+pub use accel::{BlasDesc, BlasGeometry, TlasInstance};
 pub use raster::GraphicsPipelineDesc;
 pub use resources::{
     Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format,
@@ -803,6 +803,72 @@ impl Gpu {
             );
         }
         Ok(())
+    }
+
+    /// Copies the content of an image to the CPU: the pixels row by row, in the format
+    /// of the image. `state` is the last use of the image; the image is in that state
+    /// again on return. Call between frames. Waits for the GPU, so it is for tools
+    /// (benchmark dumps), not for a frame.
+    pub fn read_image(&mut self, image: ImageHandle, state: Access) -> Result<Vec<u8>> {
+        ensure!(self.active.is_none(), "read_image in a frame");
+        let source = self.images.get(image).context("stale image handle")?;
+        let (raw, extent) = (source.raw, source.extent);
+        let size =
+            u64::from(extent.width) * u64::from(extent.height) * u64::from(source.texel_bytes);
+        let staging = self.create_buffer(&BufferDesc {
+            name: "image readback",
+            size,
+            cpu_writable: true,
+        })?;
+        let buffer = self.buffers[staging].raw;
+
+        let (layout, stage, access) = state.to_vk();
+        let (copy_layout, copy_stage, copy_access) = Access::TransferSrc.to_vk();
+        let barrier = |from: (vk::ImageLayout, _, _), to: (vk::ImageLayout, _, _)| {
+            vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(from.1)
+                .src_access_mask(from.2)
+                .dst_stage_mask(to.1)
+                .dst_access_mask(to.2)
+                .old_layout(from.0)
+                .new_layout(to.0)
+                .image(raw)
+                .subresource_range(COLOR_RANGE)
+        };
+        let to_copy = [barrier(
+            (layout, stage, access),
+            (copy_layout, copy_stage, copy_access),
+        )];
+        let back = [barrier(
+            (copy_layout, copy_stage, copy_access),
+            (layout, stage, access),
+        )];
+        let region = vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_extent(extent.into());
+        let device = &self.ctx.device;
+        let copied = self.run_now(|cmd| unsafe {
+            device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&to_copy),
+            );
+            device.cmd_copy_image_to_buffer(cmd, raw, copy_layout, buffer, &[region]);
+            device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&back),
+            );
+        });
+        let bytes = copied.and_then(|()| {
+            let mapped = self.buffers[staging].allocation.mapped_slice();
+            Ok(mapped.context("the readback buffer is not mapped")?[..size as usize].to_vec())
+        });
+        self.destroy_buffer(staging);
+        bytes
     }
 
     /// Submits the commands of the frame and shows the swapchain image.

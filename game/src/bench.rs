@@ -2,20 +2,28 @@
 //! then the game writes the timing of each frame to a CSV file and stops.
 //!
 //! The path depends only on the frame number, so each run does the same work. The light
-//! moves in each frame, so each frame starts the accumulation again and traces one
-//! sample: no frame gets the low cost of a complete picture.
+//! moves in each frame, so each frame starts the accumulation again: no frame gets the
+//! low cost of a complete picture.
+//!
+//! With `--bench-static` the light stays at the start of the path, so the picture
+//! accumulates. The path closes after `FRAMES_PER_TURN` frames: a run with a moving
+//! light whose frame count is a multiple of that number ends with the light at the
+//! same place.
 
 use std::f32::consts::TAU;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use anyhow::Context;
+use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
 use maki_core::{App, Config, Input, Module, Time, Update};
 use maki_platform::QuitRequested;
-use maki_render::{FrameGraph, Light};
+use maki_render::{Format, FrameGraph, Light, RenderGpu};
 
-use crate::light::clamp_to_room;
+use crate::light::{PlayerLight, clamp_to_room};
 
 /// The CSV file, in the working directory.
 pub const OUTPUT_PATH: &str = "bench.csv";
@@ -29,6 +37,10 @@ const MAX_WAIT_FRAMES: u64 = 8;
 /// the two would move the same light.
 pub struct BenchModule {
     pub frames: u64,
+    /// `Some`: write the picture of the last bench frame to this file. See `dump_picture`.
+    pub dump: Option<PathBuf>,
+    /// True: the light does not move.
+    pub static_light: bool,
 }
 
 impl Module for BenchModule {
@@ -37,6 +49,8 @@ impl Module for BenchModule {
             rows: vec![Row::default(); self.frames as usize],
             pass_names: Vec::new(),
             last_start: None,
+            dump: self.dump.clone(),
+            static_light: self.static_light,
         })
         .add_systems(Input, record_frame)
         .add_systems(Update, move_lights);
@@ -59,6 +73,8 @@ struct Bench {
     pass_names: Vec<&'static str>,
     /// Number and start time of the frame before.
     last_start: Option<(u64, Instant)>,
+    dump: Option<PathBuf>,
+    static_light: bool,
 }
 
 impl Bench {
@@ -81,9 +97,19 @@ fn path_position(frame: u64, light_radius: f32, config: &Config) -> Vec3 {
     clamp_to_room(position, light_radius, config)
 }
 
-fn move_lights(time: Res<Time>, config: Res<Config>, mut lights: Query<&mut Light>) {
+fn move_lights(
+    time: Res<Time>,
+    config: Res<Config>,
+    bench: Res<Bench>,
+    mut lights: Query<&mut Light, With<PlayerLight>>,
+) {
+    let frame = if bench.static_light { 0 } else { time.frame };
     for mut light in &mut lights {
-        light.position = path_position(time.frame, light.radius, &config);
+        let position = path_position(frame, light.radius, &config);
+        // A write marks the light as changed, and a changed light starts the picture again.
+        if light.position != position {
+            light.position = position;
+        }
     }
 }
 
@@ -91,11 +117,26 @@ fn move_lights(time: Res<Time>, config: Res<Config>, mut lights: Query<&mut Ligh
 fn record_frame(
     time: Res<Time>,
     graph: Option<Res<FrameGraph>>,
+    gpu: Option<ResMut<RenderGpu>>,
     mut bench: ResMut<Bench>,
     mut quit: ResMut<QuitRequested>,
 ) {
     let now = Instant::now();
     let bench = &mut *bench;
+
+    // At the start of the frame after the last bench frame: the picture of that frame
+    // is recorded and no newer frame has changed it. A fixed frame, so two runs dump
+    // the same picture.
+    if time.frame == bench.rows.len() as u64 + 1
+        && let (Some(path), Some(graph), Some(mut gpu)) = (&bench.dump, &graph, gpu)
+    {
+        match dump_picture(path, graph, &mut gpu) {
+            Ok(()) => tracing::info!(path = %path.display(), "picture dumped"),
+            Err(error) => {
+                tracing::error!(path = %path.display(), "cannot dump the picture: {error:#}")
+            }
+        }
+    }
 
     // CPU time of a frame: from its start to the start of the next frame. It has all
     // schedules, and the time that the CPU waits for the GPU and for the display.
@@ -127,6 +168,48 @@ fn record_frame(
     }
 }
 
+/// Writes the picture before the tone curve (the result of the denoiser, or the
+/// `accumulated` image if the denoiser is off): two little-endian `u32` (width,
+/// height), then four `f32` (R, G, B, A) for each pixel. `tools/bench.py` reads the file.
+fn dump_picture(path: &Path, graph: &FrameGraph, gpu: &mut RenderGpu) -> anyhow::Result<()> {
+    let id = graph
+        .resource("denoised")
+        .or_else(|| graph.resource("accumulated"))
+        .context("no picture image")?;
+    let format = graph.transient_desc(id).context("not an image")?.format;
+    let (image, (width, height), state) = graph.image(id).context("no frame was drawn")?;
+    let pixels = gpu.0.read_image(image, state)?;
+    let mut bytes = [width.to_le_bytes(), height.to_le_bytes()].concat();
+    match format {
+        Format::Rgba32Float => bytes.extend(pixels),
+        Format::Rgba16Float => {
+            let halves = pixels
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_ne_bytes);
+            bytes.extend(halves.flat_map(|half| half_to_f32(half).to_le_bytes()));
+        }
+        other => anyhow::bail!("cannot dump an image of format {other:?}"),
+    }
+    Ok(std::fs::write(path, bytes)?)
+}
+
+/// The value of a 16-bit float: 1 sign bit, 5 exponent bits, 10 fraction bits.
+fn half_to_f32(half: u16) -> f32 {
+    let sign = if half >> 15 == 0 { 1.0 } else { -1.0 };
+    let exponent = i32::from(half >> 10 & 0x1F);
+    let fraction = f32::from(half & 0x3FF) / 1024.0;
+    match exponent {
+        // Numbers too small for the normal form.
+        0 => sign * fraction * 2f32.powi(-14),
+        31 if fraction == 0.0 => sign * f32::INFINITY,
+        31 => f32::NAN,
+        _ => sign * (1.0 + fraction) * 2f32.powi(exponent - 15),
+    }
+}
+
 /// One line for each frame: frame number, CPU milliseconds, GPU milliseconds of each pass.
 fn csv(pass_names: &[&str], rows: &[Row]) -> String {
     let cell = |value: Option<f32>| value.map_or(String::new(), |value| format!("{value:.3}"));
@@ -149,6 +232,18 @@ fn csv(pass_names: &[&str], rows: &[Row]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_16_bit_float_gets_its_value() {
+        assert_eq!(half_to_f32(0x0000), 0.0);
+        assert_eq!(half_to_f32(0x3C00), 1.0);
+        assert_eq!(half_to_f32(0xC000), -2.0);
+        assert_eq!(half_to_f32(0x3555), 0.333_251_95);
+        assert_eq!(half_to_f32(0x7BFF), 65504.0);
+        assert_eq!(half_to_f32(0x0001), 2f32.powi(-24));
+        assert_eq!(half_to_f32(0x7C00), f32::INFINITY);
+        assert!(half_to_f32(0x7E00).is_nan());
+    }
 
     #[test]
     fn csv_has_one_line_for_each_frame_and_empty_cells_for_missing_values() {
