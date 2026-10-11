@@ -24,7 +24,8 @@ If the config file does not exist, the game writes one with default values.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `window_width`, `window_height` | 1280, 720 | Window size |
+| `window_title` | `maki` | Window title |
+| `window_width`, `window_height` | 1280, 720 | Window size, in logical pixels |
 | `render_width`, `render_height` | 640, 360 | Internal path-tracer resolution |
 | `vsync` | `true` | Vertical sync |
 | `model_path` | not set | glTF file to show |

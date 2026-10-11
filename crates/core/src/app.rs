@@ -22,6 +22,10 @@ pub struct Input;
 /// Simulation. Runs 0..N times in one frame, always with `Time::fixed_delta`.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FixedUpdate;
+/// Runs after each FixedUpdate step. For bookkeeping that must follow all
+/// simulation systems of the step, such as clearing one-step flags.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FixedLast;
 /// Per-frame logic that does not need a fixed rate.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Update;
@@ -70,6 +74,7 @@ impl App {
         add_schedule(&mut world, Startup);
         add_schedule(&mut world, Input);
         add_schedule(&mut world, FixedUpdate);
+        add_schedule(&mut world, FixedLast);
         add_schedule(&mut world, Update);
         add_schedule(&mut world, Extract);
         add_schedule(&mut world, Render);
@@ -151,6 +156,18 @@ impl App {
         self
     }
 
+    /// Sends a message from outside the schedules. The driver uses this to hand
+    /// OS events (key, resize) to the systems of the next frame.
+    /// Panics if the type was not registered with `add_message`.
+    pub fn write_message<T: Message>(&mut self, message: T) -> &mut Self {
+        assert!(
+            self.world.write_message(message).is_some(),
+            "message {} is not registered",
+            type_name::<T>()
+        );
+        self
+    }
+
     /// Runs Startup, then gives the app to `driver`.
     /// The driver owns the loop and calls `update` one time per frame.
     /// The window event loop will be a driver; a headless loop is another.
@@ -166,6 +183,12 @@ impl App {
         let delta = self.last_frame.map_or(Duration::ZERO, |last| now - last);
         self.last_frame = Some(now);
         self.advance(delta);
+    }
+
+    /// Makes the delta of the next `update` zero. The driver calls this after a pause
+    /// (minimized window), so the pause does not count as one slow frame.
+    pub fn reset_clock(&mut self) {
+        self.last_frame = None;
     }
 
     /// Runs one frame with a given delta. `update` calls this; tests call it directly.
@@ -207,6 +230,7 @@ impl App {
             time.accumulator -= fixed_delta;
             time.fixed_tick += 1;
             self.world.run_schedule(FixedUpdate);
+            self.world.run_schedule(FixedLast);
             steps += 1;
         }
         self.fixed_step_since_message_update |= steps > 0;

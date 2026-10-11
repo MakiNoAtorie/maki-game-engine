@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+maki-core.workspace = true
+anyhow.workspace = true
+bevy_ecs.workspace = true
+tracing.workspace = true
+winit.workspace = true

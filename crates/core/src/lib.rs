@@ -5,6 +5,8 @@ pub mod app;
 pub mod config;
 pub mod time;
 
-pub use app::{App, Extract, FixedUpdate, Input, Module, Present, Render, Startup, Update};
+pub use app::{
+    App, Extract, FixedLast, FixedUpdate, Input, Module, Present, Render, Startup, Update,
+};
 pub use config::Config;
 pub use time::Time;

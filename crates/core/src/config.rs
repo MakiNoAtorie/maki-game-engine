@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Resource)]
 #[serde(default)]
 pub struct Config {
+    pub window_title: String,
+    /// Window size in logical pixels: the OS multiplies it by the display scale factor.
     pub window_width: u32,
     pub window_height: u32,
     /// The path tracer renders at this size; the result is scaled to the window.
@@ -28,6 +30,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            window_title: "maki".to_owned(),
             window_width: 1280,
             window_height: 720,
             render_width: 640,
