@@ -8,7 +8,8 @@
 //! 3. `Present` schedule: `end_frame` submits the frame and shows it.
 //!
 //! Meshes: see the `meshes` module. It uploads the mesh assets and keeps the mesh table.
-//! The game writes [`ExtractedInstances`] in `Extract`.
+//! The game writes [`ExtractedInstances`] in `Extract`, and spawns one [`Camera`].
+//! The passes (`passes` module) trace one ray per pixel against these instances.
 //!
 //! A module adds to the renderer in two places: an `Extract` system that writes a
 //! resource into the render world, and a pass in the frame graph (from a `Startup`
@@ -17,6 +18,7 @@
 //! Shaders: GLSL files in `shaders/` are compiled to SPIR-V by `build.rs` at build time
 //! and embedded with [`shader_spirv!`]. See `build.rs` for the rules.
 
+mod camera;
 mod graph;
 mod meshes;
 mod passes;
@@ -29,9 +31,11 @@ use maki_core::{App, Config, Extract, Module, Present, Render, Startup, Time};
 use maki_gpu::{Gpu, GpuDesc};
 use maki_platform::{Window, WindowSize};
 
+pub use camera::{Camera, ExtractedCamera};
 pub use graph::{BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc};
 pub use maki_gpu::Access;
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
+pub use passes::MAX_INSTANCES;
 
 /// The bytes of a shader that `build.rs` compiled. The argument is the file name in `shaders/`.
 macro_rules! shader_spirv {
@@ -60,8 +64,6 @@ pub struct ExtractedFrame {
     pub internal_resolution: (u32, u32),
     /// Size of the window in physical pixels.
     pub window_size: (u32, u32),
-    /// Game time, for animation in shaders.
-    pub seconds: f32,
 }
 
 /// Set this environment variable to change the internal resolution every few frames.
@@ -91,6 +93,7 @@ impl Module for RenderModule {
             app.add_systems(Extract, selftest_resolution.after(extract_frame));
         }
         meshes::build(app);
+        camera::build(app);
     }
 }
 
@@ -120,13 +123,11 @@ pub fn setup_renderer(
 fn extract_frame(
     config: Res<Config>,
     size: Res<WindowSize>,
-    time: Res<Time>,
     mut render_world: ResMut<RenderWorld>,
 ) {
     render_world.0.insert_resource(ExtractedFrame {
         internal_resolution: (config.render_width, config.render_height),
         window_size: (size.width, size.height),
-        seconds: time.elapsed.as_secs_f32(),
     });
 }
 

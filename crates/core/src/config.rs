@@ -25,6 +25,12 @@ pub struct Config {
     pub room_width: f32,
     pub room_depth: f32,
     pub room_height: f32,
+    /// Where the camera is, in meters: X, Y (up), Z. The room floor has its center at the origin.
+    pub camera_position: [f32; 3],
+    /// The point that the camera looks at.
+    pub camera_target: [f32; 3],
+    /// Vertical field of view of the camera, in degrees.
+    pub camera_fov_degrees: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
     pub fixed_hz: f64,
     /// Limit of FixedUpdate steps in one frame. A longer frame counts as this many steps.
@@ -44,6 +50,10 @@ impl Default for Config {
             room_width: 8.0,
             room_depth: 8.0,
             room_height: 3.0,
+            // Above and in front of the room, looking down into it at an angle.
+            camera_position: [0.0, 9.0, 7.0],
+            camera_target: [0.0, 0.5, 0.0],
+            camera_fov_degrees: 45.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,
         }

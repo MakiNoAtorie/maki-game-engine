@@ -202,6 +202,28 @@ impl Bindless {
         unsafe { device.update_descriptor_sets(&[write], &[]) };
     }
 
+    /// The set has one acceleration structure slot.
+    pub fn write_acceleration_structure(
+        &self,
+        device: &ash::Device,
+        accel: vk::AccelerationStructureKHR,
+    ) {
+        let list = [accel];
+        // This descriptor type has no field in the write struct: it goes in an extension
+        // struct, and the count must be set by hand.
+        let mut info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(&list);
+        let write = self
+            .write(
+                ACCELERATION_STRUCTURE,
+                0,
+                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+            )
+            .descriptor_count(1)
+            .push_next(&mut info);
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
+    }
+
     fn write(
         &self,
         binding: u32,

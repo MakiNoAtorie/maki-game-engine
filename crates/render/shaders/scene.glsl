@@ -1,5 +1,5 @@
-// Mesh data on the GPU. Must agree with crates/render/src/meshes.rs.
-// Include after bindless.glsl.
+// The scene on the GPU: the acceleration structure and the mesh data.
+// Must agree with crates/render/src/meshes.rs. Include after bindless.glsl.
 //
 // From a ray hit to a normal:
 // 1. Each instance of the acceleration structure carries the mesh table index of its
@@ -8,9 +8,15 @@
 // 2. mesh_normal() below reads the three corner indices of the triangle, then the
 //    three corner normals, and blends them.
 // 3. The result is in the space of the mesh. The ray query also gives the
-//    object-to-world matrix of the instance, which turns it into a world normal.
+//    world-to-object matrix of the instance, which turns it into a world normal.
+// trace.comp does these steps.
 
 #extension GL_EXT_buffer_reference : require
+#extension GL_EXT_ray_query : require
+
+// All instances of the scene (TLAS). Built again in each frame by the pass "build_tlas".
+layout(set = BINDLESS_SET, binding = BINDLESS_ACCELERATION_STRUCTURE)
+    uniform accelerationStructureEXT scene_tlas;
 
 // 32 bytes: a vec3 in a std430 block has an alignment of 16 bytes.
 struct Vertex {

@@ -10,11 +10,14 @@ slotmap::new_key_type! {
     pub struct ImageHandle;
     pub struct SamplerHandle;
     pub struct ComputePipelineHandle;
+    pub struct BlasHandle;
+    pub struct TlasHandle;
 }
 
 /// Every buffer is a storage buffer in the bindless set.
-// ponytail: no usage flags yet. Add a usage field when a buffer needs one
-// (acceleration structure storage, vertex data for the UI).
+// ponytail: no usage field. Every buffer permits all uses that the crate has (storage
+// buffer, copy, acceleration structure input and storage). Add a usage field when a use
+// has a cost or a limit (vertex data for the UI).
 #[derive(Debug, Clone, Copy)]
 pub struct BufferDesc<'a> {
     /// Shown in allocator reports.
@@ -28,6 +31,10 @@ pub struct BufferDesc<'a> {
 pub enum Format {
     Rgba8Unorm,
     Rgba16Float,
+    /// One 32-bit float channel.
+    R32Float,
+    /// Two 16-bit float channels.
+    Rg16Float,
 }
 
 impl Format {
@@ -35,6 +42,8 @@ impl Format {
         match self {
             Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
             Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
+            Format::R32Float => vk::Format::R32_SFLOAT,
+            Format::Rg16Float => vk::Format::R16G16_SFLOAT,
         }
     }
 }
@@ -152,6 +161,8 @@ pub(crate) enum Garbage {
     Image(Image),
     Sampler(Sampler),
     Pipeline(vk::Pipeline),
+    /// The storage buffer of the structure is a separate `Buffer` entry after this one.
+    Accel(vk::AccelerationStructureKHR),
 }
 
 /// All mip levels and layers of a color image.

@@ -1,0 +1,30 @@
+# Open items
+
+Items that cannot be tested yet. Each item names the stage that makes the test possible. Remove an item when its check passes.
+
+| Item | State now | Testable when | Check |
+|---|---|---|---|
+| Dynamic rendering | Feature is enabled on the device. No code uses it. | UI stage (egui) | egui draws into the swapchain image. Validation is clean. |
+| Swapchain image views | Not created. The frame reaches the swapchain by blit only. | UI stage (egui) | Views are built again on resize. No leak at shutdown. |
+| Image upload (buffer to image copy) | No API. Images get data only from compute shaders. The glTF loader reads no textures. | Stage that adds glTF textures | A texture from a glTF file shows correctly through a sampler. |
+| Missing-feature error path | Code is written. This GPU has all features, so the path did not run. | A GPU or driver without ray query is available | The game stops with a message that names the GPU and each missing feature. |
+| Other GPUs and systems | Tested only on an NVIDIA RTX 5060 Ti, Windows 11. | AMD, Intel, or Linux hardware is available | The room and the model show in normal colors, resize works, validation is clean. |
+| Swapchain surface fallbacks | Code is written for a non-opaque composite alpha mode and for a surface without a fixed extent. Windows uses neither. | Linux (Wayland) is available | The window shows the frame and resizes. |
+| Buffers and the TLAS in the frame graph | Passes declare images only. `Gpu::build_tlas` records its own barriers against compute shaders. No pass shares a buffer with another pass. | A pass writes a buffer that a later pass reads (path tracer stage) | The graph records the buffer barrier. Synchronization validation is clean. |
+| Graphics passes in the frame graph | `Access` has compute and blit uses only. | UI stage (egui) | A pass declares a color attachment use. Synchronization validation is clean. |
+| Mesh buffers in GPU-only memory | Mesh buffers are CPU-writable. The gpu crate has no buffer-to-buffer copy. | Stage that adds a staging upload to the gpu crate | Mesh buffers are GPU-only. Validation is clean. |
+| Mesh removal in the game | `GpuMeshes::sync` frees the buffers and the BLAS of a removed mesh. No game code removes a mesh. The buffer path ran one time in a temporary test in stage 5 (remove, upload again, validation clean). The BLAS path (`Gpu::destroy_blas`) did not run. | Stage with dynamic objects or scene change | A mesh is removed during play. Its table index is used again. Validation is clean. |
+| Owner of the meshes of a model | `Assets<Model>::remove` leaves the meshes of the model in the mesh store. | Stage that unloads a model | The model and its meshes are gone from the stores and from the GPU. |
+| Asynchronous loading | `load_gltf` reads the file before it returns. Callers already wait for `LoadState::Ready`. | Stage that adds a loader thread | A model shows some frames after start. `scene.rs` did not change. |
+| Mesh table size | Fixed at `MAX_MESHES` (1024). A mesh past the limit is not uploaded; an error is logged. | A scene needs more meshes | The table grows. Shaders read the new table. |
+| Mesh shared by many glTF nodes | The loader makes one mesh for each node, with the node transform applied to the vertices. | A model file makes this expensive | One mesh, many instances, each with the node transform. |
+| Buffer usage flags | Every buffer permits all uses of the crate (storage, copy, acceleration structure input and storage). | A use has a cost or a limit (UI vertex data) | `BufferDesc` has a usage field. Validation is clean for each usage. |
+| BLAS build stops the game | `Gpu::create_blas` submits the build and waits until the GPU queue is idle. One wait for each mesh. | A mesh is uploaded during play (loader thread, dynamic objects) | The build is recorded in the frame. No frame is longer at an upload. |
+| BLAS compaction | A BLAS keeps the size of the first estimate. | A scene uses much GPU memory for meshes | The BLAS is copied to its compact size. Memory use is lower; the picture is the same. |
+| TLAS size | Fixed at `MAX_INSTANCES` (4096). More instances are not drawn; an error is logged one time. One TLAS for the life of the `Gpu` (no `destroy_tlas`). | A scene needs more instances | The TLAS grows. Validation is clean. |
+| TLAS with no instance | `build_tlas` permits an empty list. The scene always has the room, so the path did not run. | A scene can be empty (scene change) | The screen is black. Validation is clean. |
+| Moving instance | The TLAS is built each frame from the extracted transforms. No entity moves. | Stage with dynamic objects | An object moves on the screen. No renderer code changed. |
+| Instance with a scale or rotation | The shader turns the normal with the world-to-object matrix. All instances have a translation only. | A scene has a rotated or scaled object | The normal colors agree with the faces of the object. |
+| Depth, normal, and motion images | The trace pass writes them. No pass reads them. Motion is all zeros. | Denoiser or upscaler stage | A pass reads them by name. Motion vectors agree with a moving object. |
+| Single-sided parts of a model | Camera rays cull back faces, to look into the room through the near walls. A generated glTF pyramid showed correctly (temporary test). No model with single-sided parts was tested. | A glTF file with single-sided parts (leaves, cloth) is at hand | The parts show from the two sides, or the cull is limited to the room. |
+| Two cameras | The first `Camera` entity is used. | The game needs a second camera (editor) | A marker selects the active camera. |

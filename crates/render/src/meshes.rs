@@ -1,6 +1,7 @@
 //! Meshes on the GPU, and the list of mesh instances to draw.
 //!
-//! Each mesh asset gets a vertex buffer and an index buffer. One more buffer, the mesh
+//! Each mesh asset gets a vertex buffer, an index buffer, and a BLAS (the acceleration
+//! structure of its triangles, which rays are traced against). One more buffer, the mesh
 //! table, has an entry for each mesh with the addresses of its two buffers. A shader
 //! that knows the index of a mesh in the table can thus read all of its data.
 //! `shaders/scene.glsl` has the same layouts on the shader side.
@@ -21,7 +22,7 @@ use bevy_ecs::world::World;
 use glam::Mat4;
 use maki_assets::{Assets, Handle, Mesh};
 use maki_core::{App, Extract, Render, Startup};
-use maki_gpu::{BufferDesc, BufferHandle, Gpu};
+use maki_gpu::{BlasDesc, BlasHandle, BufferDesc, BufferHandle, Gpu};
 
 use crate::{RenderGpu, RenderWorld, setup_renderer};
 
@@ -56,6 +57,8 @@ pub struct GpuMesh {
     pub index: u32,
     pub vertex_count: u32,
     pub index_count: u32,
+    /// The triangles as rays see them. An instance in the TLAS names it.
+    pub(crate) blas: BlasHandle,
     vertices: BufferHandle,
     indices: BufferHandle,
 }
@@ -109,6 +112,7 @@ impl GpuMeshes {
         self.meshes.retain(|handle, mesh| {
             let alive = assets.get(*handle).is_some();
             if !alive {
+                gpu.destroy_blas(mesh.blas);
                 gpu.destroy_buffer(mesh.vertices);
                 gpu.destroy_buffer(mesh.indices);
                 self.free_indices.push(mesh.index);
@@ -148,24 +152,38 @@ impl GpuMeshes {
             .inspect_err(|_| gpu.destroy_buffer(vertices))?;
 
         // `Mesh::new` checked that the counts fit in a u32.
-        let gpu_mesh = GpuMesh {
+        let vertex_count = mesh.positions().len() as u32;
+        let index_count = mesh.indices().len() as u32;
+        let entry = entry_bytes(vertex_address, index_address, mesh);
+        // The BLAS is built here, one time: the triangles of a mesh do not change.
+        let blas = gpu
+            .create_blas(&BlasDesc {
+                name: mesh.name(),
+                vertices,
+                vertex_count,
+                vertex_stride: VERTEX_BYTES as u64,
+                indices,
+                triangle_count: index_count / 3,
+            })
+            .and_then(|blas| {
+                // No frame in flight reads this entry: no instance names a free index.
+                gpu.write_buffer(self.table, u64::from(index) * ENTRY_BYTES as u64, &entry)
+                    .inspect_err(|_| gpu.destroy_blas(blas))?;
+                Ok(blas)
+            })
+            .inspect_err(|_| {
+                gpu.destroy_buffer(vertices);
+                gpu.destroy_buffer(indices);
+            })?;
+        self.free_indices.pop();
+        Ok(GpuMesh {
             index,
-            vertex_count: mesh.positions().len() as u32,
-            index_count: mesh.indices().len() as u32,
+            vertex_count,
+            index_count,
+            blas,
             vertices,
             indices,
-        };
-        let entry = entry_bytes(vertex_address, index_address, mesh);
-        // No frame in flight reads this entry: no instance names a free index.
-        if let Err(error) =
-            gpu.write_buffer(self.table, u64::from(index) * ENTRY_BYTES as u64, &entry)
-        {
-            gpu.destroy_buffer(vertices);
-            gpu.destroy_buffer(indices);
-            return Err(error);
-        }
-        self.free_indices.pop();
-        Ok(gpu_mesh)
+        })
     }
 }
 

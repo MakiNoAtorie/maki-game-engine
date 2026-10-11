@@ -1,0 +1,84 @@
+#version 460
+// Pass "trace": one ray per pixel from the camera into the scene.
+// Writes four images at the internal resolution:
+// - hdr:    the world normal of the hit as a color (0.5 + 0.5 * normal). Black on a miss.
+// - depth:  the distance from the camera to the hit along the ray, in meters. T_MAX on a miss.
+// - normal: the world normal in xyz, and 1.0 in w. All zeros on a miss.
+// - motion: how far the point moved on the screen since the last frame. Zeros for now.
+
+#include "bindless.glsl"
+#include "scene.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// A storage image array names one format. These three arrays are the same binding,
+// seen with three formats: each image index is valid only in the array of its format.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform writeonly image2D images_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, r32f)
+    uniform writeonly image2D images_r32f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
+    uniform writeonly image2D images_rg16f[];
+
+// Must agree with `Trace::execute` in src/passes.rs.
+// A vec3 has 12 bytes and an alignment of 16, so a uint fits after each one.
+layout(push_constant) uniform Push {
+    vec3 origin;     // camera position, world space
+    uint mesh_table; // index in `mesh_tables`
+    // The ray of a pixel is `forward + x * right + y * up`, x and y from -1 to 1.
+    // See `Camera::ray_basis` in src/camera.rs.
+    vec3 right;
+    uint hdr;        // index in `images_rgba16f`
+    vec3 up;
+    uint depth;      // index in `images_r32f`
+    vec3 forward;
+    uint normal;     // index in `images_rgba16f`
+    uint motion;     // index in `images_rg16f`
+} push;
+
+// The part of a ray that can hit, in meters from the camera.
+const float T_MIN = 0.01;
+const float T_MAX = 1000.0;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images_rgba16f[push.hdr]);
+    // The work groups cover full 8x8 blocks, so some invocations are out of the image.
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    // The center of the pixel, from -1 to 1. Image y goes down, `up` goes up.
+    vec2 screen = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
+    vec3 direction = normalize(push.forward + screen.x * push.right - screen.y * push.up);
+
+    // Opaque: all geometry is opaque, so the loop below never has to ask the shader.
+    // Cull back faces: the camera is outside of the room and looks in through the
+    // back side of the near walls. Only these camera rays cull; light rays will not.
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene_tlas,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT,
+        0xFFu, push.origin, T_MIN, direction, T_MAX);
+    // Each step moves the search forward. At the end the query holds the closest hit.
+    while (rayQueryProceedEXT(query)) {}
+
+    vec3 color = vec3(0.0);
+    vec4 normal = vec4(0.0);
+    float depth = T_MAX;
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        // The custom index of an instance is the mesh table index of its mesh.
+        uint mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+        uint triangle = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+        vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+        vec3 mesh_space = mesh_normal(push.mesh_table, mesh, triangle, barycentrics);
+        // A normal goes to world space with the transpose of the world-to-object
+        // matrix (vector * matrix). This is correct also for a non-uniform scale.
+        mat4x3 world_to_object = rayQueryGetIntersectionWorldToObjectEXT(query, true);
+        normal = vec4(normalize((mesh_space * world_to_object).xyz), 1.0);
+        color = 0.5 + 0.5 * normal.xyz;
+        depth = rayQueryGetIntersectionTEXT(query, true);
+    }
+    imageStore(images_rgba16f[push.hdr], pixel, vec4(color, 1.0));
+    imageStore(images_r32f[push.depth], pixel, vec4(depth));
+    imageStore(images_rgba16f[push.normal], pixel, normal);
+    imageStore(images_rg16f[push.motion], pixel, vec4(0.0));
+}

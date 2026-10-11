@@ -33,6 +33,11 @@ If the config file does not exist, the game writes one with default values.
 | `vsync` | `true` | Vertical sync |
 | `model_path` | not set | glTF file to show (`.gltf` or `.glb`). Not set: a generated cube and sphere |
 | `room_width`, `room_depth`, `room_height` | 8.0, 8.0, 3.0 | Inner size of the room in meters (X, Z, Y) |
+| `camera_position` | `[0.0, 9.0, 7.0]` | Camera position in meters (X, Y up, Z). The room floor has its center at the origin |
+| `camera_target` | `[0.0, 0.5, 0.0]` | The point that the camera looks at |
+| `camera_fov_degrees` | 45.0 | Vertical field of view |
+
+The picture shows the world normal of each surface as a color (`0.5 + 0.5 * normal`): a floor is green, a wall that faces +X is red, a wall that faces +Z is blue. The camera rays do not hit the back side of a triangle, so the camera looks into the room through the near walls.
 
 ## Crates
 
@@ -43,7 +48,7 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/core` | Config, app and schedules, time, transform |
 | `crates/platform` | Window and input actions |
 | `crates/assets` | Asset stores and handles, mesh asset, glTF loader, mesh generators |
-| `crates/gpu` | Vulkan backend; the only crate that shows Vulkan types |
-| `crates/render` | Render world, frame graph, render passes, meshes on the GPU |
+| `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures); the only crate that shows Vulkan types |
+| `crates/render` | Render world, frame graph, render passes, camera, meshes and their acceleration structures |
 | `crates/ui` | egui panels |
 | `game` | The binary |

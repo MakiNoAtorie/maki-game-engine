@@ -5,17 +5,19 @@
 //!
 //! One frame:
 //! 1. [`Gpu::begin_frame`]: waits for a free frame slot and gets a swapchain image.
-//! 2. Draw calls ([`Gpu::image_barrier`], [`Gpu::dispatch_compute`],
+//! 2. Draw calls ([`Gpu::image_barrier`], [`Gpu::build_tlas`], [`Gpu::dispatch_compute`],
 //!    [`Gpu::blit_to_swapchain`]) record commands.
 //! 3. [`Gpu::end_frame`]: submits the commands and presents the image.
 //!
 //! The CPU records frame N+1 while the GPU still draws frame N (`FRAMES_IN_FLIGHT`).
 //! For this reason a destroyed resource is not freed at once: see [`Gpu::destroy_buffer`].
 //!
-//! Synchronization is the caller's task: this crate records no barrier by itself.
-//! The caller tells each change of use with [`Gpu::image_barrier`] (the frame graph of
-//! the render crate does this).
+//! Synchronization of images is the caller's task: this crate records no image barrier
+//! by itself. The caller tells each change of use with [`Gpu::image_barrier`] (the frame
+//! graph of the render crate does this). The exception is [`Gpu::build_tlas`], which
+//! orders itself against the compute shaders before and after it.
 
+mod accel;
 mod bindless;
 mod device;
 mod resources;
@@ -25,7 +27,7 @@ use std::io::Cursor;
 use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result, ensure};
-use ash::vk;
+use ash::{khr, vk};
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{
     AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc,
@@ -33,14 +35,16 @@ use gpu_allocator::vulkan::{
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use slotmap::SlotMap;
 
+use accel::{Blas, Tlas};
 use bindless::{Bindless, PUSH_CONSTANT_BYTES};
 use device::DeviceContext;
 use resources::{Buffer, COLOR_RANGE, Garbage, Image, Sampler};
 use swapchain::Swapchain;
 
+pub use accel::{BlasDesc, TlasInstance};
 pub use resources::{
-    Access, BufferDesc, BufferHandle, ComputePipelineHandle, Format, ImageDesc, ImageHandle,
-    ImageTarget, SamplerDesc, SamplerHandle,
+    Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format, ImageDesc,
+    ImageHandle, ImageTarget, SamplerDesc, SamplerHandle, TlasHandle,
 };
 
 /// How many frames the CPU can record ahead of the GPU.
@@ -86,6 +90,12 @@ pub struct Gpu {
     images: SlotMap<ImageHandle, Image>,
     samplers: SlotMap<SamplerHandle, Sampler>,
     pipelines: SlotMap<ComputePipelineHandle, vk::Pipeline>,
+    /// The functions of the acceleration structure extension.
+    accel: khr::acceleration_structure::Device,
+    /// The GPU needs the address of a scratch buffer to be a multiple of this.
+    scratch_alignment: u64,
+    blases: SlotMap<BlasHandle, Blas>,
+    tlases: SlotMap<TlasHandle, Tlas>,
     frames: [FrameSlot; FRAMES_IN_FLIGHT],
     /// Index in `frames` of the current frame, or of the last one between frames.
     slot: usize,
@@ -108,6 +118,16 @@ impl Gpu {
             buffer_device_address: true,
             allocation_sizes: Default::default(),
         })?;
+
+        let mut accel_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+        {
+            let mut properties =
+                vk::PhysicalDeviceProperties2::default().push_next(&mut accel_properties);
+            unsafe {
+                ctx.instance
+                    .get_physical_device_properties2(ctx.physical_device, &mut properties)
+            };
+        }
 
         let mut frames = Vec::new();
         for _ in 0..FRAMES_IN_FLIGHT {
@@ -142,6 +162,13 @@ impl Gpu {
             images: SlotMap::with_key(),
             samplers: SlotMap::with_key(),
             pipelines: SlotMap::with_key(),
+            accel: khr::acceleration_structure::Device::new(&ctx.instance, device),
+            scratch_alignment: u64::from(
+                accel_properties.min_acceleration_structure_scratch_offset_alignment,
+            )
+            .max(1),
+            blases: SlotMap::with_key(),
+            tlases: SlotMap::with_key(),
             frames: frames
                 .try_into()
                 .ok()
@@ -180,7 +207,9 @@ impl Gpu {
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::TRANSFER_SRC
-                | vk::BufferUsageFlags::TRANSFER_DST,
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
         );
         buffer.raw = unsafe { device.create_buffer(&info, None) }?;
         buffer.allocation = self.allocator.allocate(&AllocationCreateDesc {
@@ -435,6 +464,7 @@ impl Gpu {
                     self.bindless.sampler_slots.free(sampler.bindless_index);
                 }
                 Garbage::Pipeline(pipeline) => device.destroy_pipeline(pipeline, None),
+                Garbage::Accel(accel) => self.accel.destroy_acceleration_structure(accel, None),
             }
         }
     }
@@ -718,6 +748,9 @@ impl Drop for Gpu {
             for frame in &mut self.frames {
                 garbage.append(&mut frame.garbage);
             }
+            // An acceleration structure goes before the buffer that stores it.
+            garbage.extend(self.blases.drain().map(|(_, b)| Garbage::Accel(b.raw)));
+            garbage.extend(self.tlases.drain().map(|(_, t)| Garbage::Accel(t.raw)));
             garbage.extend(self.buffers.drain().map(|(_, b)| Garbage::Buffer(b)));
             garbage.extend(self.images.drain().map(|(_, i)| Garbage::Image(i)));
             garbage.extend(self.samplers.drain().map(|(_, s)| Garbage::Sampler(s)));

@@ -177,7 +177,7 @@ struct Features<'a> {
 
 /// Each required feature: its name for the error message, and its flag in `Features`.
 /// This list is the single source for the support check and for device creation.
-fn required_features<'f>(f: &'f mut Features<'_>) -> [(&'static str, &'f mut vk::Bool32); 17] {
+fn required_features<'f>(f: &'f mut Features<'_>) -> [(&'static str, &'f mut vk::Bool32); 18] {
     const INDEXING: &str = "descriptor indexing";
     [
         ("buffer device address", &mut f.v12.buffer_device_address),
@@ -224,6 +224,11 @@ fn required_features<'f>(f: &'f mut Features<'_>) -> [(&'static str, &'f mut vk:
         (
             INDEXING,
             &mut f.core.shader_sampled_image_array_dynamic_indexing,
+        ),
+        // Storage images with one or two channels (rg16f).
+        (
+            "storage image extended formats",
+            &mut f.core.shader_storage_image_extended_formats,
         ),
         ("synchronization2", &mut f.v13.synchronization2),
         ("dynamic rendering", &mut f.v13.dynamic_rendering),

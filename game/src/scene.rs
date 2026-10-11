@@ -1,4 +1,5 @@
-//! The scene: the room and the model as entities, and their copy into the render world.
+//! The scene: the room, the model, and the camera as entities, and the copy of the
+//! mesh instances into the render world.
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
@@ -6,7 +7,7 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use glam::Vec3;
 use maki_assets::{Assets, Handle, LoadState, Mesh, Model, load_gltf};
 use maki_core::{App, Config, Extract, Module, Startup, Transform, Update};
-use maki_render::{ExtractedInstance, ExtractedInstances, RenderWorld};
+use maki_render::{Camera, ExtractedInstance, ExtractedInstances, RenderWorld};
 
 /// Draws a mesh at the `Transform` of the entity.
 #[derive(Component, Debug, Clone, Copy)]
@@ -33,6 +34,13 @@ fn spawn_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
 ) {
+    // A fixed view. The renderer copies the camera in `Extract`.
+    commands.spawn(Camera {
+        position: config.camera_position.into(),
+        target: config.camera_target.into(),
+        fov_y_degrees: config.camera_fov_degrees,
+    });
+
     let room = Mesh::room(config.room_width, config.room_depth, config.room_height);
     commands.spawn((Transform::IDENTITY, MeshInstance(meshes.add(room))));
 
