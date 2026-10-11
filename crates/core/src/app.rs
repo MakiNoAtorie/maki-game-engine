@@ -119,7 +119,14 @@ impl App {
         self
     }
 
-    pub fn insert_resource(&mut self, resource: impl Resource) -> &mut Self {
+    /// Panics if the resource already exists: a second module would silently
+    /// replace the value of the first.
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
+        assert!(
+            !self.world.contains_resource::<R>(),
+            "resource {} already exists",
+            type_name::<R>()
+        );
         self.world.insert_resource(resource);
         self
     }
@@ -165,6 +172,15 @@ impl App {
     pub fn advance(&mut self, delta: Duration) {
         let fixed_delta = {
             let mut time = self.world.resource_mut::<Time>();
+            // A frame that was too slow counts as a shorter frame: game time runs slow
+            // for that frame. Without this limit, each slow frame would cause more fixed
+            // steps and thus a slower next frame (spiral of death).
+            // The limit also keeps `Update` systems from a large jump.
+            let max_delta = time.fixed_delta * self.max_fixed_steps;
+            if delta > max_delta {
+                tracing::warn!(dropped = ?(delta - max_delta), "slow frame, delta limited");
+            }
+            let delta = delta.min(max_delta);
             time.delta = delta;
             time.elapsed += delta;
             time.frame += 1;
@@ -184,17 +200,9 @@ impl App {
 
         self.world.run_schedule(Input);
 
+        // The delta limit above keeps this loop at `max_fixed_steps` steps or less.
         let mut steps = 0;
         while self.world.resource::<Time>().accumulator >= fixed_delta {
-            if steps == self.max_fixed_steps {
-                // The frame was too slow to catch up. Without this limit, each slow frame
-                // would cause more steps and thus a slower next frame (spiral of death).
-                // The simulation runs slow for this frame instead.
-                let mut time = self.world.resource_mut::<Time>();
-                tracing::warn!(dropped = ?time.accumulator, "fixed step limit reached");
-                time.accumulator = Duration::ZERO;
-                break;
-            }
             let mut time = self.world.resource_mut::<Time>();
             time.accumulator -= fixed_delta;
             time.fixed_tick += 1;
@@ -279,11 +287,12 @@ mod tests {
             }
             assert_eq!(app.world.resource::<Time>().fixed_tick, 52);
 
-            // A very long frame is limited to `max_fixed_steps` and the rest is dropped.
+            // A very long frame counts as `max_fixed_steps` steps of time.
             app.advance(Duration::from_secs(10));
             let time = app.world.resource::<Time>();
+            assert_eq!(time.delta, Duration::from_millis(80));
             assert_eq!(time.fixed_tick, 56);
-            assert_eq!(time.alpha, 0.0);
+            assert_eq!(time.alpha, 0.75);
             assert_eq!(time.frame, 103);
         });
     }
@@ -361,6 +370,13 @@ mod tests {
     struct Empty;
     impl Module for Empty {
         fn build(&self, _app: &mut App) {}
+    }
+
+    #[test]
+    #[should_panic(expected = "already exists")]
+    fn duplicate_resource_is_rejected() {
+        let mut app = App::new(Config::default()).unwrap();
+        app.insert_resource(Config::default());
     }
 
     #[test]

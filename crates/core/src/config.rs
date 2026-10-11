@@ -21,7 +21,7 @@ pub struct Config {
     pub model_path: Option<PathBuf>,
     /// Rate of the FixedUpdate schedule, in steps per second.
     pub fixed_hz: f64,
-    /// Limit of FixedUpdate steps in one frame. Time above the limit is dropped.
+    /// Limit of FixedUpdate steps in one frame. A longer frame counts as this many steps.
     pub max_fixed_steps: u32,
 }
 

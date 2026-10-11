@@ -33,6 +33,12 @@ The MVP exists to set an architecture that later features plug into without rewo
 - Vulkan validation layers are on in debug builds. A stage is not done while validation reports errors.
 - The user is learning from this code: write clear, readable code; explain non-obvious decisions in short comments.
 
+## Documentation
+- Write all documentation (READMEs, doc comments, reports) in lean, technical English. No verbose or flowery prose.
+
+## Skills
+- Use the `ponytail` skill proactively on every coding task (write, fix, refactor, review, choose dependencies).
+
 ## Working agreement
 - Work in stages. Implement only the stage the user gives.
 - At the end of a stage, STOP and report:
