@@ -20,7 +20,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// Log filter variable, same syntax as `RUST_LOG` (for example `debug` or `maki_core=trace`).
 const LOG_ENV: &str = "MAKI_LOG";
 
-const USAGE: &str = "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE] [--bench-static] [--bench-script walk|trip]]";
+const USAGE: &str = "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE] [--bench-static | --bench-light-frames N] [--bench-script walk|trip]]";
 
 fn init_logging() {
     let filter = EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -42,6 +42,8 @@ struct Args {
     bench_dump: Option<PathBuf>,
     /// With `bench_frames`: the light does not move.
     bench_static: bool,
+    /// With `bench_frames`: the light moves in this many frames, then it stops.
+    bench_light_frames: Option<u64>,
     /// With `bench_frames`: the name of a script that plays the game. See the `bench` module.
     bench_script: Option<String>,
 }
@@ -50,7 +52,7 @@ struct Args {
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> {
     let mut args = args.into_iter();
     let (mut config_path, mut bench_frames, mut bench_dump) = (None, None, None);
-    let (mut bench_static, mut bench_script) = (false, None);
+    let (mut bench_static, mut bench_script, mut bench_light_frames) = (false, None, None);
     while let Some(arg) = args.next() {
         if arg == "--bench-frames" {
             // The limit keeps a typing error from a table of rows that fills the memory.
@@ -64,6 +66,11 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
             bench_frames = Some(frames);
         } else if arg == "--bench-static" {
             bench_static = true;
+        } else if arg == "--bench-light-frames" {
+            let frames = args.next().and_then(|frames| frames.to_str()?.parse().ok());
+            bench_light_frames = Some(
+                frames.with_context(|| format!("--bench-light-frames needs a number. {USAGE}"))?,
+            );
         } else if arg == "--bench-script" {
             let name = args.next().and_then(|name| name.into_string().ok());
             let name = name.filter(|name| bench::script(name).is_some());
@@ -89,6 +96,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
         bench_frames,
         bench_dump,
         bench_static,
+        bench_light_frames,
         bench_script,
     })
 }
@@ -128,7 +136,12 @@ fn main() -> anyhow::Result<()> {
             start: args.bench_frames.map(|frames| bench::BenchRun {
                 frames,
                 dump: args.bench_dump,
-                static_light: args.bench_static,
+                // A light that does not move: one that stops before the first frame.
+                light_frames: if args.bench_static {
+                    Some(0)
+                } else {
+                    args.bench_light_frames
+                },
                 script: args.bench_script.as_deref().and_then(bench::script),
             }),
         });
@@ -154,6 +167,7 @@ mod tests {
                 bench_frames: None,
                 bench_dump: None,
                 bench_static: false,
+                bench_light_frames: None,
                 bench_script: None,
             }
         );
@@ -169,6 +183,7 @@ mod tests {
                     bench_frames: Some(300),
                     bench_dump: None,
                     bench_static: false,
+                    bench_light_frames: None,
                     bench_script: None,
                 }
             );

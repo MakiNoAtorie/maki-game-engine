@@ -90,9 +90,11 @@ impl RenderWorld {
         self.0.resource_mut::<Accumulation>().request_reset();
     }
 
-    /// Keeps a short history for each pixel (`light_history_samples` of the config).
-    /// Call from an `Extract` system when the lighting has changed: a light, or an
-    /// object that moved (its shadow moved too). The old samples are almost correct.
+    /// Keeps a short history of the indirect light for each pixel
+    /// (`light_history_samples` of the config). Call from an `Extract` system when
+    /// the lighting has changed: a light, or an object that moved (its shadow moved
+    /// too). The old samples are almost correct. The direct light needs no such
+    /// call: the denoiser finds the pixels where it changed (`history_clamp`).
     pub fn soften_accumulation(&mut self) {
         self.0.resource_mut::<Accumulation>().request_soft_reset();
     }
@@ -125,7 +127,7 @@ pub struct ExtractedFrame {
     pub samples_per_frame: u32,
     /// The largest number of rays in one light path.
     pub max_path_rays: u32,
-    /// Samples that the mean of a pixel keeps on a soft reset.
+    /// Samples that the indirect light of a pixel keeps on a soft reset.
     pub light_history_samples: u32,
     /// Filter passes of the denoiser for the indirect light in this frame, 0 to
     /// `MAX_DENOISE_PASSES`.
@@ -137,6 +139,9 @@ pub struct ExtractedFrame {
     pub denoise_reach: f32,
     /// `indirect_clamp` of the config: the limit for the light of one bounce ray.
     pub indirect_clamp: f32,
+    /// `history_clamp` of the config: the history test of the direct light, in
+    /// standard deviations of the noise. 0: no such test.
+    pub history_clamp: f32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
     /// How dark the fade makes the picture: 0.0 is the picture, 1.0 is black.
@@ -295,6 +300,7 @@ pub(crate) fn extract_frame(
         denoise_direct_passes: config.denoise_direct_passes,
         denoise_reach: config.denoise_reach,
         indirect_clamp: config.indirect_clamp,
+        history_clamp: config.history_clamp,
         exposure: config.exposure,
         fade: fade.map_or(0.0, |fade| fade.0.clamp(0.0, 1.0)),
         debug_view: *debug_view,

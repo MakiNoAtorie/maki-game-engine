@@ -357,7 +357,7 @@ def command_reference(args):
     # limit of bounce light of the default config (`indirect_clamp`): the limit changes
     # what the picture converges to, and the reference is the target of the denoiser.
     # `--set indirect_clamp=0 --name NAME` gives the picture without the limit.
-    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, **parse_overrides(args.set)}
+    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, "denoise_direct_passes": 0, "history_clamp": 0.0, **parse_overrides(args.set)}
     frames = REFERENCE_SAMPLES // 64
     # The picture starts again when the walk script ends.
     if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:
@@ -384,6 +384,8 @@ def command_quality(args):
     build()
     overrides = parse_overrides(args.set)
     arguments = [] if args.moving else ["--bench-static"]
+    if args.light_frames is not None:
+        arguments = ["--bench-light-frames", str(args.light_frames)]
     # The first frames have the cost of the load.
     warmup = min(10, args.frames // 4)
     params, columns = run_scenario(args.scenario, args.frames, warmup, args.label, overrides, arguments)
@@ -485,6 +487,7 @@ if __name__ == "__main__":
     quality.add_argument("--frames", type=int, default=64)
     quality.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="config keys")
     quality.add_argument("--moving", action="store_true", help="the light moves; use a multiple of 240 frames")
+    quality.add_argument("--light-frames", type=int, metavar="N", help="the light moves in N frames (a multiple of 240), then it stops")
     quality.add_argument("--reference", metavar="SCENARIO", help="use the reference of another scenario")
     quality.add_argument("--crop", metavar="X,Y,W,H", help="measure this part of the picture, in pixels")
     quality.set_defaults(function=command_quality)

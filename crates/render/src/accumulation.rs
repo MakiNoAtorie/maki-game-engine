@@ -14,9 +14,12 @@
 //!   are correct, at another place of the picture: the temporal pass finds them with
 //!   the `motion` image. Only the count starts again, so new samples come.
 //! - [`RenderWorld::soften_accumulation`]: the lighting changed (a light, or an object
-//!   that moved and so its shadow). The old samples are almost correct. Each pixel
-//!   keeps a short history (`light_history_samples` of the config) for some frames,
-//!   so the new light replaces the old one: see [`fade_frames`].
+//!   that moved and so its shadow). The old samples are almost correct. The indirect
+//!   light of each pixel keeps a short history (`light_history_samples` of the
+//!   config) for some frames, so the new light replaces the old one: see
+//!   [`fade_frames`]. The direct light keeps its history where the denoiser finds no
+//!   change (the fast history of `shaders/denoise_temporal.comp`): the noise of the
+//!   indirect light is too large for such a test at one sample for each frame.
 //! - [`RenderWorld::reset_accumulation`]: the old samples are of no use (a new image
 //!   size, the manual reset). Each pixel starts again.
 

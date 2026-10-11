@@ -37,7 +37,7 @@ layout(push_constant) uniform Push {
     vec3 forward;
     uint normal; // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
     int step;    // pixels between two points of the pattern
-    uint color;  // index in `images_rgba32f`: the samples in the mean, in a
+    uint color;  // index in `images_rgba32f`: the mean of this light, its samples in a
     // The pass runs for a pixel while `step * step * samples` is at most this.
     // 0: for each pixel.
     float reach;

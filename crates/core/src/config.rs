@@ -61,11 +61,12 @@ pub struct Config {
     /// GPU time for the path tracer in each frame, in milliseconds, when
     /// `samples_per_frame` is 0. Keep it well below the time of one display refresh.
     pub trace_budget_ms: f32,
-    /// When the lighting changes (a light, or an object that moves), each pixel keeps
-    /// at most this many samples of the old lighting, and the new samples replace
-    /// them step by step. More samples: less noise while something moves, and the
-    /// lighting follows later (a shadow leaves a trail).
-    /// 0: a change of the lighting starts the picture again.
+    /// When the lighting changes (a light, or an object that moves), the indirect
+    /// light of each pixel keeps at most this many samples of the old lighting, and
+    /// the new samples replace them step by step. More samples: less noise while
+    /// something moves, and the bounce light follows later.
+    /// 0: a change of the lighting starts the indirect light again.
+    /// The direct light (the shadows) has a test for each pixel: `history_clamp`.
     pub light_history_samples: u32,
     /// The largest number of rays in one light path. Mirrors that face each other and
     /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
@@ -91,6 +92,16 @@ pub struct Config {
     /// light (caustics) darker. Direct light and what the camera sees have no limit.
     /// 0: no limit.
     pub indirect_clamp: f32,
+    /// History confidence of the direct light. The denoiser keeps a second, short
+    /// mean of the direct light of each pixel (4 frames). Where the short means and
+    /// the long means of a block of pixels differ by more than this many standard
+    /// deviations of the noise, the lighting changed there, and the long mean starts
+    /// again from the short one. So a shadow follows its object in few frames, and
+    /// where nothing changes the long mean stays. Lower: a small change shows
+    /// faster, and noise alone can start a mean again. 0: no such test; a change of
+    /// the lighting then cuts the direct light of each pixel to
+    /// `light_history_samples` too.
+    pub history_clamp: f32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
     pub exposure: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
@@ -123,12 +134,13 @@ impl Default for Config {
             max_samples: 1024,
             samples_per_frame: 0,
             trace_budget_ms: 6.0,
-            light_history_samples: 32,
+            light_history_samples: 16,
             max_path_rays: 8,
             denoise_passes: 4,
             denoise_direct_passes: 1,
             denoise_reach: 4096.0,
             indirect_clamp: 8.0,
+            history_clamp: 2.0,
             exposure: 1.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,

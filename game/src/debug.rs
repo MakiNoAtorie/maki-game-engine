@@ -80,9 +80,13 @@ impl Module for DebugPanelModule {
                         .text("bounce light limit (0: none)"),
                 );
                 ui.add(
+                    egui::Slider::new(&mut config.history_clamp, 0.0..=8.0)
+                        .text("direct light history test, deviations (0: off)"),
+                );
+                ui.add(
                     egui::Slider::new(&mut config.light_history_samples, 0..=1024)
                         .logarithmic(true)
-                        .text("samples kept on a light change"),
+                        .text("indirect samples kept on a light change"),
                 );
                 ui.add(
                     egui::Slider::new(&mut config.max_samples, 1..=16384)

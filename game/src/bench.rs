@@ -21,6 +21,9 @@
 //! The CSV has the column `room_load_ms`: for a frame that loaded a room, the time
 //! of the load (file, meshes, GPU upload), else zero.
 //!
+//! With `--bench-light-frames N` the light stops after N frames: the frames after that
+//! show how fast the picture follows a change of the lighting.
+//!
 //! With `--bench-static` the light stays at the start of the path, so the picture
 //! accumulates. The path closes after `FRAMES_PER_TURN` frames: a run with a moving
 //! light whose frame count is a multiple of that number ends with the light at the
@@ -65,8 +68,9 @@ pub struct BenchRun {
     pub frames: u64,
     /// `Some`: write the picture of the last bench frame to this file. See `dump_picture`.
     pub dump: Option<PathBuf>,
-    /// True: the light does not move.
-    pub static_light: bool,
+    /// `Some`: the light moves in this many frames, then it stops. `Some(0)`: it does
+    /// not move.
+    pub light_frames: Option<u64>,
     /// `Some`: the script runs, and the light does not move.
     pub script: Option<Script>,
 }
@@ -234,7 +238,7 @@ impl Module for BenchModule {
                     world.resource_mut::<Bench>().request = Some(BenchRun {
                         frames,
                         dump: dump.then(|| PathBuf::from(PANEL_DUMP_PATH)),
-                        static_light,
+                        light_frames: static_light.then_some(0),
                         script: script_name.and_then(script),
                     });
                 }
@@ -313,11 +317,11 @@ fn move_lights(
     let Some(active) = &bench.active else { return };
     // The light path depends on the frame number, a script on game time: a picture
     // of the two together would differ from run to run.
-    let held = active.run.static_light || active.run.script.is_some();
-    let frame = if held {
+    let frame = if active.run.script.is_some() {
         0
     } else {
-        active.bench_frame(time.frame)
+        let frame = active.bench_frame(time.frame);
+        frame.min(active.run.light_frames.unwrap_or(u64::MAX))
     };
     if let Some((mut pose, light)) = lights.iter_mut().next() {
         let position = path_position(frame, light.radius, &room.def);

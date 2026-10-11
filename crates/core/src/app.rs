@@ -108,10 +108,14 @@ impl App {
             "denoise_passes and denoise_direct_passes must be from 0 to 6"
         );
         ensure!(
-            [config.denoise_reach, config.indirect_clamp]
-                .iter()
-                .all(|value| value.is_finite() && *value >= 0.0),
-            "denoise_reach and indirect_clamp must be zero or positive numbers"
+            [
+                config.denoise_reach,
+                config.indirect_clamp,
+                config.history_clamp
+            ]
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0),
+            "denoise_reach, indirect_clamp, and history_clamp must be zero or positive numbers"
         );
         ensure!(
             config.exposure.is_finite() && config.exposure > 0.0,

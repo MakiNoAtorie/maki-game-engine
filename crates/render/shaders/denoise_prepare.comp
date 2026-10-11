@@ -12,8 +12,11 @@
 //   2. Over space: the variance of the mean in the 3x3 block around the pixel. It
 //      works from the first frame, but it also takes each edge of the light (a shadow
 //      edge, a contact shadow) for noise: with it the filter never turns off there.
-//   So, as in SVGF: the larger one of the two while the mean has fewer than
-//   `SPATIAL_FRAMES` frames, then the measure over time alone.
+//   The measure over time alone is weak for a long time: with it, a mean of 16
+//   frames had four times the error of the two together.
+//   So: the larger one of the two. For the direct light, which has the sharp edges,
+//   only while the mean has fewer than `DIRECT_SPATIAL_FRAMES` frames, then the
+//   measure over time alone. The indirect light is soft: the two for all frames.
 // A pixel with no surface (the background, the light itself) has no such light: zero.
 
 #include "bindless.glsl"
@@ -29,19 +32,19 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
 
 // Must agree with `DenoisePrepare::execute` in src/denoise.rs.
 layout(push_constant) uniform Push {
-    uint color;          // index in `images_rgba32f`: mean light in rgb
+    uint color;          // index in `images_rgba32f`: mean light in rgb, samples in a
     uint moments;        // index in `images_rgba32f`: mean brightness and mean of its square
     uint normal;         // index in `images_rgba16f`: surface normal in xyz, zero for no surface
     uint dst;            // index in `images_rgba16f`
     float frame_samples; // samples that one frame adds to the mean
-    uint samples;        // index in `images_rgba32f`: the samples in the mean, in a
     // The moments of this light are in the channels `2 * signal` and `2 * signal + 1`
     // of `moments`: 0 for the direct light, 1 for the indirect light.
     uint signal;
 } push;
 
-// The measure over space counts while the mean has fewer frames than this.
-const float SPATIAL_FRAMES = 4.0;
+// For the direct light, the measure over space counts while the mean has fewer
+// frames than this.
+const float DIRECT_SPATIAL_FRAMES = 16.0;
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -57,12 +60,11 @@ void main() {
         return;
     }
     // Over time. Zero for a history of one frame.
-    float samples = imageLoad(images_rgba32f[push.samples], pixel).a;
-    float frames = max(1.0, samples / push.frame_samples);
+    float frames = max(1.0, center.a / push.frame_samples);
     vec4 all_moments = imageLoad(images_rgba32f[push.moments], pixel);
     vec2 moments = push.signal == 0u ? all_moments.xy : all_moments.zw;
     float over_time = max(0.0, moments.y - moments.x * moments.x) / frames;
-    if (frames >= SPATIAL_FRAMES) {
+    if (push.signal == 0u && frames >= DIRECT_SPATIAL_FRAMES) {
         imageStore(images_rgba16f[push.dst], pixel, vec4(light, min(over_time, MAX_LIGHT)));
         return;
     }

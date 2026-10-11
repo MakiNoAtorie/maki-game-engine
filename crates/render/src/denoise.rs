@@ -24,7 +24,9 @@
 //!    image tells where each surface point was one frame before, so the mean follows
 //!    a moving object and a moving camera. Where the frame before showed another
 //!    surface, the pixel starts again. While nothing changes, the mean gets all
-//!    samples up to `max_samples`: the picture converges.
+//!    samples up to `max_samples`: the picture converges. Where the lighting changes,
+//!    a second, short mean (the fast history) shows it, and the long mean follows
+//!    (`history_clamp` of the config): see the shader.
 //!
 //! For the direct light, then for the indirect light (`denoise_direct_*`, `denoise_*`):
 //!
@@ -126,8 +128,7 @@ pub(crate) struct TraceImages {
 #[derive(Clone, Copy)]
 pub(crate) struct SignalImages {
     signal: Signal,
-    /// The mean over time. For the direct light, the fourth channel is the sample
-    /// count of all means.
+    /// The mean over time, with its sample count in the fourth channel.
     pub mean: ResourceId,
     /// What the filter passes get: the mean, with its variance in the fourth channel.
     pub input: ResourceId,
@@ -201,6 +202,11 @@ pub(crate) fn add_passes(
         internal("denoise_specular", Format::Rgba16Float),
         "denoise_specular_previous",
     );
+    // The fast mean of the direct light: few frames, so 16 bits are sufficient.
+    let (fast_direct, previous_fast_direct) = graph.add_history(
+        internal("denoise_fast_direct", Format::Rgba16Float),
+        "denoise_fast_direct_previous",
+    );
     // 16 bits are sufficient: these images are made again in each frame.
     // The first filter pass reads `input`. Then the passes read one work image and
     // write the other, in turns. `input` stays as it is, for its debug views.
@@ -242,8 +248,9 @@ pub(crate) fn add_passes(
             previous_indirect,
             previous_moments,
             previous_specular,
+            previous_fast_direct,
         ],
-        current: [mean_direct, mean_indirect, moments, specular],
+        current: [mean_direct, mean_indirect, moments, specular, fast_direct],
     });
     let prepare = pipeline(shader_spirv!("denoise_prepare.comp"));
     let filter = pipeline(shader_spirv!("denoise_filter.comp"));
@@ -252,7 +259,6 @@ pub(crate) fn add_passes(
             pipeline: prepare,
             images,
             moments,
-            samples: mean_direct,
             normal: trace.normal,
         });
         for (index, name) in images.signal.filter_names().into_iter().enumerate() {
@@ -268,7 +274,7 @@ pub(crate) fn add_passes(
                 },
                 dst: images.work[index % 2],
                 normal: trace.normal,
-                samples: mean_direct,
+                samples: images.mean,
             });
         }
     }
@@ -283,10 +289,11 @@ pub(crate) fn add_passes(
 struct DenoiseTemporal {
     pipeline: ComputePipelineHandle,
     trace: TraceImages,
-    /// The means of the frame before: direct, indirect, moments, specular.
-    previous: [ResourceId; 4],
-    /// The same four, of this frame.
-    current: [ResourceId; 4],
+    /// The means of the frame before: direct, indirect, moments, specular, and the
+    /// fast mean of the direct light.
+    previous: [ResourceId; 5],
+    /// The same five, of this frame.
+    current: [ResourceId; 5],
 }
 
 impl DenoiseTemporal {
@@ -308,7 +315,7 @@ impl DenoiseTemporal {
 }
 
 /// See `DenoiseTemporal::images`.
-const READ_IMAGES: usize = 10;
+const READ_IMAGES: usize = 11;
 
 impl Pass for DenoiseTemporal {
     fn name(&self) -> &'static str {
@@ -338,10 +345,21 @@ impl Pass for DenoiseTemporal {
         let frame = ctx.world.resource::<ExtractedFrame>();
         let images = self.images().into_iter();
         let mut push: Vec<u32> = images.map(|image| ctx.bindless_index(image)).collect();
+        // After a change of the lighting, the indirect and the specular light keep a
+        // short history. The direct light keeps all of it where the fast history
+        // agrees with it: the shader tests each pixel.
+        let limit = accumulation.history_limit() as f32;
+        let direct_limit = if limit > 0.0 && frame.history_clamp > 0.0 {
+            frame.max_samples as f32
+        } else {
+            limit
+        };
         push.extend([
             (accumulation.frame_samples() as f32).to_bits(),
-            (accumulation.history_limit() as f32).to_bits(),
+            direct_limit.to_bits(),
+            limit.to_bits(),
             (frame.max_samples as f32).to_bits(),
+            frame.history_clamp.to_bits(),
         ]);
         ctx.gpu
             .dispatch_compute(
@@ -357,8 +375,6 @@ struct DenoisePrepare {
     pipeline: ComputePipelineHandle,
     images: SignalImages,
     moments: ResourceId,
-    /// The image with the sample count of each pixel: the mean of the direct light.
-    samples: ResourceId,
     normal: ResourceId,
 }
 
@@ -368,17 +384,12 @@ impl Pass for DenoisePrepare {
     }
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        let mut accesses = vec![
+        vec![
             (self.images.mean, Access::StorageRead),
             (self.moments, Access::StorageRead),
             (self.normal, Access::StorageRead),
             (self.images.input, Access::StorageWrite),
-        ];
-        // For the direct light the two are one image.
-        if self.samples != self.images.mean {
-            accesses.push((self.samples, Access::StorageRead));
-        }
-        accesses
+        ]
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
@@ -394,7 +405,6 @@ impl Pass for DenoisePrepare {
             ctx.bindless_index(self.normal),
             ctx.bindless_index(dst),
             (accumulation.frame_samples() as f32).to_bits(),
-            ctx.bindless_index(self.samples),
             self.images.signal as u32,
         ]);
         ctx.gpu
@@ -413,7 +423,7 @@ struct DenoiseFilter {
     src: ResourceId,
     dst: ResourceId,
     normal: ResourceId,
-    /// The image with the sample count of each pixel.
+    /// The mean of this light: the filter reads the sample count of each pixel.
     samples: ResourceId,
 }
 

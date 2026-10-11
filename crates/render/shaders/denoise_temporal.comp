@@ -8,20 +8,39 @@
 //    frame before: the mean of each kind of light, the number of samples, the moments.
 //    The place is between four pixels. Each of the four counts only if it showed the
 //    same surface (normal and distance): at the edge of a moving object, the others
-//    show the object or what was behind it.
-// 2. The new mean is the old mean moved toward the samples of this frame by
+//    show the object or what was behind it. If none of the four counts, the 3x3 block
+//    around the place gets a second look.
+// 2. History confidence, for the direct light. Its mean has up to `max_samples`
+//    samples: a shadow that moves would show after hundreds of frames. So the direct
+//    light also has a fast mean, of about `FAST_FRAMES` frames: more noise, and never
+//    old. One fast mean is too noisy to compare with: the test uses a block of
+//    pixels around the place. The mean of their fast means and the mean of their
+//    long means must agree. Where the lighting did not change, the two differ only
+//    by the noise that is left in a mean of that many fast means. Where they differ
+//    by more, the lighting changed: the history of the pixel then counts as a fast
+//    mean, so the new samples replace the old light in few frames, and the filter
+//    passes do more there for that time.
+//    The two block means have the same pixels, so a sharp shadow edge at rest is the
+//    same in the two and does not look like a change. The long mean itself is not
+//    moved to a block mean, which would blur it.
+//    (After the fast history of NVIDIA ReLAX and the gradients of A-SVGF.)
+//    The indirect light has no such test: its noise is too large to tell a change in
+//    4 frames. A change of the lighting gives it a short history in the full picture
+//    (`indirect_limit`).
+// 3. The new mean is the old mean moved toward the samples of this frame by
 //    `samples of this frame / samples in the new mean`. With no history that is 1: the
 //    pixel starts again, alone.
 //
 // Written, for the next passes and as the history of the next frame:
-// - direct:   rgb: the mean direct light. a: the number of samples in the means.
-// - indirect: rgb: the mean indirect light.
+// - direct:   rgb: the mean direct light. a: the number of samples in it.
+// - indirect: rgb: the mean indirect light. a: the number of samples in it.
+// - fast_direct: rgb: the fast mean of the direct light.
 // - specular: rgb: the mean specular light.
 // - moments:  for the direct light in r and g, for the indirect light in b and a: the
 //             mean brightness of one frame, and the mean of its square. The difference
 //             `g - r * r` is the variance: how noisy one frame is here.
 // A pixel with no surface (the background, the light itself) has no history: its
-// means are zero, and so is its sample count.
+// means are zero, and so are its sample counts.
 // The emission (the fourth channels of the three input images) does not go through
 // this pass: `denoise_resolve` reads it.
 
@@ -49,20 +68,28 @@ layout(push_constant) uniform Push {
     uint previous_normal;   // the same image of the frame before
     uint motion;            // index in `images_rg16f`: screen motion in pixels
     // The means of the frame before, and those that this pass writes.
-    uint previous_direct;   // index in `images_rgba32f`
-    uint previous_indirect; // index in `images_rgba32f`
-    uint previous_moments;  // index in `images_rgba32f`
-    uint previous_specular; // index in `images_rgba16f`
-    uint mean_direct;       // index in `images_rgba32f`
-    uint mean_indirect;     // index in `images_rgba32f`
-    uint moments;           // index in `images_rgba32f`
-    uint mean_specular;     // index in `images_rgba16f`
+    uint previous_direct;        // index in `images_rgba32f`
+    uint previous_indirect;      // index in `images_rgba32f`
+    uint previous_moments;       // index in `images_rgba32f`
+    uint previous_specular;      // index in `images_rgba16f`
+    uint previous_fast_direct;   // index in `images_rgba16f`
+    uint mean_direct;            // index in `images_rgba32f`
+    uint mean_indirect;          // index in `images_rgba32f`
+    uint moments;                // index in `images_rgba32f`
+    uint mean_specular;          // index in `images_rgba16f`
+    uint fast_direct;            // index in `images_rgba16f`
     float frame_samples;    // samples in the images of this frame, 1 or more
-    // The history of a pixel counts as this many samples at most. 0: no history is
-    // read (the first frame, a new image size). A low limit after a change of the
-    // lighting: the old light then fades in few frames.
-    float history_limit;
-    float max_samples;      // the mean never counts as more samples than this
+    // The history of a pixel counts as this many samples at most, for the direct
+    // light and for the other two. Zero for the two: no history is read (the first
+    // frame, a new image size). A low limit after a change of the lighting: the old
+    // light then fades in few frames.
+    float direct_limit;
+    float indirect_limit;
+    float max_samples;      // a mean never counts as more samples than this
+    // History confidence of the direct light: the lighting counts as changed where the
+    // fast means and the long means of a block of pixels differ by more than this
+    // many standard deviations of the noise. 0: no such test.
+    float clamp_sigma;
 } push;
 
 // A pixel of the frame before shows the same surface if the cosine of the angle
@@ -74,11 +101,77 @@ const float SAME_DISTANCE = 0.03;
 // pixel and nothing of the pixels around it: rounding errors in the motion would blur
 // the picture a little in each frame.
 const float NO_MOTION = 0.01;
+// Each frame replaces one part in this many of a fast mean.
+const float FAST_FRAMES = 4.0;
+// The block of the history test: `2 * BLOCK_RADIUS + 1` pixels in each direction.
+const int BLOCK_RADIUS = 2;
+// Two means of the same light differ by this part also with no noise (rounding,
+// 16-bit images): no change.
+const float SAME_LIGHT = 0.02;
+// The specular light (a reflection on glass) has no fast mean. Its mean has at most
+// this many samples, so it follows a change in about a second.
+const float SPECULAR_SAMPLES = 64.0;
 
 // The light of this frame. A value that is not a number would stay in the mean.
 vec3 sample_of(uint image, ivec2 pixel) {
     vec3 light = imageLoad(images_rgba16f[image], pixel).rgb;
     return any(isnan(light)) || any(isinf(light)) ? vec3(0.0) : light;
+}
+
+// The history of the pixel: sums over the pixels of the frame before that count.
+vec4 old_direct = vec4(0.0);   // rgb: mean. a: samples.
+vec4 old_indirect = vec4(0.0); // the same
+vec3 old_fast_direct = vec3(0.0);
+vec3 old_specular = vec3(0.0);
+vec4 old_moments = vec4(0.0);
+float weights = 0.0;
+
+// Adds a pixel of the frame before to the history, if it is in the picture and showed
+// the surface `surface`.
+void add_history(ivec2 tap, float weight, vec4 surface, ivec2 size) {
+    if (weight == 0.0 || any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, size))) {
+        return;
+    }
+    vec4 tap_surface = imageLoad(images_rgba16f[push.previous_normal], tap);
+    if (dot(tap_surface.xyz, surface.xyz) < SAME_NORMAL
+        || abs(tap_surface.w - surface.w) > SAME_DISTANCE * surface.w) {
+        return;
+    }
+    old_direct += weight * imageLoad(images_rgba32f[push.previous_direct], tap);
+    old_indirect += weight * imageLoad(images_rgba32f[push.previous_indirect], tap);
+    old_fast_direct += weight * imageLoad(images_rgba16f[push.previous_fast_direct], tap).rgb;
+    old_specular += weight * imageLoad(images_rgba16f[push.previous_specular], tap).rgb;
+    old_moments += weight * imageLoad(images_rgba32f[push.previous_moments], tap);
+    weights += weight;
+}
+
+// The part of the history of the direct light that is still valid at `place`, a pixel
+// of the frame before: 1.0 for the same lighting, 0.0 for a new one.
+float direct_confidence(ivec2 place, ivec2 size) {
+    float fast_sum = 0.0;
+    float fast_squares = 0.0;
+    float long_sum = 0.0;
+    float count = 0.0;
+    for (int y = -BLOCK_RADIUS; y <= BLOCK_RADIUS; y++) {
+        for (int x = -BLOCK_RADIUS; x <= BLOCK_RADIUS; x++) {
+            ivec2 tap = place + ivec2(x, y);
+            if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, size))) {
+                continue;
+            }
+            float fast = brightness(imageLoad(images_rgba16f[push.previous_fast_direct], tap).rgb);
+            fast_sum += fast;
+            fast_squares += fast * fast;
+            long_sum += brightness(imageLoad(images_rgba32f[push.previous_direct], tap).rgb);
+            count += 1.0;
+        }
+    }
+    float fast_mean = fast_sum / count;
+    // The noise that is left in the mean of `count` fast means: their standard
+    // deviation over the root of their number.
+    float deviation = sqrt(max(0.0, fast_squares / count - fast_mean * fast_mean) / count);
+    float same = push.clamp_sigma * deviation + SAME_LIGHT * fast_mean + 1e-4;
+    // No change up to `same`, a new lighting from two times that.
+    return 1.0 - clamp(abs(fast_mean - long_sum / count) / same - 1.0, 0.0, 1.0);
 }
 
 void main() {
@@ -97,65 +190,76 @@ void main() {
         imageStore(images_rgba32f[push.mean_indirect], pixel, vec4(0.0));
         imageStore(images_rgba32f[push.moments], pixel, vec4(0.0));
         imageStore(images_rgba16f[push.mean_specular], pixel, vec4(0.0));
+        imageStore(images_rgba16f[push.fast_direct], pixel, vec4(0.0));
         return;
     }
     vec2 values = vec2(brightness(direct), brightness(indirect));
 
-    // The history: a blend of up to four pixels of the frame before.
-    vec4 old_direct = vec4(0.0);
-    vec3 old_indirect = vec3(0.0);
-    vec3 old_specular = vec3(0.0);
-    vec4 old_moments = vec4(0.0);
-    float weights = 0.0;
-    if (push.history_limit > 0.0) {
+    if (push.direct_limit > 0.0 || push.indirect_limit > 0.0) {
         vec2 motion = imageLoad(images_rg16f[push.motion], pixel).xy;
         if (all(lessThan(abs(motion), vec2(NO_MOTION)))) {
             motion = vec2(0.0);
         }
         // Where the point was, in pixel units with pixel centers at whole numbers.
         vec2 was = vec2(pixel) - motion;
+        // A blend of up to four pixels of the frame before.
         ivec2 corner = ivec2(floor(was));
         vec2 part = was - vec2(corner);
         for (int y = 0; y <= 1; y++) {
             for (int x = 0; x <= 1; x++) {
-                ivec2 tap = corner + ivec2(x, y);
                 float weight = (x == 0 ? 1.0 - part.x : part.x) * (y == 0 ? 1.0 - part.y : part.y);
-                if (weight == 0.0 || any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, size))) {
-                    continue;
-                }
-                vec4 tap_surface = imageLoad(images_rgba16f[push.previous_normal], tap);
-                if (dot(tap_surface.xyz, surface.xyz) < SAME_NORMAL
-                    || abs(tap_surface.w - surface.w) > SAME_DISTANCE * surface.w) {
-                    continue;
-                }
-                old_direct += weight * imageLoad(images_rgba32f[push.previous_direct], tap);
-                old_indirect += weight * imageLoad(images_rgba32f[push.previous_indirect], tap).rgb;
-                old_specular += weight * imageLoad(images_rgba16f[push.previous_specular], tap).rgb;
-                old_moments += weight * imageLoad(images_rgba32f[push.previous_moments], tap);
-                weights += weight;
+                add_history(corner + ivec2(x, y), weight, surface, size);
             }
         }
-    }
-    float old_samples = 0.0;
-    // A history from a small part of the four pixels is not used: it is mostly noise.
-    if (weights > 0.1) {
-        old_direct /= weights;
-        old_indirect /= weights;
-        old_specular /= weights;
-        old_moments /= weights;
-        old_samples = min(old_direct.a, push.history_limit);
+        ivec2 nearest = ivec2(round(was));
+        // A history from a small part of the four pixels is not used: it is mostly
+        // noise. Then the pixels around the place: a thin object, or the edge of one,
+        // has its history one pixel to the side.
+        if (weights <= 0.1) {
+            old_direct = vec4(0.0);
+            old_indirect = vec4(0.0);
+            old_fast_direct = vec3(0.0);
+            old_specular = vec3(0.0);
+            old_moments = vec4(0.0);
+            weights = 0.0;
+            for (int y = -1; y <= 1; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    add_history(nearest + ivec2(x, y), 1.0, surface, size);
+                }
+            }
+        }
+        if (weights > 0.0) {
+            old_direct /= weights;
+            old_indirect /= weights;
+            old_fast_direct /= weights;
+            old_specular /= weights;
+            old_moments /= weights;
+        }
+        if (weights > 0.0 && push.clamp_sigma > 0.0) {
+            float fast_samples = min(old_direct.a, FAST_FRAMES * push.frame_samples);
+            old_direct.a = mix(fast_samples, old_direct.a, direct_confidence(nearest, size));
+        }
     }
     // The mean of N values from the mean of N - k and the mean of the k new ones:
     // move k/N of the way to the new value. At the sample limit N stays the same, and
     // each frame still replaces k/N of the mean.
-    float samples = min(old_samples + push.frame_samples, push.max_samples);
-    float step_to_new = push.frame_samples / samples;
+    vec2 samples = min(
+        min(vec2(old_direct.a, old_indirect.a), vec2(push.direct_limit, push.indirect_limit))
+            + push.frame_samples,
+        vec2(push.max_samples));
+    vec2 step_to_new = push.frame_samples / samples;
+    float fast_step = push.frame_samples / min(samples.x, FAST_FRAMES * push.frame_samples);
+    float specular_step = push.frame_samples / min(samples.y, SPECULAR_SAMPLES);
+
     vec4 new_moments = vec4(values.x, values.x * values.x, values.y, values.y * values.y);
     imageStore(images_rgba32f[push.mean_direct], pixel,
-        vec4(mix(old_direct.rgb, direct, step_to_new), samples));
+        vec4(mix(old_direct.rgb, direct, step_to_new.x), samples.x));
     imageStore(images_rgba32f[push.mean_indirect], pixel,
-        vec4(mix(old_indirect, indirect, step_to_new), 0.0));
+        vec4(mix(old_indirect.rgb, indirect, step_to_new.y), samples.y));
+    imageStore(images_rgba16f[push.fast_direct], pixel,
+        vec4(mix(old_fast_direct, direct, fast_step), 0.0));
     imageStore(images_rgba16f[push.mean_specular], pixel,
-        vec4(mix(old_specular, specular, step_to_new), 0.0));
-    imageStore(images_rgba32f[push.moments], pixel, mix(old_moments, new_moments, step_to_new));
+        vec4(mix(old_specular, specular, specular_step), 0.0));
+    imageStore(images_rgba32f[push.moments], pixel,
+        mix(old_moments, new_moments, step_to_new.xxyy));
 }
