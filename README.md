@@ -13,12 +13,13 @@ Top-down 3D horror game engine with path-traced lighting, written in Rust.
 cargo build
 cargo run -p maki-game                 # uses ./config.toml
 cargo run -p maki-game -- my.toml      # uses the given config file
+cargo run -p maki-game --release -- --bench-frames 300   # benchmark, see below
 ```
 
 If the config file does not exist, the game writes one with default values.
 
 - Log level: set `MAKI_LOG` (default `info`). Example: `MAKI_LOG=debug`.
-- Tracy profiler: `cargo run -p maki-game --features profile`.
+- Tracy profiler: `cargo run -p maki-game --features profile`. Each schedule is a zone with the name of the schedule (`Input`, `FixedUpdate`, `Update`, `Extract`, `Render`, `Present`). Each frame graph pass is a zone with the name `pass`; the zone text has the pass name. The zones show CPU time. With `MAKI_LOG=trace`, the log lines show the same spans.
 - Render self-test: set `MAKI_RENDER_SELFTEST`. The internal resolution changes every 7 frames; validation must stay clean.
 - Scene counts: the log shows each mesh upload (vertices, indices) and a `render scene` line (meshes, instances, triangles) each time the counts change.
 - Frame graph barriers: with `MAKI_LOG=debug`, the log shows the barrier list each time it changes.
@@ -26,7 +27,7 @@ If the config file does not exist, the game writes one with default values.
 
 ## Controls
 
-The help panel in the game lists all controls. It is open at start; F1 hides and shows it. The list is made from the binding table (`Bindings::default` in `crates/platform/src/input.rs`): to change a key, change the table.
+The help panel in the game lists all controls, with the key that hides and shows the panel. It is open at start. The list is made from the binding table (`Bindings::default` in `crates/platform/src/input.rs`): to change a key, change the table.
 
 The light moves along the floor, forward is away from the camera. It stays in the room. One wheel step changes the intensity by 10 %.
 
@@ -37,11 +38,33 @@ The panels are egui windows on top of the picture. Drag the title bar to move a 
 | Panel | Content |
 |---|---|
 | Help | Key and description of each binding |
-| Stats | Frame time (mean), FPS, sample count, internal resolution, position and intensity of each light |
+| Stats | Frame time (mean), FPS, sample count, internal resolution, position and intensity of each light, GPU time of each frame graph pass |
 
 While the mouse pointer is on a panel, the mouse wheel starts no action. While a text field of a panel has the keyboard focus, keys start no action.
 
 To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the window and the game world. `crates/ui/src/stats.rs` is an example.
+
+## Benchmark
+
+```
+cargo run -p maki-game --release -- [CONFIG] --bench-frames N
+```
+
+The game runs N frames (1 to 1000000), writes `bench.csv` in the working directory, and stops. In this mode:
+
+- The light moves on a circle around the room center, one turn in 240 frames. The position depends only on the frame number, so each run does the same work. The keyboard does not move the light.
+- Each frame traces one sample, because a moved light starts the accumulation again.
+- `vsync` is off, whatever the config file says.
+
+`bench.csv` has one row for each frame:
+
+| Column | Content |
+|---|---|
+| `frame` | Frame number, from 1 |
+| `cpu_ms` | Time from the start of the frame to the start of the next one. It has all schedules, and the time that the CPU waits for the GPU and for the display |
+| `gpu_<pass>_ms` | GPU time of each frame graph pass, in frame order (GPU timestamp queries). The time of a pass has the image barriers before it |
+
+The first frames are slow (startup work): drop them when you compute a mean. An empty cell means that the value did not arrive (a skipped frame, or a GPU without timestamp queries). A debug build has the validation layers on, which makes `cpu_ms` much larger.
 
 ## Config
 

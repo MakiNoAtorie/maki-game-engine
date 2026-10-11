@@ -240,7 +240,8 @@ impl Pass for Trace {
             vec3_bits(light_radiance, ctx.bindless_index(self.motion)),
         ]
         .concat();
-        fields.push(frame.frame);
+        // Only the low bits: the number must differ from frame to frame.
+        fields.push(frame.frame as u32);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,

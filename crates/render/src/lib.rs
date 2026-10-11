@@ -19,7 +19,7 @@
 //! [`RenderWorld::reset_accumulation`] when that data changes.
 //!
 //! Shaders: GLSL files in `shaders/` are compiled to SPIR-V by `build.rs` at build time
-//! and embedded with [`shader_spirv!`]. See `build.rs` for the rules.
+//! and embedded with `shader_spirv!`. See `build.rs` for the rules.
 
 mod accumulation;
 mod camera;
@@ -39,7 +39,9 @@ use maki_platform::{Window, WindowSize};
 
 pub use accumulation::Accumulation;
 pub use camera::{Camera, ExtractedCamera};
-pub use graph::{BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc};
+pub use graph::{
+    BACKBUFFER, FrameGraph, Pass, PassContext, PassTimings, ResourceId, SizeMode, TransientDesc,
+};
 pub use light::{ExtractedLights, Light};
 pub use maki_gpu::Access;
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
@@ -90,8 +92,8 @@ pub struct ExtractedFrame {
     /// Size of the window in physical pixels.
     pub window_size: (u32, u32),
     /// Number of the app frame. Part of the seed of the random numbers, so each
-    /// frame makes a different sample.
-    pub frame: u32,
+    /// frame makes a different sample. Also names the frame in the pass timings.
+    pub frame: u64,
     /// The accumulation stops at this number of samples.
     pub max_samples: u32,
     /// The tonemap pass multiplies the picture by this.
@@ -173,8 +175,7 @@ fn extract_frame(
     render_world.0.insert_resource(ExtractedFrame {
         internal_resolution: (config.render_width, config.render_height),
         window_size: (size.width, size.height),
-        // Only the low bits are necessary: the number must differ from frame to frame.
-        frame: time.frame as u32,
+        frame: time.frame,
         max_samples: config.max_samples,
         exposure: config.exposure,
     });
@@ -209,7 +210,7 @@ fn render_frame(
         world
             .resource_mut::<Accumulation>()
             .start_frame(frame.max_samples);
-        graph.execute(gpu, world, frame.internal_resolution);
+        graph.execute(gpu, world, frame.internal_resolution, frame.frame);
     }
 }
 

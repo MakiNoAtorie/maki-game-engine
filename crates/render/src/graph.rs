@@ -11,10 +11,13 @@
 //! 2. Plan the barriers ([`plan_barriers`], no GPU call).
 //! 3. For each pass in the order of the list: record its barriers, then run it.
 //! 4. Move the backbuffer to [`Access::Present`].
+//!
+//! The graph also measures the GPU time of each pass, with a GPU timestamp before the
+//! first pass and after each pass ([`FrameGraph::timings`]).
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
-use maki_gpu::{Access, Format, Gpu, ImageDesc, ImageHandle, ImageTarget};
+use maki_gpu::{Access, FRAMES_IN_FLIGHT, Format, Gpu, ImageDesc, ImageHandle, ImageTarget};
 
 /// Names an image of the graph. Valid for the graph that made it.
 // A plain index: graph resources are never removed. The GPU image behind a transient
@@ -117,6 +120,18 @@ struct Barrier {
     to: Access,
 }
 
+/// The GPU time of each pass of one frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PassTimings {
+    /// The frame that was measured (the number given to [`FrameGraph::execute`]). The
+    /// GPU finishes a frame later than the CPU records it, so this frame is some
+    /// frames older than the current one.
+    pub frame: u64,
+    /// Name and GPU milliseconds of each pass, in execution order. The time of a pass
+    /// has the barriers before it. A pass that skips its work shows near zero.
+    pub passes: Vec<(&'static str, f32)>,
+}
+
 #[derive(Resource)]
 pub struct FrameGraph {
     resources: Vec<GraphResource>,
@@ -124,6 +139,10 @@ pub struct FrameGraph {
     passes: Vec<PassNode>,
     /// The barriers of the frame before, to log only a changed plan.
     last_plan: Vec<Barrier>,
+    /// The frame that used each GPU frame slot last. Its timestamps are ready when
+    /// the slot is used again.
+    slot_frames: [Option<u64>; FRAMES_IN_FLIGHT],
+    timings: Option<PassTimings>,
 }
 
 impl Default for FrameGraph {
@@ -139,6 +158,8 @@ impl Default for FrameGraph {
             }],
             passes: Vec::new(),
             last_plan: Vec::new(),
+            slot_frames: [None; FRAMES_IN_FLIGHT],
+            timings: None,
         }
     }
 }
@@ -172,6 +193,12 @@ impl FrameGraph {
     /// The description of a transient image. `None` for [`BACKBUFFER`].
     pub fn transient_desc(&self, id: ResourceId) -> Option<TransientDesc> {
         self.resources[id.0].desc
+    }
+
+    /// The pass timings of the newest frame that the GPU has finished.
+    /// `None` in the first frames, and on a GPU without timestamps.
+    pub fn timings(&self) -> Option<&PassTimings> {
+        self.timings.as_ref()
     }
 
     /// Adds a pass at the end of the frame.
@@ -213,8 +240,30 @@ impl FrameGraph {
 
     /// Records the frame. Call between `Gpu::begin_frame` and `Gpu::end_frame`.
     /// `world` is the render world. `internal_resolution` is the size of
-    /// [`SizeMode::Internal`] images.
-    pub fn execute(&mut self, gpu: &mut Gpu, world: &World, internal_resolution: (u32, u32)) {
+    /// [`SizeMode::Internal`] images. `frame` is the number of the app frame: it names
+    /// the frame in [`PassTimings`].
+    pub fn execute(
+        &mut self,
+        gpu: &mut Gpu,
+        world: &World,
+        internal_resolution: (u32, u32),
+        frame: u64,
+    ) {
+        // The GPU has finished the frame that used this frame slot before, so its
+        // timestamps are ready: one before the first pass and one after each pass.
+        let stamps = gpu.timestamps();
+        if let Some(frame) = self.slot_frames[gpu.frame_slot()].replace(frame)
+            // False if a pass was added after that frame.
+            && stamps.len() == self.passes.len() + 1
+        {
+            let spans = stamps.windows(2).map(|pair| (pair[1] - pair[0]) as f32);
+            let names = self.passes.iter().map(|node| node.pass.name());
+            self.timings = Some(PassTimings {
+                frame,
+                passes: names.zip(spans).collect(),
+            });
+        }
+
         // Extension point, dead-pass culling: walk the passes from last to first and keep
         // a pass only if it writes the backbuffer or an image that a kept pass reads.
         // Then skip the passes that are not kept in steps 1 to 3.
@@ -282,6 +331,7 @@ impl FrameGraph {
 
         // 3. and 4. Barriers and passes. The plan is in pass order.
         let mut barriers = plan.iter().peekable();
+        gpu.write_timestamp().expect("timestamp");
         for index in 0..=self.passes.len() {
             while let Some(barrier) = barriers.next_if(|b| b.before_pass == index) {
                 let resource = &self.resources[barrier.resource.0];
@@ -293,11 +343,15 @@ impl FrameGraph {
                     .expect("image barrier");
             }
             if let Some(node) = self.passes.get_mut(index) {
+                // A profiler shows the CPU time of each pass (Tracy, with the `profile`
+                // feature of the game).
+                let _span = tracing::trace_span!("pass", name = node.pass.name()).entered();
                 node.pass.execute(&mut PassContext {
                     gpu,
                     world,
                     resources: &self.resources,
                 });
+                gpu.write_timestamp().expect("timestamp");
             }
         }
         self.last_plan = plan;

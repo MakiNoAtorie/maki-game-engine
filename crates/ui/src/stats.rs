@@ -1,8 +1,8 @@
-//! The stats panel: frame time, sample count, light, resolution.
+//! The stats panel: frame time, sample count, light, resolution, GPU time of each pass.
 //! It uses only the public panel API, as a panel of another crate does.
 
 use maki_core::{App, Module, Time};
-use maki_render::{Accumulation, ExtractedFrame, Light, RenderWorld};
+use maki_render::{Accumulation, ExtractedFrame, FrameGraph, Light, RenderWorld};
 
 use crate::add_panel;
 
@@ -44,6 +44,13 @@ impl Module for StatsPanelModule {
                     format!("{:.2}, {:.2}, {:.2}", p.x, p.y, p.z),
                 ));
                 rows.push(("Light intensity", format!("{:.2}", light.intensity)));
+            }
+
+            // Not a mean: the values of the newest frame that the GPU has finished.
+            if let Some(timings) = world.get_resource::<FrameGraph>().and_then(|g| g.timings()) {
+                for (pass, ms) in &timings.passes {
+                    rows.push((pass, format!("{ms:.3} ms GPU")));
+                }
             }
 
             egui::Grid::new("stats").num_columns(2).show(ui, |ui| {

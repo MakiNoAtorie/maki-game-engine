@@ -90,7 +90,7 @@ fn control_lights(
 }
 
 /// The nearest position where the full sphere of the light is in the room.
-fn clamp_to_room(position: Vec3, radius: f32, config: &Config) -> Vec3 {
+pub(crate) fn clamp_to_room(position: Vec3, radius: f32, config: &Config) -> Vec3 {
     // The floor has its center at the origin and is at y = 0.
     let half = Vec3::new(config.room_width / 2.0, 0.0, config.room_depth / 2.0);
     let low = -half + radius;

@@ -9,6 +9,8 @@
 //!    [`Gpu::begin_rendering`], [`Gpu::draw`], [`Gpu::blit_to_swapchain`]) record commands.
 //! 3. [`Gpu::end_frame`]: submits the commands and presents the image.
 //!
+//! [`Gpu::write_timestamp`] between draw calls measures the GPU time of a part of the frame.
+//!
 //! The CPU records frame N+1 while the GPU still draws frame N (`FRAMES_IN_FLIGHT`).
 //! For this reason a destroyed resource is not freed at once: see [`Gpu::destroy_buffer`].
 //!
@@ -53,6 +55,9 @@ pub use resources::{
 /// How many frames the CPU can record ahead of the GPU. See [`Gpu::frame_slot`].
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
+/// Limit of [`Gpu::write_timestamp`] calls in one frame.
+const MAX_TIMESTAMPS: u32 = 64;
+
 #[derive(Debug, Clone, Copy)]
 pub struct GpuDesc {
     /// Window size in physical pixels.
@@ -72,6 +77,10 @@ struct FrameSlot {
     in_flight: vk::Fence,
     /// Resources freed while this slot was the newest one.
     garbage: Vec<Garbage>,
+    /// The GPU writes the timestamps of the frame here. `MAX_TIMESTAMPS` entries.
+    timestamps: vk::QueryPool,
+    /// Number of timestamps that the last frame of this slot wrote.
+    timestamp_count: u32,
 }
 
 /// State of the frame between `begin_frame` and `end_frame`.
@@ -106,6 +115,12 @@ pub struct Gpu {
     /// Index in `frames` of the current frame, or of the last one between frames.
     slot: usize,
     active: Option<ActiveFrame>,
+    /// Nanoseconds in one tick of the GPU clock. `None`: the GPU has no timestamps.
+    timestamp_period: Option<f64>,
+    /// The bits of a timestamp value that are valid.
+    timestamp_mask: u64,
+    /// See [`Gpu::timestamps`].
+    finished_timestamps: Vec<f64>,
 }
 
 impl Gpu {
@@ -135,6 +150,19 @@ impl Gpu {
             };
         }
 
+        // The queue family tells how many bits of a timestamp are valid. 0: no timestamps.
+        let families = unsafe {
+            ctx.instance
+                .get_physical_device_queue_family_properties(ctx.physical_device)
+        };
+        let timestamp_bits = families[ctx.queue_family as usize].timestamp_valid_bits;
+        let limits = unsafe {
+            ctx.instance
+                .get_physical_device_properties(ctx.physical_device)
+        }
+        .limits;
+        let timestamp_period = (timestamp_bits > 0).then_some(f64::from(limits.timestamp_period));
+
         let mut frames = Vec::new();
         for _ in 0..FRAMES_IN_FLIGHT {
             // One pool per slot: a pool reset frees all commands of the slot at once.
@@ -147,12 +175,17 @@ impl Gpu {
                 .command_buffer_count(1);
             // Signaled at start: the first `begin_frame` must not wait.
             let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            let query_info = vk::QueryPoolCreateInfo::default()
+                .query_type(vk::QueryType::TIMESTAMP)
+                .query_count(MAX_TIMESTAMPS);
             frames.push(FrameSlot {
                 pool,
                 cmd: unsafe { device.allocate_command_buffers(&cmd_info) }?[0],
                 image_available: unsafe { device.create_semaphore(&Default::default(), None) }?,
                 in_flight: unsafe { device.create_fence(&fence_info, None) }?,
                 garbage: Vec::new(),
+                timestamps: unsafe { device.create_query_pool(&query_info, None) }?,
+                timestamp_count: 0,
             });
         }
 
@@ -182,6 +215,10 @@ impl Gpu {
                 .expect("the loop makes FRAMES_IN_FLIGHT slots"),
             slot: 0,
             active: None,
+            timestamp_period,
+            // All bits for 64 valid bits. The shift is not defined for 64.
+            timestamp_mask: u64::MAX >> (64 - timestamp_bits.clamp(1, 64)),
+            finished_timestamps: Vec::new(),
             ctx,
         })
     }
@@ -517,6 +554,7 @@ impl Gpu {
         for garbage in std::mem::take(&mut self.frames[self.slot].garbage) {
             self.destroy_now(garbage);
         }
+        self.read_timestamps()?;
 
         let device = &self.ctx.device;
         if self.swapchain_dirty {
@@ -562,12 +600,82 @@ impl Gpu {
             device.reset_fences(&[frame.in_flight])?;
             device.reset_command_pool(frame.pool, vk::CommandPoolResetFlags::empty())?;
             device.begin_command_buffer(frame.cmd, &begin_info)?;
+            // A query must be reset before each use.
+            device.cmd_reset_query_pool(frame.cmd, frame.timestamps, 0, MAX_TIMESTAMPS);
         }
         self.active = Some(ActiveFrame {
             image_index,
             rendering: None,
         });
         Ok(true)
+    }
+
+    /// Reads the timestamps of the frame that used the current slot before. `begin_frame`
+    /// waited for that frame, so the values are complete.
+    fn read_timestamps(&mut self) -> Result<()> {
+        self.finished_timestamps.clear();
+        let frame = &mut self.frames[self.slot];
+        let count = std::mem::take(&mut frame.timestamp_count);
+        let Some(period) = self.timestamp_period.filter(|_| count > 0) else {
+            return Ok(());
+        };
+        let mut ticks = vec![0_u64; count as usize];
+        unsafe {
+            self.ctx.device.get_query_pool_results(
+                frame.timestamps,
+                0,
+                &mut ticks,
+                vk::QueryResultFlags::TYPE_64,
+            )
+        }?;
+        // The mask makes the difference correct also when the GPU clock went past
+        // its last valid bit between the two values.
+        let mask = self.timestamp_mask;
+        let ms = |tick: &u64| (tick.wrapping_sub(ticks[0]) & mask) as f64 * period / 1e6;
+        self.finished_timestamps.extend(ticks.iter().map(ms));
+        Ok(())
+    }
+
+    /// Records the time of the GPU clock at this point of the frame: the GPU writes it
+    /// when it has finished all commands before this call. Read the values with
+    /// [`Gpu::timestamps`] some frames later. Does nothing on a GPU without timestamps.
+    /// Not permitted between `begin_rendering` and `end_rendering`.
+    pub fn write_timestamp(&mut self) -> Result<()> {
+        let active = self
+            .active
+            .as_ref()
+            .context("write_timestamp outside of a frame")?;
+        ensure!(
+            active.rendering.is_none(),
+            "write_timestamp between begin_rendering and end_rendering"
+        );
+        if self.timestamp_period.is_none() {
+            return Ok(());
+        }
+        let frame = &mut self.frames[self.slot];
+        ensure!(
+            frame.timestamp_count < MAX_TIMESTAMPS,
+            "more than {MAX_TIMESTAMPS} timestamps in one frame"
+        );
+        unsafe {
+            self.ctx.device.cmd_write_timestamp2(
+                frame.cmd,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                frame.timestamps,
+                frame.timestamp_count,
+            );
+        }
+        frame.timestamp_count += 1;
+        Ok(())
+    }
+
+    /// The timestamps of the newest frame that the GPU has finished in the current frame
+    /// slot: one value for each [`Gpu::write_timestamp`] call of that frame, in
+    /// milliseconds from its first timestamp. That frame is `FRAMES_IN_FLIGHT` frames
+    /// older than the current one if no frame was skipped. Empty if it wrote none.
+    /// Valid from `begin_frame` to the next `begin_frame`.
+    pub fn timestamps(&self) -> &[f64] {
+        &self.finished_timestamps
     }
 
     /// Records a change of use of an image: later commands that use the image as `to`
@@ -793,6 +901,7 @@ impl Drop for Gpu {
                 device.destroy_command_pool(frame.pool, None);
                 device.destroy_semaphore(frame.image_available, None);
                 device.destroy_fence(frame.in_flight, None);
+                device.destroy_query_pool(frame.timestamps, None);
             }
             self.bindless.destroy(device);
             self.swapchain.destroy(device);

@@ -1,3 +1,5 @@
 /target
 # Generated on first run.
 /config.toml
+# Written by `--bench-frames`.
+/bench.csv

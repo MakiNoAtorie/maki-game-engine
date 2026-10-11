@@ -39,6 +39,16 @@ pub struct Render;
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Present;
 
+/// Runs a schedule in a `tracing` span that has the name of the schedule. A profiler
+/// (Tracy, with the `profile` feature of the game) shows the time of each schedule.
+/// A macro, because a span name must be a constant.
+macro_rules! run_schedule {
+    ($world:expr, $label:ident) => {{
+        let _span = tracing::trace_span!(stringify!($label)).entered();
+        $world.run_schedule($label);
+    }};
+}
+
 /// A feature. It adds its own systems and resources to the app,
 /// so a new feature does not change the code of another feature.
 pub trait Module {
@@ -206,7 +216,7 @@ impl App {
     /// The driver owns the loop and calls `update` one time per frame.
     /// The window event loop will be a driver; a headless loop is another.
     pub fn run<R>(mut self, driver: impl FnOnce(App) -> R) -> R {
-        self.world.run_schedule(Startup);
+        run_schedule!(self.world, Startup);
         driver(self)
     }
 
@@ -255,7 +265,7 @@ impl App {
                 .expect("message_update_system has no parameter that can fail");
         }
 
-        self.world.run_schedule(Input);
+        run_schedule!(self.world, Input);
 
         // The delta limit above keeps this loop at `max_fixed_steps` steps or less.
         let mut steps = 0;
@@ -263,8 +273,8 @@ impl App {
             let mut time = self.world.resource_mut::<Time>();
             time.accumulator -= fixed_delta;
             time.fixed_tick += 1;
-            self.world.run_schedule(FixedUpdate);
-            self.world.run_schedule(FixedLast);
+            run_schedule!(self.world, FixedUpdate);
+            run_schedule!(self.world, FixedLast);
             steps += 1;
         }
         self.fixed_step_since_message_update |= steps > 0;
@@ -272,10 +282,10 @@ impl App {
         let mut time = self.world.resource_mut::<Time>();
         time.alpha = time.accumulator.div_duration_f32(fixed_delta);
 
-        self.world.run_schedule(Update);
-        self.world.run_schedule(Extract);
-        self.world.run_schedule(Render);
-        self.world.run_schedule(Present);
+        run_schedule!(self.world, Update);
+        run_schedule!(self.world, Extract);
+        run_schedule!(self.world, Render);
+        run_schedule!(self.world, Present);
 
         // Drops the records of removed components (`RemovedComponents`) that are two
         // frames old. Without this call the records stay in memory forever.
