@@ -160,6 +160,7 @@ impl Gpu {
             raw: vk::Buffer::null(),
             allocation: Default::default(),
             size: desc.size,
+            address: 0,
             bindless_index: self.bindless.buffer_slots.alloc()?,
         };
         // On an error, `destroy_now` frees the parts that exist. Vulkan and the
@@ -196,6 +197,9 @@ impl Gpu {
         })?;
         let allocation = &buffer.allocation;
         unsafe { device.bind_buffer_memory(buffer.raw, allocation.memory(), allocation.offset()) }?;
+        // Valid only after the memory is bound.
+        let address_info = vk::BufferDeviceAddressInfo::default().buffer(buffer.raw);
+        buffer.address = unsafe { device.get_buffer_device_address(&address_info) };
         Ok(())
     }
 
@@ -350,6 +354,14 @@ impl Gpu {
     /// Stable until the buffer is destroyed.
     pub fn buffer_index(&self, buffer: BufferHandle) -> Option<u32> {
         self.buffers.get(buffer).map(|b| b.bindless_index)
+    }
+
+    /// The address of the first byte of the buffer in GPU memory. A shader that gets
+    /// this number (in another buffer or a push constant) reads the buffer through a
+    /// GLSL `buffer_reference` block, with no descriptor.
+    /// Stable until the buffer is destroyed.
+    pub fn buffer_address(&self, buffer: BufferHandle) -> Option<u64> {
+        self.buffers.get(buffer).map(|b| b.address)
     }
 
     /// The index of the image in the bindless storage and sampled image arrays.

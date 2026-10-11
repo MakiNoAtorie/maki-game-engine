@@ -6,6 +6,9 @@ edition.workspace = true
 [dependencies]
 maki-core.workspace = true
 maki-platform.workspace = true
+maki-assets.workspace = true
 maki-gpu.workspace = true
+anyhow.workspace = true
 bevy_ecs.workspace = true
+glam.workspace = true
 tracing.workspace = true

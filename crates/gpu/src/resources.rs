@@ -128,6 +128,8 @@ pub(crate) struct Buffer {
     pub raw: vk::Buffer,
     pub allocation: Allocation,
     pub size: u64,
+    /// The address of the first byte, as shaders see it (`buffer_reference`).
+    pub address: u64,
     pub bindless_index: u32,
 }
 

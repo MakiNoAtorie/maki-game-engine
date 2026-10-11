@@ -72,6 +72,13 @@ impl App {
             config.render_width > 0 && config.render_height > 0,
             "render_width and render_height must be 1 or more"
         );
+        // `> 0.0` is false for NaN, so NaN is rejected too.
+        ensure!(
+            [config.room_width, config.room_depth, config.room_height]
+                .iter()
+                .all(|size| size.is_finite() && *size > 0.0),
+            "room_width, room_depth, and room_height must be positive numbers"
+        );
 
         let mut world = World::new();
         // All schedules exist from the start, so running an empty one is not an error.
@@ -440,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_fixed_rate_is_rejected() {
+    fn bad_config_values_are_rejected() {
         assert!(
             App::new(Config {
                 fixed_hz: 0.0,
@@ -451,6 +458,13 @@ mod tests {
         assert!(
             App::new(Config {
                 max_fixed_steps: 0,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            App::new(Config {
+                room_height: f32::NAN,
                 ..Default::default()
             })
             .is_err()

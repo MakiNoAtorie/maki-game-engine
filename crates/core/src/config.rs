@@ -19,8 +19,12 @@ pub struct Config {
     pub render_width: u32,
     pub render_height: u32,
     pub vsync: bool,
-    /// glTF file to show. `None` means an empty room.
+    /// glTF file to show (`.gltf` or `.glb`). `None` shows a generated cube and sphere.
     pub model_path: Option<PathBuf>,
+    /// Inner size of the room in meters: X, Z, and Y.
+    pub room_width: f32,
+    pub room_depth: f32,
+    pub room_height: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
     pub fixed_hz: f64,
     /// Limit of FixedUpdate steps in one frame. A longer frame counts as this many steps.
@@ -37,6 +41,9 @@ impl Default for Config {
             render_height: 360,
             vsync: true,
             model_path: None,
+            room_width: 8.0,
+            room_depth: 8.0,
+            room_height: 3.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,
         }

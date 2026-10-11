@@ -4,3 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+maki-core.workspace = true
+anyhow.workspace = true
+bevy_ecs.workspace = true
+glam.workspace = true
+gltf.workspace = true
+slotmap.workspace = true
+tracing.workspace = true

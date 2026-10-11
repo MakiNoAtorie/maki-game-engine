@@ -1,4 +1,5 @@
 mod controls;
+mod scene;
 mod tick_logger;
 
 use std::path::PathBuf;
@@ -33,7 +34,9 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(config)?;
     app.add_module(maki_platform::PlatformModule)
+        .add_module(maki_assets::AssetsModule)
         .add_module(maki_render::RenderModule)
+        .add_module(scene::SceneModule)
         .add_module(controls::ControlsModule)
         .add_module(tick_logger::TickLoggerModule);
 

@@ -24,6 +24,10 @@ gpu-allocator = { version = "0.28.0", default-features = false, features = ["std
 # Same version as winit: the gpu crate makes its surface from winit's handles.
 raw-window-handle = { version = "0.6.2", features = ["std"] }
 slotmap = "1.1.1"
+# Vectors, matrices, quaternions.
+glam = "0.34.1"
+# `import` reads the buffers of a file. It also brings the `image` crate, for textures later.
+gltf = "1.4.1"
 # No reflection and no thread pool: schedules run on the calling thread.
 # `debug` puts system names in schedule error messages.
 bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "debug"] }
