@@ -3,11 +3,12 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use bevy_ecs::resource::Resource;
 use serde::{Deserialize, Serialize};
 
 /// Engine settings, read from a TOML file at startup.
 // `default` lets an old config file omit fields that were added later.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Resource)]
 #[serde(default)]
 pub struct Config {
     pub window_width: u32,
@@ -18,6 +19,10 @@ pub struct Config {
     pub vsync: bool,
     /// glTF file to show. `None` means an empty room.
     pub model_path: Option<PathBuf>,
+    /// Rate of the FixedUpdate schedule, in steps per second.
+    pub fixed_hz: f64,
+    /// Limit of FixedUpdate steps in one frame. Time above the limit is dropped.
+    pub max_fixed_steps: u32,
 }
 
 impl Default for Config {
@@ -29,6 +34,8 @@ impl Default for Config {
             render_height: 360,
             vsync: true,
             model_path: None,
+            fixed_hz: 60.0,
+            max_fixed_steps: 8,
         }
     }
 }
