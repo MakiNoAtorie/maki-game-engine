@@ -10,6 +10,7 @@ profile = ["dep:tracing-tracy"]
 [dependencies]
 maki-core.workspace = true
 maki-platform.workspace = true
+maki-render.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
 tracing.workspace = true

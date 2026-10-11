@@ -33,6 +33,9 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(config)?;
     app.add_module(maki_platform::PlatformModule)
+        .add_module(maki_render::RenderModule)
+        // TEMPORARY: stage 3 proof. Remove with crates/render/src/gradient.rs.
+        .add_module(maki_render::GradientModule)
         .add_module(controls::ControlsModule)
         .add_module(tick_logger::TickLoggerModule);
 

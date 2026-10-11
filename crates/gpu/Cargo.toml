@@ -4,3 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+ash.workspace = true
+ash-window.workspace = true
+gpu-allocator.workspace = true
+raw-window-handle.workspace = true
+slotmap.workspace = true
+tracing.workspace = true

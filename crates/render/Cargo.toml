@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+maki-core.workspace = true
+maki-platform.workspace = true
+maki-gpu.workspace = true
+bevy_ecs.workspace = true
+tracing.workspace = true

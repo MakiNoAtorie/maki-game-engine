@@ -2,7 +2,6 @@
 //! winit types stay in this file.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use bevy_ecs::message::{Message, MessageReader};
@@ -197,9 +196,6 @@ impl ApplicationHandler for Runner {
                 if app.world().resource::<QuitRequested>().0 {
                     event_loop.exit();
                 }
-                // ponytail: nothing blocks on vsync yet, so sleep to not use a full CPU core.
-                // Remove when the Present schedule shows a swapchain image.
-                std::thread::sleep(Duration::from_millis(1));
                 // While the user drags the window border or title bar, Windows runs its
                 // own loop and `about_to_wait` is not called. Asking for the next frame
                 // here keeps frames running during the drag.

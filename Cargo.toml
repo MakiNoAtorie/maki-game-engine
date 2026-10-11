@@ -18,6 +18,12 @@ maki-render = { path = "crates/render" }
 maki-ui = { path = "crates/ui" }
 
 anyhow = "1.0.104"
+ash = "0.38.0"
+ash-window = "0.13.0"
+gpu-allocator = { version = "0.28.0", default-features = false, features = ["std", "vulkan"] }
+# Same version as winit: the gpu crate makes its surface from winit's handles.
+raw-window-handle = { version = "0.6.2", features = ["std"] }
+slotmap = "1.1.1"
 # No reflection and no thread pool: schedules run on the calling thread.
 # `debug` puts system names in schedule error messages.
 bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "debug"] }
