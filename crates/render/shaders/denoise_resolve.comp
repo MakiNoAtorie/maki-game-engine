@@ -1,6 +1,7 @@
 #version 460
-// Pass "denoise_resolve": the last step of the denoiser. Multiplies the light by the
-// surface color again and writes the picture. See src/denoise.rs for the full method.
+// Pass "denoise_resolve": the last step of the denoiser. Puts the kinds of light
+// together and writes the picture: `albedo * (direct + indirect) + specular + emission`.
+// See src/denoise.rs for the full method.
 
 #include "bindless.glsl"
 #include "denoise.glsl"
@@ -9,15 +10,20 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform image2D images_rgba16f[];
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
-    uniform readonly image2D images_rgba8[];
 
 // Must agree with `DenoiseResolve::execute` in src/denoise.rs.
+// All are indices in `images_rgba16f`.
 layout(push_constant) uniform Push {
-    uint src;    // index in `images_rgba16f`: light in rgb
-    uint dst;    // index in `images_rgba16f`
-    uint normal; // index in `images_rgba16f`: normal in xyz, zero for no surface
-    uint albedo; // index in `images_rgba8`
+    uint direct;   // the direct light after its filter passes, in rgb
+    uint indirect; // the indirect light after its filter passes, in rgb
+    uint specular; // the mean specular light
+    uint albedo;   // the surface color. White for no surface.
+    uint dst;
+    // The three light images of the trace pass. Their fourth channels are the R, G,
+    // and B of the emission of this frame.
+    uint emission_r;
+    uint emission_g;
+    uint emission_b;
 } push;
 
 void main() {
@@ -26,11 +32,13 @@ void main() {
     if (any(greaterThanEqual(pixel, size))) {
         return;
     }
-    vec3 color = imageLoad(images_rgba16f[push.src], pixel).rgb;
-    // No surface: the value is a full color already.
-    if (imageLoad(images_rgba16f[push.normal], pixel).xyz != vec3(0.0)) {
-        vec3 albedo = imageLoad(images_rgba8[push.albedo], pixel).rgb;
-        color = min(color * max(albedo, vec3(MIN_ALBEDO)), vec3(MAX_LIGHT));
-    }
-    imageStore(images_rgba16f[push.dst], pixel, vec4(color, 1.0));
+    // A pixel with no surface has emission only: the other three are zero.
+    vec3 light = imageLoad(images_rgba16f[push.direct], pixel).rgb
+        + imageLoad(images_rgba16f[push.indirect], pixel).rgb;
+    vec3 color = imageLoad(images_rgba16f[push.albedo], pixel).rgb * light
+        + imageLoad(images_rgba16f[push.specular], pixel).rgb
+        + vec3(imageLoad(images_rgba16f[push.emission_r], pixel).a,
+            imageLoad(images_rgba16f[push.emission_g], pixel).a,
+            imageLoad(images_rgba16f[push.emission_b], pixel).a);
+    imageStore(images_rgba16f[push.dst], pixel, vec4(min(color, vec3(MAX_LIGHT)), 1.0));
 }

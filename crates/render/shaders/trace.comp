@@ -19,25 +19,46 @@
 // A ray that comes from the camera, a mirror, or glass and finds a sphere light
 // brings the light itself: the light shows in the picture, in a mirror, and through glass.
 //
-// Images written, at the internal resolution:
-// - radiance: the mean light of the paths, linear RGB. Black on a miss.
+// Images written, at the internal resolution. The picture of a pixel is
+// `albedo * (direct + indirect) + specular + emission`: the denoiser filters each of
+// the first three parts alone.
+// - direct:   the light that the surface of the pixel gets straight from the lights,
+//             without the color of the surface. Sharp shadows, little noise.
+// - indirect: the light that it gets by way of a bounce. Soft, much noise.
+// - specular: light with its full color that is not on that surface: the reflection
+//             on glass that the camera sees.
+// - emission: the light of a lamp that the pixel shows: the lamp itself, in a mirror,
+//             through glass, or as a reflection on glass. Full color. It has no noise
+//             (each frame finds the same lamp), and it is thousands of times
+//             brighter than the rest: the denoiser must not get it. A mean over time
+//             would leave a bright trail behind a reflection that moves. It is stored
+//             in the fourth channels of `direct`, `indirect`, and `specular` (R, G, B).
 // - normal:   the surface that the pixel shows, for the denoiser: the world normal in
-//             xyz and the distance from the camera in w, in meters. All zeros: no surface.
+//             xyz and the length of the path from the camera in w, in meters. All
+//             zeros: no surface.
 // - albedo:   the color of that surface: the part of the light that it sends on to
 //             the camera. White for no surface.
-// - motion:   how far the point that the camera ray hit moved on the screen since the
+// - motion:   how far the point that the pixel shows moved on the screen since the
 //             frame before, in pixels: its position now minus its position then.
-//             Zero for no hit. See src/motion.rs.
-// Each path of a pixel goes through the center of the pixel, so these three
-// images do not change from frame to frame while nothing moves.
-// "The surface that the pixel shows" is the first surface on the first path of the
-// pixel that is not a mirror: behind a mirror it is the surface that shows there, and
-// its color has the tint of the mirror. The radiance of the pixel is this color times
-// the light that the surface gets, so a filter can work on the light alone.
-// Glass is such a surface, with a white color: a path takes the reflection or the
-// refraction at random, so what shows behind glass changes from frame to frame, and
-// the glass itself does not.
-
+//             Zero for no surface. See src/motion.rs.
+// Each path of a pixel goes through the center of the pixel, so normal, albedo, and
+// motion do not change from frame to frame while nothing moves.
+//
+// "The surface that the pixel shows" is the first diffuse surface on the path:
+// - Behind a mirror it is the surface that shows there. The albedo has the tint of
+//   the mirror. The pixel shows a picture of the room behind the mirror plane (the
+//   virtual image): `normal` is the normal of that picture (the true normal,
+//   mirrored), the distance is the full path length, and `motion` is that of the
+//   point at this distance along the camera ray. So the denoiser treats the room in
+//   the mirror as it treats the room. Correct for a flat mirror and a scene at rest.
+// - Glass that the camera sees (also in a mirror) splits the path one time. The path
+//   that goes through gives the surface, as for a mirror, with the tint and the part
+//   that goes through (1 - reflectance) in the albedo. The reflected path adds to
+//   `specular`, times the reflectance. Each later glass surface on the way to the
+//   surface lets the path through; after the surface, glass takes one of the two
+//   ways at random.
+// - No diffuse surface behind the glass: the glass itself is the surface (white),
+//   with no light of its own. It only gives the specular light a history.
 #include "bindless.glsl"
 #include "scene.glsl"
 #include "denoise.glsl"
@@ -48,8 +69,6 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // seen with two formats: each image index is valid only in the array of its format.
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform writeonly image2D images_rgba16f[];
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba8)
-    uniform writeonly image2D images_rgba8[];
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
     uniform writeonly image2D images_rg16f[];
 
@@ -61,9 +80,9 @@ layout(push_constant) uniform Push {
     // The ray of a pixel is `forward + x * right + y * up`, x and y from -1 to 1.
     // See `Camera::ray_basis` in src/camera.rs.
     vec3 right;
-    uint radiance;        // index in `images_rgba16f`
+    uint direct;          // index in `images_rgba16f`
     vec3 up;
-    uint albedo;          // index in `images_rgba8`
+    uint albedo;          // index in `images_rgba16f`
     vec3 forward;
     uint normal;          // index in `images_rgba16f`
     uint frame;           // number of the frame, for the random numbers
@@ -77,6 +96,8 @@ layout(push_constant) uniform Push {
     // The largest light that a bounce ray adds, in units of the light at the surface
     // that the pixel shows (the light divided by `albedo`). 0: no limit.
     float indirect_clamp;
+    uint indirect;        // index in `images_rgba16f`
+    uint specular;        // index in `images_rgba16f`
 } push;
 
 // A sphere light. 32 bytes. Must agree with `light_bytes` in src/light.rs.
@@ -206,18 +227,9 @@ Surface hit_surface(rayQueryEXT query, vec3 origin, vec3 direction) {
     return surface;
 }
 
-// Where the point that a ray query hit was on the screen one frame before, in pixels.
+// Where a world point of the frame before was on the screen of that frame, in pixels.
 // The steps of `Projection::pixel` in src/motion.rs.
-vec2 previous_pixel(rayQueryEXT query, vec2 size) {
-    // The point in the space of its instance does not change when the instance moves.
-    vec3 object_point = rayQueryGetIntersectionObjectRayOriginEXT(query, true)
-        + rayQueryGetIntersectionTEXT(query, true)
-        * rayQueryGetIntersectionObjectRayDirectionEXT(query, true);
-    uint instance = rayQueryGetIntersectionInstanceIdEXT(query, true);
-    InstanceData data = instance_buffers[nonuniformEXT(push.instances)].instances[instance];
-    vec4 point = vec4(object_point, 1.0);
-    vec3 world = vec3(dot(data.rows[0], point), dot(data.rows[1], point), dot(data.rows[2], point));
-
+vec2 previous_screen(vec3 world, vec2 size) {
     vec3 offset = world - camera_buffers[nonuniformEXT(push.previous_camera)].origin;
     float depth = dot(offset, camera_buffers[nonuniformEXT(push.previous_camera)].forward);
     // Behind the camera of the frame before: a place far out of the picture, so a
@@ -228,6 +240,18 @@ vec2 previous_pixel(rayQueryEXT query, vec2 size) {
     vec2 screen = vec2(dot(offset, camera_buffers[nonuniformEXT(push.previous_camera)].right),
         -dot(offset, camera_buffers[nonuniformEXT(push.previous_camera)].up)) / depth;
     return (screen * 0.5 + 0.5) * size;
+}
+
+// Where the point that a ray query hit was in the world one frame before.
+vec3 previous_world(rayQueryEXT query) {
+    // The point in the space of its instance does not change when the instance moves.
+    vec3 object_point = rayQueryGetIntersectionObjectRayOriginEXT(query, true)
+        + rayQueryGetIntersectionTEXT(query, true)
+        * rayQueryGetIntersectionObjectRayDirectionEXT(query, true);
+    uint instance = rayQueryGetIntersectionInstanceIdEXT(query, true);
+    InstanceData data = instance_buffers[nonuniformEXT(push.instances)].instances[instance];
+    vec4 point = vec4(object_point, 1.0);
+    return vec3(dot(data.rows[0], point), dot(data.rows[1], point), dot(data.rows[2], point));
 }
 
 // The distance along a ray to the nearest sphere light, and the radiance of that
@@ -363,24 +387,53 @@ vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_l
     return light.radiance * (cos_surface * solid_angle / PI * scale);
 }
 
-// Bounce light with the limit `push.indirect_clamp`. `albedo` is the color of the
-// surface that the pixel shows: the denoiser divides the light by it, so the limit
-// is in the units that the denoiser sees.
+// ---- The path ----
+
+// The light of the paths of this pixel, summed over the samples of the frame. See the
+// top of the file for the three parts.
+vec3 sum_direct = vec3(0.0);
+vec3 sum_indirect = vec3(0.0);
+vec3 sum_specular = vec3(0.0);
+vec3 sum_emission = vec3(0.0);
+
+// Bounce light with the limit `push.indirect_clamp`.
 // Most bounce rays bring a little light. A rare one finds the light itself by way of
 // a mirror or through glass and brings some thousand times more (a "firefly"). The
 // mean of such samples needs thousands of frames, and the filter spreads each one to
 // a soft dot. The limit makes that light darker than it is: a small, steady error in
 // place of a large, random one.
-vec3 limited(vec3 light, vec3 albedo) {
-    float value = brightness(light / max(albedo, vec3(MIN_ALBEDO)));
+vec3 limited(vec3 light) {
+    float value = brightness(light);
     return push.indirect_clamp > 0.0 && value > push.indirect_clamp
         ? light * (push.indirect_clamp / value)
         : light;
 }
 
-// The light that one random path through the pixel brings to the camera.
+// Adds the light that a path found to the part that it belongs to.
+// `bounced`: the path had left a diffuse surface. `reflection`: the path is the
+// reflection on glass.
+void add_light(vec3 light, bool bounced, bool reflection) {
+    if (bounced) {
+        light = limited(light);
+    }
+    if (reflection) {
+        sum_specular += light;
+    } else if (bounced) {
+        sum_indirect += light;
+    } else {
+        sum_direct += light;
+    }
+}
+
+// A direction in the picture behind a mirror with the normal `mirror`: the reflection
+// at the mirror plane, v - 2 (v . n) n. No change for a zero `mirror`.
+vec3 mirrored(vec3 direction, vec3 mirror) {
+    return direction - 2.0 * dot(direction, mirror) * mirror;
+}
+
+// Follows one random path through the pixel and adds its light to the sums.
 // `first`: also write the normal, albedo, and motion images.
-vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
+void trace_path(ivec2 pixel, ivec2 size, bool first) {
     // The center of the pixel, from -1 to 1 across the image. Image y goes down, `up`
     // goes up. Each path of the pixel takes the same point: the light then belongs to
     // the surface that the normal and albedo images hold. With a random point for
@@ -388,8 +441,7 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
     // the color of one.
     vec2 screen = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
     vec3 direction = normalize(push.forward + screen.x * push.right - screen.y * push.up);
-
-    vec3 radiance = vec3(0.0);
+    vec3 camera_direction = direction;
 
     // The ray to trace next. A path has two kinds of ray: path rays, which find the
     // next surface, and shadow rays, which only test if the light is visible.
@@ -406,22 +458,42 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
     uint flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT;
 
     // The part of the light at the end of the path that reaches the camera. Each
-    // surface on the way takes a part away.
+    // surface on the way takes a part away. At the surface that the pixel shows it
+    // goes into the albedo image and starts again at 1: from there the path holds
+    // light without the color of that surface.
     vec3 throughput = vec3(1.0);
     // True if the ray can bring the light of the sphere light itself. False after a
     // diffuse surface: its shadow ray already counted that light.
     bool sees_light = true;
     bool bounced = false; // the path has left a diffuse surface
     uint segment = 0;     // number of the path ray, from 0
-    // The normal and albedo images still need the surface of this pixel.
-    bool surface_missing = first;
-    // The color of the surface that the pixel shows (the value of the albedo image).
-    vec3 surface_albedo = vec3(1.0);
-    bool surface_found = false;
+
+    // The way from the camera to the surface that the pixel shows.
+    bool surface_found = false; // the path is past that surface, or ended with none
+    float path_length = 0.0;    // from the camera to the start of the ray, in meters
+    bool chain = false;         // a mirror or glass is on the way
+    // The normal of the first mirror on the way. A reflection at its plane turns a
+    // direction into the picture behind the mirror. Zero: no mirror, no change.
+    // ponytail: the first mirror only. Behind two mirrors the normal of the picture is
+    // not correct: the filter then takes each pixel there for a surface of its own
+    // (no blur, more noise). Keep a matrix for all mirrors if that shows.
+    vec3 mirror_normal = vec3(0.0);
+    bool glass_seen = false;      // glass is on the way
+    vec4 glass_guide = vec4(0.0); // normal and path length of the first glass surface
+
+    // The reflection on that first glass surface: a second path, traced after the
+    // first one ends.
+    bool pending = false;
+    vec3 pending_origin;
+    vec3 pending_direction;
+    vec3 pending_throughput;
+    uint pending_segment;
+    bool reflection = false; // the path is that second path
 
     // State of a shadow ray.
     bool shadow = false;   // the ray to trace is a shadow ray
     vec3 shadow_light;     // the light that the path gets if the shadow ray hits nothing
+    bool shadow_bounced;   // `bounced` at the surface of the shadow ray
     bool continues;        // a path ray follows the shadow ray
     vec3 bounce_direction; // its direction. It starts where the shadow ray starts.
 
@@ -434,159 +506,215 @@ vec3 path_radiance(ivec2 pixel, ivec2 size, bool first) {
         bool hit = rayQueryGetIntersectionTypeEXT(query, true)
             == gl_RayQueryCommittedIntersectionTriangleEXT;
 
+        bool done = false; // the path ends with this ray
         if (shadow) {
+            shadow = false;
             if (!hit) {
-                radiance += shadow_light;
+                add_light(shadow_light, shadow_bounced, reflection);
             }
-            if (!continues) {
+            if (continues) {
+                // The bounce ray, from the same point.
+                direction = bounce_direction;
+                t_max = T_MAX;
+                flags = gl_RayFlagsOpaqueEXT;
+                continue;
+            }
+            done = true;
+        } else {
+            Surface surface;
+            if (hit) {
+                surface = hit_surface(query, origin, direction);
+            }
+            vec3 light_radiance;
+            float light = light_distance(origin, direction, light_radiance);
+            bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
+            // On the way from the camera to the surface that the pixel shows.
+            bool to_surface = !surface_found && !reflection;
+            if ((sees_light && light_is_nearer) || !hit) {
+                if (sees_light && light_is_nearer) {
+                    vec3 light_seen = throughput * light_radiance;
+                    if (bounced) {
+                        // The bounce ray found the light by way of a mirror or glass.
+                        add_light(light_seen, true, reflection);
+                    } else {
+                        sum_emission += light_seen;
+                    }
+                }
+                // The path ends with no diffuse surface: the pixel shows the light
+                // itself or the background, behind glass or not.
+                if (to_surface) {
+                    surface_found = true;
+                    if (first) {
+                        vec2 motion = glass_seen
+                            ? vec2(pixel) + 0.5 - previous_screen(
+                                push.origin + camera_direction * glass_guide.w, vec2(size))
+                            : vec2(0.0);
+                        imageStore(images_rgba16f[push.normal], pixel, glass_guide);
+                        imageStore(images_rgba16f[push.albedo], pixel, vec4(1.0));
+                        imageStore(images_rg16f[push.motion], pixel, vec4(motion, 0.0, 0.0));
+                    }
+                }
+                done = true;
+            } else {
+                // The next ray starts on this surface.
+                t_min = 0.0;
+                flags = gl_RayFlagsOpaqueEXT;
+                if (to_surface) {
+                    path_length += surface.distance;
+                }
+
+                // The last ray of the path: a mirror or glass cannot send the ray on. The
+                // surface counts as diffuse, so it gets direct light and is not a black hole.
+                segment++;
+                bool last = segment == push.max_path_rays;
+                if (surface.material == MATERIAL_MIRROR && !last) {
+                    throughput *= surface.albedo;
+                    if (to_surface && !chain) {
+                        mirror_normal = surface.normal;
+                    }
+                    chain = chain || to_surface;
+                    origin = surface.position + surface.normal * SURFACE_GAP;
+                    direction = reflect(direction, surface.normal);
+                    sees_light = true;
+                } else if (surface.material == MATERIAL_GLASS && !last) {
+                    // The ratio of the two indices of refraction: air (1.0) to glass on the
+                    // way in, glass to air on the way out.
+                    float eta = surface.front ? 1.0 / surface.ior : surface.ior;
+                    vec3 refracted = refract(direction, surface.normal, eta);
+                    // The part of the light that the surface reflects (Fresnel law, in the
+                    // short form of Schlick): small for a ray straight at the surface, all
+                    // of the light for a ray along it.
+                    // A zero vector from `refract`: no ray can leave the glass at this
+                    // angle, and all light is reflected (total internal reflection).
+                    float reflectance = 1.0;
+                    if (refracted != vec3(0.0)) {
+                        float r0 = (1.0 - surface.ior) / (1.0 + surface.ior);
+                        r0 *= r0;
+                        // The formula uses the angle on the air side of the surface.
+                        float cos_air = surface.front
+                            ? dot(-direction, surface.normal)
+                            : dot(refracted, -surface.normal);
+                        reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_air, 5.0);
+                    }
+                    bool reflects;
+                    if (to_surface) {
+                        // The way to the surface must be the same in each frame, so
+                        // that the normal and albedo images do not change: the path
+                        // goes through where it can.
+                        chain = true;
+                        if (!glass_seen) {
+                            // The first glass surface: the two ways, as two paths.
+                            glass_seen = true;
+                            glass_guide = vec4(mirrored(surface.normal, mirror_normal), path_length);
+                            pending = true;
+                            pending_origin = surface.position + surface.normal * SURFACE_GAP;
+                            pending_direction = reflect(direction, surface.normal);
+                            pending_throughput = throughput * reflectance;
+                            pending_segment = segment;
+                            throughput *= 1.0 - reflectance;
+                        }
+                        // ponytail: a later glass surface on the way (the far side of
+                        // a ball) lets all light through. The part that it reflects
+                        // back into the glass (4 % and more) is not followed.
+                        reflects = refracted == vec3(0.0);
+                    } else {
+                        // One ray cannot split. It takes one of the two ways at random,
+                        // with the reflectance as the chance: the mean over samples has
+                        // the two parts.
+                        reflects = random() < reflectance;
+                    }
+                    if (reflects) {
+                        origin = surface.position + surface.normal * SURFACE_GAP;
+                        direction = reflect(direction, surface.normal);
+                    } else {
+                        throughput *= surface.albedo;
+                        origin = surface.position - surface.normal * SURFACE_GAP;
+                        direction = refracted;
+                    }
+                    sees_light = true;
+                } else {
+                    // Diffuse. All rays from here start a small gap above the surface.
+                    origin = surface.position + surface.normal * SURFACE_GAP;
+                    throughput *= surface.albedo;
+                    if (to_surface) {
+                        // The surface that the pixel shows. Stored here and not after the
+                        // loop: the values then do not have to stay alive through all rays,
+                        // which made the pass 8 % slower.
+                        surface_found = true;
+                        if (first) {
+                            // Behind a mirror or glass: the point at the path length
+                            // along the camera ray, with the camera of the frame
+                            // before. Else the true point, with the transform of its
+                            // instance in the frame before (`query` is the camera ray).
+                            vec3 was = chain
+                                ? push.origin + camera_direction * path_length
+                                : previous_world(query);
+                            vec2 motion = vec2(pixel) + 0.5 - previous_screen(was, vec2(size));
+                            imageStore(images_rgba16f[push.normal], pixel,
+                                vec4(mirrored(surface.normal, mirror_normal), path_length));
+                            imageStore(images_rgba16f[push.albedo], pixel, vec4(throughput, 1.0));
+                            imageStore(images_rg16f[push.motion], pixel, vec4(motion, 0.0, 0.0));
+                        }
+                        throughput = vec3(1.0);
+                    }
+                    vec3 light_direction;
+                    float to_light;
+                    shadow_light = throughput
+                        * light_sample(surface.position, surface.normal, light_direction, to_light);
+                    shadow_bounced = bounced;
+                    // The path ends at the second diffuse surface, and at the last ray.
+                    // ponytail: the reflection on glass ends at its first diffuse
+                    // surface: it shows the room with direct light only. The glass
+                    // reflects some percent of the light, so the missing bounce light
+                    // is some percent of some percent, and the path is half as long.
+                    continues = !bounced && !last && !reflection;
+                    if (continues) {
+                        // The bounce. A diffuse surface gets the most light from straight above
+                        // and none from the side (Lambert's law again). The random direction has
+                        // the same weight: more rays near the normal. Then each ray counts the
+                        // same, and the light that it brings is only multiplied by the albedo.
+                        bounce_direction = direction_around(surface.normal, sqrt(random()), TAU * random());
+                        bounced = true;
+                        sees_light = false;
+                    }
+                    if (shadow_light != vec3(0.0)) {
+                        // Only "something or nothing" matters for a shadow ray, so the search
+                        // stops at the first triangle.
+                        shadow = true;
+                        direction = light_direction;
+                        t_max = to_light;
+                        flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
+                    } else if (continues) {
+                        direction = bounce_direction;
+                    } else {
+                        done = true;
+                    }
+                }
+            }
+        }
+        if (done) {
+            if (!pending) {
                 break;
             }
-            // The bounce ray, from the same point.
-            shadow = false;
-            direction = bounce_direction;
+            // The second path of the pixel: the reflection on the glass.
+            pending = false;
+            reflection = true;
+            origin = pending_origin;
+            direction = pending_direction;
+            throughput = pending_throughput;
+            segment = pending_segment;
+            t_min = 0.0;
             t_max = T_MAX;
             flags = gl_RayFlagsOpaqueEXT;
-            continue;
-        }
-
-        if (first && segment == 0u) {
-            // The camera ray went through the center of the pixel.
-            vec2 motion = hit
-                ? vec2(pixel) + 0.5 - previous_pixel(query, vec2(size))
-                : vec2(0.0);
-            imageStore(images_rg16f[push.motion], pixel, vec4(motion, 0.0, 0.0));
-        }
-        Surface surface;
-        if (hit) {
-            surface = hit_surface(query, origin, direction);
-        }
-        vec3 light_radiance;
-        float light = light_distance(origin, direction, light_radiance);
-        bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
-        if ((sees_light && light_is_nearer) || !hit) {
-            if (sees_light && light_is_nearer) {
-                // After a bounce, the ray found the light by way of a mirror or glass.
-                vec3 light = throughput * light_radiance;
-                radiance += bounced ? limited(light, surface_albedo) : light;
-            }
-            // The path ends with no surface: the pixel shows the light itself or the
-            // background.
-            if (surface_missing) {
-                imageStore(images_rgba16f[push.normal], pixel, vec4(0.0));
-                imageStore(images_rgba8[push.albedo], pixel, vec4(1.0));
-            }
-            break;
-        }
-        // The next ray starts on this surface.
-        t_min = 0.0;
-        flags = gl_RayFlagsOpaqueEXT;
-
-        // The last ray of the path: a mirror or glass cannot send the ray on. The
-        // surface counts as diffuse, so it gets direct light and is not a black hole.
-        segment++;
-        bool last = segment == push.max_path_rays;
-        if (surface.material == MATERIAL_MIRROR && !last) {
-            throughput *= surface.albedo;
-            origin = surface.position + surface.normal * SURFACE_GAP;
-            direction = reflect(direction, surface.normal);
             sees_light = true;
-        } else if (surface.material == MATERIAL_GLASS && !last) {
-            if (!surface_found) {
-                surface_found = true;
-                surface_albedo = throughput;
-            }
-            if (surface_missing) {
-                surface_missing = false;
-                float from_camera = distance(surface.position, push.origin);
-                imageStore(images_rgba16f[push.normal], pixel, vec4(surface.normal, from_camera));
-                imageStore(images_rgba8[push.albedo], pixel, vec4(throughput, 1.0));
-            }
-            // The ratio of the two indices of refraction: air (1.0) to glass on the
-            // way in, glass to air on the way out.
-            float eta = surface.front ? 1.0 / surface.ior : surface.ior;
-            vec3 refracted = refract(direction, surface.normal, eta);
-            // The part of the light that the surface reflects (Fresnel law, in the
-            // short form of Schlick): small for a ray straight at the surface, all
-            // of the light for a ray along it.
-            // A zero vector from `refract`: no ray can leave the glass at this
-            // angle, and all light is reflected (total internal reflection).
-            float reflectance = 1.0;
-            if (refracted != vec3(0.0)) {
-                float r0 = (1.0 - surface.ior) / (1.0 + surface.ior);
-                r0 *= r0;
-                // The formula uses the angle on the air side of the surface.
-                float cos_air = surface.front
-                    ? dot(-direction, surface.normal)
-                    : dot(refracted, -surface.normal);
-                reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_air, 5.0);
-            }
-            // One ray cannot split. It takes one of the two ways at random, with the
-            // reflectance as the chance: the mean over samples has the two parts.
-            if (random() < reflectance) {
-                origin = surface.position + surface.normal * SURFACE_GAP;
-                direction = reflect(direction, surface.normal);
-            } else {
-                throughput *= surface.albedo;
-                origin = surface.position - surface.normal * SURFACE_GAP;
-                direction = refracted;
-            }
-            sees_light = true;
-        } else {
-            // Diffuse. All rays from here start a small gap above the surface.
-            origin = surface.position + surface.normal * SURFACE_GAP;
-            throughput *= surface.albedo;
-            if (!surface_found) {
-                surface_found = true;
-                surface_albedo = throughput;
-            }
-            if (surface_missing) {
-                surface_missing = false;
-                // The surface that the pixel shows. Stored here and not after the
-                // loop: the values then do not have to stay alive through all rays,
-                // which made the pass 8 % slower.
-                float from_camera = distance(surface.position, push.origin);
-                imageStore(images_rgba16f[push.normal], pixel, vec4(surface.normal, from_camera));
-                imageStore(images_rgba8[push.albedo], pixel, vec4(throughput, 1.0));
-            }
-            vec3 light_direction;
-            float to_light;
-            shadow_light = throughput
-                * light_sample(surface.position, surface.normal, light_direction, to_light);
-            // The second diffuse surface: its direct light is the bounce light of the first.
-            if (bounced) {
-                shadow_light = limited(shadow_light, surface_albedo);
-            }
-            // The path ends at the second diffuse surface, and at the last ray.
-            continues = !bounced && !last;
-            if (continues) {
-                // The bounce. A diffuse surface gets the most light from straight above
-                // and none from the side (Lambert's law again). The random direction has
-                // the same weight: more rays near the normal. Then each ray counts the
-                // same, and the light that it brings is only multiplied by the albedo.
-                bounce_direction = direction_around(surface.normal, sqrt(random()), TAU * random());
-                bounced = true;
-                sees_light = false;
-            }
-            if (shadow_light != vec3(0.0)) {
-                // Only "something or nothing" matters for a shadow ray, so the search
-                // stops at the first triangle.
-                shadow = true;
-                direction = light_direction;
-                t_max = to_light;
-                flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
-            } else if (continues) {
-                direction = bounce_direction;
-            } else {
-                break;
-            }
+            bounced = false;
         }
     }
-    return radiance;
 }
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(images_rgba16f[push.radiance]);
+    ivec2 size = imageSize(images_rgba16f[push.direct]);
     // The work groups cover full 8x8 blocks, so some invocations are out of the image.
     if (any(greaterThanEqual(pixel, size))) {
         return;
@@ -594,12 +722,17 @@ void main() {
     rng_state = hash(uint(pixel.x) + hash(uint(pixel.y) + hash(push.frame)));
 
     // The random chain of the pixel continues from one sample to the next.
-    vec3 radiance = vec3(0.0);
     for (uint s = 0; s < push.frame_samples; s++) {
-        radiance += path_radiance(pixel, size, s == 0);
+        trace_path(pixel, size, s == 0);
     }
-    radiance /= float(push.frame_samples);
-    // The image has 16-bit floats, whose largest value is 65504: a small light is
+    // The images have 16-bit floats, whose largest value is 65504: a small light is
     // brighter than that and would be stored as infinity.
-    imageStore(images_rgba16f[push.radiance], pixel, vec4(min(radiance, vec3(60000.0)), 1.0));
+    float scale = 1.0 / float(push.frame_samples);
+    vec3 emission = min(sum_emission * scale, vec3(MAX_LIGHT));
+    imageStore(images_rgba16f[push.direct], pixel,
+        vec4(min(sum_direct * scale, vec3(MAX_LIGHT)), emission.r));
+    imageStore(images_rgba16f[push.indirect], pixel,
+        vec4(min(sum_indirect * scale, vec3(MAX_LIGHT)), emission.g));
+    imageStore(images_rgba16f[push.specular], pixel,
+        vec4(min(sum_specular * scale, vec3(MAX_LIGHT)), emission.b));
 }

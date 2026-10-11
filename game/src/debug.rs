@@ -64,7 +64,11 @@ impl Module for DebugPanelModule {
             ui.collapsing("Denoiser", |ui| {
                 ui.add(
                     egui::Slider::new(&mut config.denoise_passes, 0..=MAX_DENOISE_PASSES)
-                        .text("filter passes"),
+                        .text("filter passes, indirect light"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut config.denoise_direct_passes, 0..=MAX_DENOISE_PASSES)
+                        .text("filter passes, direct light"),
                 );
                 ui.add(
                     egui::Slider::new(&mut config.denoise_reach, 0.0..=4096.0)

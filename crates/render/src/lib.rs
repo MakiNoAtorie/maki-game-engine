@@ -127,8 +127,11 @@ pub struct ExtractedFrame {
     pub max_path_rays: u32,
     /// Samples that the mean of a pixel keeps on a soft reset.
     pub light_history_samples: u32,
-    /// Filter passes of the denoiser in this frame, 0 to `MAX_DENOISE_PASSES`.
+    /// Filter passes of the denoiser for the indirect light in this frame, 0 to
+    /// `MAX_DENOISE_PASSES`.
     pub denoise_passes: u32,
+    /// The same for the direct light.
+    pub denoise_direct_passes: u32,
     /// `denoise_reach` of the config: a filter pass runs for a pixel while
     /// `step * step * samples` is at most this. 0: for each pixel.
     pub denoise_reach: f32,
@@ -160,18 +163,25 @@ pub enum DebugView {
     Variance,
     /// The samples of this frame alone, with no denoiser.
     Raw,
-    /// What the filter passes get: the mean light over time, without the surface color.
+    /// What the filter passes of the indirect light get: its mean over time, without
+    /// the surface color.
     FilterInput,
     /// The noise that the filter takes that mean to have, as a part of its brightness.
     /// The filter blurs where this is bright.
     FilterVariance,
-    /// The light after the last filter pass, without the surface color.
+    /// The indirect light after its last filter pass, without the surface color.
     FilterOutput,
+    /// The direct light after its last filter pass, without the surface color.
+    Direct,
+    /// The mean of the specular light: the reflection on glass, and the light itself.
+    Specular,
+    /// The surface color that the light is multiplied by.
+    Albedo,
 }
 
 impl DebugView {
     /// Each view with its name, for a panel.
-    pub const ALL: [(Self, &str); 10] = [
+    pub const ALL: [(Self, &str); 13] = [
         (Self::Final, "Final"),
         (Self::Raw, "Raw (one frame)"),
         (Self::Motion, "Motion vectors"),
@@ -179,9 +189,12 @@ impl DebugView {
         (Self::Normals, "Normals"),
         (Self::HistoryLength, "History length"),
         (Self::Variance, "Variance (one frame)"),
-        (Self::FilterInput, "Filter input"),
-        (Self::FilterVariance, "Filter variance"),
-        (Self::FilterOutput, "Filter output"),
+        (Self::Albedo, "Surface color"),
+        (Self::Direct, "Direct light"),
+        (Self::FilterInput, "Indirect light: filter input"),
+        (Self::FilterVariance, "Indirect light: filter variance"),
+        (Self::FilterOutput, "Indirect light"),
+        (Self::Specular, "Specular light"),
     ];
 }
 
@@ -279,6 +292,7 @@ pub(crate) fn extract_frame(
         max_path_rays: config.max_path_rays,
         light_history_samples: config.light_history_samples,
         denoise_passes: config.denoise_passes,
+        denoise_direct_passes: config.denoise_direct_passes,
         denoise_reach: config.denoise_reach,
         indirect_clamp: config.indirect_clamp,
         exposure: config.exposure,

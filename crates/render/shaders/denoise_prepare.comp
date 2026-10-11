@@ -1,8 +1,9 @@
 #version 460
-// Pass "denoise_prepare": the input of the filter passes. See src/denoise.rs for the
-// full method.
+// Passes "denoise_prepare" and "denoise_direct_prepare": the input of the filter
+// passes, for the indirect and for the direct light. See src/denoise.rs for the full
+// method.
 //
-// Reads the mean of the temporal pass and writes, for each pixel:
+// Reads one mean of the temporal pass and writes, for each pixel:
 // - rgb: the mean light (without the surface color), in a 16-bit image.
 // - a: the variance of that mean: how much noise is left in it. The filter passes blur
 //   more where this is large. Two measures:
@@ -13,7 +14,7 @@
 //      edge, a contact shadow) for noise: with it the filter never turns off there.
 //   So, as in SVGF: the larger one of the two while the mean has fewer than
 //   `SPATIAL_FRAMES` frames, then the measure over time alone.
-// A pixel with no surface (the background, the light itself) is copied as it is.
+// A pixel with no surface (the background, the light itself) has no such light: zero.
 
 #include "bindless.glsl"
 #include "denoise.glsl"
@@ -28,11 +29,15 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
 
 // Must agree with `DenoisePrepare::execute` in src/denoise.rs.
 layout(push_constant) uniform Push {
-    uint color;          // index in `images_rgba32f`: mean light in rgb, samples in a
+    uint color;          // index in `images_rgba32f`: mean light in rgb
     uint moments;        // index in `images_rgba32f`: mean brightness and mean of its square
     uint normal;         // index in `images_rgba16f`: surface normal in xyz, zero for no surface
     uint dst;            // index in `images_rgba16f`
     float frame_samples; // samples that one frame adds to the mean
+    uint samples;        // index in `images_rgba32f`: the samples in the mean, in a
+    // The moments of this light are in the channels `2 * signal` and `2 * signal + 1`
+    // of `moments`: 0 for the direct light, 1 for the indirect light.
+    uint signal;
 } push;
 
 // The measure over space counts while the mean has fewer frames than this.
@@ -52,8 +57,10 @@ void main() {
         return;
     }
     // Over time. Zero for a history of one frame.
-    float frames = max(1.0, center.a / push.frame_samples);
-    vec2 moments = imageLoad(images_rgba32f[push.moments], pixel).xy;
+    float samples = imageLoad(images_rgba32f[push.samples], pixel).a;
+    float frames = max(1.0, samples / push.frame_samples);
+    vec4 all_moments = imageLoad(images_rgba32f[push.moments], pixel);
+    vec2 moments = push.signal == 0u ? all_moments.xy : all_moments.zw;
     float over_time = max(0.0, moments.y - moments.x * moments.x) / frames;
     if (frames >= SPATIAL_FRAMES) {
         imageStore(images_rgba16f[push.dst], pixel, vec4(light, min(over_time, MAX_LIGHT)));

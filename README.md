@@ -42,7 +42,7 @@ The panels are egui windows on top of the picture. Drag the title bar to move a 
 |---|---|
 | Help | Key and description of each binding |
 | Stats | Frame time (mean), FPS, sample count, internal resolution, player position, position and intensity of each light, GPU memory, GPU time of each frame graph pass |
-| Debug | The view (final, one raw frame, motion vectors, depth, normals, history length, variance) and the config values that have an effect during a run: vsync, render scale, exposure, path tracer, denoiser, camera, player speeds. Not saved to the config file |
+| Debug | The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the config values that have an effect during a run: vsync, render scale, exposure, path tracer, denoiser, camera, player speeds. Not saved to the config file |
 | Bench | Starts a benchmark run (frames, script, light, picture dump) in the game that runs. Writes `bench.csv`; the game goes on. For numbers to compare between runs, use the command line |
 | Game state | Flags and variables of the events, with a field to add one; the events that run |
 | Message | The text of a `Message` command. Open only while a message waits |
@@ -101,7 +101,8 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `trace_budget_ms` | 6.0 | GPU time of the path tracer in each frame, in milliseconds, for the automatic sample count. Keep it well below the time of one display refresh (16.7 ms at 60 Hz) |
 | `light_history_samples` | 32 | When the lighting changes (a light, or an object that moves), each pixel keeps at most this many old samples for some frames, and new samples replace them. More: less noise while something moves, and the lighting follows later (a shadow leaves a trail). 0: a change of the lighting starts the picture again |
 | `max_path_rays` | 8 | The largest number of rays in one light path, 2 to 32. Only mirror and glass make long paths. A lower limit costs less GPU time and gives less noise; the last mirror or glass surface of a cut path shows as a diffuse surface, so deep reflections lose detail. Measured in `docs/perf-improve.md`, section 0 |
-| `denoise_passes` | 4 | Filter passes of the denoiser, 0 to 6. Each pass doubles the area that the filter takes its mean from. 0: no filter, only the mean over frames. The filter does less as a pixel gets more samples |
+| `denoise_passes` | 4 | Filter passes of the denoiser for the indirect light (bounce light), 0 to 6. Each pass doubles the area that the filter takes its mean from. 0: no filter, only the mean over frames |
+| `denoise_direct_passes` | 1 | The same for the direct light. It has little noise and sharp shadow edges. A scene with large lights (wide soft shadows) can need more |
 | `denoise_reach` | 4096.0 | The filter gets narrower as the mean of a pixel gets more samples: a pass with `s` pixels between its points runs for a pixel while `s * s * samples` is at most this. 0: each pass runs at each pixel |
 | `indirect_clamp` | 8.0 | The largest light that one bounce ray adds to a pixel, in units of the light at the surface that the pixel shows. It removes the bright speckle of rare paths, and it makes light that comes by way of a mirror or through glass (caustics) darker. 0: no limit |
 | `exposure` | 1.0 | The picture is multiplied by this before the tone curve |
@@ -116,7 +117,7 @@ The picture is path traced. Each frame traces one random light path for each pix
 |---|---|
 | Diffuse | One shadow ray goes to a random point of the sphere light (direct light, soft shadows). Then one bounce ray goes in a random direction; the path ends at the second diffuse surface (the light that fills the shadows). |
 | Mirror | Continues in the mirror direction. |
-| Glass | Is reflected or goes through and bends, at random, with the chance from the Fresnel law. |
+| Glass | Glass that the camera sees (also in a mirror) splits the path: one path goes through and bends, one is reflected, each with its part of the light from the Fresnel law. Other glass on a path: the ray takes one of the two ways at random. |
 
 A path has 12 rays at most. The base color of the mesh is the color of a diffuse surface and the tint of a mirror or of glass. The light shows as a white sphere, also in a mirror and through glass.
 
@@ -132,10 +133,19 @@ Textures are not read.
 
 Known limit: light that reaches a diffuse surface by way of a mirror or through glass (a caustic) is too dark. The shadow ray finds only light that comes straight from the light, so such light comes from a bounce ray that finds the light by chance: a rare, very bright sample. `indirect_clamp` limits it. With `indirect_clamp = 0` the light is correct in the mean, and shows as bright speckle that goes away very slowly.
 
-One frame is noisy. The denoiser makes the picture from the frames (`crates/render/src/denoise.rs`):
+One frame is noisy. The denoiser makes the picture from the frames (`crates/render/src/denoise.rs`). The path tracer gives the light of each pixel in parts, and the picture is `surface color * (direct + indirect) + specular + emission`:
+
+- Direct light: straight from the lights. Little noise, sharp shadows.
+- Indirect light: by way of a bounce. Much noise, soft.
+- Specular light: the reflection on glass.
+- Emission: a lamp that the pixel shows (also in a mirror, through glass, or as a reflection on glass). No noise: it does not go through the denoiser.
+
+For a pixel that shows a mirror or glass, the surface is the one that shows there: the denoiser treats the room in a mirror as it treats the room.
+
+The steps:
 
 1. The mean over time. Each pixel keeps the mean of its samples, up to `max_samples`. The renderer knows where the surface point of each pixel was on the screen one frame before (the motion image), so the mean follows a moving object and a moving camera. Where the frame before showed another surface, the pixel starts again.
-2. The filter (`denoise_passes`). Each pixel gets the mean of the pixels around it that show the same surface (equal normal, on the same plane) with a similar brightness. The less noise a pixel has left, the less the filter does. The filter works on the light without the surface color, so surface detail stays sharp.
+2. The filter, for the direct light (`denoise_direct_passes`) and for the indirect light (`denoise_passes`), each alone: the noise of the bounce light does not blur the shadow edges of the direct light. Each pixel gets the mean of the pixels around it that show the same surface (equal normal, on the same plane) with a similar brightness. The less noise a pixel has left, the less the filter does. The filter works on the light without the surface color, so surface detail stays sharp. The specular light gets the mean over time only.
 
 A change of the camera keeps the samples of each pixel. A change of the lighting (a light, an object that moves and so its shadow) cuts the mean of each pixel to `light_history_samples` for some frames: the new light replaces the old one. A change of the internal resolution, the window size, the room, or the mesh store starts the picture again, and so does R. While nothing changes and each pixel has `max_samples`, only the tonemap pass and the copy to the window run.
 

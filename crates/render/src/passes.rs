@@ -24,8 +24,8 @@ use crate::graph::{
 use crate::light::{LightBuffers, light_bytes};
 use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
 use crate::{
-    Accumulation, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights, GpuMeshes,
-    MAX_LIGHTS, denoise, ray_basis, shader_spirv,
+    Accumulation, DebugView, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights,
+    GpuMeshes, MAX_LIGHTS, denoise, ray_basis, shader_spirv,
 };
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
@@ -38,10 +38,13 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         format,
         size: SizeMode::Internal,
     };
-    // The light that each pixel gets: the mean of the samples of this frame.
-    // Linear color with values far above 1.0 (the light itself), at the internal resolution.
+    // The light that each pixel gets, in three parts: the mean of the samples of this
+    // frame (see `shaders/trace.comp`). Linear color with values far above 1.0 (the
+    // light itself), at the internal resolution.
     // 16-bit floats: one frame needs no more, and the smaller image is faster to read.
-    let radiance = graph.add_transient(internal("radiance", Format::Rgba16Float));
+    let direct = graph.add_transient(internal("direct", Format::Rgba16Float));
+    let indirect = graph.add_transient(internal("indirect", Format::Rgba16Float));
+    let specular = graph.add_transient(internal("specular", Format::Rgba16Float));
     // The frame as the display shows it: sRGB-encoded, 8 bits, at window size.
     let output = graph.add_transient(TransientDesc {
         name: "output",
@@ -54,8 +57,9 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
     // compares it with the surface of the frame before.
     let (normal, previous_normal) =
         graph.add_history(internal("normal", Format::Rgba16Float), "normal_previous");
-    // The color of that surface.
-    let albedo = graph.add_transient(internal("albedo", Format::Rgba8Unorm));
+    // The color of that surface. 16-bit floats: the picture is this color times the
+    // light, and 8 bits would show as steps on a dark surface.
+    let albedo = graph.add_transient(internal("albedo", Format::Rgba16Float));
     // How far the surface of each pixel moved on the screen since the frame before, in
     // pixels: see the `motion` module.
     let motion = graph.add_transient(internal("motion", Format::Rg16Float));
@@ -66,27 +70,23 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         partial_logged: false,
         built: None,
     });
+    let trace = denoise::TraceImages {
+        direct,
+        indirect,
+        specular,
+        albedo,
+        normal,
+        previous_normal,
+        motion,
+    };
     graph.add_pass(Trace {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("trace.comp"))
             .expect("trace pipeline"),
-        radiance,
-        normal,
-        albedo,
-        motion,
+        images: trace,
         lights_logged: false,
     });
-    let denoise = denoise::add_passes(
-        gpu,
-        graph,
-        denoise::TraceImages {
-            radiance,
-            albedo,
-            normal,
-            previous_normal,
-            motion,
-        },
-    );
+    let denoise = denoise::add_passes(gpu, graph, trace);
     graph.add_pass(Tonemap {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("tonemap.comp"))
@@ -98,7 +98,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
             })
             .expect("tonemap sampler"),
         hdr: denoise.denoised,
-        views: [normal, motion, denoise.color, denoise.moments, radiance],
+        trace,
         denoise,
         output,
     });
@@ -241,13 +241,12 @@ impl Pass for BuildTlas {
 }
 
 /// The path tracer: follows random light paths from the camera for each pixel and
-/// writes the mean of the light that they bring (`radiance`). See `shaders/trace.comp` for the steps.
+/// writes the mean of the light that they bring, in three parts, and the surface that
+/// the pixel shows. See `shaders/trace.comp` for the steps.
 struct Trace {
     pipeline: ComputePipelineHandle,
-    radiance: ResourceId,
-    normal: ResourceId,
-    albedo: ResourceId,
-    motion: ResourceId,
+    /// The pass writes all of them but `previous_normal`.
+    images: denoise::TraceImages,
     /// True after the "too many lights" error, to log it one time.
     lights_logged: bool,
 }
@@ -258,9 +257,17 @@ impl Pass for Trace {
     }
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        [self.radiance, self.normal, self.albedo, self.motion]
-            .map(|image| (image, Access::StorageWrite))
-            .to_vec()
+        let images = &self.images;
+        [
+            images.direct,
+            images.indirect,
+            images.specular,
+            images.normal,
+            images.albedo,
+            images.motion,
+        ]
+        .map(|image| (image, Access::StorageWrite))
+        .to_vec()
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
@@ -315,9 +322,9 @@ impl Pass for Trace {
         // Field order as in the `Push` block of the shader: a vec3, then one 32-bit value.
         let mut fields = [
             vec3_bits(camera.position, mesh_table),
-            vec3_bits(right, ctx.bindless_index(self.radiance)),
-            vec3_bits(up, ctx.bindless_index(self.albedo)),
-            vec3_bits(forward, ctx.bindless_index(self.normal)),
+            vec3_bits(right, ctx.bindless_index(self.images.direct)),
+            vec3_bits(up, ctx.bindless_index(self.images.albedo)),
+            vec3_bits(forward, ctx.bindless_index(self.images.normal)),
         ]
         .concat();
         fields.extend([
@@ -327,16 +334,18 @@ impl Pass for Trace {
             frame.max_path_rays,
             light_index,
             lights.len().min(MAX_LIGHTS) as u32,
-            ctx.bindless_index(self.motion),
+            ctx.bindless_index(self.images.motion),
             buffer_index(ctx.gpu, camera_buffer),
             buffer_index(ctx.gpu, instance_buffer),
             frame.indirect_clamp.to_bits(),
+            ctx.bindless_index(self.images.indirect),
+            ctx.bindless_index(self.images.specular),
         ]);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,
                 &push_constants(&fields),
-                groups(ctx.extent(self.radiance)),
+                groups(ctx.extent(self.images.direct)),
             )
             .expect("trace dispatch");
     }
@@ -350,10 +359,8 @@ struct Tonemap {
     pipeline: ComputePipelineHandle,
     sampler: SamplerHandle,
     hdr: ResourceId,
-    /// The images of the debug views: normal, motion, the mean of the denoiser, its
-    /// moments, and the radiance of this frame.
-    views: [ResourceId; 5],
-    /// For the views of the filter input and output.
+    /// The images of the debug views.
+    trace: denoise::TraceImages,
     denoise: denoise::DenoiseImages,
     output: ResourceId,
 }
@@ -364,21 +371,26 @@ impl Pass for Tonemap {
     }
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
-        vec![
-            (self.hdr, Access::Sampled),
-            (self.output, Access::StorageWrite),
-        ]
-        .into_iter()
-        .chain(self.views.map(|image| (image, Access::Sampled)))
-        .chain(
-            [
-                self.denoise.input,
-                self.denoise.work[0],
-                self.denoise.work[1],
-            ]
-            .map(|image| (image, Access::Sampled)),
-        )
-        .collect()
+        let (trace, denoise) = (&self.trace, &self.denoise);
+        let views = [
+            trace.direct,
+            trace.indirect,
+            trace.specular,
+            trace.albedo,
+            trace.normal,
+            trace.motion,
+            denoise.direct.mean,
+            denoise.moments,
+            denoise.specular,
+        ];
+        let filtered = [denoise.direct, denoise.indirect]
+            .into_iter()
+            .flat_map(|signal| signal.filtered_candidates());
+        let sampled = [self.hdr].into_iter().chain(views).chain(filtered);
+        sampled
+            .map(|image| (image, Access::Sampled))
+            .chain([(self.output, Access::StorageWrite)])
+            .collect()
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
@@ -387,18 +399,37 @@ impl Pass for Tonemap {
             .sampler_index(self.sampler)
             .expect("tonemap sampler is alive");
         let frame = ctx.world.resource::<ExtractedFrame>();
+        let (trace, denoise) = (&self.trace, &self.denoise);
+        // The `MODE_*` value of the shader and its images `a` to `d` for each view.
+        let one = |mode: u32, image: ResourceId| (mode, [image; 4]);
+        let (mode, images) = match frame.debug_view {
+            DebugView::Final => one(0, self.hdr),
+            DebugView::Raw => (
+                2,
+                [trace.albedo, trace.direct, trace.indirect, trace.specular],
+            ),
+            DebugView::Motion => one(3, trace.motion),
+            DebugView::Depth => one(4, trace.normal),
+            DebugView::Normals => one(5, trace.normal),
+            DebugView::HistoryLength => one(6, denoise.direct.mean),
+            DebugView::Variance => one(7, denoise.moments),
+            DebugView::FilterInput => one(1, denoise.indirect.input),
+            DebugView::FilterVariance => one(8, denoise.indirect.input),
+            DebugView::FilterOutput => one(1, denoise.indirect.filtered(ctx)),
+            DebugView::Direct => one(1, denoise.direct.filtered(ctx)),
+            DebugView::Specular => one(1, denoise.specular),
+            DebugView::Albedo => one(9, trace.albedo),
+        };
         let mut push = vec![
             ctx.bindless_index(self.hdr),
             sampler,
             ctx.bindless_index(self.output),
             // A fade is a lower exposure: at zero the tone curve gives black.
             (frame.exposure * (1.0 - frame.fade)).to_bits(),
-            // The `VIEW_*` numbers of the shader.
-            frame.debug_view as u32,
+            mode,
+            ctx.bindless_index(trace.normal),
         ];
-        push.extend(self.views.map(|image| ctx.bindless_index(image)));
-        push.push(ctx.bindless_index(self.denoise.input));
-        push.push(ctx.bindless_index(self.denoise.filter_output(ctx)));
+        push.extend(images.map(|image| ctx.bindless_index(image)));
         let push = push_constants(&push);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.output)))

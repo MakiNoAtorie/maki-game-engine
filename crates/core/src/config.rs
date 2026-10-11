@@ -71,9 +71,14 @@ pub struct Config {
     /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
     /// time, and deep reflections lose detail.
     pub max_path_rays: u32,
-    /// Filter passes of the denoiser, 0 to 6. Each pass doubles the area that the
-    /// filter takes its mean from. 0: no filter, only the mean over frames.
+    /// Filter passes of the denoiser for the indirect light (bounce light), 0 to 6.
+    /// Each pass doubles the area that the filter takes its mean from. 0: no filter,
+    /// only the mean over frames.
     pub denoise_passes: u32,
+    /// The same for the direct light. It has less noise and sharp shadow edges: fewer
+    /// passes keep them sharp. A scene with large lights (wide soft shadows) can need
+    /// more.
+    pub denoise_direct_passes: u32,
     /// The denoiser filter gets narrower as the mean of a pixel gets more samples: a
     /// filter pass whose pattern has `s` pixels between its points runs for a pixel
     /// while `s * s * samples` is at most this. 4096: up to 64 samples get all four
@@ -121,6 +126,7 @@ impl Default for Config {
             light_history_samples: 32,
             max_path_rays: 8,
             denoise_passes: 4,
+            denoise_direct_passes: 1,
             denoise_reach: 4096.0,
             indirect_clamp: 8.0,
             exposure: 1.0,

@@ -21,28 +21,29 @@ layout(push_constant) uniform Push {
     uint hdr_sampler; // index in `samplers`
     uint dst;         // index in `images`
     float exposure;   // the light is multiplied by this before the curve
-    uint view;        // a VIEW_* value
-    // Indices in `textures`, for the debug views:
-    uint normal;      // normal in xyz (zero: no surface), distance in w
-    uint motion;      // screen motion in pixels
-    uint color;       // the mean light of the denoiser in rgb, its samples in a
-    uint moments;     // mean brightness of one frame, and mean of its square
-    uint radiance;    // the samples of this frame
-    uint filter_input;  // the light that the filter passes get in rgb, its variance in a
-    uint filter_output; // the same after the last filter pass
+    uint mode;        // a MODE_* value: what to show
+    uint normal;      // index in `textures`: normal in xyz (zero: no surface), distance in w
+    // Indices in `textures`: the images of the debug view. See the MODE_* values.
+    uint a;
+    uint b;
+    uint c;
+    uint d;
 } push;
 
-// Must agree with `DebugView` in src/lib.rs.
-const uint VIEW_FINAL = 0u;
-const uint VIEW_MOTION = 1u;
-const uint VIEW_DEPTH = 2u;
-const uint VIEW_NORMALS = 3u;
-const uint VIEW_HISTORY_LENGTH = 4u;
-const uint VIEW_VARIANCE = 5u;
-const uint VIEW_RAW = 6u;
-const uint VIEW_FILTER_INPUT = 7u;
-const uint VIEW_FILTER_VARIANCE = 8u;
-const uint VIEW_FILTER_OUTPUT = 9u;
+// What the pass shows. `Tonemap::execute` chooses the mode and the images `a` to `d`
+// for each `DebugView`.
+const uint MODE_PICTURE = 0u;   // the picture `hdr`, through the tone curve
+const uint MODE_LIGHT = 1u;     // rgb of `a` as light, through the tone curve
+// `a * (b + c) + d` as light, plus the fourth channels of b, c, d as a color: albedo,
+// direct, indirect, specular, and the emission (see trace.comp).
+const uint MODE_SUM = 2u;
+const uint MODE_MOTION = 3u;    // `a`: screen motion in pixels
+const uint MODE_DEPTH = 4u;     // the distance of `normal`
+const uint MODE_NORMALS = 5u;   // the normal of `normal`
+const uint MODE_SAMPLES = 6u;   // the fourth channel of `a`: a sample count
+const uint MODE_DEVIATION = 7u; // `a`: mean brightness and mean of its square, in b and a
+const uint MODE_NOISE = 8u;     // `a`: light in rgb, its variance in a
+const uint MODE_COLOR = 9u;     // rgb of `a` as a surface color
 
 // The picture through the sampler, which does the scaling to the window size.
 vec3 sampled(uint texture_index, vec2 uv) {
@@ -57,33 +58,42 @@ vec4 pixel_at(uint texture_index, vec2 uv) {
     return texelFetch(sampler2D(textures[texture_index], samplers[push.hdr_sampler]), ivec2(uv * vec2(size)), 0);
 }
 
-// The color of a debug view at `uv`, in display range.
+float brightness(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// The color of a debug view that does not show light, at `uv`, in linear display range.
 vec3 debug_color(vec2 uv) {
-    if (push.view == VIEW_MOTION) {
+    if (push.mode == MODE_MOTION) {
         // Black for no motion. A motion of 1 pixel is well visible; 5 are almost full.
-        return 1.0 - exp(-0.5 * vec3(abs(pixel_at(push.motion, uv).xy), 0.0));
+        return 1.0 - exp(-0.5 * vec3(abs(pixel_at(push.a, uv).xy), 0.0));
     }
     vec4 surface = pixel_at(push.normal, uv);
     if (surface.xyz == vec3(0.0)) {
         return vec3(0.0); // No surface.
     }
-    if (push.view == VIEW_DEPTH) {
+    if (push.mode == MODE_DEPTH) {
         return vec3(exp(-0.08 * surface.w));
     }
-    if (push.view == VIEW_HISTORY_LENGTH) {
+    if (push.mode == MODE_SAMPLES) {
         // A log scale: 1 sample is dark, 32 are half, 1024 are white.
-        return vec3(log2(1.0 + pixel_at(push.color, uv).a) / 10.0);
+        return vec3(log2(1.0 + pixel_at(push.a, uv).a) / 10.0);
     }
-    if (push.view == VIEW_VARIANCE) {
-        vec2 moments = pixel_at(push.moments, uv).xy;
+    if (push.mode == MODE_DEVIATION) {
+        // How noisy one frame is: the standard deviation of its brightness over time,
+        // as a part of the brightness.
+        vec2 moments = pixel_at(push.a, uv).zw;
         float deviation = sqrt(max(0.0, moments.y - moments.x * moments.x));
         return vec3(deviation / (moments.x + 1e-3) * 0.25);
     }
-    if (push.view == VIEW_FILTER_VARIANCE) {
+    if (push.mode == MODE_NOISE) {
         // The noise that the filter takes the mean to have, as a part of its
         // brightness. Black: the filter changes nothing here.
-        vec4 light = pixel_at(push.filter_input, uv);
-        return vec3(sqrt(light.a) / (dot(light.rgb, vec3(0.2126, 0.7152, 0.0722)) + 1e-3));
+        vec4 light = pixel_at(push.a, uv);
+        return vec3(sqrt(light.a) / (brightness(light.rgb) + 1e-3));
+    }
+    if (push.mode == MODE_COLOR) {
+        return pixel_at(push.a, uv).rgb;
     }
     return surface.xyz * 0.5 + 0.5;
 }
@@ -110,18 +120,26 @@ void main() {
     }
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     // The views that show light go through the tone curve, as the picture does.
-    uint light = push.hdr;
-    if (push.view == VIEW_RAW) {
-        light = push.radiance;
-    } else if (push.view == VIEW_FILTER_INPUT) {
-        light = push.filter_input;
-    } else if (push.view == VIEW_FILTER_OUTPUT) {
-        light = push.filter_output;
-    } else if (push.view != VIEW_FINAL) {
-        imageStore(images[push.dst], pixel, vec4(debug_color(uv), 1.0));
+    vec3 hdr;
+    if (push.mode == MODE_PICTURE) {
+        hdr = sampled(push.hdr, uv);
+    } else if (push.mode == MODE_LIGHT) {
+        hdr = pixel_at(push.a, uv).rgb;
+    } else if (push.mode == MODE_SUM) {
+        vec4 direct = pixel_at(push.b, uv);
+        vec4 indirect = pixel_at(push.c, uv);
+        vec4 specular = pixel_at(push.d, uv);
+        hdr = pixel_at(push.a, uv).rgb * (direct.rgb + indirect.rgb) + specular.rgb
+            + vec3(direct.a, indirect.a, specular.a);
+    } else {
+        vec3 color = debug_color(uv);
+        // A surface color is linear, as light is. The other views show plain numbers.
+        if (push.mode == MODE_COLOR) {
+            color = srgb_encode(color);
+        }
+        imageStore(images[push.dst], pixel, vec4(color, 1.0));
         return;
     }
-    vec3 hdr = sampled(light, uv);
     vec3 mapped = aces(hdr * push.exposure);
     imageStore(images[push.dst], pixel, vec4(srgb_encode(mapped), 1.0));
 }
