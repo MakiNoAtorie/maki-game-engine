@@ -6,7 +6,7 @@
 //    mesh as its custom index. The ray query gives this index, the triangle number,
 //    and the barycentric coordinates of the hit.
 // 2. mesh_normal() below reads the three corner indices of the triangle, then the
-//    three corner normals, and blends them. mesh_base_color() reads the color.
+//    three corner normals, and blends them. mesh_material() reads the color and the material.
 // 3. The result is in the space of the mesh. The ray query also gives the
 //    world-to-object matrix of the instance, which turns it into a world normal.
 // trace.comp does these steps.
@@ -34,6 +34,12 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Ind
     uint indices[];
 };
 
+// The values of `MeshEntry.material`: how the surface sends light back.
+// Must agree with `Material` in the assets crate (see `entry_bytes` in meshes.rs).
+const uint MATERIAL_DIFFUSE = 0u; // equally in all directions, with the base color
+const uint MATERIAL_MIRROR = 1u;  // a perfect mirror
+const uint MATERIAL_GLASS = 2u;   // clear glass: reflects a part, lets the rest through
+
 // 48 bytes.
 struct MeshEntry {
     VertexBuffer vertices;
@@ -41,6 +47,8 @@ struct MeshEntry {
     vec4 base_color;
     uint vertex_count;
     uint index_count;
+    uint material; // a MATERIAL_* value
+    float ior;     // index of refraction, for glass
 };
 
 // The mesh table is a buffer of the bindless array. Its index comes in a push constant.
@@ -48,9 +56,13 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly 
     MeshEntry meshes[];
 } mesh_tables[];
 
-// The base color of a mesh, linear RGB.
-vec3 mesh_base_color(uint table, uint mesh) {
-    return mesh_tables[nonuniformEXT(table)].meshes[mesh].base_color.rgb;
+// The material of a mesh: its base color (linear RGB), its MATERIAL_* value, and its
+// index of refraction.
+void mesh_material(uint table, uint mesh, out vec3 base_color, out uint material, out float ior) {
+    MeshEntry entry = mesh_tables[nonuniformEXT(table)].meshes[mesh];
+    base_color = entry.base_color.rgb;
+    material = entry.material;
+    ior = entry.ior;
 }
 
 // The normal at a point of a triangle, in the space of the mesh. Not normalized.

@@ -19,7 +19,7 @@ pub struct Config {
     pub render_width: u32,
     pub render_height: u32,
     pub vsync: bool,
-    /// glTF file to show (`.gltf` or `.glb`). `None` shows a generated cube and sphere.
+    /// glTF file to show (`.gltf` or `.glb`). `None` shows a generated test scene.
     pub model_path: Option<PathBuf>,
     /// Inner size of the room in meters: X, Z, and Y.
     pub room_width: f32,

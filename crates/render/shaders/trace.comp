@@ -3,16 +3,19 @@
 // the camera and writes the light that the path brings. One frame is one noisy sample;
 // the pass "accumulate" takes the mean over frames.
 //
-// The path of a pixel:
-// 1. A camera ray finds the first surface. If the sphere light is nearer, the pixel
-//    shows the light itself.
-// 2. Direct light at that surface: one shadow ray toward a random point of the light.
-//    The point is random, so a surface that sees a part of the light is lit in a part
-//    of the frames: the mean is a soft shadow.
-// 3. One bounce: a ray in a random direction from the surface finds a second surface.
-//    The direct light there (one more shadow ray) comes back to the first surface.
-//    This is the light that fills the shadows.
-// All surfaces are diffuse (Lambert): they send the light back equally in all directions.
+// The path of a pixel starts with a camera ray. At each surface that a ray finds:
+// - Mirror: the ray continues in the mirror direction.
+// - Glass: the ray is reflected or goes through and bends, at random, with the chance
+//   that the Fresnel law gives for the angle.
+// - Diffuse (Lambert: sends light back equally in all directions):
+//   1. Direct light: one shadow ray toward a random point of the light. The point is
+//      random, so a surface that sees a part of the light is lit in a part of the
+//      frames: the mean is a soft shadow.
+//   2. One bounce: the ray continues in a random direction. The light that the next
+//      diffuse surface gets comes back to this one. This is the light that fills the
+//      shadows. The path ends at the second diffuse surface.
+// A ray that comes from the camera, a mirror, or glass and finds the sphere light
+// brings the light itself: the light shows in the picture, in a mirror, and through glass.
 //
 // Images written, at the internal resolution:
 // - radiance: the light of the path, linear RGB. Black on a miss.
@@ -65,6 +68,9 @@ const float T_MAX = 1000.0;
 // A ray that starts on a surface starts this far above it, in meters. Without the
 // gap, rounding errors would let the ray hit the surface that it starts on.
 const float SURFACE_GAP = 0.001;
+// The largest number of rays in one path. Mirrors that face each other and the
+// inside of glass can reflect a ray many times; the path stops here (as black).
+const int MAX_SEGMENTS = 12;
 
 // ---- Random numbers ----
 //
@@ -116,6 +122,9 @@ struct Surface {
     vec3 normal;    // world space, length 1, on the side that the ray came from
     vec3 albedo;    // the part of the light that the surface sends back, for R, G, and B
     float distance; // from the start of the ray, in meters
+    uint material;  // a MATERIAL_* value of scene.glsl
+    float ior;      // index of refraction, for glass
+    bool front;     // the ray hit the front side of the triangle (for glass: it goes in)
 };
 
 // Finds the nearest triangle on a ray. False if the ray hits nothing.
@@ -140,13 +149,14 @@ bool closest_hit(vec3 origin, vec3 direction, float t_min, uint flags, out Surfa
     mat4x3 world_to_object = rayQueryGetIntersectionWorldToObjectEXT(query, true);
     vec3 normal = normalize((mesh_space * world_to_object).xyz);
     // The ray hit the back side of the triangle: the lit side is the other one.
-    if (!rayQueryGetIntersectionFrontFaceEXT(query, true)) {
+    surface.front = rayQueryGetIntersectionFrontFaceEXT(query, true);
+    if (!surface.front) {
         normal = -normal;
     }
     surface.distance = rayQueryGetIntersectionTEXT(query, true);
     surface.position = origin + surface.distance * direction;
     surface.normal = normal;
-    surface.albedo = mesh_base_color(push.mesh_table, mesh);
+    mesh_material(push.mesh_table, mesh, surface.albedo, surface.material, surface.ior);
     return true;
 }
 
@@ -237,35 +247,97 @@ void main() {
     vec4 normal = vec4(0.0);
     float depth = T_MAX;
 
+    vec3 origin = push.origin;
+    float t_min = T_MIN;
     // Cull back faces: the camera is outside of the room and looks in through the
     // back side of the near walls. Only camera rays cull; for all other rays the
     // walls are solid from the two sides.
-    Surface first;
-    bool hit = closest_hit(push.origin, direction, T_MIN,
-        gl_RayFlagsCullBackFacingTrianglesEXT, first);
-    if (hit) {
-        depth = first.distance;
-    }
+    uint flags = gl_RayFlagsCullBackFacingTrianglesEXT;
+    // The part of the light at the end of the path that reaches the camera. Each
+    // surface on the way takes a part away.
+    vec3 throughput = vec3(1.0);
+    // True if the ray can bring the light of the sphere light itself. False after a
+    // diffuse surface: its shadow ray (`direct_light`) already counted that light.
+    bool sees_light = true;
+    bool bounced = false; // the path has left a diffuse surface
 
-    float light = light_distance(push.origin, direction);
-    if (light > 0.0 && light < depth) {
-        // The camera sees the light itself. Only camera rays do: for a surface, the
-        // shadow rays of `direct_light` already bring the light of the sphere.
-        radiance = push.light_radiance;
-        depth = light;
-        normal = vec4(normalize(push.origin + light * direction - push.light_position), 1.0);
-    } else if (hit) {
-        normal = vec4(first.normal, 1.0);
-        radiance = first.albedo * direct_light(first.position, first.normal);
+    for (int segment = 0; segment < MAX_SEGMENTS; segment++) {
+        Surface surface;
+        bool hit = closest_hit(origin, direction, t_min, flags, surface);
+        float light = light_distance(origin, direction);
+        bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
+        if (segment == 0) {
+            // The first surface that the camera sees, for the depth and normal images.
+            if (light_is_nearer) {
+                depth = light;
+                normal = vec4(normalize(origin + light * direction - push.light_position), 1.0);
+            } else if (hit) {
+                depth = surface.distance;
+                normal = vec4(surface.normal, 1.0);
+            }
+        }
+        if (sees_light && light_is_nearer) {
+            radiance += throughput * push.light_radiance;
+            break;
+        }
+        if (!hit) {
+            break;
+        }
+        // The next ray starts on this surface.
+        t_min = 0.0;
+        flags = 0u;
 
-        // The bounce. A diffuse surface gets the most light from straight above and
-        // none from the side (Lambert's law again). The random direction has the same
-        // weight: more rays near the normal. Then each ray counts the same, and the
-        // light that it brings is only multiplied by the albedo.
-        vec3 bounce = direction_around(first.normal, sqrt(random()), TAU * random());
-        Surface second;
-        if (closest_hit(first.position + first.normal * SURFACE_GAP, bounce, 0.0, 0u, second)) {
-            radiance += first.albedo * second.albedo * direct_light(second.position, second.normal);
+        if (surface.material == MATERIAL_MIRROR) {
+            throughput *= surface.albedo;
+            origin = surface.position + surface.normal * SURFACE_GAP;
+            direction = reflect(direction, surface.normal);
+            sees_light = true;
+        } else if (surface.material == MATERIAL_GLASS) {
+            // The ratio of the two indices of refraction: air (1.0) to glass on the
+            // way in, glass to air on the way out.
+            float eta = surface.front ? 1.0 / surface.ior : surface.ior;
+            vec3 refracted = refract(direction, surface.normal, eta);
+            // The part of the light that the surface reflects (Fresnel law, in the
+            // short form of Schlick): small for a ray straight at the surface, all
+            // of the light for a ray along it.
+            // A zero vector from `refract`: no ray can leave the glass at this
+            // angle, and all light is reflected (total internal reflection).
+            float reflectance = 1.0;
+            if (refracted != vec3(0.0)) {
+                float r0 = (1.0 - surface.ior) / (1.0 + surface.ior);
+                r0 *= r0;
+                // The formula uses the angle on the air side of the surface.
+                float cos_air = surface.front
+                    ? dot(-direction, surface.normal)
+                    : dot(refracted, -surface.normal);
+                reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_air, 5.0);
+            }
+            // One ray cannot split. It takes one of the two ways at random, with the
+            // reflectance as the chance: the mean over frames has the two parts.
+            if (random() < reflectance) {
+                origin = surface.position + surface.normal * SURFACE_GAP;
+                direction = reflect(direction, surface.normal);
+            } else {
+                throughput *= surface.albedo;
+                origin = surface.position - surface.normal * SURFACE_GAP;
+                direction = refracted;
+            }
+            sees_light = true;
+        } else {
+            radiance += throughput * surface.albedo
+                * direct_light(surface.position, surface.normal);
+            if (bounced) {
+                break;
+            }
+            bounced = true;
+            // The bounce. A diffuse surface gets the most light from straight above
+            // and none from the side (Lambert's law again). The random direction has
+            // the same weight: more rays near the normal. Then each ray counts the
+            // same, and the light that it brings is only multiplied by the albedo.
+            throughput *= surface.albedo;
+            origin = surface.position + surface.normal * SURFACE_GAP;
+            direction = direction_around(surface.normal, sqrt(random()), TAU * random());
+            sees_light = false;
         }
     }
     imageStore(images_rgba32f[push.radiance], pixel, vec4(radiance, 1.0));

@@ -20,7 +20,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::Mat4;
-use maki_assets::{Assets, Handle, Mesh};
+use maki_assets::{Assets, Handle, Material, Mesh};
 use maki_core::{App, Extract, Render, Startup};
 use maki_gpu::{BlasDesc, BlasHandle, BufferDesc, BufferHandle, Gpu};
 
@@ -234,6 +234,14 @@ fn entry_bytes(vertex_address: u64, index_address: u64, mesh: &Mesh) -> Vec<u8> 
     bytes.extend(mesh.base_color().iter().flat_map(|c| c.to_ne_bytes())); // byte 16
     bytes.extend((mesh.positions().len() as u32).to_ne_bytes()); // byte 32
     bytes.extend((mesh.indices().len() as u32).to_ne_bytes()); // byte 36
+    // The `MATERIAL_*` numbers of `scene.glsl`. Only glass uses the index of refraction.
+    let (material, ior): (u32, f32) = match mesh.material() {
+        Material::Diffuse => (0, 1.0),
+        Material::Mirror => (1, 1.0),
+        Material::Glass { ior } => (2, ior),
+    };
+    bytes.extend(material.to_ne_bytes()); // byte 40
+    bytes.extend(ior.to_ne_bytes()); // byte 44
     // The largest alignment in the struct is 16 (the color), so its size is 48.
     bytes.resize(ENTRY_BYTES, 0);
     bytes
@@ -324,7 +332,7 @@ mod tests {
 
     #[test]
     fn buffer_bytes_follow_the_shader_layouts() {
-        let mesh = Mesh::cube(2.0);
+        let mesh = Mesh::cube(2.0).with_material(Material::Glass { ior: 1.5 });
 
         let vertices = vertex_bytes(&mesh);
         assert_eq!(vertices.len(), mesh.positions().len() * VERTEX_BYTES);
@@ -343,5 +351,7 @@ mod tests {
         assert_eq!(f32_at(&entry, 28), mesh.base_color()[3]);
         assert_eq!(u32_at(&entry, 32), 24);
         assert_eq!(u32_at(&entry, 36), 36);
+        assert_eq!(u32_at(&entry, 40), 2);
+        assert_eq!(f32_at(&entry, 44), 1.5);
     }
 }

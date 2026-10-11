@@ -44,7 +44,7 @@ The light stays in the room.
 | `window_width`, `window_height` | 1280, 720 | Window size, in logical pixels |
 | `render_width`, `render_height` | 640, 360 | Internal path-tracer resolution |
 | `vsync` | `true` | Vertical sync |
-| `model_path` | not set | glTF file to show (`.gltf` or `.glb`). Not set: a generated cube and sphere |
+| `model_path` | not set | glTF file to show (`.gltf` or `.glb`). Not set: a generated test scene (cube, sphere, glass ball, two mirrors) |
 | `room_width`, `room_depth`, `room_height` | 8.0, 8.0, 3.0 | Inner size of the room in meters (X, Z, Y) |
 | `camera_position` | `[0.0, 9.0, 7.0]` | Camera position in meters (X, Y up, Z). The room floor has its center at the origin |
 | `camera_target` | `[0.0, 0.5, 0.0]` | The point that the camera looks at |
@@ -60,13 +60,19 @@ The light stays in the room.
 
 ## Picture
 
-The picture is path traced. Each frame traces one random light path for each pixel:
+The picture is path traced. Each frame traces one random light path for each pixel. The path starts with a camera ray. What happens at a surface depends on the material of the mesh:
 
-1. A camera ray finds the first surface.
-2. One shadow ray goes to a random point of the sphere light (direct light, soft shadows).
-3. One bounce ray in a random direction finds a second surface, with one more shadow ray there (the light that fills the shadows).
+| Material | The ray |
+|---|---|
+| Diffuse | One shadow ray goes to a random point of the sphere light (direct light, soft shadows). Then one bounce ray goes in a random direction; the path ends at the second diffuse surface (the light that fills the shadows). |
+| Mirror | Continues in the mirror direction. |
+| Glass | Is reflected or goes through and bends, at random, with the chance from the Fresnel law. |
 
-All surfaces are diffuse with the base color of the mesh. The light shows as a white sphere.
+A path has 12 rays at most. The base color of the mesh is the color of a diffuse surface and the tint of a mirror or of glass. The light shows as a white sphere, also in a mirror and through glass.
+
+A mesh made in code gets its material with `Mesh::with_material`. A mesh from a glTF file is diffuse.
+
+Known limit: light that reaches a diffuse surface by way of a mirror or through glass (a caustic) shows as bright speckle that goes away very slowly. The shadow ray finds only light that comes straight from the light.
 
 One frame is noisy. The renderer keeps the mean of all frames since the last reset, so the picture gets clean while nothing changes. A change of the camera, a light, a mesh instance, the mesh store, the internal resolution, or the window size starts the mean again, and so does R. At `max_samples` frames the renderer stops the path tracer: only the tonemap pass and the copy to the window run.
 
@@ -80,7 +86,7 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 |---|---|
 | `crates/core` | Config, app and schedules, time, transform |
 | `crates/platform` | Window and input actions |
-| `crates/assets` | Asset stores and handles, mesh asset, glTF loader, mesh generators |
+| `crates/assets` | Asset stores and handles, mesh asset with its material, glTF loader, mesh generators |
 | `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, accumulation, tonemap), camera, lights, meshes and their acceleration structures |
 | `crates/ui` | egui panels |

@@ -6,8 +6,8 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
-use glam::Vec3;
-use maki_assets::{Assets, Handle, LoadState, Mesh, Model, load_gltf};
+use glam::{Quat, Vec3};
+use maki_assets::{Assets, Handle, LoadState, Material, Mesh, Model, load_gltf};
 use maki_core::{App, Config, Extract, Module, Startup, Transform, Update};
 use maki_render::{Camera, ExtractedInstance, ExtractedInstances, RenderWorld};
 
@@ -51,7 +51,8 @@ fn spawn_scene(
             let model = load_gltf(path, &mut models, &mut meshes);
             commands.spawn((Transform::IDENTITY, PendingModel(model)));
         }
-        // No model in the config: a cube and a sphere of 1 m, on the floor.
+        // No model in the config: a test scene for the materials. A cube and a sphere
+        // of 1 m on the floor, a glass ball in front of them, and two mirrors.
         None => {
             commands.spawn((
                 Transform::from_translation(Vec3::new(-1.0, 0.5, 0.0)),
@@ -60,6 +61,40 @@ fn spawn_scene(
             commands.spawn((
                 Transform::from_translation(Vec3::new(1.0, 0.5, 0.0)),
                 MeshInstance(meshes.add(Mesh::sphere(0.5, 32, 16))),
+            ));
+            // Many triangles: light that goes through shows the flat triangles more
+            // than light that a diffuse surface sends back.
+            let glass = Mesh::sphere(0.6, 96, 48)
+                .with_material(Material::Glass { ior: 1.5 })
+                .with_base_color([1.0, 1.0, 1.0, 1.0]);
+            commands.spawn((
+                Transform::from_translation(Vec3::new(1.6, 0.6, 1.9)),
+                MeshInstance(meshes.add(glass)),
+            ));
+            // One mirror mesh: a cube of 1 m, made thin and wide by the scale of
+            // each instance.
+            let mirror = meshes.add(
+                Mesh::cube(1.0)
+                    .with_material(Material::Mirror)
+                    .with_base_color([0.9, 0.9, 0.9, 1.0]),
+            );
+            // Behind the objects, with the top tilted back, so it faces the camera.
+            commands.spawn((
+                Transform {
+                    translation: Vec3::new(0.0, 1.3, -2.2),
+                    rotation: Quat::from_rotation_x(-0.25),
+                    scale: Vec3::new(4.5, 2.6, 0.06),
+                },
+                MeshInstance(mirror),
+            ));
+            // At the left, turned to face the objects.
+            commands.spawn((
+                Transform {
+                    translation: Vec3::new(-3.0, 1.1, 0.8),
+                    rotation: Quat::from_rotation_y(1.1),
+                    scale: Vec3::new(2.4, 2.2, 0.06),
+                },
+                MeshInstance(mirror),
             ));
         }
     }

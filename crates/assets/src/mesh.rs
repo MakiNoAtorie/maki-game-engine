@@ -5,7 +5,22 @@ use std::f32::consts::{PI, TAU};
 use anyhow::{Result, ensure};
 use glam::Vec3;
 
-/// A triangle mesh with one color. Coordinates are right-handed with +Y up.
+/// How a surface sends light back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Material {
+    /// Sends light back equally in all directions, with the base color (paper, plaster).
+    Diffuse,
+    /// A perfect mirror. The base color tints the reflection.
+    Mirror,
+    /// Clear glass: a part of the light is reflected, the rest goes through and bends.
+    /// The base color tints the light that goes through.
+    Glass {
+        /// Index of refraction: how much the light bends. 1.5 for window glass, 1.33 for water.
+        ior: f32,
+    },
+}
+
+/// A triangle mesh with one color and one material. Coordinates are right-handed with +Y up.
 /// The front side of a triangle is the side where its corners go counter-clockwise.
 ///
 /// [`Mesh::new`] checks the data, so users (the GPU upload, later the shaders) can
@@ -17,11 +32,13 @@ pub struct Mesh {
     normals: Vec<Vec3>,
     indices: Vec<u32>,
     base_color: [f32; 4],
+    material: Material,
 }
 
 impl Mesh {
     /// `normals: None` computes smooth normals from the triangles.
     /// `base_color` is linear RGBA, as the base color factor of a glTF material.
+    /// The material is [`Material::Diffuse`]; see [`Mesh::with_material`].
     pub fn new(
         name: impl Into<String>,
         positions: Vec<Vec3>,
@@ -64,7 +81,20 @@ impl Mesh {
             normals,
             indices,
             base_color,
+            material: Material::Diffuse,
         })
+    }
+
+    /// The same mesh with another material.
+    pub fn with_material(mut self, material: Material) -> Self {
+        self.material = material;
+        self
+    }
+
+    /// The same mesh with another base color (linear RGBA).
+    pub fn with_base_color(mut self, base_color: [f32; 4]) -> Self {
+        self.base_color = base_color;
+        self
     }
 
     pub fn name(&self) -> &str {
@@ -87,6 +117,10 @@ impl Mesh {
 
     pub fn base_color(&self) -> [f32; 4] {
         self.base_color
+    }
+
+    pub fn material(&self) -> Material {
+        self.material
     }
 
     /// An open room: a floor and four walls, no ceiling. The normals point into the room.

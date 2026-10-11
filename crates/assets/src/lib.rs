@@ -16,7 +16,7 @@ use bevy_ecs::resource::Resource;
 use maki_core::{App, Module};
 use slotmap::{DefaultKey, SlotMap};
 
-pub use mesh::Mesh;
+pub use mesh::{Material, Mesh};
 pub use model::{Model, load_gltf};
 
 /// A generational reference to an asset of type `T`. A handle of a removed asset never
