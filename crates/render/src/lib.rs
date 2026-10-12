@@ -138,6 +138,8 @@ pub struct ExtractedFrame {
     pub denoise_passes: u32,
     /// The same for the direct light.
     pub denoise_direct_passes: u32,
+    /// The same for the specular light of a rough surface.
+    pub denoise_specular_passes: u32,
     /// `denoise_reach` of the config: a filter pass runs for a pixel while
     /// `step * step * samples` is at most this. 0: for each pixel.
     pub denoise_reach: f32,
@@ -325,6 +327,7 @@ pub(crate) fn extract_frame(
         light_history_samples: config.light_history_samples,
         denoise_passes: config.denoise_passes,
         denoise_direct_passes: config.denoise_direct_passes,
+        denoise_specular_passes: config.denoise_specular_passes,
         denoise_reach: config.denoise_reach,
         indirect_clamp: config.indirect_clamp,
         history_clamp: config.history_clamp,

@@ -1,6 +1,6 @@
 #version 460
-// Passes "denoise_prepare" and "denoise_direct_prepare": the input of the filter
-// passes, for the indirect and for the direct light. See src/denoise.rs for the full
+// Passes "denoise_prepare", "denoise_direct_prepare", and "denoise_specular_prepare":
+// the input of the filter passes, for the indirect, the direct, and the specular light. See src/denoise.rs for the full
 // method.
 //
 // Reads one mean of the temporal pass and writes, for each pixel:
@@ -17,6 +17,10 @@
 //   So: the larger one of the two. For the direct light, which has the sharp edges,
 //   only while the mean has fewer than `DIRECT_SPATIAL_FRAMES` frames, then the
 //   measure over time alone. The indirect light is soft: the two for all frames.
+//   The specular light has no moments: the measure over space, and only for a rough
+//   surface (the roughness is in the fourth channel of the albedo image). The
+//   reflection of a smooth surface is sharp: its variance here is zero, so the
+//   filter passes change nothing.
 // A pixel with no surface (the background, the light itself) has no such light: zero.
 
 #include "bindless.glsl"
@@ -38,9 +42,16 @@ layout(push_constant) uniform Push {
     uint dst;            // index in `images_rgba16f`
     float frame_samples; // samples that one frame adds to the mean
     // The moments of this light are in the channels `2 * signal` and `2 * signal + 1`
-    // of `moments`: 0 for the direct light, 1 for the indirect light.
+    // of `moments`: 0 for the direct light, 1 for the indirect light. 2: the specular
+    // light, with no moments.
     uint signal;
+    uint albedo;         // index in `images_rgba16f`: the roughness of the surface in a
 } push;
+
+// The specular light of a surface with this roughness or less gets no filter, ...
+const float SHARP_ROUGHNESS = 0.15;
+// ... and from this roughness on the filter has its full effect.
+const float SOFT_ROUGHNESS = 0.5;
 
 // For the direct light, the measure over space counts while the mean has fewer
 // frames than this.
@@ -63,7 +74,9 @@ void main() {
     float frames = max(1.0, center.a / push.frame_samples);
     vec4 all_moments = imageLoad(images_rgba32f[push.moments], pixel);
     vec2 moments = push.signal == 0u ? all_moments.xy : all_moments.zw;
-    float over_time = max(0.0, moments.y - moments.x * moments.x) / frames;
+    float over_time = push.signal == 2u
+        ? 0.0
+        : max(0.0, moments.y - moments.x * moments.x) / frames;
     if (push.signal == 0u && frames >= DIRECT_SPATIAL_FRAMES) {
         imageStore(images_rgba16f[push.dst], pixel, vec4(light, min(over_time, MAX_LIGHT)));
         return;
@@ -95,5 +108,9 @@ void main() {
     float mean = sum / count;
     float over_space = max(0.0, sum_of_squares / count - mean * mean);
     float variance = max(over_time, over_space);
+    if (push.signal == 2u) {
+        float roughness = imageLoad(images_rgba16f[push.albedo], pixel).a;
+        variance *= smoothstep(SHARP_ROUGHNESS, SOFT_ROUGHNESS, roughness);
+    }
     imageStore(images_rgba16f[push.dst], pixel, vec4(light, min(variance, MAX_LIGHT)));
 }

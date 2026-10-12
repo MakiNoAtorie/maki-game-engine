@@ -10,8 +10,10 @@
 //! - `direct`: light straight from the lights. Its noise is small (only where a light
 //!   is partly hidden), and its shadow edges are sharp: few filter passes.
 //! - `indirect`: bounce light. Much noise, and soft by nature: all filter passes.
-//! - `specular`: the reflection on glass. A filter would need the surface in the
-//!   reflection, which the pixel does not have: the mean over time only.
+//! - `specular`: the reflection on glass and on a rough surface (metal, plastic). For
+//!   a smooth surface a filter would need the surface in the reflection, which the
+//!   pixel does not have: the mean over time only. The reflection of a rough surface
+//!   is soft by nature and noisy: a narrow filter (`denoise_specular_passes`).
 //! - The light of a lamp that the pixel shows (the emission) has no noise and does not
 //!   go through the denoiser: `denoise_resolve` adds it.
 //!
@@ -64,11 +66,13 @@ use crate::{Accumulation, ExtractedFrame, shader_spirv};
 /// `denoise_direct_passes` of the config).
 pub const MAX_DENOISE_PASSES: u32 = 6;
 
-/// The two kinds of light that the filter passes run on.
+/// The kinds of light that the filter passes run on. The numbers are the `signal`
+/// values of `shaders/denoise_prepare.comp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Signal {
-    Direct,
-    Indirect,
+    Direct = 0,
+    Indirect = 1,
+    Specular = 2,
 }
 
 impl Signal {
@@ -76,6 +80,7 @@ impl Signal {
         match self {
             Signal::Direct => "denoise_direct_prepare",
             Signal::Indirect => "denoise_prepare",
+            Signal::Specular => "denoise_specular_prepare",
         }
     }
 
@@ -97,6 +102,14 @@ impl Signal {
                 "denoise_filter_5",
                 "denoise_filter_6",
             ],
+            Signal::Specular => [
+                "denoise_specular_1",
+                "denoise_specular_2",
+                "denoise_specular_3",
+                "denoise_specular_4",
+                "denoise_specular_5",
+                "denoise_specular_6",
+            ],
         }
     }
 
@@ -106,6 +119,7 @@ impl Signal {
         let passes = match self {
             Signal::Direct => frame.denoise_direct_passes,
             Signal::Indirect => frame.denoise_passes,
+            Signal::Specular => frame.denoise_specular_passes,
         };
         passes.min(MAX_DENOISE_PASSES)
     }
@@ -159,8 +173,7 @@ pub(crate) struct DenoiseImages {
     pub denoised: ResourceId,
     pub direct: SignalImages,
     pub indirect: SignalImages,
-    /// The mean specular light.
-    pub specular: ResourceId,
+    pub specular: SignalImages,
     /// For the direct light in the first two channels, for the indirect light in the
     /// other two: the mean brightness of one frame and the mean of its square.
     pub moments: ResourceId,
@@ -195,11 +208,8 @@ pub(crate) fn add_passes(
         internal("denoise_moments", Format::Rgba32Float),
         "denoise_moments_previous",
     );
-    // ponytail: 16 bits. A frame changes a mean of more than about 500 samples by
-    // less than one step of a 16-bit float, so this mean stops there. A reflection
-    // on glass is a small part of the picture; use 32 bits if it shows noise at rest.
-    let (specular, previous_specular) = graph.add_history(
-        internal("denoise_specular", Format::Rgba16Float),
+    let (mean_specular, previous_specular) = graph.add_history(
+        internal("denoise_specular", Format::Rgba32Float),
         "denoise_specular_previous",
     );
     // The fast mean of the direct light: few frames, so 16 bits are sufficient.
@@ -228,6 +238,15 @@ pub(crate) fn add_passes(
             graph.add_transient(internal("denoise_work_b", Format::Rgba16Float)),
         ],
     };
+    let specular = SignalImages {
+        signal: Signal::Specular,
+        mean: mean_specular,
+        input: graph.add_transient(internal("denoise_specular_input", Format::Rgba16Float)),
+        work: [
+            graph.add_transient(internal("denoise_specular_work_a", Format::Rgba16Float)),
+            graph.add_transient(internal("denoise_specular_work_b", Format::Rgba16Float)),
+        ],
+    };
     let images = DenoiseImages {
         denoised: graph.add_transient(internal("denoised", Format::Rgba16Float)),
         direct,
@@ -250,16 +269,23 @@ pub(crate) fn add_passes(
             previous_specular,
             previous_fast_direct,
         ],
-        current: [mean_direct, mean_indirect, moments, specular, fast_direct],
+        current: [
+            mean_direct,
+            mean_indirect,
+            moments,
+            mean_specular,
+            fast_direct,
+        ],
     });
     let prepare = pipeline(shader_spirv!("denoise_prepare.comp"));
     let filter = pipeline(shader_spirv!("denoise_filter.comp"));
-    for images in [direct, indirect] {
+    for images in [direct, indirect, specular] {
         graph.add_pass(DenoisePrepare {
             pipeline: prepare,
             images,
             moments,
             normal: trace.normal,
+            albedo: trace.albedo,
         });
         for (index, name) in images.signal.filter_names().into_iter().enumerate() {
             graph.add_pass(DenoiseFilter {
@@ -376,6 +402,8 @@ struct DenoisePrepare {
     images: SignalImages,
     moments: ResourceId,
     normal: ResourceId,
+    /// The roughness of the surface is in its fourth channel.
+    albedo: ResourceId,
 }
 
 impl Pass for DenoisePrepare {
@@ -388,6 +416,7 @@ impl Pass for DenoisePrepare {
             (self.images.mean, Access::StorageRead),
             (self.moments, Access::StorageRead),
             (self.normal, Access::StorageRead),
+            (self.albedo, Access::StorageRead),
             (self.images.input, Access::StorageWrite),
         ]
     }
@@ -406,6 +435,7 @@ impl Pass for DenoisePrepare {
             ctx.bindless_index(dst),
             (accumulation.frame_samples() as f32).to_bits(),
             self.images.signal as u32,
+            ctx.bindless_index(self.albedo),
         ]);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(dst)))
@@ -483,12 +513,12 @@ impl Pass for DenoiseResolve {
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
         let images = &self.images;
-        let filtered = [images.direct, images.indirect]
+        let filtered = [images.direct, images.indirect, images.specular]
             .into_iter()
             .flat_map(|signal| signal.filtered_candidates());
         let trace = &self.trace;
         filtered
-            .chain([images.specular, trace.albedo])
+            .chain([trace.albedo])
             .chain([trace.direct, trace.indirect, trace.specular])
             .map(|image| (image, Access::StorageRead))
             .chain([(images.denoised, Access::StorageWrite)])
@@ -503,7 +533,7 @@ impl Pass for DenoiseResolve {
         let push = push_constants(&[
             ctx.bindless_index(images.direct.filtered(ctx)),
             ctx.bindless_index(images.indirect.filtered(ctx)),
-            ctx.bindless_index(images.specular),
+            ctx.bindless_index(images.specular.filtered(ctx)),
             ctx.bindless_index(self.trace.albedo),
             ctx.bindless_index(images.denoised),
             ctx.bindless_index(self.trace.direct),

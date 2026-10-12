@@ -7,6 +7,16 @@
 // - Mirror: the ray continues in the mirror direction.
 // - Glass: the ray is reflected or goes through and bends, at random, with the chance
 //   that the Fresnel law gives for the angle.
+// - Metal and plastic (rough surfaces), if the pixel shows the surface: the reflection
+//   of many small mirrors (the GGX model). A shadow ray to a light gives the bright
+//   spot of that light, and the path continues in a direction that the small mirrors
+//   reflect to. The two ways to find a light share the result (see `light_pdf`).
+//   Plastic also has the diffuse part below. This light goes to `specular`.
+//   Later on a path (after a bounce, in a reflection on glass), these surfaces count
+//   as diffuse: the path has spread out, a sharp reflection of a lamp there would be
+//   a rare, very bright sample.
+// - A surface with a light of its own (emissive) adds it where a path finds it. No
+//   shadow ray aims at it.
 // - Diffuse (Lambert: sends light back equally in all directions):
 //   1. Direct light: one shadow ray toward a random point of one light. With more
 //      than one light, the light is picked at random, with a larger chance for a
@@ -25,8 +35,9 @@
 // - direct:   the light that the surface of the pixel gets straight from the lights,
 //             without the color of the surface. Sharp shadows, little noise.
 // - indirect: the light that it gets by way of a bounce. Soft, much noise.
-// - specular: light with its full color that is not on that surface: the reflection
-//             on glass that the camera sees.
+// - specular: light with its full color that is not the diffuse light of that
+//             surface: the reflection on glass that the camera sees, and the
+//             reflection of a rough surface (metal, plastic).
 // - emission: the light of a lamp that the pixel shows: the lamp itself, in a mirror,
 //             through glass, or as a reflection on glass. Full color. It has no noise
 //             (each frame finds the same lamp), and it is thousands of times
@@ -37,7 +48,9 @@
 //             xyz and the length of the path from the camera in w, in meters. All
 //             zeros: no surface.
 // - albedo:   the color of that surface: the part of the light that it sends on to
-//             the camera. White for no surface.
+//             the camera. White for no surface. In the fourth channel: the roughness of
+//             a metal or plastic surface, else zero. The denoiser filters the specular
+//             light of a rough surface, and not that of a smooth one.
 // - motion:   how far the point that the pixel shows moved on the screen since the
 //             frame before, in pixels: its position now minus its position then.
 //             Zero for no surface. See src/motion.rs.
@@ -107,13 +120,23 @@ layout(push_constant) uniform Push {
     uint blue_noise;      // 1: use the blue noise. 0: white noise only
 } push;
 
-// A sphere light. 32 bytes. Must agree with `light_bytes` in src/light.rs.
+// A sphere light. 48 bytes. Must agree with `light_bytes` in src/light.rs.
 struct LightData {
     vec3 position;  // center, world space
     float radius;   // meters
     vec3 radiance;  // the light that each point of the sphere sends out
     float power;    // brightness as one number, for the pick of a light
+    // A cone light (a flashlight) sends light only in a cone around `direction`:
+    vec3 direction; // length 1
+    float cos_cone; // the cosine of the angle from `direction` to the cone edge. -2: all directions
 };
+
+// The part of its light that a light sends in the direction `to_point` (from its
+// center, length 1): 1 in its cone, 0 out of it, with a soft edge.
+float cone_part(LightData light, vec3 to_point) {
+    // The edge takes the outer fifth of the cone.
+    return smoothstep(light.cos_cone, mix(light.cos_cone, 1.0, 0.2), dot(light.direction, to_point));
+}
 
 // The lights are a buffer of the bindless array, as the mesh table is (scene.glsl).
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer LightBuffer {
@@ -232,7 +255,8 @@ struct Surface {
     vec3 albedo;    // the part of the light that the surface sends back, for R, G, and B
     float distance; // from the start of the ray, in meters
     uint material;  // a MATERIAL_* value of scene.glsl
-    float ior;      // index of refraction, for glass
+    float param;    // glass: index of refraction. Metal and plastic: roughness
+    vec3 emissive;  // the light that the surface sends out by itself
     bool front;     // the ray hit the front side of the triangle (for glass: it goes in)
 };
 
@@ -259,7 +283,8 @@ Surface hit_surface(rayQueryEXT query, vec3 origin, vec3 direction) {
     surface.distance = rayQueryGetIntersectionTEXT(query, true);
     surface.position = origin + surface.distance * direction;
     surface.normal = normal;
-    mesh_material(push.mesh_table, mesh, surface.albedo, surface.material, surface.ior);
+    mesh_material(push.mesh_table, mesh, surface.albedo, surface.material, surface.param,
+        surface.emissive);
     return surface;
 }
 
@@ -290,12 +315,12 @@ vec3 previous_world(rayQueryEXT query) {
     return vec3(dot(data.rows[0], point), dot(data.rows[1], point), dot(data.rows[2], point));
 }
 
-// The distance along a ray to the nearest sphere light, and the radiance of that
-// light. Negative: the ray hits no light.
+// The distance along a ray to the nearest sphere light, the radiance of that light
+// toward the start of the ray, and its index. Negative: the ray hits no light.
 // The lights are not meshes in the scene, so rays find them with this function only.
 // ponytail: tests each light. With some hundreds of lights, put the spheres in the
 // TLAS (an instance mask keeps them out of the shadow rays).
-float light_distance(vec3 origin, vec3 direction, out vec3 radiance) {
+float light_distance(vec3 origin, vec3 direction, out vec3 radiance, out uint light_index) {
     float nearest = -1.0;
     for (uint index = 0; index < push.light_count; index++) {
         LightData light = light_at(index);
@@ -309,7 +334,8 @@ float light_distance(vec3 origin, vec3 direction, out vec3 radiance) {
         float front = along - sqrt(discriminant);
         if (front > 0.0 && (nearest < 0.0 || front < nearest)) {
             nearest = front;
-            radiance = light.radiance;
+            radiance = light.radiance * cone_part(light, normalize(-to_center));
+            light_index = index;
         }
     }
     return nearest;
@@ -330,7 +356,8 @@ float light_importance(LightData light, vec3 position, vec3 normal) {
     }
     float center_distance = sqrt(distance_squared);
     float cosine = min(1.0, (dot(normal, to_center) + light.radius) / center_distance);
-    return light.power * max(cosine, 0.0) / distance_squared;
+    return light.power * cone_part(light, -to_center / center_distance) * max(cosine, 0.0)
+        / distance_squared;
 }
 
 // A shadow ray to each light at each surface would make the cost of a frame grow with
@@ -351,7 +378,10 @@ const uint LIGHT_CANDIDATES = 8u;
 // light, so the shader aims a ray at a light on purpose. From `position` the sphere
 // looks like a disk; all directions to the disk make a cone. The shadow ray takes a
 // random direction in that cone.
-vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_light) {
+// `chance`: the chance density of the direction, for each unit of solid angle: the
+// chance of the light over the size of its cone.
+vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_light,
+    out float chance) {
     // 1. Pick a light. With few lights, each one is a candidate; else the candidates
     // are random lights.
     bool all = push.light_count <= LIGHT_CANDIDATES;
@@ -419,8 +449,91 @@ vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_l
     to_light = along - sqrt(max(0.0, along * along - (distance_squared - radius_squared)));
     // The size of the cone, as a solid angle: how large the light looks from here.
     float solid_angle = TAU * one_minus_cos_max;
+    chance = 1.0 / (solid_angle * scale);
     // A diffuse surface sends out 1/pi of the light that it gets, in each direction.
-    return light.radiance * (cos_surface * solid_angle / PI * scale);
+    return light.radiance * cone_part(light, -to_center / center_distance)
+        * (cos_surface * solid_angle / PI * scale);
+}
+
+// The chance density with which `light_sample` at a surface point gives a direction
+// to the light `index`. For a ray that found the light in another way (the reflection
+// of a rough surface): how likely the shadow ray was to find it too.
+float light_pdf(uint index, vec3 position, vec3 normal) {
+    float pick = 1.0 / float(push.light_count);
+    if (push.light_count <= LIGHT_CANDIDATES) {
+        float sum = 0.0;
+        float own = 0.0;
+        for (uint other = 0u; other < push.light_count; other++) {
+            float importance = light_importance(light_at(other), position, normal);
+            sum += importance;
+            own = other == index ? importance : own;
+        }
+        if (own <= 0.0) {
+            return 0.0;
+        }
+        pick = own / sum;
+    }
+    LightData light = light_at(index);
+    vec3 to_center = light.position - position;
+    float sin2_max = light.radius * light.radius / dot(to_center, to_center);
+    if (sin2_max >= 1.0) {
+        return 0.0;
+    }
+    return pick / (TAU * sin2_max / (1.0 + sqrt(1.0 - sin2_max)));
+}
+
+// ---- Rough surfaces (GGX) ----
+//
+// A rough surface is many small mirrors (facets), too small to see. `alpha` (the
+// roughness squared) tells how far their normals spread around the surface normal.
+// The functions below are the GGX model (Walter et al., 2007) in the usual form:
+// D: how many facets have a given normal. G1: the part of them that the other facets
+// do not hide, seen from a direction. F: the part of the light that a facet reflects.
+
+// D: the density of facets whose normal is at the cosine `n_h` from the surface normal.
+float ggx_d(float n_h, float alpha) {
+    float a2 = alpha * alpha;
+    float d = n_h * n_h * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+// G1: the part of the facets that is visible from a direction at the cosine `n_v`
+// from the surface normal.
+float ggx_g1(float n_v, float alpha) {
+    float a2 = alpha * alpha;
+    return 2.0 * n_v / (n_v + sqrt(a2 + (1.0 - a2) * n_v * n_v));
+}
+
+// F: the reflected part, from `f0` for light straight at a facet to all of it for
+// light along the facet (Schlick). `v_h`: the cosine between the light and the facet
+// normal. Metal: `f0` is its color. Plastic and other non-metals: 0.04.
+vec3 fresnel(vec3 f0, float v_h) {
+    return f0 + (1.0 - f0) * pow(1.0 - v_h, 5.0);
+}
+
+// A random facet normal among those that are visible from `out_direction` (toward the
+// viewer, length 1): a ray reflected at it is a sample of the reflection. The chance
+// density of that reflected direction is `ggx_g1(n_out) * ggx_d(n_h) / (4 * n_out)`.
+// The method: stretch the view direction by alpha, pick a point on the cap of the unit
+// sphere that it sees, stretch back (Dupuy and Benyoub, "Sampling Visible GGX Normals
+// with Spherical Caps", 2023).
+vec3 visible_normal(vec3 normal, vec3 out_direction, float alpha, vec2 random_pair) {
+    // The same basis as `direction_around`.
+    float s = normal.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (s + normal.z);
+    float b = normal.x * normal.y * a;
+    vec3 tangent = vec3(1.0 + s * normal.x * normal.x * a, s * b, -s * normal.x);
+    vec3 bitangent = vec3(b, s + normal.y * normal.y * a, -normal.y);
+
+    vec3 view = vec3(dot(out_direction, tangent), dot(out_direction, bitangent),
+        dot(out_direction, normal));
+    vec3 stretched = normalize(vec3(view.xy * alpha, view.z));
+    float phi = TAU * random_pair.x;
+    float z = (1.0 - random_pair.y) * (1.0 + stretched.z) - stretched.z;
+    float sin_theta = sqrt(clamp(1.0 - z * z, 0.0, 1.0));
+    vec3 facet = vec3(sin_theta * cos(phi), sin_theta * sin(phi), z) + stretched;
+    facet = normalize(vec3(facet.xy * alpha, max(facet.z, 1e-6)));
+    return facet.x * tangent + facet.y * bitangent + facet.z * normal;
 }
 
 // ---- The path ----
@@ -528,10 +641,21 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
     uint pending_segment;
     bool reflection = false; // the path is that second path
 
+    // State of the reflection ray of a rough surface: the path ray after that surface.
+    // It can find a light, as the shadow ray of the surface can: the two share the
+    // light by their chances ("multiple importance sampling", Veach, 1995), so a
+    // small light on a smooth surface and a large light on a rough one both have
+    // little noise.
+    bool glossy_ray = false; // the ray to trace is such a ray
+    float glossy_chance;     // the chance density of its direction
+    vec3 glossy_normal;      // the normal of the surface that it left (`origin` is the point)
+
     // State of a shadow ray.
     bool shadow = false;   // the ray to trace is a shadow ray
     vec3 shadow_light;     // the light that the path gets if the shadow ray hits nothing
+    vec3 shadow_specular = vec3(0.0); // the same, for the reflection of a rough surface
     bool shadow_bounced;   // `bounced` at the surface of the shadow ray
+    bool shadow_reflection; // `reflection` at that surface
     bool continues;        // a path ray follows the shadow ray
     vec3 bounce_direction; // its direction. It starts where the shadow ray starts.
 
@@ -548,7 +672,8 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
         if (shadow) {
             shadow = false;
             if (!hit) {
-                add_light(shadow_light, shadow_bounced, reflection);
+                add_light(shadow_light, shadow_bounced, shadow_reflection);
+                sum_specular += shadow_specular;
             }
             if (continues) {
                 // The bounce ray, from the same point.
@@ -564,14 +689,22 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                 surface = hit_surface(query, origin, direction);
             }
             vec3 light_radiance;
-            float light = light_distance(origin, direction, light_radiance);
+            uint light_index;
+            float light = light_distance(origin, direction, light_radiance, light_index);
             bool light_is_nearer = light > 0.0 && (!hit || light < surface.distance);
             // On the way from the camera to the surface that the pixel shows.
             bool to_surface = !surface_found && !reflection;
             if ((sees_light && light_is_nearer) || !hit) {
                 if (sees_light && light_is_nearer) {
                     vec3 light_seen = throughput * light_radiance;
-                    if (bounced) {
+                    if (glossy_ray) {
+                        // The reflection ray of a rough surface found the light. Its
+                        // shadow ray can find it too: this ray gets the part that
+                        // belongs to its chance.
+                        float chance = light_pdf(light_index, origin, glossy_normal);
+                        float mine = glossy_chance * glossy_chance;
+                        sum_specular += light_seen * (mine / (mine + chance * chance));
+                    } else if (bounced) {
                         // The bounce ray found the light by way of a mirror or glass.
                         add_light(light_seen, true, reflection);
                     } else {
@@ -597,6 +730,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                 // The next ray starts on this surface.
                 t_min = 0.0;
                 flags = gl_RayFlagsOpaqueEXT;
+                glossy_ray = false;
                 if (to_surface) {
                     path_length += surface.distance;
                 }
@@ -617,7 +751,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                 } else if (surface.material == MATERIAL_GLASS && !last) {
                     // The ratio of the two indices of refraction: air (1.0) to glass on the
                     // way in, glass to air on the way out.
-                    float eta = surface.front ? 1.0 / surface.ior : surface.ior;
+                    float eta = surface.front ? 1.0 / surface.param : surface.param;
                     vec3 refracted = refract(direction, surface.normal, eta);
                     // The part of the light that the surface reflects (Fresnel law, in the
                     // short form of Schlick): small for a ray straight at the surface, all
@@ -626,7 +760,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     // angle, and all light is reflected (total internal reflection).
                     float reflectance = 1.0;
                     if (refracted != vec3(0.0)) {
-                        float r0 = (1.0 - surface.ior) / (1.0 + surface.ior);
+                        float r0 = (1.0 - surface.param) / (1.0 + surface.param);
                         r0 *= r0;
                         // The formula uses the angle on the air side of the surface.
                         float cos_air = surface.front
@@ -671,9 +805,50 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     }
                     sees_light = true;
                 } else {
-                    // Diffuse. All rays from here start a small gap above the surface.
+                    // Diffuse, metal, or plastic. All rays from here start a small gap
+                    // above the surface.
                     origin = surface.position + surface.normal * SURFACE_GAP;
-                    throughput *= surface.albedo;
+                    // The light of the surface itself, as the light of a lamp: with no
+                    // noise where the pixel shows it, as bounce light after a bounce.
+                    if (surface.emissive != vec3(0.0)) {
+                        vec3 own = throughput * surface.emissive;
+                        if (bounced) {
+                            add_light(own, true, reflection);
+                        } else if (to_surface) {
+                            sum_emission += own;
+                        } else {
+                            sum_specular += own;
+                        }
+                    }
+                    // The rough reflection, only at the surface that the pixel shows.
+                    bool glossy = to_surface && surface.material >= MATERIAL_METAL;
+                    bool metal = surface.material == MATERIAL_METAL;
+                    // The values of the rough reflection. Not computed for a diffuse
+                    // surface, which is most of them.
+                    float alpha = 1.0;
+                    vec3 out_direction = -direction;
+                    float n_out = 1.0;
+                    vec3 f0 = vec3(0.04);
+                    float glossy_pick = 0.0;
+                    vec3 diffuse_color = surface.albedo;
+                    if (glossy) {
+                        alpha = surface.param * surface.param;
+                        n_out = max(dot(surface.normal, out_direction), 1e-4);
+                        f0 = metal ? surface.albedo : vec3(0.04);
+                        // A facet reflects a part (F); the rest goes into the plastic
+                        // and comes back as diffuse light. Metal has no diffuse light.
+                        vec3 mirror_part = fresnel(f0, n_out);
+                        diffuse_color = metal ? vec3(0.0) : surface.albedo * (1.0 - mirror_part);
+                        // The chance that the path of a plastic surface continues with
+                        // the reflection and not with the diffuse bounce: about the
+                        // part of the light that each one sends on.
+                        glossy_pick = metal ? 1.0 : clamp(
+                            mirror_part.g / (mirror_part.g + brightness(diffuse_color) + 1e-4),
+                            0.1, 0.9);
+                    }
+                    // The light on the way to this surface, without its color.
+                    vec3 before = throughput;
+                    throughput *= diffuse_color;
                     if (to_surface) {
                         // The surface that the pixel shows. Stored here and not after the
                         // loop: the values then do not have to stay alive through all rays,
@@ -690,35 +865,90 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                             vec2 motion = in_image - previous_screen(was, vec2(size));
                             imageStore(images_rgba16f[push.normal], pixel,
                                 vec4(mirrored(surface.normal, mirror_normal), path_length));
-                            imageStore(images_rgba16f[push.albedo], pixel, vec4(throughput, 1.0));
+                            // Metal has no diffuse light: any color does. Its own color
+                            // makes the "surface color" debug view complete.
+                            imageStore(images_rgba16f[push.albedo], pixel, vec4(
+                                glossy && metal ? before * surface.albedo : throughput,
+                                glossy ? surface.param : 0.0));
                             imageStore(images_rg16f[push.motion], pixel, vec4(motion, 0.0, 0.0));
                         }
-                        throughput = vec3(1.0);
+                        throughput = glossy && metal ? vec3(0.0) : vec3(1.0);
                     }
                     vec3 light_direction;
                     float to_light;
+                    float light_chance;
                     // The surface that the pixel shows, on the first path of the frame.
                     noise_blue = push.blue_noise != 0u && first && to_surface;
-                    shadow_light = throughput
-                        * light_sample(surface.position, surface.normal, light_direction, to_light);
+                    vec3 lambert = light_sample(surface.position, surface.normal, light_direction,
+                        to_light, light_chance);
+                    shadow_light = throughput * lambert;
+                    shadow_specular = vec3(0.0);
+                    if (glossy && lambert != vec3(0.0)) {
+                        // The bright spot of the light on the rough surface: the
+                        // facets that reflect the light to the viewer have the normal
+                        // half way between the two directions.
+                        vec3 half_way = normalize(out_direction + light_direction);
+                        float n_in = dot(surface.normal, light_direction);
+                        // The chance density with which the reflection ray below
+                        // takes this direction.
+                        float chance = ggx_g1(n_out, alpha)
+                            * ggx_d(dot(surface.normal, half_way), alpha) / (4.0 * n_out);
+                        // The light that the facets send to the viewer, for light of
+                        // 1 from this direction.
+                        vec3 reflected = fresnel(f0, dot(out_direction, half_way)) * chance
+                            * ggx_g1(n_in, alpha);
+                        // `lambert` has the factor `cosine / pi` of a diffuse surface.
+                        float mine = light_chance * light_chance;
+                        float other = chance * glossy_pick;
+                        shadow_specular = before * lambert * (PI / n_in) * reflected
+                            * (mine / (mine + other * other));
+                    }
                     shadow_bounced = bounced;
+                    shadow_reflection = reflection;
                     // The path ends at the second diffuse surface, and at the last ray.
                     // ponytail: the reflection on glass ends at its first diffuse
                     // surface: it shows the room with direct light only. The glass
                     // reflects some percent of the light, so the missing bounce light
                     // is some percent of some percent, and the path is half as long.
                     continues = !bounced && !last && !reflection;
-                    if (continues) {
+                    if (continues && glossy && (metal || random() < glossy_pick)) {
+                        // The reflection ray of the rough surface.
+                        vec3 facet = visible_normal(surface.normal, out_direction, alpha,
+                            vec2(blue(2u), blue(3u)));
+                        bounce_direction = reflect(direction, facet);
+                        float n_in = dot(surface.normal, bounce_direction);
+                        // Below the surface: another facet takes the light.
+                        continues = n_in > 0.0;
+                        if (continues) {
+                            // The light that the ray brings counts by `F * G1`: the
+                            // rest of the model is in the choice of the direction.
+                            throughput = before * fresnel(f0, dot(out_direction, facet))
+                                * ggx_g1(n_in, alpha) / glossy_pick;
+                            glossy_ray = true;
+                            glossy_chance = ggx_g1(n_out, alpha)
+                                * ggx_d(dot(surface.normal, facet), alpha) / (4.0 * n_out)
+                                * glossy_pick;
+                            glossy_normal = surface.normal;
+                            // From here the light of the path is specular light.
+                            reflection = true;
+                            bounced = true;
+                            sees_light = true;
+                        }
+                    } else if (continues) {
                         // The bounce. A diffuse surface gets the most light from straight above
                         // and none from the side (Lambert's law again). The random direction has
                         // the same weight: more rays near the normal. Then each ray counts the
                         // same, and the light that it brings is only multiplied by the albedo.
                         bounce_direction = direction_around(surface.normal, sqrt(blue(2u)), TAU * blue(3u));
+                        if (glossy) {
+                            // Plastic took the diffuse bounce, with this chance.
+                            throughput /= 1.0 - glossy_pick;
+                        }
                         bounced = true;
                         sees_light = false;
                     }
                     noise_blue = false;
-                    if (shadow_light != vec3(0.0)) {
+                    if (shadow_light != vec3(0.0) || shadow_specular != vec3(0.0)) {
                         // Only "something or nothing" matters for a shadow ray, so the search
                         // stops at the first triangle.
                         shadow = true;
@@ -740,6 +970,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
             // The second path of the pixel: the reflection on the glass.
             pending = false;
             reflection = true;
+            glossy_ray = false;
             origin = pending_origin;
             direction = pending_direction;
             throughput = pending_throughput;

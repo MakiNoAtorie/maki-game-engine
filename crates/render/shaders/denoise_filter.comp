@@ -76,8 +76,10 @@ void main() {
     vec4 surface = imageLoad(images_rgba16f[push.normal], pixel);
     // No surface: the value is a full color, and it stays as it is.
     // Many samples: the mean stays as it is.
+    // No noise (a variance of zero): only equal neighbors would count, so the pixel
+    // would stay as it is; no need to read them.
     float samples = imageLoad(images_rgba32f[push.color], pixel).a;
-    if (surface.xyz == vec3(0.0)
+    if (surface.xyz == vec3(0.0) || center.a == 0.0
         || (push.reach > 0.0 && float(push.step * push.step) * samples > push.reach)) {
         imageStore(images_rgba16f[push.dst], pixel, center);
         return;

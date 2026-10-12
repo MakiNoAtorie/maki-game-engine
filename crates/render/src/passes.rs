@@ -400,9 +400,8 @@ impl Pass for Tonemap {
             trace.motion,
             denoise.direct.mean,
             denoise.moments,
-            denoise.specular,
         ];
-        let filtered = [denoise.direct, denoise.indirect]
+        let filtered = [denoise.direct, denoise.indirect, denoise.specular]
             .into_iter()
             .flat_map(|signal| signal.filtered_candidates());
         let sampled = [self.hdr, self.bloom]
@@ -439,7 +438,7 @@ impl Pass for Tonemap {
             DebugView::FilterVariance => one(8, denoise.indirect.input),
             DebugView::FilterOutput => one(1, denoise.indirect.filtered(ctx)),
             DebugView::Direct => one(1, denoise.direct.filtered(ctx)),
-            DebugView::Specular => one(1, denoise.specular),
+            DebugView::Specular => one(1, denoise.specular.filtered(ctx)),
             DebugView::Albedo => one(9, trace.albedo),
         };
         let mut push = vec![

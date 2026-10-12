@@ -19,6 +19,25 @@ pub enum Material {
         /// Index of refraction: how much the light bends. 1.5 for window glass, 1.33 for water.
         ior: f32,
     },
+    /// A rough mirror (brushed steel, worn brass): the reflection is soft, more so
+    /// with more roughness. The base color tints it. No diffuse light.
+    Metal {
+        /// 0.05 (almost a mirror) to 1.0 (no reflection that shows a shape).
+        roughness: f32,
+    },
+    /// A diffuse surface with the base color under a clear, rough coat (plastic,
+    /// paint, wet stone): the coat reflects some percent of the light, more at a flat
+    /// angle, with no tint.
+    Plastic {
+        /// As for `Metal`.
+        roughness: f32,
+    },
+}
+
+impl Material {
+    /// The lowest roughness that the renderer uses. Below it, the bright spot of a
+    /// small lamp is smaller than a pixel: use `Mirror`.
+    pub const MIN_ROUGHNESS: f32 = 0.05;
 }
 
 /// A wall of a room, named by the side of the room that it is on.
@@ -82,6 +101,7 @@ pub struct Mesh {
     indices: Vec<u32>,
     base_color: [f32; 4],
     material: Material,
+    emissive: [f32; 3],
 }
 
 impl Mesh {
@@ -131,12 +151,20 @@ impl Mesh {
             indices,
             base_color,
             material: Material::Diffuse,
+            emissive: [0.0; 3],
         })
     }
 
     /// The same mesh with another material.
     pub fn with_material(mut self, material: Material) -> Self {
         self.material = material;
+        self
+    }
+
+    /// The same mesh with a light of its own (linear RGB, as radiance): it shows with
+    /// this color, and bounce rays that find it bring its light to the room.
+    pub fn with_emissive(mut self, emissive: [f32; 3]) -> Self {
+        self.emissive = emissive;
         self
     }
 
@@ -170,6 +198,11 @@ impl Mesh {
 
     pub fn material(&self) -> Material {
         self.material
+    }
+
+    /// The light that the surface sends out by itself. Zero for most meshes.
+    pub fn emissive(&self) -> [f32; 3] {
+        self.emissive
     }
 
     /// An open room: a floor and four walls, no ceiling. The normals point into the room.

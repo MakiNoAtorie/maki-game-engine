@@ -46,7 +46,7 @@ use crate::{RenderGpu, RenderWorld, setup_renderer};
 pub const MAX_MESHES: u32 = 1024;
 
 /// Bytes of one entry of the mesh table: `MeshEntry` in `scene.glsl`.
-const ENTRY_BYTES: usize = 32;
+const ENTRY_BYTES: usize = 48;
 /// `NormalBuffer` in `scene.glsl` declares this alignment for its address.
 const BUFFER_ALIGNMENT: u64 = 4;
 
@@ -360,15 +360,21 @@ fn normal_bytes(mesh: &Mesh) -> Vec<u8> {
 fn entry_bytes(normal_address: u64, mesh: &Mesh) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(ENTRY_BYTES);
     bytes.extend(normal_address.to_ne_bytes()); // byte 0
-    // The `MATERIAL_*` numbers of `scene.glsl`. Only glass uses the index of refraction.
-    let (material, ior): (u32, f32) = match mesh.material() {
+    // The `MATERIAL_*` numbers of `scene.glsl`, and the number of the material:
+    // the index of refraction of glass, the roughness of metal and plastic.
+    let roughness = |roughness: f32| roughness.clamp(Material::MIN_ROUGHNESS, 1.0);
+    let (material, param): (u32, f32) = match mesh.material() {
         Material::Diffuse => (0, 1.0),
         Material::Mirror => (1, 1.0),
         Material::Glass { ior } => (2, ior),
+        Material::Metal { roughness: r } => (3, roughness(r)),
+        Material::Plastic { roughness: r } => (4, roughness(r)),
     };
     bytes.extend(material.to_ne_bytes()); // byte 8
-    bytes.extend(ior.to_ne_bytes()); // byte 12
+    bytes.extend(param.to_ne_bytes()); // byte 12
     bytes.extend(mesh.base_color().iter().flat_map(|c| c.to_ne_bytes())); // byte 16
+    let [r, g, b] = mesh.emissive();
+    bytes.extend([r, g, b, 0.0].iter().flat_map(|c| c.to_ne_bytes())); // byte 32
     debug_assert_eq!(bytes.len(), ENTRY_BYTES);
     bytes
 }
@@ -510,6 +516,20 @@ mod tests {
         assert_eq!(f32_at(&entry, 12), 1.5);
         assert_eq!(f32_at(&entry, 16), mesh.base_color()[0]);
         assert_eq!(f32_at(&entry, 28), mesh.base_color()[3]);
+        // No light of its own.
+        assert_eq!(f32_at(&entry, 32), 0.0);
+
+        // A roughness below the limit is the limit; the light of the mesh follows the color.
+        let lamp = Mesh::cube(1.0)
+            .with_material(Material::Metal { roughness: 0.0 })
+            .with_emissive([3.0, 2.0, 1.0]);
+        let entry = entry_bytes(0, &lamp);
+        assert_eq!(u32_at(&entry, 8), 3);
+        assert_eq!(f32_at(&entry, 12), Material::MIN_ROUGHNESS);
+        assert_eq!(
+            [f32_at(&entry, 32), f32_at(&entry, 36), f32_at(&entry, 40)],
+            [3.0, 2.0, 1.0]
+        );
     }
 
     #[test]

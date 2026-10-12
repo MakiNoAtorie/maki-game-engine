@@ -32,13 +32,18 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Nor
 const uint MATERIAL_DIFFUSE = 0u; // equally in all directions, with the base color
 const uint MATERIAL_MIRROR = 1u;  // a perfect mirror
 const uint MATERIAL_GLASS = 2u;   // clear glass: reflects a part, lets the rest through
+// The two rough kinds. A rough surface is many small mirrors (facets) that point in
+// directions around the normal; `param` is the roughness: how far around.
+const uint MATERIAL_METAL = 3u;   // a rough mirror, with the base color as its tint
+const uint MATERIAL_PLASTIC = 4u; // a diffuse surface under a clear, rough coat
 
-// 32 bytes.
+// 48 bytes.
 struct MeshEntry {
     NormalBuffer normals;
     uint material; // a MATERIAL_* value
-    float ior;     // index of refraction, for glass
+    float param;   // glass: index of refraction. Metal and plastic: roughness, 0.05 to 1
     vec4 base_color;
+    vec4 emissive; // rgb: the light that the surface sends out by itself
 };
 
 // The mesh table is a buffer of the bindless array. Its index comes in a push constant.
@@ -46,13 +51,15 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly 
     MeshEntry meshes[];
 } mesh_tables[];
 
-// The material of a mesh: its base color (linear RGB), its MATERIAL_* value, and its
-// index of refraction.
-void mesh_material(uint table, uint mesh, out vec3 base_color, out uint material, out float ior) {
+// The material of a mesh: its base color (linear RGB), its MATERIAL_* value, the
+// number of that material (`MeshEntry.param`), and its own light.
+void mesh_material(uint table, uint mesh, out vec3 base_color, out uint material, out float param,
+    out vec3 emissive) {
     MeshEntry entry = mesh_tables[nonuniformEXT(table)].meshes[mesh];
     base_color = entry.base_color.rgb;
     material = entry.material;
-    ior = entry.ior;
+    param = entry.param;
+    emissive = entry.emissive.rgb;
 }
 
 // A packed normal to a vector of length 1. Must agree with `pack_normal` in meshes.rs.

@@ -84,6 +84,26 @@ pub struct Light {
     pub intensity: f32,
     /// False: the light gives no light and does not show.
     pub on: bool,
+    /// For a cone light (a flashlight): the middle of the cone, length 1.
+    pub direction: Vec3,
+    /// The angle from `direction` to the edge of the cone, in degrees. 180 and more:
+    /// light in all directions. The outer fifth of the cone is a soft edge. In its
+    /// cone, the light is as bright as a light for all directions.
+    pub cone_degrees: f32,
+}
+
+/// A small white light for all directions.
+impl Default for Light {
+    fn default() -> Self {
+        Self {
+            radius: 0.1,
+            color: Vec3::ONE,
+            intensity: 1.0,
+            on: true,
+            direction: Vec3::NEG_Y,
+            cone_degrees: 180.0,
+        }
+    }
 }
 
 /// The point of view of the picture. The game spawns one entity with this component.

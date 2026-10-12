@@ -130,12 +130,18 @@ pub struct LookDef {
     pub color: Option<[f32; 3]>,
     /// `None`: diffuse.
     pub material: Option<Material>,
+    /// A light of its own, linear RGB: the mesh shows with this color and lights
+    /// the room by bounce rays. `None`: no light.
+    pub emissive: Option<[f32; 3]>,
 }
 
 impl LookDef {
     fn apply(&self, mut mesh: Mesh) -> Mesh {
         if let Some([r, g, b]) = self.color {
             mesh = mesh.with_base_color([r, g, b, 1.0]);
+        }
+        if let Some(emissive) = self.emissive {
+            mesh = mesh.with_emissive(emissive);
         }
         match self.material {
             Some(material) => mesh.with_material(material),
@@ -184,6 +190,13 @@ pub struct LightDef {
     pub intensity: f32,
     #[serde(default = "yes")]
     pub on: bool,
+    /// A cone light: the direction of the middle of the cone. `None`: straight down.
+    #[serde(default)]
+    pub direction: Option<[f32; 3]>,
+    /// A cone light: degrees from `direction` to the edge of the cone. `None`: light
+    /// in all directions.
+    #[serde(default)]
+    pub cone: Option<f32>,
 }
 
 /// A door in a doorway of the room. It turns on the side of the opening that is
@@ -452,6 +465,11 @@ impl Spawner<'_, '_, '_> {
                     color: light.color.into(),
                     intensity: light.intensity,
                     on: light.on,
+                    direction: light
+                        .direction
+                        .and_then(|direction| Vec3::from(direction).try_normalize())
+                        .unwrap_or(Vec3::NEG_Y),
+                    cone_degrees: light.cone.unwrap_or(180.0),
                 },
             ));
             if let Some(name) = &light.name {
@@ -620,7 +638,7 @@ pub(crate) fn spawn_loaded_models(
                             radius: pending.light_radius,
                             color: light.color,
                             intensity: light.intensity,
-                            on: true,
+                            ..Light::default()
                         },
                     ));
                 }
@@ -671,6 +689,7 @@ mod tests {
                 look: LookDef {
                     color: Some([1.0, 0.0, 0.0]),
                     material: Some(Material::Glass { ior: 1.5 }),
+                    emissive: None,
                 },
                 collider: true,
                 light_radius: 0.15,
@@ -682,6 +701,8 @@ mod tests {
                 color: [1.0; 3],
                 intensity: 5.0,
                 on: true,
+                direction: None,
+                cone: None,
             }],
             doors: vec![DoorDef {
                 name: Some("door".to_owned()),

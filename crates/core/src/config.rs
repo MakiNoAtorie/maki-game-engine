@@ -99,6 +99,9 @@ pub struct Config {
     /// passes keep them sharp. A scene with large lights (wide soft shadows) can need
     /// more.
     pub denoise_direct_passes: u32,
+    /// The same for the specular light: the reflection of a rough surface (metal,
+    /// plastic). The reflection of a smooth surface and of glass gets no filter.
+    pub denoise_specular_passes: u32,
     /// The denoiser filter gets narrower as the mean of a pixel gets more samples: a
     /// filter pass whose pattern has `s` pixels between its points runs for a pixel
     /// while `s * s * samples` is at most this. 4096: up to 64 samples get all four
@@ -183,6 +186,7 @@ impl Default for Config {
             max_path_rays: 8,
             denoise_passes: 4,
             denoise_direct_passes: 1,
+            denoise_specular_passes: 2,
             denoise_reach: 4096.0,
             indirect_clamp: 8.0,
             history_clamp: 2.0,

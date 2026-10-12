@@ -141,8 +141,12 @@ fn read_primitive(
     let material = primitive.material();
     let base_color = material.pbr_metallic_roughness().base_color_factor();
     Ok(Mesh::new(name, positions, normals, indices, base_color)?
-        .with_material(material_kind(&material)))
+        .with_material(material_kind(&material))
+        .with_emissive(material.emissive_factor()))
 }
+
+/// A roughness factor from this value on is a diffuse surface.
+const FULLY_ROUGH: f32 = 0.9;
 
 /// The index of refraction of glass in a file that gives none (the glTF default).
 const DEFAULT_IOR: f32 = 1.5;
@@ -152,8 +156,8 @@ const DEFAULT_IOR: f32 = 1.5;
 /// - more than half of the light goes through: glass;
 /// - metal with a smooth surface: mirror;
 /// - all other surfaces: diffuse. This includes the glTF default (a rough metal).
-// ponytail: a rough metal and a surface that is partly clear show as one of the three
-// kinds. Add roughness and a transmission amount to `Material` when the shader has them.
+// ponytail: a surface that is partly metal or partly clear shows as one of the kinds.
+// Add a metal amount and a transmission amount to `Material` when the shader has them.
 fn material_kind(material: &gltf::Material) -> Material {
     let pbr = material.pbr_metallic_roughness();
     let transmission = material
@@ -166,10 +170,22 @@ fn material_kind(material: &gltf::Material) -> Material {
         Material::Glass {
             ior: ior.unwrap_or(DEFAULT_IOR),
         }
-    } else if pbr.metallic_factor() >= 0.5 && pbr.roughness_factor() <= 0.1 {
-        Material::Mirror
-    } else {
+    } else if pbr.roughness_factor() >= FULLY_ROUGH {
+        // No reflection that shows. This is also the glTF default (a rough metal),
+        // which most files with no material mean as "plain".
         Material::Diffuse
+    } else if pbr.metallic_factor() >= 0.5 {
+        if pbr.roughness_factor() <= 0.1 {
+            Material::Mirror
+        } else {
+            Material::Metal {
+                roughness: pbr.roughness_factor(),
+            }
+        }
+    } else {
+        Material::Plastic {
+            roughness: pbr.roughness_factor().max(Material::MIN_ROUGHNESS),
+        }
     }
 }
 
@@ -330,11 +346,17 @@ mod tests {
                 "rough_metal",
                 r#","metallicFactor":1.0,"roughnessFactor":0.6"#,
                 String::new(),
-                Material::Diffuse,
+                Material::Metal { roughness: 0.6 },
             ),
             (
                 "smooth_plastic",
                 r#","metallicFactor":0.0,"roughnessFactor":0.0"#,
+                String::new(),
+                Material::Plastic { roughness: 0.05 },
+            ),
+            (
+                "plaster",
+                r#","metallicFactor":0.0,"roughnessFactor":0.95"#,
                 String::new(),
                 Material::Diffuse,
             ),

@@ -90,6 +90,8 @@ SCENARIOS = {
     # The full loop of the game: room A, room B, the switch, and back (the trip script).
     # Two room loads, with events, messages, and fades. Use `--frames 900 --warmup 0`.
     "trip_720p": ((1280, 720), None, {}, ["--bench-script", "trip"]),
+    # Room C: rough metal and plastic, a surface with a light of its own, a cone light.
+    "materials_720p": ((1280, 720), None, {"start_room": "room_c.ron"}),
     "heavy_mixed_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {}),
 }
 
@@ -146,6 +148,8 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
     `overrides` are more config keys, `arguments` more command line arguments."""
     (width, height), scene, extra, *more = SCENARIOS[name]
     extra = {**extra, **(overrides or {})}
+    # A scenario can name another room of the game with the key `start_room`.
+    room_name = extra.pop("start_room", "room_a.ron")
     # A key of `extra` takes the place of the same key below: TOML permits a key one time.
     fixed = {"window_width": WINDOW[0], "window_height": WINDOW[1], "render_width": width, "render_height": height}
     if "samples_per_frame" not in extra:
@@ -172,7 +176,7 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         room_path.write_text(MODEL_ROOM.replace("MODEL", json.dumps(scene_path.resolve().as_posix())))
         params += f";{scene_text};triangles={triangles}"
     else:
-        room_path = ROOT / "game" / "assets" / "rooms" / "room_a.ron"
+        room_path = ROOT / "game" / "assets" / "rooms" / room_name
     # A JSON string is a valid TOML basic string.
     config.insert(0, f"start_room = {json.dumps(room_path.resolve().as_posix())}")
     (work / "config.toml").write_text("\n".join(config) + "\n")

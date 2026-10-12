@@ -108,6 +108,7 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `blue_noise` | false | The random numbers for the point on the light and for the bounce direction are spread evenly over the pixels (a blue-noise pattern), so the noise of one frame has no clumps. Measured: 6 to 10 % less error for a young picture, 1 % in motion |
 | `denoise_passes` | 4 | Filter passes of the denoiser for the indirect light (bounce light), 0 to 6. Each pass doubles the area that the filter takes its mean from. 0: no filter, only the mean over frames |
 | `denoise_direct_passes` | 1 | The same for the direct light. It has little noise and sharp shadow edges. A scene with large lights (wide soft shadows) can need more |
+| `denoise_specular_passes` | 2 | The same for the specular light: the reflection of a rough surface (metal, plastic). The reflection of a smooth surface and of glass gets no filter |
 | `denoise_reach` | 4096.0 | The filter gets narrower as the mean of a pixel gets more samples: a pass with `s` pixels between its points runs for a pixel while `s * s * samples` is at most this. 0: each pass runs at each pixel |
 | `indirect_clamp` | 8.0 | The largest light that one bounce ray adds to a pixel, in units of the light at the surface that the pixel shows. It removes the bright speckle of rare paths, and it makes light that comes by way of a mirror or through glass (caustics) darker. 0: no limit |
 | `exposure` | 1.0 | The picture is multiplied by this before the tone curve. Manual: an automatic exposure would take away the darkness that the game wants |
@@ -127,16 +128,23 @@ The picture is path traced. Each frame traces one random light path for each pix
 | Diffuse | One shadow ray goes to a random point of the sphere light (direct light, soft shadows). Then one bounce ray goes in a random direction; the path ends at the second diffuse surface (the light that fills the shadows). |
 | Mirror | Continues in the mirror direction. |
 | Glass | Glass that the camera sees (also in a mirror) splits the path: one path goes through and bends, one is reflected, each with its part of the light from the Fresnel law. Other glass on a path: the ray takes one of the two ways at random. |
+| Metal (roughness) | If the pixel shows the surface: the soft reflection of many small mirrors (GGX). One shadow ray gives the bright spot of a light, and the path continues in a reflected direction; the two share the light of a lamp by their chances, so a small lamp on a smooth surface and a large one on a rough surface both have little noise. The base color tints the reflection. Later on a path: as diffuse. |
+| Plastic (roughness) | A diffuse surface under a clear rough coat: the reflection of metal, with no tint and some percent of the light (more at a flat angle), plus the diffuse light. |
 
 A path has 12 rays at most. The base color of the mesh is the color of a diffuse surface and the tint of a mirror or of glass. The light shows as a white sphere, also in a mirror and through glass.
 
 A mesh made in code gets its material with `Mesh::with_material`. A mesh from a glTF file gets it from the numbers of its glTF material:
 
+A mesh can have a light of its own (`Mesh::with_emissive`, `look: (emissive: (r, g, b))` in a room file, the emissive factor of a glTF material): it shows with that color, and bounce rays that find it bring its light to the room. No shadow ray aims at it, so it gives soft, noisy light: for a strong light use a `Light`.
+
+A `Light` is a sphere. With `direction` and `cone` (degrees from the direction to the edge) in the room file it sends its light only in that cone: a flashlight. `game/assets/rooms/room_c.ron` shows the rough materials, a mesh with its own light, and a cone light (`start_room` of the config).
+
 | glTF material | Material |
 |---|---|
 | Transmission factor above 0.5 (`KHR_materials_transmission`) | Glass. The index of refraction is the `ior` of `KHR_materials_ior`, or 1.5 |
-| Else: metallic factor 0.5 or more and roughness factor 0.1 or less | Mirror |
-| All others, with the glTF default (a rough metal) | Diffuse |
+| Else: roughness factor 0.9 or more (also the glTF default, a rough metal) | Diffuse |
+| Else: metallic factor 0.5 or more | Mirror with a roughness factor of 0.1 or less, else Metal with that roughness |
+| All others | Plastic with that roughness (0.05 at least) |
 
 Textures are not read.
 

@@ -71,12 +71,12 @@ layout(push_constant) uniform Push {
     uint previous_direct;        // index in `images_rgba32f`
     uint previous_indirect;      // index in `images_rgba32f`
     uint previous_moments;       // index in `images_rgba32f`
-    uint previous_specular;      // index in `images_rgba16f`
+    uint previous_specular;      // index in `images_rgba32f`
     uint previous_fast_direct;   // index in `images_rgba16f`
     uint mean_direct;            // index in `images_rgba32f`
     uint mean_indirect;          // index in `images_rgba32f`
     uint moments;                // index in `images_rgba32f`
-    uint mean_specular;          // index in `images_rgba16f`
+    uint mean_specular;          // index in `images_rgba32f`
     uint fast_direct;            // index in `images_rgba16f`
     float frame_samples;    // samples in the images of this frame, 1 or more
     // The history of a pixel counts as this many samples at most, for the direct
@@ -108,7 +108,7 @@ const int BLOCK_RADIUS = 2;
 // Two means of the same light differ by this part also with no noise (rounding,
 // 16-bit images): no change.
 const float SAME_LIGHT = 0.02;
-// The specular light (a reflection on glass) has no fast mean. Its mean has at most
+// The specular light (a reflection on glass or on a rough surface) has no fast mean. Its mean has at most
 // this many samples, so it follows a change in about a second.
 const float SPECULAR_SAMPLES = 64.0;
 
@@ -140,7 +140,7 @@ void add_history(ivec2 tap, float weight, vec4 surface, ivec2 size) {
     old_direct += weight * imageLoad(images_rgba32f[push.previous_direct], tap);
     old_indirect += weight * imageLoad(images_rgba32f[push.previous_indirect], tap);
     old_fast_direct += weight * imageLoad(images_rgba16f[push.previous_fast_direct], tap).rgb;
-    old_specular += weight * imageLoad(images_rgba16f[push.previous_specular], tap).rgb;
+    old_specular += weight * imageLoad(images_rgba32f[push.previous_specular], tap).rgb;
     old_moments += weight * imageLoad(images_rgba32f[push.previous_moments], tap);
     weights += weight;
 }
@@ -189,7 +189,7 @@ void main() {
         imageStore(images_rgba32f[push.mean_direct], pixel, vec4(0.0));
         imageStore(images_rgba32f[push.mean_indirect], pixel, vec4(0.0));
         imageStore(images_rgba32f[push.moments], pixel, vec4(0.0));
-        imageStore(images_rgba16f[push.mean_specular], pixel, vec4(0.0));
+        imageStore(images_rgba32f[push.mean_specular], pixel, vec4(0.0));
         imageStore(images_rgba16f[push.fast_direct], pixel, vec4(0.0));
         return;
     }
@@ -258,7 +258,7 @@ void main() {
         vec4(mix(old_indirect.rgb, indirect, step_to_new.y), samples.y));
     imageStore(images_rgba16f[push.fast_direct], pixel,
         vec4(mix(old_fast_direct, direct, fast_step), 0.0));
-    imageStore(images_rgba16f[push.mean_specular], pixel,
+    imageStore(images_rgba32f[push.mean_specular], pixel,
         vec4(mix(old_specular, specular, specular_step), 0.0));
     imageStore(images_rgba32f[push.moments], pixel,
         mix(old_moments, new_moments, step_to_new.xxyy));

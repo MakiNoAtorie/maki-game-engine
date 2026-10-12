@@ -43,7 +43,7 @@ pub struct ExtractedLights(pub Vec<ExtractedLight>);
 /// The light buffer has room for this many lights. More are not used by the renderer.
 pub const MAX_LIGHTS: usize = 256;
 /// Bytes of one light in the light buffer: `LightData` in `shaders/trace.comp`.
-const LIGHT_BYTES: usize = 32;
+const LIGHT_BYTES: usize = 48;
 
 /// The light buffers on the GPU: one for each frame slot, because the CPU writes the
 /// lights of frame N+1 while the GPU can still read those of frame N. The trace pass
@@ -60,7 +60,17 @@ pub(crate) fn light_bytes(lights: &[ExtractedLight]) -> Vec<u8> {
         // with a chance in proportion to it.
         let power = light.light.intensity * light.light.color.max_element();
         let radius = light.light.radius.max(MIN_RADIUS);
-        let fields = [p.x, p.y, p.z, radius, r.x, r.y, r.z, power];
+        // A cone of 180 degrees or more is no cone: the shader takes -2 for "all
+        // directions" (a cosine is never below -1).
+        let (d, degrees) = (light.light.direction, light.light.cone_degrees);
+        let cos_cone = if degrees < 180.0 {
+            degrees.max(0.0).to_radians().cos()
+        } else {
+            -2.0
+        };
+        let fields = [
+            p.x, p.y, p.z, radius, r.x, r.y, r.z, power, d.x, d.y, d.z, cos_cone,
+        ];
         bytes.extend(fields.into_iter().flat_map(f32::to_ne_bytes));
     }
     bytes
@@ -130,6 +140,8 @@ mod tests {
                 color: Vec3::new(1.0, 0.5, 0.25),
                 intensity: 8.0,
                 on: true,
+                direction: Vec3::X,
+                cone_degrees: 60.0,
             },
         };
         let bytes = light_bytes(&[light; MAX_LIGHTS + 1]);
@@ -143,6 +155,16 @@ mod tests {
         assert_eq!(field(4), light.radiance().x);
         assert_eq!(field(6), light.radiance().z);
         assert_eq!(field(7), 8.0);
+        // The cone: its direction and the cosine of 60 degrees.
+        assert_eq!(field(8), 1.0);
+        assert!((field(11) - 0.5).abs() < 1e-6);
+        // No cone.
+        let all = ExtractedLight {
+            light: Light::default(),
+            ..light
+        };
+        let bytes = light_bytes(&[all]);
+        assert_eq!(f32::from_ne_bytes(bytes[44..48].try_into().unwrap()), -2.0);
     }
 
     /// The sample count of each frame.
@@ -162,15 +184,7 @@ mod tests {
         // Not `build`: `setup_lights` needs a GPU.
         app.add_systems(Extract, extract_lights);
         app.add_systems(Startup, |mut commands: Commands| {
-            commands.spawn((
-                Transform::IDENTITY,
-                Light {
-                    radius: 0.1,
-                    color: Vec3::ONE,
-                    intensity: 1.0,
-                    on: true,
-                },
-            ));
+            commands.spawn((Transform::IDENTITY, Light::default()));
         })
         // The light moves in the fixed steps 3 and 4 only.
         .add_systems(

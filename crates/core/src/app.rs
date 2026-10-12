@@ -104,8 +104,10 @@ impl App {
         );
         // `MAX_DENOISE_PASSES` of the render crate.
         ensure!(
-            config.denoise_passes <= 6 && config.denoise_direct_passes <= 6,
-            "denoise_passes and denoise_direct_passes must be from 0 to 6"
+            config.denoise_passes <= 6
+                && config.denoise_direct_passes <= 6
+                && config.denoise_specular_passes <= 6,
+            "denoise_passes, denoise_direct_passes, and denoise_specular_passes must be from 0 to 6"
         );
         ensure!(
             [

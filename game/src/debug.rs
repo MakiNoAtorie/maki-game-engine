@@ -103,6 +103,10 @@ impl Module for DebugPanelModule {
                         .text("filter passes, direct light"),
                 );
                 ui.add(
+                    egui::Slider::new(&mut config.denoise_specular_passes, 0..=MAX_DENOISE_PASSES)
+                        .text("filter passes, rough reflections"),
+                );
+                ui.add(
                     egui::Slider::new(&mut config.denoise_reach, 0.0..=4096.0)
                         .logarithmic(true)
                         .text("filter reach (0: all passes at each pixel)"),
