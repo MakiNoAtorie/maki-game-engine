@@ -38,6 +38,9 @@
                         SetFlag("power_off", true),
                         LightOff("lamp_b"),
                         Message("Click. The lamp dies. Far away, a lock lets go."),
+                        // `SavePoint` is a command of the save module (crates/gameplay):
+                        // the file is written when this event ends.
+                        SavePoint,
                     ],
                 ),
                 (

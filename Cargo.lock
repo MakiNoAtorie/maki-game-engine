@@ -1581,6 +1581,7 @@ dependencies = [
  "maki-events",
  "maki-platform",
  "maki-scene",
+ "ron",
  "serde",
  "tracing",
 ]

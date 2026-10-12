@@ -1,6 +1,6 @@
 //! Gameplay that many games of this kind share: a camera that follows the player
-//! from above, a character that walks with the move actions, the start room, and
-//! debug controls. A game adds the modules that it wants.
+//! from above, a character that walks with the move actions, the start room, save
+//! and load, and debug controls. A game adds the modules that it wants.
 //!
 //! Each module has its own settings (a table of the config file) and its own input
 //! actions. No module has a value that belongs to one game: no room name, no size of
@@ -15,6 +15,7 @@ mod controls;
 mod light_control;
 mod player;
 mod rooms;
+mod save;
 
 pub use camera::{CameraModule, CameraSettings, FollowCamera, follow_player};
 pub use controls::{
@@ -27,3 +28,4 @@ pub use light_control::{
 };
 pub use player::{PlayerModule, PlayerSettings, Walker, steer_player, walk};
 pub use rooms::{RELOAD_ROOM, RoomSettings, RoomsModule, StartRoom, check_start_room};
+pub use save::{LOAD_GAME, SaveCommand, SaveData, SaveFile, SaveModule, SaveSettings};

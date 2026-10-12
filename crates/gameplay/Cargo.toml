@@ -12,5 +12,6 @@ maki-events.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true
+ron.workspace = true
 serde.workspace = true
 tracing.workspace = true

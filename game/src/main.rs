@@ -19,6 +19,8 @@ const LOG_ENV: &str = "MAKI_LOG";
 /// Where the game starts if the config file names no room.
 const START_ROOM: &str = "game/assets/rooms/room_a.ron";
 const START_SPAWN: &str = "start";
+/// The save file, in the working directory.
+const SAVE_FILE: &str = "save.ron";
 /// The room files of the game: where the editor opens and saves.
 #[cfg(feature = "editor")]
 const ROOMS: &str = "game/assets/rooms";
@@ -85,6 +87,12 @@ fn main() -> anyhow::Result<()> {
         .add_module(maki_gameplay::RoomsModule {
             start_room: PathBuf::from(START_ROOM),
             start_spawn: START_SPAWN.to_owned(),
+        })
+        // Not with the editor: it plays a room that is not on disk, and its play
+        // must not write the save of the game.
+        .add_module(maki_gameplay::SaveModule {
+            file: PathBuf::from(SAVE_FILE),
+            active: !editor,
         })
         .add_module(shake::ShakeModule)
         .add_module(maki_render::RenderModule)
@@ -162,6 +170,10 @@ output = false",
             .add_module(maki_events::EventsModule)
             .add_module(maki_audio::AudioModule)
             .add_module(maki_gameplay::CameraModule)
+            .add_module(maki_gameplay::SaveModule {
+                file: PathBuf::from(SAVE_FILE),
+                active: false,
+            })
             .add_module(shake::ShakeModule);
         let registry = app.world().resource::<maki_events::CommandRegistry>();
         let mut events = 0;

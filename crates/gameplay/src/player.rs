@@ -101,7 +101,7 @@ impl Module for PlayerModule {
     }
 }
 
-fn spawn_player(
+pub(crate) fn spawn_player(
     mut commands: Commands,
     settings: Res<PlayerSettings>,
     mut meshes: ResMut<Assets<Mesh>>,

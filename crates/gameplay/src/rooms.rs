@@ -83,7 +83,7 @@ pub fn check_start_room(app: &App) -> Result<()> {
     Ok(())
 }
 
-fn request_start_room(start: Res<StartRoom>, mut request: ResMut<RoomRequest>) {
+pub(crate) fn request_start_room(start: Res<StartRoom>, mut request: ResMut<RoomRequest>) {
     request.0 = Some(start.target());
 }
 
