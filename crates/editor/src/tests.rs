@@ -895,3 +895,97 @@ fn a_click_on_a_model_from_a_file_selects_its_prop() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
+    use maki_scene::{PoseDef, RoomItem, read_prefab};
+
+    let (app, directory) = editor_app("prefab");
+    app.run(|mut app| {
+        frames(&mut app, 3);
+        let select = |app: &mut App, items: &[Item]| {
+            let mut editor = app.resource_mut::<Editor>();
+            editor.selection = items.to_vec();
+            // Not the command rows of an event.
+            editor.event_ui.focused = false;
+        };
+        let editor = |app: &App| app.world().resource::<Editor>().clone_parts();
+
+        // The cube and the lamp of room A go into room B by the buffer. The lamp of
+        // room B is a second lamp: the name gets a number.
+        request(&mut app, Command::Add(Kind::Light));
+        select(&mut app, &[Item::Prop(0), Item::Light(0)]);
+        request(&mut app, Command::Copy);
+        request(&mut app, Command::Save);
+        request(&mut app, Command::Open(directory.join("b.ron")));
+        request(&mut app, Command::Add(Kind::Light));
+        app.resource_mut::<Editor>().document.room.lights[0].name = Some("lamp".to_owned());
+        request(&mut app, Command::Paste);
+        let (room, selection) = editor(&app);
+        assert_eq!(selection, [Item::Prop(0), Item::Light(1)]);
+        assert_eq!(room.props[0].pose.position, [1.0, 0.5, 0.0]);
+        assert_eq!(room.lights[1].name.as_deref(), Some("lamp_2"));
+
+        // A second cube, 1 m beside the first, and the two as a prefab: its origin is
+        // the floor point of the first.
+        request(&mut app, Command::Duplicate);
+        app.resource_mut::<Editor>().document.room.props[1]
+            .pose
+            .position = [2.0, 0.5, 0.0];
+        select(&mut app, &[Item::Prop(0), Item::Prop(1)]);
+        request(&mut app, Command::MakePrefab("pair".to_owned()));
+        let (room, selection) = editor(&app);
+        assert_eq!(selection, [Item::Prefab(0)]);
+        assert!(room.props.is_empty());
+        assert_eq!(room.prefabs[0].pose.position, [1.0, 0.0, 0.0]);
+        let file = directory.join("prefabs/pair.prefab");
+        let places = |file: &Path| -> Vec<[f32; 3]> {
+            let props = read_prefab(file).unwrap().props;
+            props.iter().map(|prop| prop.pose.position).collect()
+        };
+        assert_eq!(places(&file), [[0.0, 0.5, 0.0], [1.0, 0.5, 0.0]]);
+        // The world shows the two cubes, and a click on one selects the prefab.
+        frames(&mut app, 2);
+        let world = app.world();
+        let mut shown = world.try_query::<&RoomItem>().unwrap();
+        let of_prefab = |item: &&RoomItem| **item == RoomItem::Prefab(0);
+        assert_eq!(shown.iter(world).filter(of_prefab).count(), 2);
+        select(&mut app, &[]);
+        click(&mut app, Vec3::new(1.0, 1.0, 0.0));
+        assert_eq!(editor(&app).1, [Item::Prefab(0)]);
+
+        // The prefab is turned and moved, and unpacked: the cubes are props again,
+        // at the places that the prefab showed them at.
+        app.resource_mut::<Editor>().document.room.prefabs[0].pose = PoseDef {
+            position: [0.0, 0.0, -1.0],
+            rotation: [0.0, 90.0, 0.0],
+            ..PoseDef::default()
+        };
+        request(&mut app, Command::UnpackPrefab);
+        let (room, selection) = editor(&app);
+        assert_eq!(selection, [Item::Prop(0), Item::Prop(1)]);
+        assert!(room.prefabs.is_empty());
+        // A quarter turn around Y moves +X to -Z.
+        assert_eq!(room.props[1].pose.position, [0.0, 0.5, -2.0]);
+        assert_eq!(room.props[1].pose.rotation, [0.0, 90.0, 0.0]);
+
+        // One cube goes up, and the prefab is made again with its name: the file has
+        // the change in the space of the prefab, and the prefab has its pose again.
+        app.resource_mut::<Editor>().document.room.props[1]
+            .pose
+            .position[1] = 1.5;
+        assert_eq!(app.world().resource::<Editor>().prefab_name, "pair");
+        request(&mut app, Command::MakePrefab("pair".to_owned()));
+        assert_eq!(places(&file), [[0.0, 0.5, 0.0], [1.0, 1.5, 0.0]]);
+        let (room, _) = editor(&app);
+        assert_eq!(room.prefabs[0].pose.rotation, [0.0, 90.0, 0.0]);
+        assert_eq!(room.prefabs[0].pose.position, [0.0, 0.0, -1.0]);
+
+        // The room is saved with its prefab and reads as the document.
+        request(&mut app, Command::Save);
+        let text = std::fs::read_to_string(directory.join("b.ron")).unwrap();
+        assert!(text.contains(r#"file: "prefabs/pair.prefab""#), "{text}");
+        assert_eq!(maki_scene::parse_room(&text).unwrap(), room);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}

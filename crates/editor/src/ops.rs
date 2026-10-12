@@ -14,7 +14,10 @@ use glam::Vec3;
 use maki_assets::{Doorway, Wall};
 use maki_audio::AudioCommand;
 use maki_events::{Area, Builtin, Command, CommandRegistry, CommandSet, EventDef, Page, Trigger};
-use maki_scene::{DoorDef, LightDef, MeshDef, MoverDef, PoseDef, PropDef, RoomDef};
+use maki_scene::{
+    DoorDef, LightDef, MeshDef, MoverDef, PoseDef, PrefabDef, PrefabUse, PropDef, RoomDef, pose_in,
+    pose_out, prefab_text, read_prefab,
+};
 
 use crate::ron_text::Notes;
 use crate::{Document, Item};
@@ -27,6 +30,8 @@ pub enum Kind {
     Sphere,
     /// A glTF file, from the directory of the room file.
     Model(PathBuf),
+    /// A prefab file, from the directory of the room file.
+    Prefab(PathBuf),
     Light,
     Spawn,
     Doorway,
@@ -53,7 +58,7 @@ impl Kind {
 }
 
 /// The offset of a duplicate from its source, in meters along X and Z.
-const DUPLICATE_OFFSET: f32 = 0.5;
+pub(crate) const DUPLICATE_OFFSET: f32 = 0.5;
 
 /// `name`, or `name_2`, `name_3`, ... : the first that `taken` does not have.
 fn free_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
@@ -75,6 +80,18 @@ fn in_floor(position: Vec3) -> [f32; 3] {
     [position.x, 0.0, position.z]
 }
 
+/// A pose with each number at a step of 0.0001: a pose that went into the space of
+/// a prefab and back is the number that a person wrote, not 0.99999994.
+fn tidy(pose: PoseDef) -> PoseDef {
+    // `+ 0.0`: no "-0.0" in a file.
+    let round = |values: [f32; 3]| values.map(|value| (value * 1e4).round() / 1e4 + 0.0);
+    PoseDef {
+        position: round(pose.position),
+        rotation: round(pose.rotation),
+        scale: round(pose.scale),
+    }
+}
+
 impl Document {
     /// True if the document has the item.
     pub fn has(&self, item: &Item) -> bool {
@@ -86,6 +103,7 @@ impl Document {
             Item::Prop(index) => *index < room.props.len(),
             Item::Mover(index) => *index < room.movers.len(),
             Item::Light(index) => *index < room.lights.len(),
+            Item::Prefab(index) => *index < room.prefabs.len(),
             Item::Spawn(name) => room.spawns.contains_key(name),
             Item::Event(index) => *index < self.events.len(),
         }
@@ -111,6 +129,11 @@ impl Document {
             Item::Light(_) => {
                 let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
                 named(lights.collect(), item)
+            }
+            Item::Prefab(_) => {
+                let prefabs = room.prefabs.iter().enumerate();
+                let prefabs = prefabs.map(|(i, prefab)| (Item::Prefab(i), &prefab.name));
+                named(prefabs.collect(), item)
             }
             Item::Door(_) | Item::Mover(_) => {
                 let doors = doors.map(|(i, door)| (Item::Door(i), &door.name));
@@ -308,6 +331,19 @@ impl Document {
                 self.room.props.last_mut().expect("pushed above").name = Some(name);
                 item
             }
+            Kind::Prefab(file) => {
+                let item = Item::Prefab(room.prefabs.len());
+                let stem = file.file_stem().unwrap_or_default();
+                let stem = stem.to_string_lossy().into_owned();
+                room.prefabs.push(PrefabUse {
+                    name: None,
+                    file,
+                    pose: on_floor(0.0),
+                });
+                let name = self.unique_name(&item, &stem);
+                self.room.prefabs.last_mut().expect("pushed above").name = Some(name);
+                item
+            }
             Kind::Light => {
                 let item = Item::Light(room.lights.len());
                 room.lights.push(LightDef {
@@ -436,6 +472,7 @@ impl Document {
                 Item::Prop(index) => drop(room.props.remove(*index)),
                 Item::Mover(index) => drop(room.movers.remove(*index)),
                 Item::Light(index) => drop(room.lights.remove(*index)),
+                Item::Prefab(index) => drop(room.prefabs.remove(*index)),
                 Item::Spawn(name) => drop(room.spawns.remove(name)),
                 Item::Event(index) => drop(self.events.remove(*index)),
             }
@@ -450,54 +487,71 @@ impl Document {
     /// Makes a copy of each item, a little beside it, with a name of its own.
     /// Returns the copies. The room and a door have no copy (a doorway holds one door).
     pub fn duplicate(&mut self, items: &[Item]) -> Vec<Item> {
+        let source = self.clone();
+        self.copy_from(&source, items, DUPLICATE_OFFSET)
+    }
+
+    /// Makes in this document a copy of each of `items` of the document `source`
+    /// (another room, or this one), `offset` meters beside its place, with a name
+    /// that this room does not have and with its notes. Returns the copies. The
+    /// room and a door have no copy (a doorway holds one door).
+    pub fn copy_from(&mut self, source: &Document, items: &[Item], offset: f32) -> Vec<Item> {
         let shift = |position: &mut [f32; 3]| {
-            position[0] += DUPLICATE_OFFSET;
-            position[2] += DUPLICATE_OFFSET;
+            position[0] += offset;
+            position[2] += offset;
         };
         let mut copies = Vec::new();
         for item in items {
-            if !self.has(item) {
+            if !source.has(item) {
                 continue;
             }
-            let notes = self.notes_of(item).to_vec();
+            let notes = source.notes_of(item).to_vec();
             let room = &mut self.room;
             let copy = match item {
                 Item::Room | Item::Door(_) => continue,
                 Item::Doorway(index) => {
-                    let mut doorway = room.doorways[*index];
-                    doorway.offset += doorway.width + DUPLICATE_OFFSET;
+                    let mut doorway = source.room.doorways[*index];
+                    if offset != 0.0 {
+                        doorway.offset += doorway.width + offset;
+                    }
                     room.doorways.push(doorway);
                     Item::Doorway(room.doorways.len() - 1)
                 }
                 Item::Prop(index) => {
-                    let mut prop = room.props[*index].clone();
+                    let mut prop = source.room.props[*index].clone();
                     shift(&mut prop.pose.position);
                     room.props.push(prop);
                     Item::Prop(room.props.len() - 1)
                 }
                 Item::Mover(index) => {
-                    let mut mover = room.movers[*index].clone();
+                    let mut mover = source.room.movers[*index].clone();
                     shift(&mut mover.a.position);
                     shift(&mut mover.b.position);
                     let copy = Item::Mover(room.movers.len());
+                    let name = mover.name.take();
                     room.movers.push(mover);
-                    let name = self.room.movers[*index].name.clone();
                     let name = name.map(|name| self.unique_name(&copy, &name));
                     self.room.movers.last_mut().expect("pushed above").name = name;
                     copy
                 }
                 Item::Light(index) => {
-                    let mut light = room.lights[*index].clone();
+                    let mut light = source.room.lights[*index].clone();
                     shift(&mut light.position);
                     let copy = Item::Light(room.lights.len());
+                    let name = light.name.take();
                     room.lights.push(light);
-                    let name = self.room.lights[*index].name.clone();
                     let name = name.map(|name| self.unique_name(&copy, &name));
                     self.room.lights.last_mut().expect("pushed above").name = name;
                     copy
                 }
+                Item::Prefab(index) => {
+                    let mut prefab = source.room.prefabs[*index].clone();
+                    shift(&mut prefab.pose.position);
+                    room.prefabs.push(prefab);
+                    Item::Prefab(room.prefabs.len() - 1)
+                }
                 Item::Spawn(name) => {
-                    let mut position = room.spawns[name];
+                    let mut position = source.room.spawns[name];
                     shift(&mut position);
                     let new = free_name(name, |name| room.spawns.contains_key(name));
                     room.spawns.insert(new.clone(), position);
@@ -507,15 +561,15 @@ impl Document {
                     copy
                 }
                 Item::Event(index) => {
-                    let mut event = self.events[*index].clone();
+                    let mut event = source.events[*index].clone();
                     if let Some(area) = &mut event.area {
-                        area.center[0] += DUPLICATE_OFFSET;
-                        area.center[1] += DUPLICATE_OFFSET;
+                        area.center[0] += offset;
+                        area.center[1] += offset;
                     }
                     let copy = Item::Event(self.events.len());
-                    event.name = String::new();
+                    let name = std::mem::take(&mut event.name);
                     self.events.push(event);
-                    let name = self.unique_name(&copy, &self.events[*index].name);
+                    let name = self.unique_name(&copy, &name);
                     self.events.last_mut().expect("pushed above").name = name;
                     copy
                 }
@@ -525,6 +579,118 @@ impl Document {
             self.dirty = true;
         }
         copies
+    }
+
+    /// Writes the selected props and lights as a prefab file, and puts one prefab in
+    /// their place. `file`: from the directory of the room file. `outer`: the pose
+    /// that the prefab gets in this room; `None`: at the floor point of the first of
+    /// the items, with no turn. A file of that name is replaced: each room that
+    /// names it shows the new content. Returns the prefab. `Err`: why not.
+    // The file is written now, not with the room, and undo does not bring the old
+    // file back: a prefab file is not a part of the document.
+    pub fn make_prefab(
+        &mut self,
+        items: &[Item],
+        file: &Path,
+        outer: Option<PoseDef>,
+    ) -> Result<Item, String> {
+        let room = &self.room;
+        let is_part = |item: &&Item| match item {
+            Item::Prop(index) => *index < room.props.len(),
+            Item::Light(index) => *index < room.lights.len(),
+            _ => false,
+        };
+        let parts: Vec<Item> = items.iter().filter(is_part).cloned().collect();
+        let Some(first) = parts.first() else {
+            return Err("A prefab is made of props and lights: select some first".to_owned());
+        };
+        let outer = outer.unwrap_or_else(|| {
+            let (at, _) = self.pose_of(first, false).expect("a prop or a light");
+            PoseDef {
+                position: in_floor(at),
+                ..PoseDef::default()
+            }
+        });
+        let space = outer.transform();
+        let mut prefab = PrefabDef::default();
+        for item in &parts {
+            match item {
+                Item::Prop(index) => {
+                    let mut prop = room.props[*index].clone();
+                    prop.pose = tidy(PoseDef::of(&pose_out(&space, &prop.pose.transform())));
+                    prefab.props.push(prop);
+                }
+                Item::Light(index) => {
+                    let mut light = room.lights[*index].clone();
+                    let at = PoseDef {
+                        position: light.position,
+                        ..PoseDef::default()
+                    };
+                    light.position = tidy(PoseDef::of(&pose_out(&space, &at.transform()))).position;
+                    let back = space.rotation.inverse();
+                    light.direction = light
+                        .direction
+                        .map(|direction| (back * Vec3::from(direction)).into());
+                    prefab.lights.push(light);
+                }
+                _ => unreachable!("`parts` has props and lights"),
+            }
+        }
+        let path = self.path.parent().unwrap_or(Path::new("")).join(file);
+        std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))
+            .and_then(|()| std::fs::write(&path, prefab_text(&prefab)))
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+
+        self.delete(&parts);
+        let item = Item::Prefab(self.room.prefabs.len());
+        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+        self.room.prefabs.push(PrefabUse {
+            name: None,
+            // Forward slashes: the same room file on each system.
+            file: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
+            pose: outer,
+        });
+        let name = self.unique_name(&item, &stem);
+        self.room.prefabs.last_mut().expect("pushed above").name = Some(name);
+        self.dirty = true;
+        Ok(item)
+    }
+
+    /// Puts the props and the lights of a prefab into the room, each at its place,
+    /// in place of the prefab: to change them, and to make the prefab again. Returns
+    /// the new items, and the file and the pose that the prefab had.
+    pub fn unpack_prefab(&mut self, index: usize) -> Result<(Vec<Item>, PathBuf, PoseDef), String> {
+        let Some(used) = self.room.prefabs.get(index).cloned() else {
+            return Err("Select a prefab first".to_owned());
+        };
+        let path = self.path.parent().unwrap_or(Path::new("")).join(&used.file);
+        let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
+        let space = used.pose.transform();
+        let mut items = Vec::new();
+        for mut prop in prefab.props {
+            prop.pose = tidy(PoseDef::of(&pose_in(&space, &prop.pose.transform())));
+            items.push(Item::Prop(self.room.props.len()));
+            self.room.props.push(prop);
+        }
+        for mut light in prefab.lights {
+            let at = PoseDef {
+                position: light.position,
+                ..PoseDef::default()
+            };
+            light.position = tidy(PoseDef::of(&pose_in(&space, &at.transform()))).position;
+            light.direction = light
+                .direction
+                .map(|direction| (space.rotation * Vec3::from(direction)).into());
+            let item = Item::Light(self.room.lights.len());
+            let name = light.name.take();
+            self.room.lights.push(light);
+            let name = name.map(|name| self.unique_name(&item, &name));
+            self.room.lights.last_mut().expect("pushed above").name = name;
+            items.push(item);
+        }
+        self.delete(&[Item::Prefab(index)]);
+        self.dirty = true;
+        Ok((items, used.file, used.pose))
     }
 
     /// What undo and redo keep: all of the document but the path.
@@ -551,6 +717,7 @@ fn item_index(item: &Item) -> usize {
         | Item::Prop(index)
         | Item::Mover(index)
         | Item::Light(index)
+        | Item::Prefab(index)
         | Item::Event(index) => *index,
     }
 }

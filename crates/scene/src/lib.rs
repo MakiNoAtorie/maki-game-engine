@@ -16,10 +16,11 @@ use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transfo
 pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use room::{
-    CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef,
-    RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest,
-    RoomTarget, RoomValidator, RoomValidators, SoundDef, TextureDef, check_room,
-    load_requested_room, parse_room, patch_room, read_room, ron_options,
+    CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PrefabDef,
+    PrefabUse, PropDef, RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride,
+    RoomProblem, RoomRequest, RoomTarget, RoomValidator, RoomValidators, SoundDef, TextureDef,
+    check_room, load_requested_room, parse_room, patch_room, pose_in, pose_out, prefab_text,
+    read_prefab, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.

@@ -387,6 +387,7 @@ fn marks(
             Item::Prop(index) => Some(RoomItem::Prop(*index)),
             Item::Door(index) => Some(RoomItem::Door(*index)),
             Item::Mover(index) => Some(RoomItem::Mover(*index)),
+            Item::Prefab(index) => Some(RoomItem::Prefab(*index)),
             _ => None,
         };
         for (matrix, low, high) in of_mesh.map_or(Vec::new(), |item| mesh_boxes(world, item)) {
@@ -406,6 +407,7 @@ fn marks(
             Item::Prop(index) => Some(RoomItem::Prop(*index)),
             Item::Door(index) => Some(RoomItem::Door(*index)),
             Item::Mover(index) => Some(RoomItem::Mover(*index)),
+            Item::Prefab(index) => Some(RoomItem::Prefab(*index)),
             _ => None,
         };
         for (matrix, low, high) in of_mesh.map_or(Vec::new(), |item| mesh_boxes(world, item)) {

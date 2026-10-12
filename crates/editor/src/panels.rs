@@ -154,8 +154,13 @@ fn top(ui: &mut Ui, world: &mut World, editor: &mut Editor, save_as: &mut String
     let playing = editor.playing();
     ui.horizontal(|ui| {
         if !playing {
-            ui.menu_button("File", |ui| file_menu(ui, editor, save_as));
-            ui.menu_button("Edit", |ui| edit_menu(ui, world, editor));
+            // These menus have a text field: a click in a menu must not close it.
+            // Each button of them closes the menu itself.
+            let stay = egui::containers::menu::MenuConfig::new()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            let menu = |name| egui::containers::menu::MenuButton::new(name).config(stay.clone());
+            menu("File").ui(ui, |ui| file_menu(ui, editor, save_as));
+            menu("Edit").ui(ui, |ui| edit_menu(ui, world, editor));
         }
         ui.menu_button("View", |ui| {
             if ui
@@ -187,8 +192,8 @@ fn edit_menu(ui: &mut Ui, world: &World, editor: &mut Editor) {
         ("Redo", redo > 0, Command::Redo, crate::REDO),
         ("Duplicate", some, Command::Duplicate, crate::DUPLICATE),
         ("Delete", some, Command::Delete, crate::DELETE),
-        ("Copy command rows", some, Command::Copy, crate::COPY),
-        ("Paste command rows", some, Command::Paste, crate::PASTE),
+        ("Copy", some, Command::Copy, crate::COPY),
+        ("Paste", true, Command::Paste, crate::PASTE),
         ("Frame in the view", true, Command::Frame, crate::FRAME),
     ];
     for (text, enabled, command, action) in buttons {
@@ -197,6 +202,38 @@ fn edit_menu(ui: &mut Ui, world: &World, editor: &mut Editor) {
             editor.request(command);
             ui.close();
         }
+    }
+    ui.separator();
+    let is_part = |item: &Item| matches!(item, Item::Prop(_) | Item::Light(_));
+    let parts = editor.selection.iter().any(is_part);
+    ui.horizontal(|ui| {
+        let field = egui::TextEdit::singleline(&mut editor.prefab_name)
+            .desired_width(120.0)
+            .hint_text("name of the prefab");
+        ui.add(field);
+        let name = editor.prefab_name.trim().to_owned();
+        let button = ui
+            .add_enabled(parts && !name.is_empty(), egui::Button::new("Make prefab"))
+            .on_hover_text(
+                "The selected props and lights become the file prefabs/<name>.prefab, and \
+                 one prefab in their place. A file of that name is replaced: each room \
+                 that names it shows the change.",
+            );
+        if button.clicked() {
+            editor.request(Command::MakePrefab(name));
+            ui.close();
+        }
+    });
+    let prefab = matches!(editor.primary(), Item::Prefab(_));
+    let unpack = ui
+        .add_enabled(prefab, egui::Button::new("Unpack prefab"))
+        .on_hover_text(
+            "The props and lights of the selected prefab go into the room, to change \
+             them. \"Make prefab\" with the same name then changes the prefab in each room.",
+        );
+    if unpack.clicked() {
+        editor.request(Command::UnpackPrefab);
+        ui.close();
     }
 }
 
@@ -307,6 +344,19 @@ fn tools(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
                 });
                 if row.inner {
                     editor.request(Command::Add(Kind::Model(path)));
+                    ui.close();
+                }
+            }
+        });
+        ui.menu_button("Prefab file", |ui| {
+            let directory = editor.document.path.parent().unwrap_or(Path::new(""));
+            let prefabs = crate::widgets::files(directory, &crate::widgets::PREFABS);
+            if prefabs.is_empty() {
+                ui.weak("No .prefab file at the room file. Edit > Make prefab writes one.");
+            }
+            for path in prefabs {
+                if ui.button(path.to_string_lossy()).clicked() {
+                    editor.request(Command::Add(Kind::Prefab(path)));
                     ui.close();
                 }
             }
@@ -574,6 +624,12 @@ fn sections(document: &Document) -> Vec<Section> {
         .iter()
         .enumerate()
         .map(|(index, light)| (Item::Light(index), named(&light.name, "light", index)));
+    let prefabs = room.prefabs.iter().enumerate().map(|(index, prefab)| {
+        (
+            Item::Prefab(index),
+            named(&prefab.name, &file_name(&prefab.file), index),
+        )
+    });
     let spawns = room.spawns.keys();
     let spawns = spawns.map(|name| (Item::Spawn(name.clone()), name.clone()));
     let events = document.events.iter().enumerate();
@@ -585,6 +641,7 @@ fn sections(document: &Document) -> Vec<Section> {
         (Some("Props"), props.collect()),
         (Some("Movers"), movers.collect()),
         (Some("Lights"), lights.collect()),
+        (Some("Prefabs"), prefabs.collect()),
         (Some("Spawn points"), spawns.collect()),
         (Some("Events"), events.collect()),
     ]
@@ -760,6 +817,13 @@ fn item_properties(
                 | ui.checkbox(&mut prop.collider, "blocks the player").changed()
                 | (is_file
                     && number(ui, "radius of its lights", &mut prop.light_radius, 0.01, 0.01..=10.0))
+        }
+        Item::Prefab(index) => {
+            let prefab = room.prefabs.get_mut(*index)?;
+            let files = &crate::widgets::PREFABS;
+            name(ui, &mut prefab.name)
+                | crate::widgets::file(ui, "prefab file", &mut prefab.file, files)
+                | pose(ui, "pose", &mut prefab.pose)
         }
         Item::Mover(index) => {
             let mover = room.movers.get_mut(*index)?;

@@ -67,6 +67,9 @@ pub struct RoomDef {
     pub movers: Vec<MoverDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lights: Vec<LightDef>,
+    /// The prefab files that the room shows, each at its pose.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefabs: Vec<PrefabUse>,
     /// Places where the player can enter the room, by name: X, Y, Z.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spawns: BTreeMap<String, [f32; 3]>,
@@ -122,6 +125,81 @@ impl PoseDef {
             rotation: Quat::from_euler(EulerRot::YXZ, y, x, z),
             scale: self.scale.into(),
         }
+    }
+
+    /// The pose of a transform. The angles are those that `transform` reads.
+    pub fn of(transform: &Transform) -> Self {
+        let (y, x, z) = transform.rotation.to_euler(EulerRot::YXZ);
+        Self {
+            position: transform.translation.into(),
+            rotation: [x, y, z].map(f32::to_degrees),
+            scale: transform.scale.into(),
+        }
+    }
+}
+
+/// A prefab file that a room names. The items of the file show in the room; a
+/// change of the file changes each room that names it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrefabUse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// From the directory of the room file.
+    pub file: PathBuf,
+    /// Where the origin of the prefab is in the room, and its turn and scale.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub pose: PoseDef,
+}
+
+/// The content of a prefab file: props and lights around one origin (a table with
+/// its chairs). The format of an item is that of a room file. A file name in it (a
+/// model, a texture) starts at the directory of the room file that names the prefab.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrefabDef {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<PropDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<LightDef>,
+}
+
+/// Reads a prefab file. The error has the file, the line, and the column.
+pub fn read_prefab(path: &Path) -> Result<PrefabDef> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read prefab file {}", path.display()))?;
+    ron_options()
+        .from_str(&text)
+        .map_err(|error| anyhow!("{}:{error}", path.display()))
+}
+
+/// The text of a prefab file.
+pub fn prefab_text(prefab: &PrefabDef) -> String {
+    let config = ron::ser::PrettyConfig::default();
+    let text = ron_options().to_string_pretty(prefab, config);
+    text.expect("a prefab has no value that RON cannot write")
+}
+
+/// The pose in the room of an item of a prefab: `inner` in the space of `outer`.
+// ponytail: a turn, then a scale for each axis of the room. A prefab with unequal
+// scale and a turned item in it keeps the shape of the item (no shear): the item is
+// then not where a matrix product puts each of its points.
+pub fn pose_in(outer: &Transform, inner: &Transform) -> Transform {
+    Transform {
+        translation: outer.translation + outer.rotation * (outer.scale * inner.translation),
+        rotation: outer.rotation * inner.rotation,
+        scale: outer.scale * inner.scale,
+    }
+}
+
+/// The inverse of [`pose_in`]: the pose in the space of `outer` of an item that is
+/// at `pose` in the room.
+pub fn pose_out(outer: &Transform, pose: &Transform) -> Transform {
+    let back = outer.rotation.inverse();
+    Transform {
+        translation: back * (pose.translation - outer.translation) / outer.scale,
+        rotation: back * pose.rotation,
+        scale: pose.scale / outer.scale,
     }
 }
 
@@ -453,7 +531,15 @@ pub fn parse_room(text: &str) -> Result<RoomDef, ron::error::SpannedError> {
 pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, String)> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read room file {}", path.display()))?;
-    Ok((check_room(path, &text, validators)?, text))
+    let room = check_room(path, &text, validators)?;
+    // Not in `check_room`: a tool opens a room whose prefab file is not there, so
+    // that the name can be set right. The loader then shows the room without it.
+    let directory = path.parent().unwrap_or(Path::new(""));
+    for prefab in &room.prefabs {
+        read_prefab(&directory.join(&prefab.file))
+            .with_context(|| format!("{}: a prefab of the room", path.display()))?;
+    }
+    Ok((room, text))
 }
 
 /// Reads and checks the text of a room file. `path` is for the error text.
@@ -529,6 +615,8 @@ pub enum RoomItem {
     Light(usize),
     Door(usize),
     Mover(usize),
+    /// Each entity of the items of a prefab file has the item of the prefab.
+    Prefab(usize),
 }
 
 /// Ask for a room: write `Some`. `load_requested_room` takes it in the next `Update`.
@@ -647,6 +735,8 @@ pub fn load_requested_room(
     let directory = target.path.parent().unwrap_or(Path::new(""));
     // The models that only the old room used. Without this, each room that was shown
     // keeps its meshes on the GPU, and the mesh table of the renderer gets full.
+    // ponytail: the models of the props of the room. A model that only a prefab
+    // names is read again in the next room that names the prefab.
     let named: Vec<PathBuf> = def
         .props
         .iter()
@@ -800,24 +890,65 @@ impl Spawner<'_, '_, '_> {
             self.mover(mover, RoomItem::Mover(index));
         }
         for (index, light) in def.lights.iter().enumerate() {
-            let mut entity = self.commands.spawn((
-                RoomEntity,
-                RoomItem::Light(index),
-                // A light can move in fixed steps (a script, a debug control).
-                Interpolated::at(Transform::from_translation(light.position.into())),
-                light.light(),
-            ));
-            if let Some(name) = &light.name {
-                entity.insert(Name(name.clone()));
+            self.light(light, RoomItem::Light(index));
+        }
+        for (index, used) in def.prefabs.iter().enumerate() {
+            self.prefab(used, RoomItem::Prefab(index));
+        }
+    }
+
+    fn light(&mut self, light: &LightDef, item: RoomItem) {
+        let mut entity = self.commands.spawn((
+            RoomEntity,
+            item,
+            // A light can move in fixed steps (a script, a debug control).
+            Interpolated::at(Transform::from_translation(light.position.into())),
+            light.light(),
+        ));
+        if let Some(name) = &light.name {
+            entity.insert(Name(name.clone()));
+        }
+        if let Some(sound) = &light.sound {
+            entity.insert(sound.source(self.directory));
+        }
+    }
+
+    /// The items of a prefab file, each at its pose in the room. A file that does
+    /// not read: an error in the log, and the room shows without it.
+    // ponytail: the file is read at each load of the room. A store by path when a
+    // room names many prefabs.
+    fn prefab(&mut self, used: &PrefabUse, item: RoomItem) {
+        let prefab = match read_prefab(&self.directory.join(&used.file)) {
+            Ok(prefab) => prefab,
+            Err(error) => {
+                tracing::error!("prefab not shown: {error:#}");
+                return;
             }
-            if let Some(sound) = &light.sound {
-                entity.insert(sound.source(self.directory));
-            }
+        };
+        let outer = used.pose.transform();
+        for prop in &prefab.props {
+            self.prop_at(prop, pose_in(&outer, &prop.pose.transform()), item);
+        }
+        for light in &prefab.lights {
+            let at = Transform::from_translation(light.position.into());
+            let direction = light
+                .direction
+                .map(|direction| outer.rotation * Vec3::from(direction));
+            let light = LightDef {
+                position: pose_in(&outer, &at).translation.into(),
+                direction: direction.map(Into::into),
+                ..light.clone()
+            };
+            self.light(&light, item);
         }
     }
 
     fn prop(&mut self, prop: &PropDef, item: RoomItem) {
-        let transform = prop.pose.transform();
+        self.prop_at(prop, prop.pose.transform(), item);
+    }
+
+    /// A prop at a pose that is not that of its definition (an item of a prefab).
+    fn prop_at(&mut self, prop: &PropDef, transform: Transform, item: RoomItem) {
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
                 let path = self.directory.join(path);
@@ -1180,6 +1311,7 @@ mod tests {
             }],
             floor: None,
             walls: None,
+            prefabs: Vec::new(),
             spawns: BTreeMap::from([("start".to_owned(), [0.0, 0.0, 1.0])]),
             events: IgnoredAny,
         }
@@ -1572,6 +1704,128 @@ mod tests {
         assert!(load("c.ron").0.is_empty());
         let (again, _) = load("a.ron");
         assert!(again.len() == 1 && again != first);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_prefab_file_shows_in_each_room_that_names_it_and_a_change_of_it_in_all() {
+        let directory = std::env::temp_dir().join(format!("maki-prefabs-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("prefabs")).unwrap();
+        // A table, a chair 1 m in front of it, and a lamp 2 m above the origin.
+        let table = r#"(
+            props: [
+                (name: "table", mesh: Cube(1.0), pose: (position: (0.0, 0.5, 0.0))),
+                (name: "chair", mesh: Cube(0.4), pose: (position: (0.0, 0.2, 1.0))),
+            ],
+            lights: [(position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 3.0)],
+        )"#;
+        let file = directory.join("prefabs/table.prefab");
+        std::fs::write(&file, table).unwrap();
+        // Room A has it at a place. Room B has it two times, one with a quarter turn.
+        let rooms = [
+            (
+                "a.ron",
+                r#"prefabs: [(file: "prefabs/table.prefab", pose: (position: (1.0, 0.0, -1.0)))]"#,
+            ),
+            (
+                "b.ron",
+                r#"props: [(mesh: Cube(1.0))], prefabs: [
+                    (file: "prefabs/table.prefab"),
+                    (file: "prefabs/table.prefab", pose: (position: (2.0, 0.0, 0.0), rotation: (0.0, 90.0, 0.0))),
+                ]"#,
+            ),
+        ];
+        for (name, items) in rooms {
+            let text = format!("(width: 8, depth: 8, height: 3, {items})");
+            std::fs::write(directory.join(name), text).unwrap();
+        }
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        // Loads a room. Gives the place of each mesh and each light of a prefab,
+        // with the number of the prefab, in the order of the numbers and of X and Z.
+        let mut load = |name: &str| {
+            app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+                path: directory.join(name),
+                spawn: None,
+                text: None,
+            });
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let mut meshes = world
+                .try_query::<(&RoomItem, &Transform, &MeshInstance)>()
+                .unwrap();
+            let mut lights = world
+                .try_query::<(&RoomItem, &Interpolated, &Light)>()
+                .unwrap();
+            let meshes = meshes
+                .iter(world)
+                .map(|(item, at, _)| (*item, at.translation));
+            let lights = lights
+                .iter(world)
+                .map(|(item, at, _)| (*item, at.current.translation));
+            let mut places: Vec<(usize, [i32; 3])> = meshes
+                .chain(lights)
+                .filter_map(|(item, at)| match item {
+                    RoomItem::Prefab(index) => Some((index, (at * 10.0).round().as_ivec3().into())),
+                    _ => None,
+                })
+                .collect();
+            places.sort();
+            places
+        };
+        // In decimeters.
+        assert_eq!(
+            load("a.ron"),
+            [(0, [10, 2, 0]), (0, [10, 5, -10]), (0, [10, 20, -10])]
+        );
+        let in_b = load("b.ron");
+        assert_eq!(
+            in_b[..3],
+            [(0, [0, 2, 10]), (0, [0, 5, 0]), (0, [0, 20, 0])]
+        );
+        // A quarter turn around Y moves +Z to +X.
+        assert_eq!(
+            in_b[3..],
+            [(1, [20, 5, 0]), (1, [20, 20, 0]), (1, [30, 2, 0])]
+        );
+
+        // The chair goes to the other side of the table: in each room.
+        std::fs::write(&file, table.replace("(0.0, 0.2, 1.0)", "(0.0, 0.2, -1.0)")).unwrap();
+        assert_eq!(load("b.ron")[0], (0, [0, 2, -10]));
+        assert_eq!(load("a.ron")[0], (0, [10, 2, -20]));
+
+        // A prefab file that does not read: the game does not go into the room.
+        std::fs::write(&file, "(props: [(mesh: Ball)])").unwrap();
+        assert_eq!(load("b.ron")[0], (0, [10, 2, -20]));
+        assert!(
+            app.world()
+                .resource::<CurrentRoom>()
+                .path
+                .ends_with("a.ron")
+        );
+        let error = read_room(&directory.join("b.ron"), &RoomValidators::default()).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("table.prefab:1:"),
+            "{error:#}"
+        );
+
+        // A pose is the same after `pose_in` and `pose_out`, and as a `PoseDef`.
+        let pose = |position, rotation, scale| PoseDef {
+            position,
+            rotation,
+            scale,
+        };
+        let outer = pose([1.0, 0.0, -2.0], [0.0, 130.0, 0.0], [2.0, 1.0, 2.0]).transform();
+        let inner = pose([0.5, 0.2, 1.0], [10.0, -40.0, 5.0], [1.0, 3.0, 1.0]);
+        let back = PoseDef::of(&pose_out(&outer, &pose_in(&outer, &inner.transform())));
+        let near = |a: [f32; 3], b: [f32; 3]| Vec3::from(a).distance(b.into()) < 1e-3;
+        assert!(
+            near(back.position, inner.position)
+                && near(back.rotation, inner.rotation)
+                && near(back.scale, inner.scale),
+            "{back:?}"
+        );
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }

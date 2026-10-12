@@ -210,6 +210,7 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
             RoomItem::Light(index) => Item::Light(index),
             RoomItem::Door(index) => Item::Door(index),
             RoomItem::Mover(index) => Item::Mover(index),
+            RoomItem::Prefab(index) => Item::Prefab(index),
         });
         if let Some(t) = ray.mesh(mesh, matrix) {
             hit(t, item);

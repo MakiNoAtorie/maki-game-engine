@@ -229,6 +229,8 @@ pub const SOUNDS: [&str; 2] = ["wav", "ogg"];
 pub(crate) const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
 /// The extensions of the model files.
 pub(crate) const MODELS: [&str; 2] = ["gltf", "glb"];
+/// The extension of the prefab files.
+pub(crate) const PREFABS: [&str; 1] = ["prefab"];
 
 /// A list to choose one option from. `same` tells if the value is that option (for
 /// an enum with fields: the same variant).

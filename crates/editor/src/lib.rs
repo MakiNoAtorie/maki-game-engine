@@ -205,10 +205,17 @@ pub enum Command {
     Delete,
     /// A copy of each selected item. The copies are the selection then.
     Duplicate,
-    /// The selected command rows go into the buffer.
+    /// The selected command rows go into the buffer of the rows; with no click
+    /// on a row, the selected items go into the buffer of the items.
     Copy,
-    /// The command rows of the buffer, after the selected row.
+    /// The command rows of the buffer, after the selected row; or the items of the
+    /// buffer, into the room that is open now.
     Paste,
+    /// The selected props and lights become the prefab file of this name
+    /// (`prefabs/<name>.prefab`) and one prefab of the room.
+    MakePrefab(String),
+    /// The items of the selected prefab go into the room, in place of the prefab.
+    UnpackPrefab,
     /// The view looks at the last selected item.
     Frame,
     /// Ends a drag of a handle with no change. With no drag: selects nothing.
@@ -283,9 +290,23 @@ pub struct Editor {
     playing: Option<GameState>,
     /// The room that the world shows. `None`: load the document.
     shown: Option<(PathBuf, RoomDef)>,
+    /// The items that "Copy" took, in the document that had them. It stays when
+    /// another room is opened: "Paste" puts the items into that room.
+    item_buffer: Option<(Document, Vec<Item>)>,
+    /// The name in the "Make prefab" field of the "Edit" menu.
+    pub prefab_name: String,
+    /// The file and the pose of the prefab that was unpacked last: "Make prefab"
+    /// with this file puts the prefab back at this pose.
+    unpacked: Option<(PathBuf, maki_scene::PoseDef)>,
 }
 
 impl Editor {
+    /// The room and the selection, for a test.
+    #[cfg(test)]
+    fn clone_parts(&self) -> (RoomDef, Vec<Item>) {
+        (self.document.room.clone(), self.selection.clone())
+    }
+
     pub fn request(&mut self, command: Command) {
         self.queue.push(command);
     }
@@ -572,8 +593,58 @@ impl Editor {
                     false => format!("{name}: no step"),
                 };
             }
-            Command::Copy | Command::Paste => {
-                self.status = "Copy and paste: click a command row of an event first".to_owned();
+            Command::Copy => {
+                let items = self.selection.clone();
+                self.status = format!("{} items copied", items.len());
+                self.item_buffer = Some((self.document.clone(), items));
+            }
+            Command::Paste => match &self.item_buffer {
+                Some((source, items)) => {
+                    // In the room that they came from: beside the items.
+                    let same = source.path == self.document.path;
+                    let offset = if same { ops::DUPLICATE_OFFSET } else { 0.0 };
+                    let copies = self.document.copy_from(source, items, offset);
+                    self.status = format!("{} items pasted", copies.len());
+                    if !copies.is_empty() {
+                        self.selection = copies;
+                    }
+                }
+                None => self.status = "Paste: copy items or command rows first".to_owned(),
+            },
+            Command::MakePrefab(name) => {
+                let file = Path::new("prefabs").join(&name).with_extension("prefab");
+                // The prefab that was unpacked goes back to its pose: its items are
+                // then at the same places in each other room.
+                let outer = self
+                    .unpacked
+                    .as_ref()
+                    .filter(|(unpacked, _)| *unpacked == file);
+                let outer = outer.map(|(_, pose)| *pose);
+                match self.document.make_prefab(&self.selection, &file, outer) {
+                    Ok(item) => {
+                        self.selection = vec![item];
+                        self.status = format!("{} written", file.display());
+                        // The world shows the file, not the document: load again.
+                        self.shown = None;
+                    }
+                    Err(reason) => self.status = reason,
+                }
+            }
+            Command::UnpackPrefab => {
+                let index = match self.primary() {
+                    Item::Prefab(index) => index,
+                    _ => usize::MAX,
+                };
+                match self.document.unpack_prefab(index) {
+                    Ok((items, file, pose)) => {
+                        let stem = file.file_stem().unwrap_or_default();
+                        self.prefab_name = stem.to_string_lossy().into_owned();
+                        self.unpacked = Some((file, pose));
+                        self.selection = items;
+                        self.status = "Unpacked".to_owned();
+                    }
+                    Err(reason) => self.status = reason,
+                }
             }
             Command::Frame => {
                 let at = self.document.pose_of(&self.primary(), self.second_pose);
@@ -952,6 +1023,9 @@ impl Module for EditorModule {
             pending: None,
             playing: None,
             shown: None,
+            item_buffer: None,
+            prefab_name: String::new(),
+            unpacked: None,
         })
         .add_systems(Startup, camera::spawn)
         .add_systems(Input, take_quit_request)

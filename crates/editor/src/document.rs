@@ -22,6 +22,8 @@ pub enum Item {
     Prop(usize),
     Mover(usize),
     Light(usize),
+    /// A prefab file that the room names.
+    Prefab(usize),
     /// By name.
     Spawn(String),
     Event(usize),
@@ -29,7 +31,7 @@ pub enum Item {
 
 /// The part of an item that tells where it is: what a gizmo changes.
 pub enum Place<'a> {
-    /// A prop, or one of the two poses of a mover.
+    /// A prop, a prefab, or one of the two poses of a mover.
     Pose(&'a mut PoseDef),
     /// A light, a spawn point.
     Point(&'a mut [f32; 3]),
@@ -151,6 +153,10 @@ impl Document {
                 .lights
                 .get_mut(*index)
                 .map(|light| Place::Point(&mut light.position)),
+            Item::Prefab(index) => room
+                .prefabs
+                .get_mut(*index)
+                .map(|prefab| Place::Pose(&mut prefab.pose)),
             Item::Spawn(name) => room.spawns.get_mut(name).map(Place::Point),
             Item::Event(index) => {
                 let event = self.events.get_mut(*index)?;
@@ -176,6 +182,7 @@ impl Document {
                 .lights
                 .get(*index)
                 .map(|light| of_point(&light.position)),
+            Item::Prefab(index) => room.prefabs.get(*index).map(|prefab| of_pose(&prefab.pose)),
             Item::Spawn(name) => room.spawns.get(name).map(of_point),
             Item::Event(index) => {
                 let [x, z] = self.events.get(*index)?.area?.center;
@@ -195,6 +202,7 @@ impl Document {
             Item::Prop(index) => ("props", *index),
             Item::Mover(index) => ("movers", *index),
             Item::Light(index) => ("lights", *index),
+            Item::Prefab(index) => ("prefabs", *index),
             // The file has the spawn points in the order of their names.
             Item::Spawn(name) => (
                 "spawns",
