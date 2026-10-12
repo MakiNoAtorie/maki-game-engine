@@ -28,28 +28,29 @@ If the config file does not exist, the game writes one with default values.
 
 ## Controls
 
-The help panel in the game lists all controls, with the key that hides and shows the panel. It is open at start. The list is made from the binding table (`Bindings::default` in `crates/platform/src/input.rs`): to change a key, change the table.
+The help panel in the game lists all controls, with the key that hides and shows the panel. Its section is folded at start. The list is made from the binding table (`Bindings::default` in `crates/platform/src/input.rs`): to change a key, change the table.
 
 The move keys walk the player; forward is away from the camera. Shift runs. Z or Enter is "interact": it starts the event that the player faces, and it closes a message. While an event runs (a message, a fade), the player does not move.
 
-Debug keys: L gives the move keys to the first light of the room (and back), Q and E move that light down and up, one wheel step changes its intensity by 10 %. O opens or closes all doors. F5 reads the room file again. R starts the picture again.
+Debug keys: L gives the move keys to the first light of the room (and back), Q and E move that light down and up, one wheel step changes its intensity by 10 %. O opens or closes all doors. F5 reads the room file again. Page down and Page up go to the next and the previous stage (see the Stages panel). R starts the picture again.
 
 ## Debug panels
 
-The panels are egui windows on top of the picture. Drag the title bar to move a panel, click the arrow to fold it.
+The picture has a fixed size (`window_width`, `window_height`) and is in the top left corner of the window, not scaled. The panels are the sections of a column at the right of the picture: no panel hides the picture. Click a title to unfold a section. The window is as large as the picture and the column; in a larger window the column gets the rest.
 
 | Panel | Content |
 |---|---|
 | Help | Key and description of each binding |
 | Stats | Frame time (mean), FPS, sample count, internal resolution, player position, position and intensity of each light, GPU memory, GPU time of each frame graph pass |
-| Debug | The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the config values that have an effect during a run: vsync, render scale, exposure, path tracer, denoiser, camera, player speeds. Not saved to the config file |
+| Debug | The resolution (the picture size, from 640 x 360 to 2560 x 1440: the window follows). The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the config values that have an effect during a run: vsync, render scale, exposure, path tracer, denoiser, camera, player speeds. Not saved to the config file |
 | Bench | Starts a benchmark run (frames, script, light, picture dump) in the game that runs. Writes `bench.csv`; the game goes on. For numbers to compare between runs, use the command line |
+| Stages | Each room file that the game can show: the files in the directory of `start_room`, and `target/bench/<scenario>/room.ron` (the generated scenes; `python tools/bench.py run` makes them). A click loads the room. The config stays: set the render size or the sample count of a scenario in the Debug panel |
 | Game state | Flags and variables of the events, with a field to add one; the events that run |
-| Message | The text of a `Message` command. Open only while a message waits |
+| Message | The text of a `Message` command. A window on top of the picture, at its bottom (`maki_ui::add_window`). Open only while a message waits |
 
 While the mouse pointer is on a panel, the mouse wheel starts no action. While a text field of a panel has the keyboard focus, keys start no action.
 
-To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the window and the game world. `crates/ui/src/stats.rs` is an example.
+To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the section and the game world. `crates/ui/src/stats.rs` is an example.
 
 ## Benchmark
 
@@ -84,9 +85,9 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | Key | Default | Meaning |
 |---|---|---|
 | `window_title` | `maki` | Window title |
-| `window_width`, `window_height` | 1280, 720 | Window size, in logical pixels |
-| `render_scale` | 1.0 | Internal path-tracer resolution: the window size multiplied by this, 0.1 to 1.0 |
-| `render_width`, `render_height` | 0, 0 | A fixed internal resolution that does not follow the window. 0: use `render_scale` |
+| `window_width`, `window_height` | 1280, 720 | Size of the picture, in pixels. The window is wider by the panel column |
+| `render_scale` | 1.0 | Internal path-tracer resolution: the picture size multiplied by this, 0.1 to 1.0 |
+| `render_width`, `render_height` | 0, 0 | A fixed internal resolution that does not follow the picture size. 0: use `render_scale` |
 | `vsync` | `true` | Vertical sync |
 | `start_room` | `game/assets/rooms/room_a.ron` | The room file that the game starts in. A path that is not absolute starts at the working directory |
 | `start_spawn` | `start` | The spawn point of that room where the player starts |
@@ -105,7 +106,7 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `taa` | true | Temporal anti-aliasing. Each frame moves all camera rays by a part of a pixel, and the picture is the mean of some frames: smooth edges, and with `render_scale` below 1 more detail than one frame has. False: stairs at each edge |
 | `taa_blend` | 0.1 | The part of a new frame in the picture of the anti-aliasing, at rest. Lower: smoother edges. 0: the plain mean of all frames since the last change, for a reference picture of a scene at rest |
 | `max_path_rays` | 8 | The largest number of rays in one light path, 2 to 32. Only mirror and glass make long paths. A lower limit costs less GPU time and gives less noise; the last mirror or glass surface of a cut path shows as a diffuse surface, so deep reflections lose detail. Measured in `docs/perf-improve.md`, section 0 |
-| `max_bounces` | 1 | A light path ends after this many diffuse bounces, 1 to 16. More: nearer to the light of a real room, for one more ray and more noise for each bounce. 2 with `bounce_light` is 20 times nearer to a picture with 8 bounces than 1 alone, for 16 % more GPU time |
+| `max_bounces` | 2 | A light path ends after this many diffuse bounces, 1 to 16. More: nearer to the light of a real room, for one more ray and more noise for each bounce. 2 with `bounce_light` is 20 times nearer to a picture with 8 bounces than 1 alone, for 16 % more GPU time |
 | `bounce_light` | true | Light of many bounces for the cost of one: the last surface of a path also counts the bounce light that the same point had in the picture of the frame before, if that picture showed it. Corners that no lamp sees get their light. False: such corners stay too dark |
 | `blue_noise` | true | The random numbers for the point on the light and for the bounce direction are spread evenly over the pixels (a blue-noise pattern), so the noise of one frame has no clumps. Measured: 6 to 10 % less error for a young picture, 1 % in motion |
 | `denoise_passes` | 4 | Filter passes of the denoiser for the indirect light (bounce light), 0 to 6. Each pass doubles the area that the filter takes its mean from. 0: no filter, only the mean over frames |

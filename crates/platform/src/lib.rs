@@ -11,7 +11,9 @@ pub use input::{
     Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, Key, RawInput,
     ScriptedActions,
 };
-pub use window::{QuitRequested, RawWindowEvent, Window, WindowResized, WindowSize, run};
+pub use window::{
+    QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSize, run,
+};
 
 /// Adds input actions and window data to the app. `run` opens the window.
 pub struct PlatformModule;
@@ -27,6 +29,7 @@ impl Module for PlatformModule {
             .init_resource::<ActionState>()
             .init_resource::<FixedActionState>()
             .init_resource::<QuitRequested>()
+            .init_resource::<WindowMargin>()
             .add_systems(FixedLast, input::clear_fixed_changes)
             .add_systems(
                 Input,
@@ -34,6 +37,12 @@ impl Module for PlatformModule {
                     input::update_actions,
                     // `run` adds `WindowSize` with the window. A headless app has none.
                     window::update_window_size.run_if(resource_exists::<WindowSize>),
+                    // It reads only the picture size of the config. The order to a system that
+                    // writes the config decides only if the window follows in this frame or
+                    // in the next one.
+                    window::fit_window
+                        .run_if(resource_exists::<Window>)
+                        .ambiguous_with_all(),
                 ),
             );
     }

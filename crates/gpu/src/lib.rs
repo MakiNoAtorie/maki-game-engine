@@ -819,6 +819,64 @@ impl Gpu {
         Ok(())
     }
 
+    /// Makes `target` black and copies `source` into its top left corner, not scaled.
+    /// A source that is larger than the target is cut at the right and at the bottom.
+    /// `source` must be in [`Access::TransferSrc`], `target` in [`Access::TransferDst`].
+    pub fn copy_to_corner(&mut self, source: ImageHandle, target: ImageHandle) -> Result<()> {
+        ensure!(self.active.is_some(), "copy_to_corner outside of a frame");
+        let image = |handle| self.images.get(handle).context("stale image handle");
+        let (source_raw, source_extent) = image(source).map(|image| (image.raw, image.extent))?;
+        let (target_raw, target_extent) = image(target).map(|image| (image.raw, image.extent))?;
+        let cmd = self.frames[self.slot].cmd;
+        unsafe {
+            self.ctx.device.cmd_clear_color_image(
+                cmd,
+                target_raw,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+                &[COLOR_RANGE],
+            );
+        }
+        // Two writes to one image: the copy must wait for the clear.
+        let transfer = Some(Access::TransferDst);
+        self.image_barrier(ImageTarget::Image(target), transfer, Access::TransferDst)?;
+
+        let layers = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        // The same box in the two images: the blit does not scale.
+        let corners = [
+            vk::Offset3D::default(),
+            vk::Offset3D {
+                x: source_extent.width.min(target_extent.width) as i32,
+                y: source_extent.height.min(target_extent.height) as i32,
+                z: 1,
+            },
+        ];
+        let region = vk::ImageBlit::default()
+            .src_subresource(layers)
+            .src_offsets(corners)
+            .dst_subresource(layers)
+            .dst_offsets(corners);
+        unsafe {
+            self.ctx.device.cmd_blit_image(
+                cmd,
+                source_raw,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                target_raw,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+                vk::Filter::NEAREST,
+            );
+        }
+        Ok(())
+    }
+
     /// Copies the content of an image to the CPU: the pixels row by row, in the format
     /// of the image. `state` is the last use of the image; the image is in that state
     /// again on return. Call between frames. Waits for the GPU, so it is for tools

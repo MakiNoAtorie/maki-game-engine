@@ -1,4 +1,4 @@
-//! The `ui_overlay` pass: draws the triangles of egui on top of the picture.
+//! The `ui_overlay` pass: draws the triangles of egui into the window image.
 //!
 //! A small egui renderer on the draw calls of the gpu crate. egui gives a list of
 //! meshes (2D triangles with a color and a texture coordinate at each vertex) and the
@@ -40,13 +40,14 @@ impl Drop for ExtractedUi {
 /// Adds the pass to the frame graph. A `Startup` system, after `setup_renderer`.
 pub(crate) fn add_pass(mut gpu: ResMut<RenderGpu>, mut graph: ResMut<FrameGraph>) {
     let gpu = &mut gpu.0;
-    // The tonemap pass writes this image and the present pass copies it to the window.
+    // The compose pass puts the picture into this image and the present pass copies
+    // it to the window.
     let output = graph
-        .resource("output")
-        .expect("the render crate makes the `output` image");
+        .resource("window")
+        .expect("the render crate makes the `window` image");
     let format = graph
         .transient_desc(output)
-        .expect("`output` is a transient image")
+        .expect("`window` is a transient image")
         .format;
     let pipeline = gpu
         .create_graphics_pipeline(&GraphicsPipelineDesc {

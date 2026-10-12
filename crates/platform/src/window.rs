@@ -8,10 +8,10 @@ use anyhow::Result;
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::ResMut;
+use bevy_ecs::system::{Local, Res, ResMut};
 use maki_core::{App, Config};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -53,6 +53,35 @@ impl HasDisplayHandle for Window {
 pub struct WindowSize {
     pub width: u32,
     pub height: u32,
+}
+
+/// Room in the window at the right of the picture, in physical pixels. The module that
+/// draws there writes it (the panel column of the ui crate). The window is as large as
+/// the picture of the config and this room.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WindowMargin {
+    pub right: u32,
+}
+
+/// The size of the window for a picture size and a margin.
+fn window_size(config: &Config, margin: WindowMargin) -> PhysicalSize<u32> {
+    PhysicalSize::new(config.window_width + margin.right, config.window_height)
+}
+
+/// Gives the window a new size when the picture size of the config or the margin
+/// changes (a resolution selector, another display scale).
+pub(crate) fn fit_window(
+    config: Res<Config>,
+    margin: Res<WindowMargin>,
+    window: Res<Window>,
+    mut last: Local<Option<PhysicalSize<u32>>>,
+) {
+    let target = window_size(&config, *margin);
+    // Only a new target is a request: a size that the user gave the window stays.
+    if last.replace(target) != Some(target) && window.0.inner_size() != target {
+        // The OS can give another size (the screen limits). `Resized` tells it.
+        let _ = window.0.request_inner_size(target);
+    }
 }
 
 /// Sent when the drawable area changed size. Same units as `WindowSize`.
@@ -125,9 +154,10 @@ impl ApplicationHandler for Runner {
         let mut app = self.app.take().expect("app is present outside resumed");
 
         let config = app.world().resource::<Config>();
+        let margin = *app.world().resource::<WindowMargin>();
         let attributes = winit::window::Window::default_attributes()
             .with_title(&config.window_title)
-            .with_inner_size(LogicalSize::new(config.window_width, config.window_height));
+            .with_inner_size(window_size(config, margin));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => {
@@ -261,6 +291,8 @@ fn key_from_winit(code: KeyCode) -> Option<Key> {
         KeyCode::ArrowRight => Key::ArrowRight,
         KeyCode::F1 => Key::F1,
         KeyCode::F5 => Key::F5,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
         KeyCode::Escape => Key::Escape,
         _ => return None,
     })

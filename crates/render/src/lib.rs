@@ -116,7 +116,10 @@ impl RenderWorld {
 pub struct ExtractedFrame {
     /// Size of the images that the path tracer writes, in pixels.
     pub internal_resolution: (u32, u32),
-    /// Size of the window in physical pixels.
+    /// Size of the picture in pixels: `window_width` and `window_height` of the
+    /// config. The window shows it in its top left corner, not scaled.
+    pub picture_size: (u32, u32),
+    /// Size of the window in physical pixels: the picture and the room for the panels.
     pub window_size: (u32, u32),
     /// True: a frame waits for the display refresh.
     pub vsync: bool,
@@ -310,18 +313,21 @@ pub(crate) fn extract_frame(
     fade: Option<Res<ScreenFade>>,
     mut render_world: ResMut<RenderWorld>,
 ) {
-    // A new internal resolution gives new, empty images.
-    // The window size sets the shape of the camera rays (see `Trace` in `passes`).
+    // A new internal resolution gives new, empty images. The picture size is in the
+    // config, so a new window size changes nothing in the picture.
     // ponytail: each config change is a reset, also one that needs none (the exposure).
     // Compare the old and the new values that the picture depends on if that shows.
     // Another room: the old samples show the old room, also where a wall of the new
     // room is at the same place.
     let new_room = room.is_some_and(|room| room.is_changed());
-    if config.is_changed() || size.is_changed() || new_room {
+    if config.is_changed() || new_room {
         render_world.reset_accumulation();
     }
+    // Never zero: the passes divide by it.
+    let picture = (config.window_width.max(1), config.window_height.max(1));
     render_world.0.insert_resource(ExtractedFrame {
-        internal_resolution: internal_resolution(&config, (size.width, size.height)),
+        internal_resolution: internal_resolution(&config, picture),
+        picture_size: picture,
         window_size: (size.width, size.height),
         vsync: config.vsync,
         frame: time.frame,
@@ -360,14 +366,14 @@ pub(crate) fn extract_frame(
     });
 }
 
-/// The size of the path tracer images: the fixed size of the config, or the window
-/// size multiplied by `render_scale`. Never zero, also for a window with no area.
-fn internal_resolution(config: &Config, window: (u32, u32)) -> (u32, u32) {
+/// The size of the path tracer images: the fixed size of the config, or the picture
+/// size multiplied by `render_scale`. Never zero.
+fn internal_resolution(config: &Config, picture: (u32, u32)) -> (u32, u32) {
     if config.render_width > 0 && config.render_height > 0 {
         return (config.render_width, config.render_height);
     }
     let scaled = |size: u32| ((size as f32 * config.render_scale).round() as u32).max(1);
-    (scaled(window.0), scaled(window.1))
+    (scaled(picture.0), scaled(picture.1))
 }
 
 /// Halves the internal resolution in every second block of `SELFTEST_PERIOD` frames.
@@ -404,7 +410,14 @@ fn render_frame(
         );
         // The history images change places only when the passes write them.
         let sampling = world.resource::<Accumulation>().sampling();
-        graph.execute(gpu, world, frame.internal_resolution, frame.frame, sampling);
+        graph.execute(
+            gpu,
+            world,
+            frame.internal_resolution,
+            frame.picture_size,
+            frame.frame,
+            sampling,
+        );
     }
 }
 

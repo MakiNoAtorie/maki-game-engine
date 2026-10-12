@@ -24,16 +24,17 @@ pub enum ToneCurve {
 #[serde(default)]
 pub struct Config {
     pub window_title: String,
-    /// Window size in logical pixels: the OS multiplies it by the display scale factor.
+    /// Size of the picture in pixels. The window shows it not scaled, and is wider
+    /// by the panel column of the UI.
     pub window_width: u32,
     pub window_height: u32,
-    /// The path tracer renders at the window size multiplied by this, 0.1 to 1.0.
-    /// 1.0: one traced pixel for each pixel of the window. Lower: less GPU time, and
-    /// the result is scaled to the window.
+    /// The path tracer renders at the picture size multiplied by this, 0.1 to 1.0.
+    /// 1.0: one traced pixel for each pixel of the picture. Lower: less GPU time, and
+    /// the result is scaled to the picture.
     pub render_scale: f32,
-    /// A fixed size for the path tracer, in pixels. It does not follow the window, and
+    /// A fixed size for the path tracer, in pixels. It does not follow the picture, and
     /// `render_scale` has no effect: a benchmark does the same work on each display.
-    /// 0: the window size multiplied by `render_scale`.
+    /// 0: the picture size multiplied by `render_scale`.
     pub render_width: u32,
     pub render_height: u32,
     pub vsync: bool,
@@ -192,7 +193,7 @@ impl Default for Config {
             samples_per_frame: 0,
             trace_budget_ms: 6.0,
             light_history_samples: 16,
-            max_bounces: 1,
+            max_bounces: 2,
             bounce_light: true,
             blue_noise: true,
             max_path_rays: 8,

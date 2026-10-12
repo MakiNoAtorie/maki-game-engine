@@ -26,6 +26,9 @@ pub enum Action {
     ToggleMovers,
     /// Debug: reads the file of the current room again.
     ReloadRoom,
+    /// Debug: goes to the next or the previous room file of the stage list.
+    NextStage,
+    PreviousStage,
     LightUp,
     LightDown,
     LightIntensityUp,
@@ -58,6 +61,8 @@ pub enum Key {
     ArrowRight,
     F1,
     F5,
+    PageUp,
+    PageDown,
     Escape,
     WheelUp,
     WheelDown,
@@ -90,6 +95,8 @@ impl Key {
             Key::ArrowRight => "Right",
             Key::F1 => "F1",
             Key::F5 => "F5",
+            Key::PageUp => "Page up",
+            Key::PageDown => "Page down",
             Key::Escape => "Esc",
             Key::WheelUp => "Wheel up",
             Key::WheelDown => "Wheel down",
@@ -137,6 +144,8 @@ impl Default for Bindings {
             ),
             (Key::R, ResetAccumulation, "Reset accumulation"),
             (Key::F5, ReloadRoom, "Reload the room file (debug)"),
+            (Key::PageDown, NextStage, "Next stage (debug)"),
+            (Key::PageUp, PreviousStage, "Previous stage (debug)"),
             (Key::F1, ToggleHelp, "Toggle help panel"),
             (Key::Escape, Quit, "Quit"),
         ];

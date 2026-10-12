@@ -4,7 +4,7 @@
 use bevy_ecs::system::{Res, ResMut};
 use maki_core::{App, Module, Update};
 use maki_events::{EventRunner, GameState, MessageBox};
-use maki_ui::{Panels, add_panel, egui};
+use maki_ui::{Panels, add_panel, add_window, egui};
 
 const MESSAGE: &str = "Message";
 
@@ -16,7 +16,7 @@ impl Module for EventsUiModule {
         // The text of the `Message` command. A plain egui window: `MessageBox` is
         // the interface, so a styled text box can replace this with no change to the
         // events.
-        add_panel(app, MESSAGE, false, |ui, world| {
+        add_window(app, MESSAGE, false, |ui, world| {
             if let Some(text) = &world.resource::<MessageBox>().0 {
                 ui.label(egui::RichText::new(text).size(18.0));
                 ui.weak("Z or Enter");

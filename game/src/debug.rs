@@ -5,6 +5,16 @@ use maki_core::{App, Config, Module, ToneCurve};
 use maki_render::{DebugView, MAX_DENOISE_PASSES};
 use maki_ui::{add_panel, egui};
 
+/// The picture sizes of the selector, in pixels.
+const RESOLUTIONS: [(u32, u32); 6] = [
+    (640, 360),
+    (960, 540),
+    (1280, 720),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+];
+
 /// Adds the "Debug" panel. Needs `UiModule` to show it.
 pub struct DebugPanelModule;
 
@@ -27,6 +37,19 @@ impl Module for DebugPanelModule {
             ui.separator();
             let mut config = world.resource::<Config>().clone();
 
+            // The size of the picture. The window gets the size of the picture and
+            // the panel column.
+            let picture = (config.window_width, config.window_height);
+            egui::ComboBox::from_label("resolution")
+                .selected_text(format!("{} x {}", picture.0, picture.1))
+                .show_ui(ui, |ui| {
+                    for size in RESOLUTIONS {
+                        let name = format!("{} x {}", size.0, size.1);
+                        if ui.selectable_label(size == picture, name).clicked() {
+                            (config.window_width, config.window_height) = size;
+                        }
+                    }
+                });
             ui.collapsing("Display", |ui| {
                 ui.checkbox(&mut config.vsync, "vsync");
                 if config.render_width > 0 && config.render_height > 0 {
@@ -34,7 +57,7 @@ impl Module for DebugPanelModule {
                         "The config fixes the render size: {} x {}",
                         config.render_width, config.render_height
                     ));
-                    if ui.button("Follow the window").clicked() {
+                    if ui.button("Follow the resolution").clicked() {
                         (config.render_width, config.render_height) = (0, 0);
                     }
                 } else {

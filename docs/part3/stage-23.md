@@ -4,7 +4,7 @@ State: built in a smaller form than the plan (the picture of the frame before as
 
 ## 1. What was built
 
-- `max_bounces` (config, 1 to 16, default 1): a path ends after this many diffuse bounces. With 8, the benchmark makes a reference with the light of many bounces (`bench.py reference SCENARIO --set max_bounces=8 max_path_rays=32 bounce_light=false --name SCENARIO_bounces8`).
+- `max_bounces` (config, 1 to 16, default 2): a path ends after this many diffuse bounces. With 8, the benchmark makes a reference with the light of many bounces (`bench.py reference SCENARIO --set max_bounces=8 max_path_rays=32 bounce_light=false --name SCENARIO_bounces8`).
 - `bounce_light` (config, default true): at the last surface of a path that has left a diffuse surface, the trace pass adds the bounce light that the same point had in the frame before: the mean indirect light of the denoiser at the pixel that showed the point (`bounce_light()` in `trace.comp`). The pixel counts only if its surface has the normal and the distance of the point. That mean was made the same way one frame before, so it holds the light of all later bounces.
 - Debug panel, "Path tracer": the two controls.
 
@@ -29,7 +29,7 @@ Gate:
 - No lag longer than about half a second after a change: 30 frames after the light stops, the error is 0.0171, against 0.0134 at rest. Met, about.
 - Cost equal or lower `gpu_trace`: not met. 1080p, run `s23on` against `s21c`: `gpu_trace` 1.16 -> 1.36 ms (`test_1080p`), 5.19 -> 5.56 ms (`heavy_mixed_lights8_1080p`); `gpu_total` 3.89 -> 4.09 ms and 7.31 -> 7.69 ms.
 
-Two bounces with `bounce_light` are 20 times nearer to the reference than one bounce alone, for 16 % more GPU time in the rooms of the game (`test_1080p_bounces2`: 4.66 ms). In the heavy benchmark scene that is 9.3 ms, over the budget of 8 ms, so the default stays 1.
+Two bounces with `bounce_light` are 20 times nearer to the reference than one bounce alone, for 16 % more GPU time in the rooms of the game (`test_1080p_bounces2`: 4.66 ms). In the heavy benchmark scene that is 9.3 ms, over the budget of 8 ms.
 
 The numbers of the denoiser against the own reference, with `bounce_light`: rest 64 frames 0.000274 / 0.937 / 0.72, `walk_720p` 0.00247 / 0.907 / 3.04, `materials_720p` 0.000449 / 1.027 / 0.97.
 
@@ -48,7 +48,7 @@ The numbers of the denoiser against the own reference, with `bounce_light`: rest
 
 ## 5. Decisions
 
-- `max_bounces = 1`. The owner can set 2 for the rooms of the game: see the numbers.
+- `max_bounces = 2` (owner, 2026-10-11; the stage first had 1). Runs `part3end` and `part3end_b2`: `gpu_total` 4.12 -> 4.69 ms in `test_1080p`, 7.71 -> 9.34 ms in `heavy_mixed_lights8_1080p`, which is over the budget of 8 ms.
 - The cache value has the limit `indirect_clamp`, as all bounce light.
 - A pixel behind a mirror or glass has the guides of the picture behind the mirror: its distance does not agree with that of a true point, so it is never read as a cache entry.
 - The reference of the benchmark (`bench.py reference`) is the default config, so it has `bounce_light` too. The references with 8 bounces have their own names.

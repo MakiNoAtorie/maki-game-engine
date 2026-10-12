@@ -6,6 +6,7 @@ mod events_ui;
 mod light;
 mod player;
 mod rooms;
+mod stages;
 mod tick_logger;
 
 use std::ffi::OsString;
@@ -133,6 +134,7 @@ fn main() -> anyhow::Result<()> {
         .add_module(maki_events::EventsModule)
         .add_module(events_ui::EventsUiModule)
         .add_module(rooms::RoomsModule)
+        .add_module(stages::StagesModule)
         .add_module(controls::ControlsModule)
         .add_module(camera::CameraModule)
         .add_module(player::PlayerControllerModule)

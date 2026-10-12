@@ -46,11 +46,18 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
     let direct = graph.add_transient(internal("direct", Format::Rgba16Float));
     let indirect = graph.add_transient(internal("indirect", Format::Rgba16Float));
     let specular = graph.add_transient(internal("specular", Format::Rgba16Float));
-    // The frame as the display shows it: sRGB-encoded, 8 bits, at window size.
+    // The picture as the display shows it: sRGB-encoded, 8 bits.
     let output = graph.add_transient(TransientDesc {
         name: "output",
         format: Format::Rgba8Unorm,
         size: SizeMode::Output,
+    });
+    // All of the window: the picture in the top left corner, not scaled, and black
+    // around it. A pass of another crate draws there (the panels of the ui crate).
+    let window = graph.add_transient(TransientDesc {
+        name: "window",
+        format: Format::Rgba8Unorm,
+        size: SizeMode::Window,
     });
 
     // The surface that each pixel shows, for the denoiser: see `shaders/trace.comp`.
@@ -117,7 +124,8 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         denoise,
         output,
     });
-    graph.add_pass(Present { output });
+    graph.add_pass(Compose { output, window });
+    graph.add_pass(Present { window });
 }
 
 /// A push constant block of 32-bit fields, as bytes.
@@ -136,11 +144,9 @@ pub(crate) fn vec3_bits(v: Vec3, last: u32) -> [u32; 4] {
 
 /// `[right, up, forward]` of the camera of this frame: see [`ray_basis`].
 pub(crate) fn frame_ray_basis(world: &bevy_ecs::world::World) -> [Vec3; 3] {
-    // The picture is scaled to the window, so the rays use the shape of the window
-    // and not that of the internal image. A resize thus does not stretch the scene.
-    // The extracted size and not the swapchain size: the swapchain can change one
-    // frame before the window size message, and that frame has no accumulation reset.
-    let (width, height) = world.resource::<ExtractedFrame>().window_size;
+    // The internal image is scaled to the picture, so the rays use the shape of the
+    // picture and not that of the internal image.
+    let (width, height) = world.resource::<ExtractedFrame>().picture_size;
     let camera = world.resource::<ExtractedCamera>().current;
     ray_basis(&camera, width as f32 / height as f32)
 }
@@ -302,7 +308,7 @@ impl Pass for Trace {
         let cameras = *ctx.world.resource::<ExtractedCamera>();
         let camera = cameras.current;
         let frame = ctx.world.resource::<ExtractedFrame>();
-        let (width, height) = frame.window_size;
+        let (width, height) = frame.picture_size;
         let aspect = width as f32 / height as f32;
         let [right, up, forward] = frame_ray_basis(ctx.world);
         // The camera of the frame before, for the motion of each pixel.
@@ -491,9 +497,34 @@ impl Pass for Tonemap {
     }
 }
 
-/// Copies the output image into the swapchain image. `Gpu::end_frame` shows it.
-struct Present {
+/// Puts the picture into the window image: see `window` in `build_graph`.
+struct Compose {
     output: ResourceId,
+    window: ResourceId,
+}
+
+impl Pass for Compose {
+    fn name(&self) -> &'static str {
+        "compose"
+    }
+
+    fn accesses(&self) -> Vec<(ResourceId, Access)> {
+        vec![
+            (self.output, Access::TransferSrc),
+            (self.window, Access::TransferDst),
+        ]
+    }
+
+    fn execute(&mut self, ctx: &mut PassContext) {
+        ctx.gpu
+            .copy_to_corner(ctx.image(self.output), ctx.image(self.window))
+            .expect("compose copy");
+    }
+}
+
+/// Copies the window image into the swapchain image. `Gpu::end_frame` shows it.
+struct Present {
+    window: ResourceId,
 }
 
 impl Pass for Present {
@@ -503,14 +534,14 @@ impl Pass for Present {
 
     fn accesses(&self) -> Vec<(ResourceId, Access)> {
         vec![
-            (self.output, Access::TransferSrc),
+            (self.window, Access::TransferSrc),
             (BACKBUFFER, Access::TransferDst),
         ]
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
         ctx.gpu
-            .blit_to_swapchain(ctx.image(self.output))
+            .blit_to_swapchain(ctx.image(self.window))
             .expect("present blit");
     }
 }

@@ -33,8 +33,11 @@ pub const BACKBUFFER: ResourceId = ResourceId(0);
 pub enum SizeMode {
     /// The internal render resolution (from the config).
     Internal,
-    /// The size of the swapchain images (the window).
+    /// The size of the picture (`window_width` and `window_height` of the config).
     Output,
+    /// The size of the swapchain images (the window): the picture and the room for
+    /// the panels.
+    Window,
     /// The output size divided by this number, rounded up, in each direction. For
     /// the small images of a blur.
     OutputDiv(u32),
@@ -279,7 +282,8 @@ impl FrameGraph {
 
     /// Records the frame. Call between `Gpu::begin_frame` and `Gpu::end_frame`.
     /// `world` is the render world. `internal_resolution` is the size of
-    /// [`SizeMode::Internal`] images. `frame` is the number of the app frame: it names
+    /// [`SizeMode::Internal`] images, `output` that of [`SizeMode::Output`] images.
+    /// `frame` is the number of the app frame: it names
     /// the frame in [`PassTimings`]. `advance_history`: the history images change
     /// places. False for a frame whose passes write no history image: the content of
     /// the frame before then stays the "frame before" of the next frame.
@@ -288,6 +292,7 @@ impl FrameGraph {
         gpu: &mut Gpu,
         world: &World,
         internal_resolution: (u32, u32),
+        output: (u32, u32),
         frame: u64,
         advance_history: bool,
     ) {
@@ -319,7 +324,6 @@ impl FrameGraph {
         // each transient, two transients whose ranges do not overlap and whose format
         // and size agree can share one image. A shared image must start each range with
         // `state: None`, because the other user changed its content.
-        let output = gpu.swapchain_extent();
         for (index, resource) in self.resources.iter_mut().enumerate() {
             let Some(desc) = resource.desc else {
                 // The swapchain gives a different image each frame.
@@ -329,6 +333,7 @@ impl FrameGraph {
             let size = match desc.size {
                 SizeMode::Internal => internal_resolution,
                 SizeMode::Output => output,
+                SizeMode::Window => gpu.swapchain_extent(),
                 SizeMode::OutputDiv(by) => (output.0.div_ceil(by), output.1.div_ceil(by)),
             };
             // An image gets the color attachment use only if a pass draws into it. A

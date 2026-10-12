@@ -1,29 +1,36 @@
-//! The debug UI: egui panels, drawn on top of the picture.
+//! The debug UI: egui panels in a column at the right of the picture.
+//!
+//! The picture has a fixed size (the config) and is in the top left corner of the
+//! window. The column fills the window at the right of it: no panel hides the picture.
+//! This crate tells the platform crate the width of the column (`WindowMargin`), and
+//! the window is as large as the two.
 //!
 //! Data flow of one frame:
 //! 1. `Input` schedule: `feed_events` gives the window events to egui (`egui-winit`).
 //! 2. `Update` schedule: `run_ui` runs the egui frame. It draws each open panel of the
-//!    [`Panels`] registry and keeps the result: triangles and texture changes. Then it
+//!    [`Panels`] registry as a section of the column and keeps the result: triangles and texture changes. Then it
 //!    writes `InputCapture`, so input that egui uses starts no action in the next frame.
 //! 3. `Extract` schedule: `extract_ui` moves the result into the render world.
 //! 4. The `ui_overlay` pass of the frame graph (`overlay` module) draws the triangles
-//!    into the output image, after the tonemap pass and before the copy to the window.
+//!    into the window image, after the compose pass and before the copy to the window.
 //!
-//! A module adds a debug panel with [`add_panel`]. The help panel (`help` module) and
+//! A module adds a debug panel with [`add_panel`], and a window on top of the picture
+//! (game text) with [`add_window`]. The help panel (`help` module) and
 //! the stats panel (`stats` module) are added in the same way.
 
 mod help;
 mod overlay;
 mod stats;
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::common_conditions::resource_exists;
 use bevy_ecs::system::{Res, ResMut};
 use bevy_ecs::world::{Mut, World};
-use maki_core::{App, Extract, Input, Module, Startup, Update};
-use maki_platform::{InputCapture, RawWindowEvent, Window};
+use maki_core::{App, Config, Extract, Input, Module, Startup, Update};
+use maki_platform::{InputCapture, RawWindowEvent, Window, WindowMargin};
 use maki_render::{RenderGpu, RenderWorld, setup_renderer};
 
 /// For the `egui::Ui` parameter of a panel function: a module that adds a panel uses
@@ -38,10 +45,17 @@ pub type PanelFn = Box<dyn FnMut(&mut egui::Ui, &mut World) + Send + Sync>;
 struct Panel {
     name: &'static str,
     open: bool,
+    /// True: an egui window on top of the picture. False: a section of the column.
+    floating: bool,
     draw: PanelFn,
 }
 
-/// The panel registry: all debug panels, by name. Each open panel is one egui window.
+/// Width of the panel column in egui points. A window that is wider than the picture
+/// and this gives the rest to the column.
+const COLUMN_WIDTH: f32 = 440.0;
+
+/// The panel registry: all panels, by name. Each open panel is one section of the
+/// column, or one egui window on top of the picture.
 #[derive(Resource, Default)]
 pub struct Panels(Vec<Panel>);
 
@@ -73,22 +87,41 @@ impl Panels {
     }
 }
 
-/// Adds a debug panel. Call from `Module::build`. `name` is the window title and must be
-/// unique. `open` is the state at startup. `draw` runs in each frame while the panel is open.
+/// Adds a debug panel: a section of the column at the right of the picture, folded at
+/// the start. Call from `Module::build`. `name` is the title and must be unique. `open`
+/// is the state at startup: a panel that is not open has no section. `draw` runs in
+/// each frame while the section is unfolded.
 // ponytail: no list of panels on screen, so only code can open a closed panel (the help
-// panel has an action). Add a menu with one checkbox for each name when panels crowd the screen.
+// panel has an action). Add a menu with one checkbox for each name if that is needed.
 pub fn add_panel(
     app: &mut App,
     name: &'static str,
     open: bool,
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
+    register(app, name, open, false, Box::new(draw));
+}
+
+/// Adds a window on top of the picture, for text of the game (a message). Not for
+/// debug data: that goes into the column, where it hides nothing. The parameters are
+/// those of [`add_panel`].
+pub fn add_window(
+    app: &mut App,
+    name: &'static str,
+    open: bool,
+    draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
+) {
+    register(app, name, open, true, Box::new(draw));
+}
+
+fn register(app: &mut App, name: &'static str, open: bool, floating: bool, draw: PanelFn) {
     // `App` gives no direct access to a resource, so a `Startup` system adds the panel.
     // A system can run more than one time; the panel moves out in the first run.
     let mut panel = Some(Panel {
         name,
         open,
-        draw: Box::new(draw),
+        floating,
+        draw,
     });
     app.init_resource::<Panels>()
         // Each module adds its own panel: the order changes nothing but the list order.
@@ -128,7 +161,7 @@ impl Drop for UiContext {
     }
 }
 
-/// Runs egui, draws the registered panels on top of the picture, and adds the help
+/// Runs egui, draws the registered panels beside the picture, and adds the help
 /// panel. Needs `PlatformModule`. Without `RenderModule` the panels run but are not drawn.
 pub struct UiModule;
 
@@ -189,23 +222,57 @@ fn run_ui(world: &mut World) {
                 (Some(state), Some(window)) => state.take_egui_input(window.winit()),
                 _ => egui::RawInput::default(),
             };
+            let config = world.resource::<Config>();
+            let picture_pixels =
+                egui::vec2(config.window_width as f32, config.window_height as f32);
             let output = ui.ctx.run_ui(input, |root| {
-                for (index, panel) in panels.0.iter_mut().enumerate() {
-                    if !panel.open {
-                        continue;
+                // The place of the picture in the window, in egui points.
+                let picture = egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    picture_pixels / root.ctx().pixels_per_point(),
+                );
+                // No open panel, no column: the egui frame is empty (a screenshot).
+                if panels.0.iter().any(|panel| panel.open && !panel.floating) {
+                    // All of the window at the right of the picture.
+                    let width = root.ctx().content_rect().width() - picture.width();
+                    egui::Panel::right("panels")
+                        .exact_size(width.max(COLUMN_WIDTH))
+                        .resizable(false)
+                        .show(root, |ui| {
+                            egui::ScrollArea::both().show(ui, |ui| {
+                                for panel in &mut panels.0 {
+                                    if panel.open && !panel.floating {
+                                        egui::CollapsingHeader::new(panel.name)
+                                            .show(ui, |ui| (panel.draw)(ui, world));
+                                    }
+                                }
+                            });
+                        });
+                }
+                for panel in &mut panels.0 {
+                    if panel.open && panel.floating {
+                        egui::Window::new(panel.name)
+                            .collapsible(false)
+                            .resizable(false)
+                            // At the bottom of the picture, in the middle.
+                            .pivot(egui::Align2::CENTER_BOTTOM)
+                            .default_pos(picture.center_bottom() - egui::vec2(0.0, 24.0))
+                            .constrain_to(picture)
+                            .show(root.ctx(), |ui| (panel.draw)(ui, world));
                     }
-                    egui::Window::new(panel.name)
-                        // In rows of three at the first start. The user can move them.
-                        .default_pos([
-                            12.0 + 360.0 * (index % 3) as f32,
-                            12.0 + 280.0 * (index / 3) as f32,
-                        ])
-                        .show(root.ctx(), |ui| (panel.draw)(ui, world));
                 }
             });
 
             ui.primitives = ui.ctx.tessellate(output.shapes, output.pixels_per_point);
             ui.pixels_per_point = output.pixels_per_point;
+            // The column in physical pixels: the platform crate makes the window wider by
+            // it, after the first frame. Only a different value is a write.
+            let margin = WindowMargin {
+                right: (COLUMN_WIDTH * output.pixels_per_point).round() as u32,
+            };
+            if let Some(mut current) = world.get_resource_mut::<WindowMargin>() {
+                current.set_if_neq(margin);
+            }
             // `append`: if no `Extract` took the changes of the frame before, they stay.
             ui.textures.append(output.textures_delta);
             // The mouse cursor shape, and other requests of egui to the OS.
