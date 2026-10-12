@@ -146,6 +146,9 @@ pub struct EditorSettings {
     pub grid_step: f32,
     /// A rotation snaps to steps of this, in degrees.
     pub angle_step: f32,
+    /// The command that opens a file at a line in the code editor ("Open in
+    /// editor"). `{file}` and `{line}` are replaced.
+    pub code_editor: String,
 }
 
 impl Default for EditorSettings {
@@ -154,6 +157,7 @@ impl Default for EditorSettings {
             snap: true,
             grid_step: 0.25,
             angle_step: 15.0,
+            code_editor: "code -g \"{file}:{line}\"".to_owned(),
         }
     }
 }
@@ -177,6 +181,9 @@ pub enum Command {
     /// A new, empty room.
     New,
     Open(PathBuf),
+    /// The document, the view, and the spawn point of an editor app before this one
+    /// ([`Session`]).
+    Restore(Session),
     Save,
     /// Saves the room to another file, which then is the open one.
     SaveAs(PathBuf),
@@ -519,6 +526,27 @@ impl Editor {
                         self.open(document);
                         self.status = "Opened".to_owned();
                         self.error = None;
+                    }
+                    Err(error) => self.fail(format!("{error:#}")),
+                }
+            }
+            Command::Restore(session) => {
+                let registry = world.resource::<CommandRegistry>();
+                match Document::parse(&session.path, &session.text, registry) {
+                    Ok(mut document) => {
+                        document.dirty = session.dirty;
+                        self.open(document);
+                        self.selection = session.selection;
+                        self.play_from = session.play_from;
+                        if let Some(view) = session.view {
+                            let mut cameras = world.query::<&mut EditorCamera>();
+                            cameras
+                                .iter_mut(world)
+                                .for_each(|mut camera| *camera = view);
+                        }
+                        self.status =
+                            "The code of the project was loaded again. The undo steps are gone"
+                                .to_owned();
                     }
                     Err(error) => self.fail(format!("{error:#}")),
                 }
@@ -1193,6 +1221,38 @@ fn add_commands(app: &mut App) {
     );
 }
 
+/// What an editor app hands to the next one, when the code of the project is loaded
+/// again (`maki_platform::NextApp`). The document goes as the text of a room file:
+/// its event commands are values of types of the old code.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Session {
+    /// The room file of the document: where a save writes.
+    pub path: PathBuf,
+    pub text: String,
+    /// True: the document is not what the file holds.
+    pub dirty: bool,
+    /// The selected items.
+    pub selection: Vec<Item>,
+    /// The spawn point where the game starts on "Play".
+    pub play_from: Option<String>,
+    /// The view of the editor camera.
+    pub view: Option<EditorCamera>,
+}
+
+/// The session of an app with the editor. `None`: the app has no editor.
+pub fn session(world: &World) -> Option<Session> {
+    let editor = world.get_resource::<Editor>()?;
+    let mut cameras = world.try_query::<&EditorCamera>()?;
+    Some(Session {
+        path: editor.document.path.clone(),
+        text: editor.document.text(),
+        dirty: editor.document.dirty,
+        selection: editor.selection.clone(),
+        play_from: editor.play_from.clone(),
+        view: cameras.iter(world).next().copied(),
+    })
+}
+
 /// What is under the pointer in the picture: a click takes it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Hover {
@@ -1230,6 +1290,9 @@ pub struct EditorModule {
     pub rooms: PathBuf,
     /// The name of the project, for the title of the window.
     pub project: String,
+    /// `Some`: the editor goes on with the document of the app before this one.
+    /// `None`: it opens the start room.
+    pub session: Option<Session>,
 }
 
 impl Module for EditorModule {
@@ -1285,7 +1348,10 @@ impl Module for EditorModule {
             rooms: self.rooms.clone(),
             project: self.project.clone(),
             // In the first frame: all modules have added their event commands then.
-            queue: vec![Command::Open(start.path)],
+            queue: vec![match &self.session {
+                Some(session) => Command::Restore(session.clone()),
+                None => Command::Open(start.path),
+            }],
             pending: None,
             playing: None,
             shown: None,

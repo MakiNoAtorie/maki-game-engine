@@ -24,6 +24,8 @@ mod editor_program;
 #[cfg(feature = "dynamic")]
 mod loader;
 mod project;
+#[cfg(feature = "dynamic")]
+mod reload;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

@@ -25,6 +25,7 @@ maki-devtools.workspace = true
 maki-editor = { workspace = true, optional = true }
 maki-engine-dylib = { workspace = true, optional = true }
 anyhow.workspace = true
+bevy_ecs.workspace = true
 libloading = { workspace = true, optional = true }
 serde.workspace = true
 toml.workspace = true

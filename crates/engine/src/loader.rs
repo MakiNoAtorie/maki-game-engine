@@ -19,7 +19,7 @@ pub const ENTRY: &[u8] = b"maki_project";
 const ENGINE_COPY: &[u8] = b"MAKI_ENGINE_COPY";
 
 /// The name of the engine DLL (`maki-engine-dylib`). It is beside the program.
-const ENGINE: &str = "maki_engine_dylib";
+pub(crate) const ENGINE: &str = "maki_engine_dylib";
 
 /// Loads a copy of the script DLL and lets it add its modules to the app.
 ///

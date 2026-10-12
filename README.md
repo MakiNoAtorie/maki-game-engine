@@ -125,12 +125,15 @@ The two builds:
 | Static: the game, the tests | `cargo build`, `cargo test` | In the program | In the program |
 | Dynamic: the editor | `cargo build --profile dynamic -p maki-editor-app -p maki-game-dll` | One DLL (`maki_engine_dylib.dll`) | A DLL that the editor loads |
 
-- The editor builds the script DLL of the project at its start, with the build command above, and loads a copy of it. A build error: the editor starts, shows the error as a notice, and the project has no code in that run (a room file that names a command of the project does not read).
+- The editor builds the script DLL of the project at its start, with the build command above, and loads a copy of it. A build error: the editor starts, shows the error as a notice and in the panel "Build", and the project has no code until a build is good (a room file that names a command of the project does not read).
+- While the editor runs, it watches the Rust files and the `Cargo.toml` files of the project folder (not `assets/`). A saved change starts the build command behind the work; the status row shows the job. A build that wrote a new DLL is loaded with no action of the user: the editor makes a new app in the same window with the modules of the new copy, and the open room goes to it with its changes that are not saved, its selection, and the view (the undo steps do not). About 2 seconds from the save to the new code. While a game runs, the load waits for "Stop". A room that the new code cannot read (a command is gone): no load, and a notice says why.
+- The panel "Build" (it opens when a build fails; "Window" has it): the state of the last build, and one row for each error and warning. A click on the file of a row runs the command of the code editor with the file and the line (`[editor] code_editor`). "File" has "Build the scripts" and "Open the project in the code editor".
+- A change of an engine crate cannot be built while the editor runs: the engine DLL is in use. The panel says so; start the editor again.
 - The build command always has the two packages: with another package set, cargo can give some crates other features and build the engine DLL again, and the editor that runs has that file.
 - The loader refuses, with a message and with no call into it: a DLL that is older than the engine DLL (it is of another build of the engine), a DLL that has its own copy of the engine crates, and a file that is not the DLL of a project.
 - A program of the dynamic build needs the DLL of the standard library, which is in the folder of the compiler: `editor.bat` puts that folder into `PATH`.
 - Tests of the dynamic build: `cargo test --profile dynamic -p maki-editor-app -p maki-game-dll` (the loader), and `python tools/reload_test.py` (a change of the script crate reaches a program that runs, and the build does not write the engine DLL).
-- Not there yet: a new build of the script DLL while the editor runs (stage 44), and a project outside this repository (the script crate is a member of the workspace of the engine).
+- Not there yet: a project outside this repository (the script crate is a member of the workspace of the engine).
 
 ## Benchmark
 
@@ -251,6 +254,7 @@ The config file is TOML, with one table for each module. A module declares its t
 | `snap` | true | A drag of a gizmo handle snaps. Ctrl turns it around for one drag |
 | `grid_step` | 0.25 | Step of a position, in meters. Also the grid for a new item |
 | `angle_step` | 15.0 | Step of a rotation, in degrees |
+| `code_editor` | `code -g "{file}:{line}"` | The command that opens a file at a line in the code editor (Visual Studio Code). `{file}` and `{line}` are replaced; the first word is the program that opens the project folder |
 
 `[ui]` (`crates/ui`):
 

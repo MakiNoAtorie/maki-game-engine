@@ -262,6 +262,21 @@ pub(crate) fn update_window_size(
     }
 }
 
+/// What makes the next app: see [`NextApp`].
+pub type MakeApp = Box<dyn FnOnce(&mut App) -> Option<App> + Send + Sync>;
+
+/// A request for another app in the same window: a tool that has new code for its
+/// modules (the editor, after a new build of the script DLL of a project). An app
+/// cannot give back the systems of its modules, so the new code gets a new app.
+///
+/// The function gets the app that runs, after its frame, and takes from it what
+/// the new app goes on with. `Some`: the new app, with its modules and not started.
+/// The old app is dropped first (its renderer has the swapchain of the window),
+/// then the new one gets the window and runs its `Startup`. `None`: the old app
+/// goes on.
+#[derive(Resource, Default)]
+pub struct NextApp(pub Option<MakeApp>);
+
 /// Opens the window, runs `Startup`, then runs one frame per redraw until the app quits.
 /// Call this in place of `App::run`: winit can make a window only inside its event loop,
 /// and `Startup` systems need the window.
@@ -413,6 +428,21 @@ impl ApplicationHandler for Runner {
                     return;
                 }
                 app.update();
+                let next = app.resource_mut::<NextApp>().0.take();
+                if let Some(mut new) = next.and_then(|make| make(app)) {
+                    self.app = None;
+                    if let Some(window) = &self.window {
+                        let size = window.inner_size();
+                        new.insert_resource(Window(window.clone()))
+                            .insert_resource(WindowSize {
+                                width: size.width,
+                                height: size.height,
+                            });
+                        window.request_redraw();
+                    }
+                    self.app = Some(new.run(|app| app));
+                    return;
+                }
                 let world = app.world();
                 if world.resource::<QuitRequested>().0 && !world.resource::<QuitHold>().0 {
                     event_loop.exit();

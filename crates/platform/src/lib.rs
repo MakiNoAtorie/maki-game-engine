@@ -12,8 +12,8 @@ pub use input::{
     Modifiers, Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings,
 };
 pub use window::{
-    Picture, PictureFit, QuitHold, QuitRequested, RawWindowEvent, Window, WindowMargin,
-    WindowResized, WindowSettings, WindowSize, WindowTitle, run, update_picture,
+    MakeApp, NextApp, Picture, PictureFit, QuitHold, QuitRequested, RawWindowEvent, Window,
+    WindowMargin, WindowResized, WindowSettings, WindowSize, WindowTitle, run, update_picture,
 };
 
 /// Adds input actions and window data to the app. `run` opens the window.
@@ -50,6 +50,7 @@ impl Module for PlatformModule {
             .init_resource::<ActionState>()
             .init_resource::<FixedActionState>()
             .init_resource::<QuitRequested>()
+            .init_resource::<window::NextApp>()
             // Each writer asks for the end. A module that holds the app open
             // (`QuitHold`) takes the request in this frame or in the next one.
             .allow_ambiguous_resource::<QuitRequested>()

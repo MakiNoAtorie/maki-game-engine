@@ -71,6 +71,7 @@ pub mod icon {
     pub const OUTLINER: &str = "☰";
     pub const INSPECTOR: &str = "🔧";
     pub const EVENTS: &str = "⚡";
+    pub const BUILD: &str = "⚙";
 }
 
 /// Gives egui the values of the table. For the layout of a tool: the panels of a

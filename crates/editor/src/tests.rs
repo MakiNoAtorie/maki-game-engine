@@ -53,6 +53,11 @@ const ROOM_B: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, spawns: {"in": (0.
 /// A directory with the two rooms, and an app with the modules of a game and the
 /// editor.
 fn editor_app(name: &str) -> (App, PathBuf) {
+    session_app(name, None)
+}
+
+/// The same, with the session of an app before it.
+fn session_app(name: &str, session: Option<Session>) -> (App, PathBuf) {
     let directory = std::env::temp_dir().join(format!("maki-editor-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("a.ron"), ROOM_A).unwrap();
@@ -79,6 +84,7 @@ output = false",
         .add_module(EditorModule {
             rooms: directory.clone(),
             project: "test".to_owned(),
+            session,
         });
     (app, directory)
 }
@@ -1040,5 +1046,45 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
             "{texts:?}"
         );
         assert!(app.world().resource::<Editor>().pending().is_none());
+    });
+}
+
+#[test]
+fn the_document_of_a_session_goes_to_the_next_editor_app() {
+    // The first app: a change that is not saved, another spawn point for "Play",
+    // and another view.
+    let (app, directory) = editor_app("session");
+    let (session, room) = app.run(|mut app| {
+        frames(&mut app, 2);
+        let mut editor = app.resource_mut::<Editor>();
+        editor.document.room.lights[0].intensity = 2.5;
+        editor.document.dirty = true;
+        editor.play_from = Some("other".to_owned());
+        editor.select(Item::Event(0), false);
+        frames(&mut app, 2);
+        let world = app.world();
+        let mut cameras = world.try_query::<&EditorCamera>().unwrap();
+        assert!(cameras.iter(world).next().is_some());
+        let room = world.resource::<Editor>().document.room.clone();
+        (session(world).unwrap(), room)
+    });
+    assert!(session.dirty && session.view.is_some());
+    assert_eq!(session.path, directory.join("a.ron"));
+
+    // The next app starts with that document, not with the file: the change is
+    // there, and it is still not saved.
+    let (app, _) = session_app("session", Some(session.clone()));
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        let world = app.world();
+        let editor = world.resource::<Editor>();
+        assert_eq!(editor.document.room, room);
+        assert_eq!(editor.document.room.lights[0].intensity, 2.5);
+        assert!(editor.document.dirty);
+        assert_eq!(editor.document.path, directory.join("a.ron"));
+        assert_eq!(editor.play_from.as_deref(), Some("other"));
+        assert_eq!(editor.selection, [Item::Event(0)]);
+        // The same session comes out of it.
+        assert_eq!(super::session(world).unwrap(), session);
     });
 }
