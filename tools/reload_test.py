@@ -1,10 +1,12 @@
-"""Spike of part 6: a change of the script crate reaches a program that runs.
+"""The reload test of the loader: a change of the script crate of the project reaches
+a program that runs, and the build of it does not write the engine DLL.
 
-Starts `spike-host`, waits for its first load, changes two lines of
-`spike/scripts/src/lib.rs`, builds the script DLL, and shows what the host prints
-after its second load. The source file is put back at the end.
+Starts `reload_test` (programs/editor/src/bin), waits for its first load, changes
+one line of `game/scripts/src/shake.rs`, builds with the build command of the
+editor, and shows what the program prints after its second load. The source file is
+put back at the end.
 
-    python tools/spike_reload.py
+    python tools/reload_test.py
 """
 
 import os
@@ -14,11 +16,14 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "spike" / "scripts" / "src" / "lib.rs"
-# Always the two packages. With the script crate alone, the features of some crates
-# are other ones: cargo then builds the engine DLL again, and the host has that file.
-BUILD = ["cargo", "build", "--profile", "dynamic", "-p", "spike-scripts", "-p", "spike-host"]
-CHANGES = [('LABEL: &str = "v1"', 'LABEL: &str = "v2"'), ("PAD: usize = 1;", "PAD: usize = 64;")]
+SOURCE = ROOT / "game" / "scripts" / "src" / "shake.rs"
+# The build command of the editor (`maki_engine::BUILD`), with the DLL package of the
+# project. Always the two packages: with the script crate alone, the features of
+# some crates are other ones, cargo then builds the engine DLL again, and the program
+# that runs has that file.
+BUILD = ["cargo", "build", "--profile", "dynamic", "-p", "maki-editor-app", "-p", "maki-game-dll"]
+# The row text of the command of the game: the program prints it after each load.
+CHANGES = [('"Shake the camera: ', '"Shake the view: ')]
 
 
 def main() -> int:
@@ -35,7 +40,7 @@ def main() -> int:
         new = new.replace(before, after)
 
     host = subprocess.Popen(
-        [str(ROOT / "target" / "dynamic" / "spike-host.exe"), "2"],
+        [str(ROOT / "target" / "dynamic" / "reload_test.exe"), "game", "2"],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     try:

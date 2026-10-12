@@ -1,0 +1,16 @@
+[package]
+name = "maki-game-dll"
+version.workspace = true
+edition.workspace = true
+
+# The script crate of the project as a DLL, for the editor (`project.toml` names this
+# package). Built only by the build command of the editor, with `--profile dynamic`:
+# the engine crates then come from the engine DLL.
+[lib]
+crate-type = ["dylib"]
+test = false
+doctest = false
+
+[dependencies]
+maki-engine.workspace = true
+maki-game-scripts = { path = ".." }

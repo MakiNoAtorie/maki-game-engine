@@ -23,8 +23,8 @@
 //! the game; stop takes them again and loads the document, so nothing that the game
 //! did stays.
 //!
-//! This crate is the last one before the game. A game adds [`EditorModule`] after
-//! its own modules, behind a cargo feature: a build without it has no editor code.
+//! The editor program (`maki_engine::run_editor`) adds [`EditorModule`] after the
+//! modules of the engine and of the project. The program of a game does not have it.
 
 mod audio;
 mod camera;
@@ -40,11 +40,9 @@ mod ron_text;
 mod view;
 pub mod widgets;
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Context;
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
@@ -274,8 +272,9 @@ pub struct Editor {
     /// What a click would take now, and the pixel that it was found for.
     pub hover: Option<Hover>,
     hover_pixel: Option<[f32; 2]>,
-    /// The directory of the room files of the game.
+    /// The directory of the room files of the project, and its name.
     rooms: PathBuf,
+    project: String,
     queue: Vec<Command>,
     /// A command that waits for an [`Answer`].
     pending: Option<Command>,
@@ -789,7 +788,11 @@ impl Editor {
         let path = &self.document.path;
         let file = path.file_name().unwrap_or(path.as_os_str());
         let changed = if self.document.dirty { " *" } else { "" };
-        format!("{}{changed} - maki editor", file.to_string_lossy())
+        let project = &self.project;
+        format!(
+            "{}{changed} - {project} - maki editor",
+            file.to_string_lossy()
+        )
     }
 
     /// A file name in the room directory that no file has.
@@ -1222,9 +1225,11 @@ fn reset_play_state(world: &mut World) {
 /// game open. Add it after the modules of the game. Needs `maki_ui::UiModule`,
 /// `maki_events::EventsModule`, and `maki_gameplay::RoomsModule`.
 pub struct EditorModule {
-    /// The directory of the room files of the game: for "Open", "Save as", and new
-    /// rooms.
+    /// The directory of the room files of the project: for "Open", "Save as", and
+    /// new rooms.
     pub rooms: PathBuf,
+    /// The name of the project, for the title of the window.
+    pub project: String,
 }
 
 impl Module for EditorModule {
@@ -1278,6 +1283,7 @@ impl Module for EditorModule {
             hover: None,
             hover_pixel: None,
             rooms: self.rooms.clone(),
+            project: self.project.clone(),
             // In the first frame: all modules have added their event commands then.
             queue: vec![Command::Open(start.path)],
             pending: None,
@@ -1307,39 +1313,6 @@ impl Module for EditorModule {
         add_commands(app);
         panels::build(app);
     }
-}
-
-/// The command line options of the editor, for the usage text of a game.
-pub const USAGE: &str = "[--editor] [--editor-resave ROOM]...";
-
-/// What the command line asks of the editor.
-#[derive(Debug, Default, PartialEq)]
-pub struct EditorArgs {
-    /// `--editor`: the game starts in the editor. Add [`EditorModule`].
-    pub open: bool,
-    /// `--editor-resave ROOM`, one or more times: call [`resave`] with the files,
-    /// and end.
-    pub resave: Vec<PathBuf>,
-}
-
-/// Takes the editor options from the command line. Returns them and the other
-/// arguments, as `maki_devtools::parse_args` does for the benchmark options.
-pub fn parse_args(
-    args: impl IntoIterator<Item = OsString>,
-) -> anyhow::Result<(EditorArgs, Vec<OsString>)> {
-    let (mut editor, mut rest) = (EditorArgs::default(), Vec::new());
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        if arg == "--editor" {
-            editor.open = true;
-        } else if arg == "--editor-resave" {
-            let path = args.next().context("--editor-resave needs a room file")?;
-            editor.resave.push(PathBuf::from(path));
-        } else {
-            rest.push(arg);
-        }
-    }
-    Ok((editor, rest))
 }
 
 /// Reads each room file and writes it again as the editor saves it: the same room,

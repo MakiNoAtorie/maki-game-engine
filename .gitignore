@@ -9,6 +9,6 @@
 /bench.csv
 /bench.dump
 # Written by a save point of the game.
-/save.ron
+/game/save.ron
 # Backup of the owner. Not part of the repository.
 /maki-renderer-*.zip

@@ -1,0 +1,12 @@
+# The project file: what the engine must know of this game. A path starts at this
+# folder.
+name = "maki"
+# The room files: where the editor opens and saves.
+rooms = "assets/rooms"
+# Where the game starts if the config file names no room: a file of `rooms`, and a
+# spawn point of it.
+start_room = "room_a.ron"
+start_spawn = "start"
+save = "save.ron"
+# The cargo package that the editor builds and loads: the script crate as a DLL.
+scripts = "maki-game-dll"

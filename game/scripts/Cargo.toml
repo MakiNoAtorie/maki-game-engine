@@ -1,0 +1,18 @@
+[package]
+name = "maki-game-scripts"
+version.workspace = true
+edition.workspace = true
+
+# The script crate of the project: the Rust code of this game. Of the engine it names
+# `maki-engine` only. The game program links it statically; the editor loads it as a
+# DLL (`dll/`).
+[dependencies]
+maki-engine.workspace = true
+# For the derive macros: they name these crates.
+bevy_ecs.workspace = true
+glam.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+# A test: the editor writes each room file of the game with the same content.
+maki-editor.workspace = true

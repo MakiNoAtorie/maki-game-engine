@@ -49,9 +49,6 @@ pub enum Pace {
 /// A script: its steps, one after the other. After the last step nothing is held.
 pub type Script = &'static [Step];
 
-/// Scripts by name.
-pub type Scripts = &'static [(&'static str, Script)];
-
 /// The player is at a place when it is this near on the axis, in meters. More than
 /// half of the way of one fixed step at the default run speed (0.06 m).
 const NEAR: f32 = 0.04;

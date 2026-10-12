@@ -1,8 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "game", "spike/*"]
-# The spike crates build only when named (`-p`, or the feature `dynamic` of the game).
-default-members = ["crates/*", "game"]
+members = [
+    "crates/*",
+    "crates/engine/dylib",
+    "programs/editor",
+    "game",
+    "game/scripts",
+    "game/scripts/dll",
+]
+# The static build: the engine crates, the game, and its script crate. The editor
+# program, the engine DLL, and the script DLL build only when named, with
+# `--profile dynamic` (`editor.bat` has the command).
+default-members = ["crates/*", "game", "game/scripts"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,7 +20,7 @@ edition = "2024"
 # All versions live here; crates use `name.workspace = true`.
 [workspace.dependencies]
 # Dependency rule: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu
-# -> render -> ui -> devtools -> editor -> game.
+# -> render -> ui -> devtools -> editor -> engine -> game.
 # A crate may depend only on crates to its left.
 maki-core = { path = "crates/core" }
 maki-platform = { path = "crates/platform" }
@@ -25,7 +34,8 @@ maki-render = { path = "crates/render" }
 maki-ui = { path = "crates/ui" }
 maki-devtools = { path = "crates/devtools" }
 maki-editor = { path = "crates/editor" }
-maki-engine = { path = "spike/engine" }
+maki-engine = { path = "crates/engine" }
+maki-engine-dylib = { path = "crates/engine/dylib" }
 
 anyhow = "1.0.104"
 ash = "0.38.0"
@@ -34,7 +44,8 @@ gpu-allocator = { version = "0.28.0", default-features = false, features = ["std
 # Same version as winit: the gpu crate makes its surface from winit's handles.
 raw-window-handle = { version = "0.6.2", features = ["std"] }
 slotmap = "1.1.1"
-# Loads the script DLL of the spike. `ash` has it already: the same version.
+# Loads the script DLL of a project into the editor. `ash` has it already: the same
+# version.
 libloading = "0.8.9"
 # Vectors, matrices, quaternions.
 glam = "0.34.1"
@@ -68,8 +79,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing-tracy = "0.12.0"
 
-# Spike of part 6: the build with the engine as a DLL. A DLL of Windows exports
-# 65535 symbols at most. A crate at `opt-level` 0 or 1 exports each generic function
+# The build of the editor: the engine crates are one DLL, and the script crate of a
+# project is a DLL that the editor loads. A DLL of Windows exports 65535 symbols at
+# most. A crate at `opt-level` 0 or 1 exports each generic function
 # that it made, and the engine DLL then has too many: the crates of others are
 # built at 2.
 [profile.dynamic]

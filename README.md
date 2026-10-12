@@ -11,11 +11,13 @@ Top-down 3D horror game engine with path-traced lighting, written in Rust.
 
 ```
 cargo build
-cargo run -p maki-game                 # uses ./config.toml; run it in the repository root (room files)
+cargo run -p maki-game                 # the game; uses ./config.toml
 cargo run -p maki-game -- my.toml      # uses the given config file
 cargo run -p maki-game --release -- --bench-frames 300   # benchmark, see below
-cargo run -p maki-game --features editor -- --editor     # the room editor, see below
+editor.bat                             # the editor with the project `game`, see below
 ```
+
+Two programs. `maki-game` is the game: the engine and the Rust code of the project in one program, with no editor (`run.bat` builds and starts it). `maki-editor` is the editor: the engine and the editor, with no code of a game; it opens a project folder (see "Project").
 
 If the config file does not exist, the game writes one with the default values of all modules.
 
@@ -61,21 +63,22 @@ A tool has another layout (`Panels::set_tool_layout`, the editor): panels at the
 
 ## Editor
 
-`cargo run -p maki-game --features editor -- --editor` starts the game in the room editor, with the start room open. The editor is the crate `crates/editor`, behind the cargo feature `editor` of the game: a build without the feature has no editor code and no `--editor` option.
+`editor.bat` builds and starts the editor program `maki-editor` with the project of this repository (`game`), with the start room open. `maki-editor [PROJECT [CONFIG]]`: the project folder (not given: `game`), then the config file. The editor is the crate `crates/editor`; the program of a game does not have it. Its layout is a shell of `crates/ui`: a module adds a panel (`maki_ui::add_tool_panel`) and a command (`maki_ui::add_command`) with one call each, with no change in the editor crate.
 
-- The window starts maximized, and the picture has the room that the panels leave: it has the shape of that room, not that of the game. In the view of the game camera (G), a thin frame shows the picture of the game (`[window]` size). The title bar has the room file, ` *` for changes that are not saved, and "maki editor".
-- At the top: the menus "File" (new room, open a room file of `game/assets/rooms`, save, save as, quit), "Edit" (undo, redo, duplicate, delete), and "View" ("Debug panels": the panels of the game in one window). Below them the row with "Play" and the spawn point where the game starts, the tools, "Local", the snap, and "Add".
-- At the left: the outliner: the room, its doorways, doors, props, movers, lights, spawn points, and events. The field above it filters the rows by a part of the name. A double click on a row, or F, puts the item in the middle of the view. The right mouse button on a row: frame, duplicate, delete. An event with a problem is red (an error) or yellow (a warning), with the problem as hover text. An item with no name shows its kind and its index; a new prop gets a name (`cube`, `cube_2`).
-- At the right: the properties of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. For an event: its name and its area; the rest is in the event panel (below). "Where used" is a fold at the end.
-- At the bottom: the status row. What the last command did; in red why a command did not do its work, until the "x" closes it; at the right the count of errors and warnings in the events.
-- Drag the edge of the outliner, of the properties, or of the event panel to change its size. The sizes are saved in `[editor]`.
-- While the game is played (Play), the top row has "Stop" (and "Step", "Run" in a test), the left panel has the events that run, and the right panel has the game state.
+- The window starts maximized. The picture is the tab in the middle, with the name of the room file (` *` for changes that are not saved): it has the room that the docks leave, and the shape of that room, not that of the game. In the view of the game camera (G), a thin frame shows the picture of the game (`[window]` size). The title bar has the room file, the name of the project, and "maki editor".
+- At the top: the menus "File" (new room, open a room file of the project, save, save as, quit), "Edit" (undo, redo, duplicate, delete, copy, paste, rename, the prefab commands), "Add" (each kind of item, a model file, a prefab file), "View" (frame, the view from the top, the view of the game camera), and "Window" (each panel, "Reset layout", the named layouts). Each row of a menu has the key of its command and is grey while the command cannot run. Below them the tool row: at the left the tools, "Local", and the snap; in the middle "Play" and the spawn point where the game starts; at the right the list of the layouts.
+- Each panel is a tab of a dock: the outliner at the left, the inspector at the right, the events under the picture. Drag a tab to another dock (the middle target groups it with the tabs there, a side target splits the dock), or out of the docks (it floats in the window of the editor). The button of a tab closes it; "Window" opens it again. Drag the edge between two docks to change their sizes. The layout is saved in a file beside the config file (`config.layout.ron`) and read at the start. The named layouts: "Build" (the default), "Logic" (more room for the events), "Look" (no event panel), "Animate", and "Debug" (the debug panels of the game as tabs under the picture: Help, Stats, Debug, Gameplay, Game state).
+- The command search (Ctrl+P, or the button beside the menus): type a part of the name of a command, a panel ("window inspector"), or a layout ("layout debug"); the arrow keys and Enter, or a click, run the row.
+- At the left: the outliner: the room, its doorways, doors, props, movers, lights, spawn points, and events. The field above it filters the rows by a part of the name. A double click on a row, or F, puts the item in the middle of the view. The right mouse button on a row: rename, frame, duplicate, delete. F2 makes the name of the selected item a text field in its row: Enter takes the new name, Esc does not. An event with a problem is red (an error) or yellow (a warning), with the problem as hover text. An item with no name shows its kind and its index; a new prop gets a name (`cube`, `cube_2`).
+- At the right: the inspector with the values of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. A value that the room file can leave out (a pose, "on", the volume of a sound) has a small button at the end of its row while it is not the default: "back to default". For an event: its name and its area; the rest is in the panel "Events" (below). "Where used" is a fold at the end.
+- At the bottom: the status row, in four parts: what the last command did, the jobs that run behind the work, the count of errors and warnings in the events (a click lists them), and the frame time. Why a command did not do its work is a notice at the bottom right of the window: it stops no work, and stays until its button closes it.
+- While the game is played (Play), the picture has a frame in the play color, the tool row has "Stop" (and "Step", "Run" in a test), the outliner has the events that run, and the inspector has the game state.
 - The view: drag with the right mouse button to turn it, with the middle button to move it, the wheel goes nearer and farther. T is the view from the top, G the view of the game camera. The help panel lists the keys of the editor while the room is edited, and those of the game while it is played.
 - Selection: a click in the picture selects the item under the pointer (a prop, a door, a mover, a light, a spawn point, the area of an event); a click on a wall, the floor, or nothing selects nothing. Shift and a click adds an item or takes it out. The outliner has the same selection. The pick is against what the picture shows: a click goes through the near walls as the view does, and a mirror or a glass ball is selected itself, not what shows in it.
-- The gizmo is at the last selected item. "Move" (W): a handle for each axis, and the square at the origin moves the item over the floor. "Rotate" (E): a ring for each axis. "Scale" (R): a handle for each axis of the item. "Local" (Q): the handles follow the axes of the item, not those of the room. A light, a spawn point, and an event area only move. A turn of more than one item turns the group around the gizmo: each item goes around it. A mover has two poses: a move and a turn take the two, or only pose `b` with the checkbox in "Properties"; the marks show the mesh at pose `b` and the way between the two.
+- The gizmo is at the last selected item. "Move" (W): a handle for each axis, and the square at the origin moves the item over the floor. "Rotate" (E): a ring for each axis. "Scale" (R): a handle for each axis of the item. "Local" (Q): the handles follow the axes of the item, not those of the room. A light, a spawn point, and an event area only move. A turn of more than one item turns the group around the gizmo: each item goes around it. A mover has two poses: a move and a turn take the two, or only pose `b` with the checkbox in the inspector; the marks show the mesh at pose `b` and the way between the two.
 - Handles of the item itself, white squares, with each tool. A cone light: at the point of the floor that the middle of its cone meets; a drag aims the light at the point of the floor under the pointer. An event area: at each corner; a drag moves the corner, and the corner across stays. A doorway: at each top corner; a drag on the wall changes the width and the height, and the other side stays. They snap to the grid as a move does.
 - Snap: a move snaps to the grid step and a turn to the angle step of the `[editor]` settings (the two fields beside "Snap"); a scale snaps to 0.05. Hold Ctrl in a drag for no snap.
-- "Add" puts a new item on the floor at the point that the view looks at: a cube, a cuboid, a sphere, a model file (the `.gltf` and `.glb` files at the room file), a light, a spawn point, a doorway, a door (in the first doorway with no door), a mover, an event area. "Delete" (Delete key) removes the selection; a doorway takes its door with it, and the doors of the other doorways keep their doorway. "Copy" (Ctrl+D) makes a copy of each selected item, half a meter beside it.
+- The "Add" menu puts a new item on the floor at the point that the view looks at: a cube, a cuboid, a sphere, a model file (the `.gltf` and `.glb` files at the room file), a light, a spawn point, a doorway, a door (in the first doorway with no door), a mover, an event area. "Delete" (Delete key) removes the selection; a doorway takes its door with it, and the doors of the other doorways keep their doorway. "Copy" (Ctrl+D) makes a copy of each selected item, half a meter beside it.
 - Names: a light, a door or mover, a spawn point, and an event get a name that no other one of its kind has (`lamp_2`). A new name of a light, a door, or a mover goes into the built-in commands of the events of the room that name it (`LightOff`, `OpenDoor`, ...). A new name of a spawn point: the status line names each other room file whose `Transfer` still has the old name; the editor does not change other files.
 - Undo (Ctrl+Z) and redo (Ctrl+Y): each change of the document is one step, also a full drag of a handle or of a number. The steps go away when another room is opened; a save keeps them. Undo and redo also put back the selection of the state that they go to: the undo of a delete selects the item again.
 - Marks on the picture, in the editor only: the floor grid (1 m), the names and places of the spawn points and event areas, the hinge and the swing of each door, the second pose of each mover, the box of each selected mesh, the radius and the cone of a selected light, the opening of a selected doorway. What is in front of a mark hides it: the grid does not show on a prop. The marks of the selection and of the item under the pointer, and the gizmo, show through each object. The editor cuts the lines with the distance of each pixel, which it reads from the GPU after the picture changed (`maki_render::read_distances`); while the view moves the cut is one frame late.
@@ -83,27 +86,51 @@ A tool has another layout (`Panels::set_tool_layout`, the editor): panels at the
 - New, open, and quit ask first if the room has changes that are not saved; "Save as" asks before it writes over the file of another room. The question is in the middle of the window, and nothing else takes input while it waits. Enter is the first answer, Esc is "Cancel".
 - The item or the handle under the pointer shows it: a thin white box around the item, a thicker and brighter handle. Esc in a drag of a handle puts the values of the start of the drag back, with no step of the history; Esc with no drag selects nothing.
 - Delete, Ctrl+D (duplicate), Ctrl+C, and Ctrl+V go to the list that had the last click: the items (the picture, the outliner) or the command rows of the event panel. Copy and paste are for command rows only. The hover text of a button has the key of its action, from the binding table.
-- Properties: the values are in one column, a length has `m`, an angle `deg`, a time `s`, and X, Y, Z have the colors of the gizmo. A texture and a glTF file are picked from the list of the files at the room file. The direction of a light is in the group of its cone.
+- Inspector: the labels are in one column and the values in the next one, also for a group in a group; a length has `m`, an angle `deg`, a time `s`, and X, Y, Z have the colors of the gizmo. A texture and a glTF file are picked from the list of the files at the room file. The direction of a light is in the group of its cone.
 
-The event panel is under the picture while an event is selected (in the outliner or by its area in the picture). At its left the pages with their conditions and trigger, in the middle the command rows, at the right the arguments of the selected row:
+The panel "Events" shows the selected event (selected in the outliner or by its area in the picture); its tab comes to the front when an event is selected. At its left the pages with their conditions and trigger, in the middle the command rows, at the right the arguments of the selected row:
 
-- In the properties: the name, and the area on the floor (also by the gizmo). With the checkbox off the event has no area: for `Autorun` and `Parallel`.
+- In the inspector: the name, and the area on the floor (also by the gizmo). With the checkbox off the event has no area: for `Autorun` and `Parallel`.
 - A name (a flag, a variable, a light, a door, a room file, a spawn point, a command of "Add") is picked from a list with a search field: type a part of the name, Enter takes the first one. The lists of flags and variables have the entry "New...": type the name, then Enter.
 - Pages as tabs, with add, copy, delete, and the two arrows for the order. A star marks the page that the game would run with the flags and variables of the "Game state" panel (the last page whose conditions hold): set a flag there to see another page get the star, and to play with that state. Stop gives the values of before the play back.
 - Conditions as rows: a kind (flag is set, flag is not set, variable is at least, variable is), a name, a value. The trigger is a choice of the four.
-- Commands as rows, one line each, as text for a reader (`Message: The door is locked.`, `If power_off and count >= 3`); the text of the room file is the hover text. A module gives the row text and one line of help for its commands with `CommandRegistry::add_texts` (`game/src/shake.rs`); without it the row is the text of the room file. The two lists of an `If` are under it, with `Else` and `End`. "Add" has each command of the game, with its help as hover text; the new command goes after the selected row (after `If`: into its first list; after `Else`: into the second). Drag a row to another row to move it: a line shows where it goes. Shift and a click selects the rows from the row of the click before to this one, in one list; "Delete", "Duplicate", "Copy", and "Paste" take the range. The buffer of "Copy" stays when another event or another room is opened.
+- Commands as rows, one line each, as text for a reader (`Message: The door is locked.`, `If power_off and count >= 3`); the text of the room file is the hover text. A module gives the row text and one line of help for its commands with `CommandRegistry::add_texts` (`game/scripts/src/shake.rs`); without it the row is the text of the room file. The two lists of an `If` are under it, with `Else` and `End`. "Add" has each command of the game, with its help as hover text; the new command goes after the selected row (after `If`: into its first list; after `Else`: into the second). Drag a row to another row to move it: a line shows where it goes. Shift and a click selects the rows from the row of the click before to this one, in one list; "Delete", "Duplicate", "Copy", and "Paste" take the range. The buffer of "Copy" stays when another event or another room is opened.
 - The arguments of the selected command: a light, a door, or a mover is picked from those of the room; a flag or a variable from each name that an event of any room file beside the open one uses, or typed as a new one; a `Transfer` picks a room file, then one of its spawn points. The audio commands pick a sound file of the directory of the room file (and one level below it), and a light that has a sound. A module gives the widgets of its commands with `maki_editor::add_argument_editor` (`maki_editor::widgets` has a number, a file, and a name of a list), and the new command of "Add" with `CommandRegistry::add_defaults`: `crates/editor/src/audio.rs` is the example. A command with none of the two is a text field with the command as a room file has it (`ShakeCamera(0.6, 0.06)`), checked with each key.
 - Checks, on the row and with `(!)` at the event in the outliner. Red, an error: a light, a door, or a mover that the room does not have; a `SoundOn` or `SoundOff` for a light with no sound; two events with one name. Yellow, a warning: a `Transfer` to a room file or a spawn point that does not exist, a sound file that does not exist. The room loader of the game makes the same checks with the same code (see "Rooms and events"): it does not load a room file with an error. A room with such a problem opens in the editor and can be saved; the status line gives the count.
 - A flag or a variable that an event reads and no event of any room file writes has the yellow mark "no event sets it", in the pick lists and in "Where used": a name with a wrong letter, or a flag that only a test sets.
-- "Test this page" plays the room and starts the page, whatever its trigger and conditions are, in step mode: each event waits before each command, "Step" (in the top row) runs the next one, and the left panel shows the command that waits. "Run" ends the step mode.
+- "Test this page" plays the room and starts the page, whatever its trigger and conditions are, in step mode: each event waits before each command, "Step" (in the tool row) runs the next one, and the outliner shows the command that waits. "Run" ends the step mode.
 
 The panel "Where used" lists each flag and each variable of the game with each place that reads or writes it: room file, event, page, and the condition or command.
 
 The editor changes a document (the room, its events, its comments), not the world. The world is made from the document: a change of a light or of the pose of a prop changes the entities in place, with no stop of the picture; each other change loads the room again from the text of the document (each mesh of the room is built again on the GPU, some milliseconds). Only the document is saved.
 
-A saved file is RON as a person writes it: the field order of `RoomDef`, no field that has its default, one item on one line if it is not longer than 110 characters, and the `//` comments of the file. A comment before an item of a list (`props`, `lights`, `events`, ...) or in it is the note of that item and stays with it; each other comment is a note of the room and goes to the top of the file. `maki-game --editor-resave ROOM` writes a room file again in this form, with no window.
+A saved file is RON as a person writes it: the field order of `RoomDef`, no field that has its default, one item on one line if it is not longer than 110 characters, and the `//` comments of the file. A comment before an item of a list (`props`, `lights`, `events`, ...) or in it is the note of that item and stays with it; each other comment is a note of the room and goes to the top of the file. `maki-editor game --resave ROOM` writes a room file again in this form, with no window.
 
-With a picture of 1280 pixels the editor window is 1960 pixels wide (240 for the outliner, 440 for the column). On a smaller display, set `width` and `height` of `[window]`.
+## Project
+
+A project is a folder with the data and the Rust code of one game. `game/` is the project of this repository:
+
+| Part | Content |
+|---|---|
+| `project.toml` | What the engine must know of the game: its name, the directory of the room files, the start room and its spawn point, the save file, and the cargo package of its script DLL. A path starts at the project folder |
+| `assets/` | The rooms, with their models, textures, and sounds |
+| `scripts/` | The script crate: the Rust code of the game (its event command `ShakeCamera`, its benchmark scripts). Of the engine it names one crate, `maki-engine`. Its entry function adds its modules to the app |
+| `scripts/dll/` | The script crate as a DLL, for the editor: one line |
+| `Cargo.toml`, `src/main.rs` | The program of the game: `maki_engine::run_game` with the entry function of the script crate |
+
+The two builds:
+
+| Build | Command | Engine crates | Script crate |
+|---|---|---|---|
+| Static: the game, the tests | `cargo build`, `cargo test` | In the program | In the program |
+| Dynamic: the editor | `cargo build --profile dynamic -p maki-editor-app -p maki-game-dll` | One DLL (`maki_engine_dylib.dll`) | A DLL that the editor loads |
+
+- The editor builds the script DLL of the project at its start, with the build command above, and loads a copy of it. A build error: the editor starts, shows the error as a notice, and the project has no code in that run (a room file that names a command of the project does not read).
+- The build command always has the two packages: with another package set, cargo can give some crates other features and build the engine DLL again, and the editor that runs has that file.
+- The loader refuses, with a message and with no call into it: a DLL that is older than the engine DLL (it is of another build of the engine), a DLL that has its own copy of the engine crates, and a file that is not the DLL of a project.
+- A program of the dynamic build needs the DLL of the standard library, which is in the folder of the compiler: `editor.bat` puts that folder into `PATH`.
+- Tests of the dynamic build: `cargo test --profile dynamic -p maki-editor-app -p maki-game-dll` (the loader), and `python tools/reload_test.py` (a change of the script crate reaches a program that runs, and the build does not write the engine DLL).
+- Not there yet: a new build of the script DLL while the editor runs (stage 44), and a project outside this repository (the script crate is a member of the workspace of the engine).
 
 ## Benchmark
 
@@ -116,7 +143,7 @@ The game runs N frames (1 to 1000000), writes `bench.csv` in the working directo
 - Each frame counts as one fixed step of game time (1/60 s), whatever the real time was: the simulation is the same in each run.
 - The first light of the room moves on a circle around the room center, one turn in 240 frames. The position depends only on the frame number, so each run does the same work. The keyboard does not move the light.
 - The light moves in each frame, so each frame is a change of the lighting: the indirect light of each pixel keeps `light_history_samples` old samples. `--bench-static` holds the light at the start of the path, so the picture gets all its samples. `--bench-light-frames M` moves the light in M frames, then holds it: the frames after that show how fast the picture follows.
-- `--bench-script NAME` holds the light and plays the game with a script of actions. The scripts belong to the game (`game/src/scripts.rs`); the runner is a module of the engine (`maki_devtools::BenchModule`). `walk`: in room A the player walks and a door opens; the last motion shows in frame 180. `trip`: the full loop, 820 frames: room A, room B, the switch, back to room A, through the door that was locked. `shake`: a check of the `ShakeCamera` command; it needs room B as the start room.
+- `--bench-script NAME` holds the light and plays the game with a script of actions. The scripts belong to the project (`game/scripts/src/bench.rs` adds them with `maki_devtools::add_bench_script`); the runner is a module of the engine (`maki_devtools::BenchModule`). The editor program has no benchmark. `walk`: in room A the player walks and a door opens; the last motion shows in frame 180. `trip`: the full loop, 820 frames: room A, room B, the switch, back to room A, through the door that was locked. `shake`: a check of the `ShakeCamera` command; it needs room B as the start room.
 - `tools/bench.py` sets `render.samples_per_frame = 1` if the scenario does not set it: the automatic count would give each run another load.
 - `--bench-dump FILE` writes the picture of frame N (the picture before the tone curve, at the output resolution) to FILE: two little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel. The picture depends only on the config, the scene, and N. `python tools/bench.py same` compares two dumps.
 - `--bench-shot` (with `--bench-dump`): the file gets the picture as the window shows it (after the tone curve), and the run hides all panels. `python tools/shot.py OUT.png [--room room_b.ron --spawn west] [--set table.key=value ...]` runs the game that way and writes a PNG.
@@ -201,8 +228,8 @@ The config file is TOML, with one table for each module. A module declares its t
 
 | Key | Default | Meaning |
 |---|---|---|
-| `start` | not set | The room file that the game starts in. Not set: the room of the game, `game/assets/rooms/room_a.ron`. A path that is not absolute starts at the working directory |
-| `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the game, `start` |
+| `start` | not set | The room file that the game starts in. Not set: the start room of the project (`project.toml`). A path that is not absolute starts at the working directory |
+| `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the project |
 
 `[assets]` (`crates/assets`, `AssetsModule`):
 
@@ -217,14 +244,13 @@ The config file is TOML, with one table for each module. A module declares its t
 | `volume` | 1.0 | The volume of all sound. 1.0: as loud as the files are. 0.0: silent |
 | `output` | true | False: the game opens no sound device and does the same work with no sound (the benchmark, a test). With no device that can be opened, the game logs a warning and runs the same way |
 
-`[editor]` (`crates/editor`, only with the feature `editor`):
+`[editor]` (`crates/editor`, in the editor program only):
 
 | Key | Default | Meaning |
 |---|---|---|
 | `snap` | true | A drag of a gizmo handle snaps. Ctrl turns it around for one drag |
 | `grid_step` | 0.25 | Step of a position, in meters. Also the grid for a new item |
 | `angle_step` | 15.0 | Step of a rotation, in degrees |
-| `left_width`, `right_width`, `event_height` | 230, 340, 300 | Width of the outliner and of the properties, height of the event panel, in points of the UI. The editor writes them when the user drags an edge |
 
 `[ui]` (`crates/ui`):
 
@@ -344,11 +370,11 @@ An event has pages. A page has conditions, a trigger, and commands. The active p
 | `PlayMusic("sounds/theme.ogg", 0.8)` | Start a file as music: a loop, read from the file while it plays, in place of the music that plays. The file of the music that plays: no change |
 | `StopMusic` | The music fades out in one second |
 | `SoundOn("name")`, `SoundOff("name")` | Turn the sound of a light of the room on or off |
-| `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
+| `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/scripts/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
 
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.
 
-The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/src/shake.rs` is the example. A command that holds lists of commands (`If`, `Choice`) tells so with `CommandRegistry::add_lists`: the checks of the loader and the event panel of the editor then walk and show the lists of each module in the same way, with the label of each list as a row (`Else`, `Answer: Yes`).
+The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/scripts/src/shake.rs` is the example. A command that holds lists of commands (`If`, `Choice`) tells so with `CommandRegistry::add_lists`: the checks of the loader and the event panel of the editor then walk and show the lists of each module in the same way, with the label of each list as a row (`Else`, `Answer: Yes`).
 
 The loader checks the events of a room file (`crates/events/src/check.rs`). An error has the file and the line of the command, and the room does not load: a light, a door, or a mover that the room does not have, a `SoundOn` or `SoundOff` for a light with no sound, and two events with one name. A warning is logged, and the room loads: a `Transfer` to a room file or a spawn point that does not exist, a sound file that does not exist. The commands of a page after a `Transfer` run in the other room and are not checked. A module adds the check of its own commands with `CommandRegistry::add_check`.
 
@@ -369,7 +395,10 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/gameplay` | Gameplay that games of this kind share, each a module with its own settings: camera that follows the player, walking controller, start room and reload, move actions and quit, debug control of a light and of the movers |
 | `crates/gpu` | Vulkan backend (resources, images with mip levels, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
-| `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the text box of the game (message, question) and the game state panel of the events |
+| `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the text box of the game (message, question) and the game state panel of the events. The shell of a tool: docks with tabs, the layout file, the command list with its menus, keys, and search, the widgets (property grid, tree, tool button, notice), the theme table |
 | `crates/devtools` | Tools that a game opts into: benchmark runner with its command line options and panel, list of the room files, panel of the gameplay settings |
-| `crates/editor` | The room editor, behind the feature `editor` of the game: the document (room, events, comments), the writer of room files, the free camera, the outliner and the property panel, the pick, the gizmo, the marks on the picture, add, delete, duplicate, undo and redo, the event panel with its checks and the test of a page, play and stop |
-| `game` | The binary: the module list, the benchmark scripts, the `ShakeCamera` command. The rooms are in `game/assets/rooms` |
+| `crates/editor` | The room editor: the document (room, events, comments), the writer of room files, the free camera, the panels (outliner, inspector, events) and the commands of the editor in the shell of `crates/ui`, the pick, the gizmo, the marks on the picture, add, delete, duplicate, names, undo and redo, the event panel, the checks of the events |
+| `crates/engine` | The engine as one crate, the only one that a project names: the engine crates by their short names, the project file, the module list of a game and of the editor, the command line, the log setup, the two entry functions, the loader of the script DLL |
+| `crates/engine/dylib` | All engine crates as one DLL, for the dynamic build |
+| `programs/editor` | The editor program `maki-editor`, and the reload test of the loader |
+| `game` | The project of this repository: `project.toml`, the rooms (`assets/rooms`), the script crate (`scripts`: the `ShakeCamera` command, the benchmark scripts), and the program of the game |

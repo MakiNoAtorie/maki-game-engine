@@ -1,0 +1,20 @@
+[package]
+name = "maki-editor-app"
+version.workspace = true
+edition.workspace = true
+
+# The editor program: the engine and the editor, with no code of a game. It opens a
+# project and loads its script crate as a DLL. Built only when named, with
+# `--profile dynamic` and the DLL package of the project in the same call:
+# `editor.bat` has the command.
+[[bin]]
+name = "maki-editor"
+path = "src/main.rs"
+
+[dependencies]
+maki-engine = { workspace = true, features = ["dynamic"] }
+
+[dev-dependencies]
+# The loader test loads the script DLL of the game of this repository: with this
+# line, `cargo test` builds the DLL (a test run builds only what a test needs).
+maki-game-dll = { path = "../../game/scripts/dll" }

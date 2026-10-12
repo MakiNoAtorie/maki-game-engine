@@ -57,8 +57,8 @@
                 (conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")]),
             ],
         ),
-        // `ShakeCamera` is a command of the game (game/src/shake.rs): seconds, meters.
-        // Not on the way of the trip script (game/src/scripts.rs): a shake in its
+        // `ShakeCamera` is a command of the game (game/scripts/src/shake.rs): seconds, meters.
+        // Not on the way of the trip script (game/scripts/src/bench.rs): a shake in its
         // frames would change the pictures that the benchmark compares.
         (
             name: "mirror ball",

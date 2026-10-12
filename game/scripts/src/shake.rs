@@ -7,10 +7,10 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_core::{App, Module, ResetPlay, Time, Update};
-use maki_events::{CommandRegistry, Finding};
-use maki_gameplay::{FollowCamera, follow_player};
-use maki_scene::Camera;
+use maki_engine::core::{App, Module, ResetPlay, Time, Update};
+use maki_engine::events::{CommandRegistry, Finding};
+use maki_engine::gameplay::{FollowCamera, follow_player};
+use maki_engine::scene::Camera;
 use serde::{Deserialize, Serialize};
 
 /// The event commands of this game.
@@ -29,8 +29,8 @@ struct CameraShake {
     strength: f32,
 }
 
-/// Adds the commands of [`GameCommand`]. Needs `maki_events::EventsModule` and
-/// `maki_gameplay::CameraModule`.
+/// Adds the commands of [`GameCommand`]. Needs `maki_engine::events::EventsModule` and
+/// `maki_engine::gameplay::CameraModule`.
 pub struct ShakeModule;
 
 impl Module for ShakeModule {
@@ -102,10 +102,10 @@ fn shake_camera(
 mod tests {
     use std::time::Duration;
 
-    use maki_core::{ConfigFile, Interpolated, Startup, Transform};
-    use maki_events::EventsModule;
-    use maki_platform::PlatformModule;
-    use maki_scene::{Player, RoomRequest, RoomTarget, SceneModule};
+    use maki_engine::core::{ConfigFile, Interpolated, Startup, Transform};
+    use maki_engine::events::EventsModule;
+    use maki_engine::platform::PlatformModule;
+    use maki_engine::scene::{Player, RoomRequest, RoomTarget, SceneModule};
 
     use super::*;
 
@@ -121,7 +121,7 @@ mod tests {
         app.add_module(PlatformModule)
             .add_module(SceneModule)
             .add_module(EventsModule)
-            .add_module(maki_gameplay::CameraModule)
+            .add_module(maki_engine::gameplay::CameraModule)
             .add_module(ShakeModule);
         let target = RoomTarget {
             path: path.clone(),
@@ -168,7 +168,7 @@ mod tests {
         app.add_module(PlatformModule)
             .add_module(SceneModule)
             .add_module(EventsModule)
-            .add_module(maki_gameplay::CameraModule)
+            .add_module(maki_engine::gameplay::CameraModule)
             .add_module(ShakeModule);
         app.run(|mut app| {
             let left = |app: &App| app.world().resource::<CameraShake>().left;

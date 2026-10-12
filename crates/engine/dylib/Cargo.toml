@@ -1,10 +1,12 @@
 [package]
-name = "maki-engine"
+name = "maki-engine-dylib"
 version.workspace = true
 edition.workspace = true
 
-# Spike of part 6: all engine crates as one shared library. A program and a script
-# DLL that link to it share one copy of each engine crate.
+# All engine crates as one shared library. The editor program and the script DLL of
+# a project link to it, so they have one copy of each engine crate, of `bevy_ecs`, and
+# of the standard library. Built only with `--profile dynamic`: in the dev profile a
+# DLL of this size has more symbols than Windows permits.
 [lib]
 crate-type = ["dylib"]
 test = false
@@ -23,6 +25,3 @@ maki-render.workspace = true
 maki-ui.workspace = true
 maki-devtools.workspace = true
 maki-editor.workspace = true
-anyhow.workspace = true
-libloading.workspace = true
-tracing.workspace = true

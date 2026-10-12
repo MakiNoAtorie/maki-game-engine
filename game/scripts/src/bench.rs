@@ -1,6 +1,7 @@
 //! The benchmark scripts of this game: each plays the game with input actions, as a
 //! player does with keys. The benchmark module of the engine runs them
-//! (`maki_devtools::BenchModule`, `--bench-script NAME`).
+//! (`maki_engine::devtools::BenchModule`, `--bench-script NAME`); this crate adds
+//! them to its list.
 //!
 //! A script walks to places that the room files name (a spawn point, the area of an
 //! event): a room that changes does not break it, as long as the way along X and
@@ -8,15 +9,20 @@
 //! door that opens), and the walk script, whose picture must be the same in each
 //! version of the game.
 
-use maki_devtools::{Axis, Pace, Place, Script, Scripts, Step};
-use maki_events::INTERACT;
-use maki_gameplay::{MOVE_FORWARD, MOVE_LEFT, TOGGLE_MOVERS};
+use maki_engine::core::App;
+use maki_engine::devtools::{Axis, Pace, Place, Script, Step, add_bench_script};
+use maki_engine::events::INTERACT;
+use maki_engine::gameplay::{MOVE_FORWARD, MOVE_LEFT, TOGGLE_MOVERS};
 
-pub const SCRIPTS: Scripts = &[
-    ("walk", WALK_SCRIPT),
-    ("trip", TRIP_SCRIPT),
-    ("shake", SHAKE_SCRIPT),
-];
+pub fn add_scripts(app: &mut App) {
+    for (name, script) in [
+        ("walk", WALK_SCRIPT),
+        ("trip", TRIP_SCRIPT),
+        ("shake", SHAKE_SCRIPT),
+    ] {
+        add_bench_script(app, name, script);
+    }
+}
 
 /// The walk script, in room A. The player walks to the left, then to the back between
 /// the cube and the left mirror, and the door opens. The last motion shows in frame

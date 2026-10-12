@@ -247,8 +247,8 @@ Docks: the crate `egui_dock`. Not in the shell stage: a tab with no content, a p
 | Stage | Content | State |
 |---|---|---|
 | 41 | Spike: the Rust code of a project as a DLL | Done |
-| 42 | The shell of the editor: docks, registries of panels and commands, widgets, theme (`stage-42-editor-shell.md`) | Approved |
-| 43 | The editor program, and the game as a project (`stage-43-editor-program-and-project.md`) | Planned, not approved |
+| 42 | The shell of the editor: docks, registries of panels and commands, widgets, theme (`stage-42-editor-shell.md`) | Done (`stage-42.md`) |
+| 43 | The editor program, and the game as a project (`stage-43-editor-program-and-project.md`) | Done (`stage-43.md`) |
 | 44 | The editor loads a new build of the script DLL while it runs: build after a save, the build errors in a panel, "Open in editor" (2.4) | Not planned |
 | 45 | A changed asset file shows at once (`stage-45-asset-reload.md`) | Planned, not approved |
 | 46 | Source files of other programs: `.blend`, `.obj`, `.psd` (`stage-46-source-files.md`) | Planned, not approved |

@@ -1,0 +1,33 @@
+[package]
+name = "maki-engine"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# The build of the editor (`--profile dynamic`): the engine crates come from one DLL
+# (`maki-engine-dylib`), and the editor program and the loader of the script DLL of a
+# project are compiled. A crate that names `maki-engine` links the DLL with it.
+dynamic = ["dep:maki-engine-dylib", "dep:maki-editor", "dep:libloading"]
+# Sends tracing spans to the Tracy profiler.
+profile = ["dep:tracing-tracy"]
+
+[dependencies]
+maki-core.workspace = true
+maki-platform.workspace = true
+maki-assets.workspace = true
+maki-scene.workspace = true
+maki-events.workspace = true
+maki-audio.workspace = true
+maki-gameplay.workspace = true
+maki-render.workspace = true
+maki-ui.workspace = true
+maki-devtools.workspace = true
+maki-editor = { workspace = true, optional = true }
+maki-engine-dylib = { workspace = true, optional = true }
+anyhow.workspace = true
+libloading = { workspace = true, optional = true }
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-tracy = { workspace = true, optional = true }

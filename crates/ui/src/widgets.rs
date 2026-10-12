@@ -379,6 +379,15 @@ struct Notice {
 pub struct Notices(Vec<Notice>);
 
 impl Notices {
+    /// Adds a notice. With a world at hand: [`notify`].
+    pub fn push(&mut self, level: NoticeLevel, text: impl Into<String>) {
+        self.0.push(Notice {
+            level,
+            text: text.into(),
+            since: Instant::now(),
+        });
+    }
+
     /// The texts of the notices that show, the oldest first.
     pub fn texts(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|notice| notice.text.as_str())
@@ -392,15 +401,8 @@ const NOTICE_TIME: Duration = Duration::from_secs(6);
 /// over the bottom right corner of the window for some seconds (an error: until the
 /// user closes it), and the work goes on.
 pub fn notify(world: &mut World, level: NoticeLevel, text: impl Into<String>) {
-    let notice = Notice {
-        level,
-        text: text.into(),
-        since: Instant::now(),
-    };
-    world
-        .get_resource_or_insert_with(Notices::default)
-        .0
-        .push(notice);
+    let mut notices = world.get_resource_or_insert_with(Notices::default);
+    notices.push(level, text);
 }
 
 /// Draws the notices. `corner`: the bottom right corner of the room for them.

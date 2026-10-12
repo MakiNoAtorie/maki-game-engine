@@ -34,7 +34,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::script::{Script, Scripts};
+use crate::script::Script;
 use anyhow::{Context, bail};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -71,8 +71,52 @@ const MAX_WAIT_FRAMES: u64 = 8;
 pub struct BenchModule {
     /// `Some`: this run starts with the game, and the game stops after it.
     pub start: Option<BenchRun>,
-    /// The scripts of the game, each with its name for the command line and the panel.
-    pub scripts: Scripts,
+}
+
+/// The benchmark scripts, each with its name for the command line and the panel. A
+/// project adds its scripts with [`add_bench_script`]: their places fit its rooms.
+#[derive(Resource, Default)]
+pub struct BenchScripts(Vec<(&'static str, Script)>);
+
+impl BenchScripts {
+    fn find(&self, name: &str) -> Option<Script> {
+        let named = self.0.iter().find(|(script, _)| *script == name);
+        named.map(|(_, script)| *script)
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.0.iter().map(|(name, _)| *name).collect()
+    }
+}
+
+/// Adds a benchmark script. Call from `Module::build`. It needs no `BenchModule`: a
+/// program with no benchmark (the editor) keeps the list and does not read it.
+pub fn add_bench_script(app: &mut App, name: &'static str, script: Script) {
+    app.init_resource::<BenchScripts>();
+    let mut scripts = app.resource_mut::<BenchScripts>();
+    assert!(
+        scripts.find(name).is_none(),
+        "bench script `{name}` was added two times"
+    );
+    scripts.0.push((name, script));
+}
+
+/// Call after the last module was added: the script that the command line names
+/// must be one of the list. The error has the names.
+pub fn check_bench(app: &App) -> anyhow::Result<()> {
+    let world = app.world();
+    let run = world.get_resource::<Bench>();
+    let name = run.and_then(|bench| bench.request.as_ref()?.script.as_deref());
+    let scripts = world.get_resource::<BenchScripts>();
+    let known = |name: &str| scripts.is_some_and(|scripts| scripts.find(name).is_some());
+    if let Some(name) = name.filter(|name| !known(name)) {
+        let names = scripts.map_or(Vec::new(), BenchScripts::names);
+        bail!(
+            "--bench-script: no script `{name}`. The scripts: {}",
+            names.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// One benchmark run.
@@ -87,20 +131,15 @@ pub struct BenchRun {
     /// `Some`: the light moves in this many frames, then it stops. `Some(0)`: it does
     /// not move.
     pub light_frames: Option<u64>,
-    /// `Some`: the script runs, and the light does not move.
-    pub script: Option<Script>,
-}
-
-fn find_script(scripts: Scripts, name: &str) -> Option<Script> {
-    let named = scripts.iter().find(|(script, _)| *script == name);
-    named.map(|(_, script)| *script)
+    /// `Some`: the script of this name runs ([`BenchScripts`]), and the light does
+    /// not move.
+    pub script: Option<String>,
 }
 
 /// Takes the benchmark options out of a command line (without the program name).
 /// Returns the run that they ask for, and the arguments that are left for the game.
 pub fn parse_args(
     args: impl IntoIterator<Item = OsString>,
-    scripts: Scripts,
 ) -> anyhow::Result<(Option<BenchRun>, Vec<OsString>)> {
     let mut args = args.into_iter();
     let (mut frames, mut dump, mut shot) = (None, None, false);
@@ -123,12 +162,9 @@ pub fn parse_args(
             let count = args.next().and_then(|frames| frames.to_str()?.parse().ok());
             light_frames = Some(count.context("--bench-light-frames needs a number")?);
         } else if arg == "--bench-script" {
+            // The project adds its scripts later: `check_bench` looks for the name.
             let name = args.next().and_then(|name| name.into_string().ok());
-            let found = name.and_then(|name| find_script(scripts, &name));
-            let names: Vec<_> = scripts.iter().map(|(name, _)| *name).collect();
-            script = Some(found.with_context(|| {
-                format!("--bench-script needs a script name: {}", names.join(", "))
-            })?);
+            script = Some(name.context("--bench-script needs a script name")?);
         } else if arg == "--bench-dump" {
             let path = args.next().context("--bench-dump needs a file")?;
             dump = Some(PathBuf::from(path));
@@ -159,6 +195,7 @@ fn run_script(
     room: Res<CurrentRoom>,
     events: Option<Res<maki_events::EventRunner>>,
     players: Query<&Interpolated, bevy_ecs::query::With<maki_scene::Player>>,
+    scripts: Res<BenchScripts>,
     mut scripted: ResMut<ScriptedActions>,
 ) {
     use bevy_ecs::change_detection::DetectChangesMut;
@@ -168,7 +205,7 @@ fn run_script(
     // The progress of the script has no reader: no change of the resource.
     let active = bench.bypass_change_detection().active.as_mut();
     let script = active.and_then(|active| {
-        let script = active.run.script?;
+        let script = scripts.find(active.run.script.as_deref()?)?;
         let frame = active.bench_frame(time.frame);
         let world = crate::script::World {
             player: player.unwrap_or_default(),
@@ -203,6 +240,7 @@ impl Module for BenchModule {
         app.resource_mut::<RoomDirs>()
             .0
             .push((PathBuf::from(BENCH_DIR), 1));
+        app.init_resource::<BenchScripts>();
         app.insert_resource(Bench {
             request: self.start.clone(),
             active: None,
@@ -235,7 +273,6 @@ impl Module for BenchModule {
                 (|mut window: ResMut<WindowSettings>| window.vsync = false).before(setup_renderer),
             );
         }
-        let scripts = self.scripts;
 
         // The values of the panel for the next run.
         let (mut frames, mut script_name, mut static_light, mut dump) = (300, None, false, false);
@@ -257,8 +294,8 @@ impl Module for BenchModule {
                 ui.horizontal(|ui| {
                     ui.label("script");
                     ui.radio_value(&mut script_name, None, "none");
-                    for (name, _) in scripts {
-                        ui.radio_value(&mut script_name, Some(*name), *name);
+                    for name in world.resource::<BenchScripts>().names() {
+                        ui.radio_value(&mut script_name, Some(name), name);
                     }
                 });
                 // A script holds the light.
@@ -276,7 +313,7 @@ impl Module for BenchModule {
                         dump: dump.then(|| PathBuf::from(PANEL_DUMP_PATH)),
                         shot: false,
                         light_frames: static_light.then_some(0),
-                        script: script_name.and_then(|name| find_script(scripts, name)),
+                        script: script_name.map(str::to_owned),
                     });
                 }
             });
@@ -573,12 +610,9 @@ mod tests {
         assert!(half_to_f32(0x7E00).is_nan());
     }
 
-    const SCRIPT: Script = &[crate::script::Step::Hold(40, &[])];
-
     #[test]
     fn the_command_line_gives_the_run_and_leaves_the_other_arguments() {
-        let scripts: Scripts = &[("walk", SCRIPT)];
-        let parse = |args: &[&str]| parse_args(args.iter().map(OsString::from), scripts);
+        let parse = |args: &[&str]| parse_args(args.iter().map(OsString::from));
 
         let (run, rest) = parse(&["my.toml"]).unwrap();
         assert!(run.is_none());
@@ -605,7 +639,7 @@ mod tests {
         assert_eq!(run.dump, Some(PathBuf::from("a.bin")));
         assert_eq!(run.light_frames, Some(0));
         let run = parse(&["--bench-frames", "3", "--bench-script", "walk"]);
-        assert!(run.unwrap().0.unwrap().script.is_some());
+        assert_eq!(run.unwrap().0.unwrap().script.as_deref(), Some("walk"));
         for bad in [
             &["--bench-frames"][..],
             &["--bench-frames", "0"],
@@ -614,7 +648,6 @@ mod tests {
             &["--bench-static"],
             &["--bench-script", "walk"],
             &["--bench-frames", "3", "--bench-script"],
-            &["--bench-frames", "3", "--bench-script", "fly"],
             &["--bench-frames", "3", "--bench-dump"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");

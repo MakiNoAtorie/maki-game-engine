@@ -20,26 +20,28 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Use current stable crate versions and verify APIs against their docs.
 
 ## Workspace
-`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/audio`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, and `game/` (the only binary).
+`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/audio`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, `crates/engine` (with `crates/engine/dylib`), `programs/editor`, and `game/` (the project of this repository).
 - `scene`: the components that describe the world, the room data format, load and unload of rooms.
 - `events`: flags and variables, event definitions, the event interpreter, the registry of event commands.
 - `audio`: the sound output (`kira`), sound assets, music, the sounds at a place in the room, the audio event commands. No type of `kira` in its public API.
 - `gameplay`: generic gameplay modules (camera follow, walking controller, start room, debug controls), each with its own settings.
 - `devtools`: tools that a game opts into (benchmark runner, room list, gameplay panel).
 - `ui`: egui, the debug panels of a game, and the shell of a tool (docks with tabs, the panel and command registries, the widgets, the theme).
-- `editor`: the room editor. The game has it behind the cargo feature `editor` (`maki-game --editor`); a build without the feature has no editor code. It edits a document (room, events, comments) and builds the world from it; it never saves the world.
-- `game/`: content, the module list, and code that is specific to this game. Generic code goes into an engine crate.
-- `spike/` (stage 41, until stage 43 removes it): the engine crates as one DLL, a script DLL, and a test program. Built only when named, with `--profile dynamic`.
+- `editor`: the room editor, a library. It edits a document (room, events, comments) and builds the world from it; it never saves the world.
+- `engine` (`maki-engine`): the engine as one crate, and the only one that a project names. The module list of a game and of the editor, the command line, the log setup, the project file (`project.toml`), the two entry functions (`run_game`, `run_editor`), the loader of the script DLL. `engine/dylib`: all engine crates as one DLL.
+- `programs/editor`: the editor program `maki-editor`: engine and editor, no code of a game. It opens a project.
+- `game/`: the project: `project.toml`, `assets/`, the script crate `scripts/` (the Rust code of this game; `scripts/dll` is the same crate as a DLL for the editor), and the program of the game (`maki-game`: engine and script crate linked statically, no editor). Generic code goes into an engine crate.
+- Two builds. Static: `cargo build`, `cargo test`, `cargo clippy` (the engine crates, the game, its script crate). Dynamic, for the editor: `--profile dynamic -p maki-editor-app -p maki-game-dll`, always the two packages in one call (`editor.bat`; `maki_engine::BUILD`).
 
 ## Architecture rules (do not break)
-1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu -> render -> ui -> devtools -> editor -> game. A crate depends only on crates to its left. `scene`, `events`, `audio`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
+1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu -> render -> ui -> devtools -> editor -> engine -> game. A crate depends only on crates to its left. `scene`, `events`, `audio`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
 2. No `ash` or Vulkan type in any public API outside the `gpu` crate.
 3. The renderer reads only data copied into it during the Extract stage, never game state directly.
 4. Gameplay code reads input actions, never raw keys.
 5. Every feature is a module that registers its own systems and resources. Adding a module must not require editing another module. A module owns its config table (`Settings`), its input actions and their keys (`add_bindings`), and its event commands (`CommandRegistry`). A module adds its panels and its commands of the editor to the shell (`maki_ui::add_tool_panel`, `add_command`), with no change in the editor crate.
 6. Long-lived resources (GPU resources, assets) are referenced by generational handles.
 7. Gameplay state that must survive a room change (flags, variables, player state) lives in resources outside room entities.
-8. Game content (rooms, events) is data, not code. A new room or event must not need a recompile.
+8. Game content (rooms, objects, prefabs, events) is data, loaded at run time. The Rust code of a project is in its script crate, and of the engine it names `maki-engine` only. Neither a change of content nor a change of a script needs a new build of the editor. No engine crate has a constant of a game: the project file has them.
 
 ## Conventions
 - Test fixtures (meshes, glTF files, config files) are generated by code, not hand-written and committed.

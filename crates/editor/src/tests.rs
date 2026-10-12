@@ -17,17 +17,6 @@ use maki_ui::UiModule;
 
 use super::*;
 
-#[test]
-fn the_command_line_gives_the_editor_options() {
-    let parse = |args: &[&str]| parse_args(args.iter().map(OsString::from));
-    let (editor, rest) = parse(&["my.toml", "--editor", "--editor-resave", "a.ron"]).unwrap();
-    assert!(editor.open);
-    assert_eq!(editor.resave, [PathBuf::from("a.ron")]);
-    assert_eq!(rest, [OsString::from("my.toml")]);
-    assert_eq!(parse(&["--bench"]).unwrap().0, EditorArgs::default());
-    assert!(parse(&["--editor-resave"]).is_err());
-}
-
 /// Room A: a lamp, a cube, and an event that runs when the room loads. It sets a
 /// flag, turns the lamp off, and goes to room B.
 const ROOM_A: &str = r#"// The test room.
@@ -89,6 +78,7 @@ output = false",
         .add_module(UiModule)
         .add_module(EditorModule {
             rooms: directory.clone(),
+            project: "test".to_owned(),
         });
     (app, directory)
 }
