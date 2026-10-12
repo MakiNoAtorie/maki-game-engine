@@ -2,8 +2,9 @@
 
 Top-down 3D horror game engine with path-traced lighting, written in Rust.
 
-## Current target (part 5: from editor to game)
-Make the editor a tool for daily work and give the engine what a longer game needs: checks at load, a richer event format, an editor window that fits the display, key chords, a play signal, choices, sound, save and load, prefabs. The plan is in `docs/part5/`. Parts 2 (`docs/part2/`), 3 (`docs/part3/`), and 4 (`docs/part4/`) are done.
+## Current target (part 6: a general engine)
+Make the engine a general engine with the workflow of Unity, Godot, and Unreal, in which a game in the style of RPG Maker can be made. It must not copy the workflow of RPG Maker: parts 4 and 5 made the event (pages, triggers, command rows) the only way to write logic, and the item kinds of a room a closed set. Part 6 corrects the two: objects with components that modules register, kinds as prefabs, scripts in Rust in a script crate of the project (loaded as a DLL, so a script change does not close the editor), and the editor as a program of its own that opens a project. The events stay, as a way with no code on the same system.
+The plan, the decisions of the owner, and the stage files are in `docs/part6/`. Start with `docs/part6/HANDOVER.md`, then `docs/part6/README.md`. Parts 2 (`docs/part2/`), 3 (`docs/part3/`), 4 (`docs/part4/`), and 5 (`docs/part5/`) are done.
 The architecture must let later features plug in without rework (upscaling, software tracer backend, Metal backend, skinned characters, baked lighting). Favor correct seams over feature breadth.
 Picture quality and GPU time must not regress: compare `tools/bench.py` runs before and after each stage.
 
@@ -27,6 +28,7 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - `devtools`: tools that a game opts into (benchmark runner, room list, gameplay panel).
 - `editor`: the room editor. The game has it behind the cargo feature `editor` (`maki-game --editor`); a build without the feature has no editor code. It edits a document (room, events, comments) and builds the world from it; it never saves the world.
 - `game/`: content, the module list, and code that is specific to this game. Generic code goes into an engine crate.
+- `spike/` (stage 41, until stage 43 removes it): the engine crates as one DLL, a script DLL, and a test program. Built only when named, with `--profile dynamic`.
 
 ## Architecture rules (do not break)
 1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu -> render -> ui -> devtools -> editor -> game. A crate depends only on crates to its left. `scene`, `events`, `audio`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
@@ -51,11 +53,18 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Use the `ponytail` skill proactively on every coding task (write, fix, refactor, review, choose dependencies).
 
 ## Working agreement
-- Work in stages. Implement only the stage the user gives.
-- At the end of a stage, STOP and report:
-  1. What was built, in a few lines.
-  2. Files created or changed, one line each on role.
-  3. Deviations from the spec and why.
-  4. Decisions made where the spec was silent.
-  5. Anything uncertain.
+- Work in stages, in the order of the stage table (`docs/part6/README.md`, 3.1). Implement only the stage at hand.
+- At the end of each stage, always, in this order:
+  1. Sanity check: tests and clippy (each build form), a validation run, the benchmark against the stage before, each line of "Done when" and each point of "What to watch for" of the stage file, and a run by hand of what the stage changed.
+  2. Fill the gaps and fix the bugs that the check finds, in the same stage. Then check again.
+  3. Report (`docs/partN/stage-NN.md`):
+     1. What was built, in a few lines.
+     2. Files created or changed, one line each on role.
+     3. Deviations from the spec and why.
+     4. Decisions made where the spec was silent.
+     5. Anything uncertain.
+  4. Commit on `main` as `Stage NN: <name>` and push.
+  5. Go on with the next stage. Do not wait for the owner.
+- A next stage with no stage file: write the file first, in the form of the others, from the plan and the code as it is then. A proposal of a stage file that the owner did not change is taken as given.
+- Stop and ask: a gate that cannot be met; a decision of the plan that the code shows to be wrong; a regression of GPU time or picture that is the code; a dependency that the plan does not name; a stage that the plan marks "in discussion".
 - Where the spec is silent, choose the simplest option that respects the rules, and list it in the report.
