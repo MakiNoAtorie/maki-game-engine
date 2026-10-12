@@ -4,19 +4,20 @@
 //! not saved.
 //!
 //! A panel writes the document and the command queue of the [`Editor`], never the
-//! world.
+//! entities of the room.
 
 use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::{Mut, World};
 use maki_assets::Wall;
 use maki_core::App;
+use maki_events::Builtin;
 use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
-use maki_ui::{Panels, add_left_panel, add_panel, add_window};
+use maki_ui::{Panels, add_left_panel, add_overlay, add_panel, add_window};
 
-use crate::widgets::{choice, color, look, mesh, name, number, pose, texture, vector};
-use crate::{Answer, Command, Document, Editor, Item};
+use crate::widgets::{choice, color, drag, look, mesh, name, number, pose, texture, vector};
+use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool, spawn_users};
 
 const OUTLINER: &str = "Editor";
 const PROPERTIES: &str = "Properties";
@@ -26,15 +27,22 @@ pub(crate) fn build(app: &mut App) {
     // The text of the "Save as" field.
     let mut save_as = String::new();
     add_left_panel(app, OUTLINER, true, move |ui, world| {
-        with_editor(world, |editor| outliner(ui, editor, &mut save_as));
+        with_editor(world, |world, editor| {
+            outliner(ui, world, editor, &mut save_as)
+        });
     });
     add_panel(app, PROPERTIES, true, |ui, world| {
-        with_editor(world, |editor| properties(ui, editor));
+        with_editor(world, |_, editor| properties(ui, editor));
     });
     app.resource_mut::<Panels>().unfold(PROPERTIES);
+    add_overlay(app, "Editor marks", true, |ui, world| {
+        with_editor(world, |world, editor| {
+            crate::overlay::draw(ui, world, editor)
+        });
+    });
     // Open while a command waits for the answer (`Editor::apply_mode`).
     add_window(app, CONFIRM, false, |ui, world| {
-        with_editor(world, |editor| {
+        with_editor(world, |_, editor| {
             ui.label(format!("{} has changes.", file_name(&editor.document.path)));
             ui.horizontal(|ui| {
                 let answers = [
@@ -52,8 +60,110 @@ pub(crate) fn build(app: &mut App) {
     });
 }
 
-fn with_editor(world: &mut World, draw: impl FnOnce(&mut Editor)) {
-    world.resource_scope(|_, mut editor: Mut<Editor>| draw(&mut editor));
+fn with_editor(world: &mut World, draw: impl FnOnce(&mut World, &mut Editor)) {
+    world.resource_scope(|world, mut editor: Mut<Editor>| draw(world, &mut editor));
+}
+
+/// The glTF files in the directory of the room file and one level below it, as a
+/// room file names them: from that directory, with `/`.
+fn model_files(room: &Path) -> Vec<PathBuf> {
+    let directory = room.parent().unwrap_or(Path::new(""));
+    let files_of = |directory: &Path| -> Vec<PathBuf> {
+        let entries = std::fs::read_dir(directory).into_iter().flatten().flatten();
+        entries.map(|entry| entry.path()).collect()
+    };
+    let top = files_of(directory);
+    let below = top
+        .iter()
+        .filter(|path| path.is_dir())
+        .flat_map(|path| files_of(path));
+    let is_model = |path: &PathBuf| {
+        let extension = path.extension().and_then(|extension| extension.to_str());
+        matches!(extension, Some("gltf" | "glb"))
+    };
+    let mut models: Vec<PathBuf> = top.iter().cloned().chain(below).filter(is_model).collect();
+    models.sort();
+    let relative = |path: PathBuf| {
+        path.strip_prefix(directory)
+            .map(Path::to_owned)
+            .unwrap_or(path)
+    };
+    let models = models.into_iter().map(relative);
+    models
+        .map(|path| PathBuf::from(path.to_string_lossy().replace('\\', "/")))
+        .collect()
+}
+
+/// The second row of the left panel: the tool of the gizmo, the snap, and the
+/// commands that change the list of the items.
+fn tools(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
+    ui.horizontal(|ui| {
+        for (tool, text) in [
+            (Tool::Move, "Move"),
+            (Tool::Rotate, "Rotate"),
+            (Tool::Scale, "Scale"),
+        ] {
+            ui.selectable_value(&mut editor.tool, tool, text);
+        }
+        ui.checkbox(&mut editor.local, "Local")
+            .on_hover_text("The handles follow the axes of the item, not those of the room");
+    });
+    ui.horizontal(|ui| {
+        let old = world.resource::<EditorSettings>();
+        let mut settings = old.clone();
+        ui.checkbox(&mut settings.snap, "Snap");
+        ui.add(
+            drag(&mut settings.grid_step)
+                .speed(0.01)
+                .range(0.01..=10.0)
+                .suffix(" m"),
+        );
+        ui.add(
+            drag(&mut settings.angle_step)
+                .speed(0.5)
+                .range(1.0..=90.0)
+                .suffix(" deg"),
+        );
+        // Only a different value is a write.
+        if settings != *old {
+            *world.resource_mut::<EditorSettings>() = settings;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.menu_button("Add", |ui| {
+            for (text, kind) in Kind::MENU {
+                if ui.button(text).clicked() {
+                    editor.request(Command::Add(kind));
+                    ui.close();
+                }
+            }
+            ui.menu_button("Model file", |ui| {
+                let models = model_files(&editor.document.path);
+                if models.is_empty() {
+                    ui.weak("No .gltf or .glb file at the room file");
+                }
+                for path in models {
+                    if ui.button(path.to_string_lossy()).clicked() {
+                        editor.request(Command::Add(Kind::Model(path)));
+                        ui.close();
+                    }
+                }
+            });
+        });
+        let some = !editor.selection.is_empty();
+        let (undo, redo) = editor.history_steps();
+        let buttons = [
+            ("Delete", some, Command::Delete),
+            ("Copy", some, Command::Duplicate),
+            ("Undo", undo > 0, Command::Undo),
+            ("Redo", redo > 0, Command::Redo),
+        ];
+        for (text, enabled, command) in buttons {
+            if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+                editor.request(command);
+            }
+        }
+    });
 }
 
 fn file_name(path: &Path) -> String {
@@ -107,7 +217,10 @@ fn file_menu(ui: &mut Ui, editor: &mut Editor, save_as: &mut String) {
     }
 }
 
-fn outliner(ui: &mut Ui, editor: &mut Editor, save_as: &mut String) {
+fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, save_as: &mut String) {
+    // A drag of a value, or a text that is typed: the history waits for its end.
+    let pointer_down = ui.ctx().input(|input| input.pointer.any_down());
+    editor.busy = pointer_down || ui.ctx().memory(|memory| memory.focused().is_some());
     ui.horizontal(|ui| {
         if editor.playing() {
             if ui.button("Stop").clicked() {
@@ -145,6 +258,8 @@ fn outliner(ui: &mut Ui, editor: &mut Editor, save_as: &mut String) {
 
     let playing = editor.playing();
     ui.add_enabled_ui(!playing, |ui| {
+        tools(ui, world, editor);
+        ui.separator();
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
@@ -164,11 +279,15 @@ fn outliner(ui: &mut Ui, editor: &mut Editor, save_as: &mut String) {
 
 fn rows(ui: &mut Ui, editor: &mut Editor, items: Vec<(Item, String)>) {
     for (item, label) in items {
-        if ui
-            .selectable_label(editor.selection == item, label)
-            .clicked()
-        {
-            editor.selection = item;
+        let selected =
+            editor.selection.contains(&item) || (item == Item::Room && editor.selection.is_empty());
+        if ui.selectable_label(selected, label).clicked() {
+            // The room is "nothing selected". Shift adds, as in the picture.
+            let add = ui.ctx().input(|input| input.modifiers.shift);
+            match item {
+                Item::Room => editor.selection.clear(),
+                item => editor.select(item, add),
+            }
         }
     }
 }
@@ -234,11 +353,26 @@ fn properties(ui: &mut Ui, editor: &mut Editor) {
         ui.weak("Stop the game to change the room.");
         return;
     }
-    let item = editor.selection.clone();
-    let Some(mut changed) = item_properties(ui, editor, &item) else {
+    let item = editor.primary();
+    if editor.selection.len() > 1 {
+        ui.weak(format!(
+            "{} items are selected. The last one:",
+            editor.selection.len()
+        ));
+    }
+    // `Some`: the name of the item was changed, from this one.
+    let mut old_name = None;
+    let Some(mut changed) = item_properties(ui, editor, &item, &mut old_name) else {
         ui.weak("The room has no such item.");
         return;
     };
+    if let Some(old) = old_name {
+        let registry = editor.registry.clone();
+        let more = editor.document.renamed(&item, old, &registry);
+        if !more.is_empty() {
+            editor.status = more;
+        }
+    }
 
     // The comment lines of the item in the room file.
     ui.separator();
@@ -265,10 +399,24 @@ fn properties(ui: &mut Ui, editor: &mut Editor) {
 
 /// The widgets of one item. True: a value was changed. `None`: the document has no
 /// such item.
-fn item_properties(ui: &mut Ui, editor: &mut Editor, item: &Item) -> Option<bool> {
+fn item_properties(
+    ui: &mut Ui,
+    editor: &mut Editor,
+    item: &Item,
+    old_name: &mut Option<Option<String>>,
+) -> Option<bool> {
     const SIZE: std::ops::RangeInclusive<f32> = 0.1..=100.0;
     let document = &mut editor.document;
     let room = &mut document.room;
+    // The name field of an item that events find by its name.
+    let mut name = |ui: &mut Ui, value: &mut Option<String>| {
+        let old = value.clone();
+        let changed = name(ui, value);
+        if changed {
+            *old_name = Some(old);
+        }
+        changed
+    };
     Some(match item {
         Item::Room => {
             number(ui, "width (X)", &mut room.width, 0.05, 1.0..=100.0)
@@ -316,6 +464,10 @@ fn item_properties(ui: &mut Ui, editor: &mut Editor, item: &Item) -> Option<bool
         }
         Item::Mover(index) => {
             let mover = room.movers.get_mut(*index)?;
+            ui.checkbox(
+                &mut editor.second_pose,
+                "the gizmo moves the second pose (b)",
+            );
             name(ui, &mut mover.name)
                 | mesh(ui, &mut mover.mesh)
                 | look(ui, &mut mover.look)
@@ -357,17 +509,47 @@ fn item_properties(ui: &mut Ui, editor: &mut Editor, item: &Item) -> Option<bool
             let position = document.room.spawns.get_mut(now)?;
             let moved = vector(ui, "position", position, 0.01);
             if renamed {
-                editor.selection = Item::Spawn(new);
+                // A `Transfer` of this room to itself follows. Other room files are
+                // not changed: the user gets their names.
+                let file = file_name(&document.path);
+                let registry = editor.registry.clone();
+                document.rename_in_events(&registry, |command| match command {
+                    Builtin::Transfer(room, to) if *room == file && to == spawn => {
+                        Some(Builtin::Transfer(room.clone(), new.clone()))
+                    }
+                    _ => None,
+                });
+                let users = spawn_users(&editor.rooms, &document.path, spawn, &registry);
+                if !users.is_empty() {
+                    let users = users.join(", ");
+                    editor.status = format!("{users}: a Transfer still names `{spawn}`");
+                }
+                editor.selection = vec![Item::Spawn(new)];
             }
             renamed | moved
         }
-        // The event editor is a later stage: what the event is, with no widget.
+        // The event editor is a later stage: the name and the area, and what the
+        // pages are, with no widget.
         Item::Event(index) => {
-            let event = document.events.get(*index)?;
-            ui.label(format!(
-                "area: center {:?}, size {:?}",
-                event.area.center, event.area.size
-            ));
+            let event = document.events.get_mut(*index)?;
+            let old = event.name.clone();
+            let mut changed = crate::widgets::text(ui, "name", &mut event.name);
+            if changed {
+                *old_name = Some(Some(old));
+            }
+            let area = &mut event.area;
+            for (label, value, least) in [
+                ("area center (X, Z)", &mut area.center, -100.0),
+                ("area size (X, Z)", &mut area.size, 0.0),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    for part in value {
+                        let drag = drag(part).speed(0.01).range(least..=100.0);
+                        changed |= ui.add(drag).changed();
+                    }
+                });
+            }
             for (number, page) in event.pages.iter().enumerate() {
                 let title = format!("page {number}: {:?}", page.trigger);
                 egui::CollapsingHeader::new(title)
@@ -381,7 +563,7 @@ fn item_properties(ui: &mut Ui, editor: &mut Editor, item: &Item) -> Option<bool
                         }
                     });
             }
-            false
+            changed
         }
     })
 }

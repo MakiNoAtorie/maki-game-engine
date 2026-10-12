@@ -7,6 +7,13 @@ use maki_assets::Material;
 use maki_scene::{Filter, LookDef, MeshDef, PoseDef, TextureDef};
 use maki_ui::egui::{self, DragValue, Ui};
 
+/// The widget of a number. A value of the file that is out of the range of the
+/// widget stays as it is until the user changes it: a look at an item does not
+/// change the room.
+pub(crate) fn drag<Num: egui::emath::Numeric>(value: &mut Num) -> DragValue<'_> {
+    DragValue::new(value).clamp_existing_to_range(false)
+}
+
 /// A number with a label. Drag it, or click it and type.
 pub(crate) fn number(
     ui: &mut Ui,
@@ -17,8 +24,7 @@ pub(crate) fn number(
 ) -> bool {
     ui.horizontal(|ui| {
         ui.label(label);
-        ui.add(DragValue::new(value).speed(speed).range(range))
-            .changed()
+        ui.add(drag(value).speed(speed).range(range)).changed()
     })
     .inner
 }
@@ -28,7 +34,7 @@ pub(crate) fn vector(ui: &mut Ui, label: &str, value: &mut [f32; 3], speed: f32)
         ui.label(label);
         let mut changed = false;
         for part in value {
-            changed |= ui.add(DragValue::new(part).speed(speed)).changed();
+            changed |= ui.add(drag(part).speed(speed)).changed();
         }
         changed
     })
@@ -40,9 +46,15 @@ pub(crate) fn vector(ui: &mut Ui, label: &str, value: &mut [f32; 3], speed: f32)
 pub(crate) fn color(ui: &mut Ui, label: &str, value: &mut [f32; 3]) -> bool {
     ui.horizontal(|ui| {
         ui.label(label);
-        let mut changed = ui.color_edit_button_rgb(value).changed();
+        // On a copy: the button writes the color back also with no change, with the
+        // rounding of its color space.
+        let mut picked = *value;
+        let mut changed = ui.color_edit_button_rgb(&mut picked).changed();
+        if changed {
+            *value = picked;
+        }
         for part in value {
-            let drag = DragValue::new(part).speed(0.01).range(0.0..=1000.0);
+            let drag = drag(part).speed(0.01).range(0.0..=1000.0);
             changed |= ui.add(drag).changed();
         }
         changed
@@ -194,7 +206,7 @@ pub(crate) fn mesh(ui: &mut Ui, value: &mut MeshDef) -> bool {
                 let count = |ui: &mut Ui, label, value: &mut u32, least| {
                     ui.horizontal(|ui| {
                         ui.label(label);
-                        ui.add(DragValue::new(value).range(least..=256)).changed()
+                        ui.add(drag(value).range(least..=256)).changed()
                     })
                     .inner
                 };

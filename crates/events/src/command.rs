@@ -20,7 +20,7 @@
 //! serde code of that enum. The registry holds enums of types that this crate does
 //! not know, so that last call goes through `erased-serde`.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -138,6 +138,8 @@ impl Step<'_> {
 /// One command enum in the registry.
 #[derive(Clone)]
 struct Set {
+    /// Of the enum.
+    type_id: TypeId,
     /// The names of the variants.
     names: &'static [&'static str],
     /// Reads a value of the enum.
@@ -180,6 +182,7 @@ impl CommandRegistry {
             );
         }
         sets.push(Set {
+            type_id: TypeId::of::<T>(),
             names,
             read: read::<T>,
             run: Arc::new(move |command, step, world| {
@@ -187,6 +190,17 @@ impl CommandRegistry {
                 handler(command, step, world)
             }),
         });
+    }
+
+    /// A command from a value of its enum: for a tool that makes or changes events
+    /// (an editor). `None`: no module added the enum `T`.
+    pub fn command<T: CommandSet>(&self, value: T) -> Option<Command> {
+        let sets = self.0.read().expect("no writer panics");
+        let set = sets.iter().find(|set| set.type_id == TypeId::of::<T>())?;
+        Some(Command {
+            value: Arc::new(value),
+            run: set.run.clone(),
+        })
     }
 
     /// The names of all commands, in the order in which they were added.

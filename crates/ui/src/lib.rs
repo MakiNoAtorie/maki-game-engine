@@ -72,6 +72,8 @@ enum Place {
     Window,
     /// Text with no window in the top left corner of the picture. Gets no input.
     Corner,
+    /// Shapes on top of the picture, under each window. Gets no input.
+    Overlay,
 }
 
 /// Width of the panel column in egui points. A window that is wider than the picture
@@ -163,6 +165,20 @@ pub fn add_corner(
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
     register(app, name, open, Place::Corner, Box::new(draw));
+}
+
+/// Adds a drawing on top of the picture, for the marks of a tool (the selection and
+/// the handles of an editor). `draw` paints with `ui.painter()`; `ui.clip_rect()` is
+/// the place of the picture in the window. The shapes are drawn after the picture is
+/// done: they are not in the path tracer or in a pass after it. The pointer goes
+/// through them. The parameters are those of [`add_panel`].
+pub fn add_overlay(
+    app: &mut App,
+    name: &'static str,
+    open: bool,
+    draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
+) {
+    register(app, name, open, Place::Overlay, Box::new(draw));
 }
 
 /// Adds a window on top of the picture, for text of the game (a message). Not for
@@ -334,6 +350,16 @@ fn run_ui(world: &mut World) {
                         });
                 }
                 for panel in panels.iter_mut() {
+                    if shown(panel, Place::Overlay) {
+                        egui::Area::new(egui::Id::new(panel.name))
+                            .order(egui::Order::Background)
+                            .fixed_pos(picture.min)
+                            .interactable(false)
+                            .show(root.ctx(), |ui| {
+                                ui.set_clip_rect(picture);
+                                (panel.draw)(ui, world)
+                            });
+                    }
                     if shown(panel, Place::Corner) {
                         egui::Area::new(egui::Id::new(panel.name))
                             .fixed_pos(picture.min + egui::vec2(8.0, 8.0))

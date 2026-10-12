@@ -234,6 +234,11 @@ mod tests {
         let error = registry.validate_events(bad).unwrap_err();
         assert!(error.starts_with("3:"), "{error}");
 
+        // A command that code makes is the command that the file gives.
+        let made = registry.command(Builtin::Message("Locked.".to_owned()));
+        assert_eq!(made.as_ref(), Some(&events[0].pages[0].commands[0]));
+        assert!(registry.command(crate::Trigger::Touch).is_none());
+
         // What is written is read as the same events: the editor saves room files.
         let written = ron::to_string(&events).unwrap();
         let read = registry

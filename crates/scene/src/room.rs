@@ -814,14 +814,17 @@ fn collider_around(mesh: &Mesh, transform: &Transform) -> Collider {
 
 /// Changes the entities of the current room in place, so they show `room`. Only for a
 /// room that differs from the current one in values that need no new mesh and no new
-/// entity: a light (but for its name), and the pose of a prop with a generated mesh.
+/// entity: a light (but for its name), the pose of a prop with a generated mesh, and
+/// the poses and the time of a mover.
 /// Returns false, with no change, for each other difference: load the room again.
 ///
 /// For a tool that shows each step of a change (an editor, while a slider moves): no
 /// mesh is built, and the picture keeps its history. `text` is the room as a text.
 pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     let old = &world.resource::<CurrentRoom>().def;
-    let same_count = old.lights.len() == room.lights.len() && old.props.len() == room.props.len();
+    let same_count = old.lights.len() == room.lights.len()
+        && old.props.len() == room.props.len()
+        && old.movers.len() == room.movers.len();
     if !same_count {
         return false;
     }
@@ -839,6 +842,9 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             prop.pose = new.pose;
         }
     }
+    for (mover, new) in patched.movers.iter_mut().zip(&room.movers) {
+        (mover.a, mover.b, mover.seconds) = (new.a, new.b, new.seconds);
+    }
     if patched != *room {
         return false;
     }
@@ -853,6 +859,17 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         light.set_if_neq(def.light());
         if pose.current.translation != Vec3::from(def.position) {
             pose.snap(Transform::from_translation(def.position.into()));
+        }
+    }
+    let mut movers = world.query::<(&RoomItem, &mut Mover, &mut Interpolated)>();
+    for (item, mut mover, mut pose) in movers.iter_mut(world) {
+        let RoomItem::Mover(index) = *item else {
+            continue;
+        };
+        let def = &room.movers[index];
+        let new = Mover::new(def.a.transform(), def.b.transform(), def.seconds);
+        if mover.set_if_neq(new) {
+            pose.snap(new.a);
         }
     }
     world.resource_scope(|world, meshes: Mut<Assets<Mesh>>| {

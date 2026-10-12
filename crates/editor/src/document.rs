@@ -5,8 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use maki_events::{CommandRegistry, EventDef};
-use maki_scene::{LightDef, RoomDef, RoomValidators, check_room, ron_options};
+use glam::{Quat, Vec3};
+use maki_events::{Area, CommandRegistry, EventDef};
+use maki_scene::{LightDef, PoseDef, RoomDef, RoomValidators, check_room, ron_options};
 
 use crate::ron_text::{Notes, pretty, read_notes};
 
@@ -24,6 +25,16 @@ pub enum Item {
     /// By name.
     Spawn(String),
     Event(usize),
+}
+
+/// The part of an item that tells where it is: what a gizmo changes.
+pub enum Place<'a> {
+    /// A prop, or one of the two poses of a mover.
+    Pose(&'a mut PoseDef),
+    /// A light, a spawn point.
+    Point(&'a mut [f32; 3]),
+    /// The rectangle of an event on the floor.
+    Area(&'a mut Area),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,15 +85,25 @@ impl Document {
     pub fn read(path: &Path, registry: &CommandRegistry, checks: &RoomValidators) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read room file {}", path.display()))?;
-        let room = check_room(path, &text, checks)?;
+        Self::parse(path, &text, registry, checks)
+    }
+
+    /// The document of the text of a room file. `path` is the file that a save writes.
+    pub fn parse(
+        path: &Path,
+        text: &str,
+        registry: &CommandRegistry,
+        checks: &RoomValidators,
+    ) -> Result<Self> {
+        let room = check_room(path, text, checks)?;
         let events = registry
-            .parse_events(&text)
+            .parse_events(text)
             .map_err(|error| anyhow!("{}:{error}", path.display()))?;
         Ok(Self {
             path: path.to_owned(),
             room,
             events,
-            notes: read_notes(&text),
+            notes: read_notes(text),
             dirty: false,
         })
     }
@@ -108,6 +129,62 @@ impl Document {
             .with_context(|| format!("cannot write room file {}", self.path.display()))?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// Where an item is, to change it. `second`: for a mover, its pose `b`. `None`:
+    /// the item has no place of its own (the room, a doorway, a door).
+    pub fn place(&mut self, item: &Item, second: bool) -> Option<Place<'_>> {
+        let room = &mut self.room;
+        match item {
+            Item::Prop(index) => room
+                .props
+                .get_mut(*index)
+                .map(|prop| Place::Pose(&mut prop.pose)),
+            Item::Mover(index) => {
+                let mover = room.movers.get_mut(*index)?;
+                Some(Place::Pose(if second {
+                    &mut mover.b
+                } else {
+                    &mut mover.a
+                }))
+            }
+            Item::Light(index) => room
+                .lights
+                .get_mut(*index)
+                .map(|light| Place::Point(&mut light.position)),
+            Item::Spawn(name) => room.spawns.get_mut(name).map(Place::Point),
+            Item::Event(index) => self
+                .events
+                .get_mut(*index)
+                .map(|event| Place::Area(&mut event.area)),
+            Item::Room | Item::Doorway(_) | Item::Door(_) => None,
+        }
+    }
+
+    /// The origin and the rotation of an item. `None` as for [`Document::place`], and
+    /// for an event with no area.
+    pub fn pose_of(&self, item: &Item, second: bool) -> Option<(Vec3, Quat)> {
+        let room = &self.room;
+        let of_pose = |pose: &PoseDef| (Vec3::from(pose.position), pose.transform().rotation);
+        let of_point = |point: &[f32; 3]| (Vec3::from(*point), Quat::IDENTITY);
+        match item {
+            Item::Prop(index) => room.props.get(*index).map(|prop| of_pose(&prop.pose)),
+            Item::Mover(index) => {
+                let mover = room.movers.get(*index)?;
+                Some(of_pose(if second { &mover.b } else { &mover.a }))
+            }
+            Item::Light(index) => room
+                .lights
+                .get(*index)
+                .map(|light| of_point(&light.position)),
+            Item::Spawn(name) => room.spawns.get(name).map(of_point),
+            Item::Event(index) => {
+                let area = self.events.get(*index)?.area;
+                let [x, z] = area.center;
+                (area.size != [0.0; 2]).then_some((Vec3::new(x, 0.0, z), Quat::IDENTITY))
+            }
+            Item::Room | Item::Doorway(_) | Item::Door(_) => None,
+        }
     }
 
     /// The list of the notes that an item has its notes in, and its index there.

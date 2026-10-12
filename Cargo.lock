@@ -1384,8 +1384,10 @@ dependencies = [
  "maki-events",
  "maki-gameplay",
  "maki-platform",
+ "maki-render",
  "maki-scene",
  "maki-ui",
+ "serde",
  "tracing",
 ]
 

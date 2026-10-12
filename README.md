@@ -60,8 +60,15 @@ To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, w
 `cargo run -p maki-game --features editor -- --editor` starts the game in the room editor, with the start room open. The editor is the crate `crates/editor`, behind the cargo feature `editor` of the game: a build without the feature has no editor code and no `--editor` option.
 
 - At the left: the menu "File" (new room, open a room file of `game/assets/rooms`, save, save as, quit), "Play" with the spawn point where the game starts, and the outliner: the room, its doorways, doors, props, movers, lights, spawn points, and events. An item with no name shows its kind and its index.
-- At the right, in the panel column: "Properties" has the values of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. Events are shown, not changed (stage 28).
+- At the right, in the panel column: "Properties" has the values of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. Of an event, the name and the area change; its pages are shown (stage 28).
 - The view: drag with the right mouse button to turn it, with the middle button to move it, the wheel goes nearer and farther. T is the view from the top, G the view of the game camera. The help panel lists the keys of the editor while the room is edited, and those of the game while it is played.
+- Selection: a click in the picture selects the item under the pointer (a prop, a door, a mover, a light, a spawn point, the area of an event); a click on a wall, the floor, or nothing selects nothing. Shift and a click adds an item or takes it out. The outliner has the same selection. The pick is against what the picture shows: a click goes through the near walls as the view does, and a mirror or a glass ball is selected itself, not what shows in it.
+- The gizmo is at the last selected item. "Move" (W): a handle for each axis, and the square at the origin moves the item over the floor. "Rotate" (E): a ring for each axis. "Scale" (R): a handle for each axis of the item. "Local" (Q): the handles follow the axes of the item, not those of the room. A light, a spawn point, and an event area only move. A mover has two poses: the gizmo moves pose `a`, or pose `b` with the checkbox in "Properties"; the marks show the mesh at pose `b` and the way between the two.
+- Snap: a move snaps to the grid step and a turn to the angle step of the `[editor]` settings (the two fields beside "Snap"); a scale snaps to 0.05. Hold Ctrl in a drag for no snap.
+- "Add" puts a new item on the floor at the point that the view looks at: a cube, a cuboid, a sphere, a model file (the `.gltf` and `.glb` files at the room file), a light, a spawn point, a doorway, a door (in the first doorway with no door), a mover, an event area. "Delete" (Delete key) removes the selection; a doorway takes its door with it, and the doors of the other doorways keep their doorway. "Copy" (Ctrl+D) makes a copy of each selected item, half a meter beside it.
+- Names: a light, a door or mover, a spawn point, and an event get a name that no other one of its kind has (`lamp_2`). A new name of a light, a door, or a mover goes into the built-in commands of the events of the room that name it (`LightOff`, `OpenDoor`, ...). A new name of a spawn point: the status line names each other room file whose `Transfer` still has the old name; the editor does not change other files.
+- Undo (Ctrl+Z) and redo (Ctrl+Y): each change of the document is one step, also a full drag of a handle or of a number. The steps go away when another room is opened; a save keeps them.
+- Marks on the picture, in the editor only: the floor grid (1 m), the names and places of the spawn points and event areas, the hinge and the swing of each door, the second pose of each mover, the box of each selected mesh, the radius and the cone of a selected light, the opening of a selected doorway.
 - Play (the button or F5) runs the game in the room as it is in the editor, from the selected spawn point (a room with none: from the point that the view looks at). Stop (the button, or the quit key of the game) goes back to the editor: the room and the game state are those of before the play. What events did (flags, lights, doors, another room, a fade, a message) is gone.
 - New, open, play, and quit ask first if the room has changes that are not saved.
 
@@ -169,6 +176,14 @@ The config file is TOML, with one table for each module. A module declares its t
 |---|---|---|
 | `start` | not set | The room file that the game starts in. Not set: the room of the game, `game/assets/rooms/room_a.ron`. A path that is not absolute starts at the working directory |
 | `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the game, `start` |
+
+`[editor]` (`crates/editor`, only with the feature `editor`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `snap` | true | A drag of a gizmo handle snaps. Ctrl turns it around for one drag |
+| `grid_step` | 0.25 | Step of a position, in meters. Also the grid for a new item |
+| `angle_step` | 15.0 | Step of a rotation, in degrees |
 
 `[time]` (`crates/core`):
 
@@ -291,5 +306,5 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
 | `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the message window and the game state panel of the events |
 | `crates/devtools` | Tools that a game opts into: benchmark runner with its command line options and panel, list of the room files, panel of the gameplay settings |
-| `crates/editor` | The room editor, behind the feature `editor` of the game: the document (room, events, comments), the writer of room files, the free camera, the outliner and the property panel, play and stop |
+| `crates/editor` | The room editor, behind the feature `editor` of the game: the document (room, events, comments), the writer of room files, the free camera, the outliner and the property panel, the pick, the gizmo, the marks on the picture, add, delete, duplicate, undo and redo, play and stop |
 | `game` | The binary: the module list, the benchmark scripts, the `ShakeCamera` command. The rooms are in `game/assets/rooms` |

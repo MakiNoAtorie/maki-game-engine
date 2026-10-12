@@ -40,7 +40,7 @@ const ROOM_A: &str = r#"// The test room.
         (name: "cube", mesh: Cube(1.0), pose: (position: (1.0, 0.5, 0.0))),
     ],
     lights: [
-        (name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
+        (name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 0.9, 0.8), intensity: 5.0),
     ],
     spawns: {
         "start": (0.0, 0.0, 2.0),
@@ -138,6 +138,20 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         // The event of the room does not run: the lamp is on.
         assert!(lamp(&app).0.on);
         let loads = world.resource::<CurrentRoom>().loads;
+
+        // The property panel shows each item for some frames: a look is no change.
+        for item in [
+            Item::Light(0),
+            Item::Prop(0),
+            Item::Spawn("start".to_owned()),
+            Item::Event(0),
+        ] {
+            app.resource_mut::<Editor>().selection = vec![item];
+            frames(&mut app, 3);
+        }
+        let editor = app.world().resource::<Editor>();
+        assert_eq!(editor.document.text(), ROOM_A);
+        assert_eq!(editor.history_steps(), (0, 0));
 
         // A light and the pose of a prop: the entities change, the room is not loaded.
         let mut editor = app.resource_mut::<Editor>();
@@ -255,6 +269,160 @@ fn play_runs_the_game_and_stop_brings_back_the_room_and_the_game_state() {
         frames(&mut app, 2);
         assert!(app.world().resource::<QuitRequested>().0);
         assert!(!app.world().resource::<maki_platform::QuitHold>().0);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// The pixel of a point of the room in the window, for the view of the editor.
+fn window_pixel(app: &App, point: Vec3) -> [f32; 2] {
+    let world = app.world();
+    let mut cameras = world
+        .try_query_filtered::<&maki_scene::Camera, With<EditorCamera>>()
+        .unwrap();
+    let window = world.resource::<maki_platform::WindowSettings>();
+    let size = [window.width as f32, window.height as f32];
+    let view = View::new(*cameras.single(world).unwrap(), size);
+    let [x, y] = view.project(point).unwrap();
+    // The picture starts at the right of the left panel.
+    [
+        x + world.resource::<maki_platform::WindowMargin>().left as f32,
+        y,
+    ]
+}
+
+/// A press and a release of the left button at a point of the room.
+fn click(app: &mut App, point: Vec3) {
+    use maki_platform::{Key, RawInput};
+    let at = window_pixel(app, point);
+    app.write_message(RawInput::PointerMoved(at));
+    frames(app, 1);
+    app.write_message(RawInput::KeyDown(Key::MouseLeft));
+    frames(app, 1);
+    app.write_message(RawInput::KeyUp(Key::MouseLeft));
+    frames(app, 1);
+}
+
+#[test]
+fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_step() {
+    use maki_platform::{Key, RawInput};
+
+    let (app, directory) = editor_app("pick");
+    app.run(|mut app| {
+        frames(&mut app, 3);
+        let selection = |app: &App| app.world().resource::<Editor>().selection.clone();
+        assert!(app.world().resource::<maki_platform::WindowMargin>().left > 0);
+
+        // The cube, then the spawn point (a mark, no mesh), then the floor.
+        click(&mut app, Vec3::new(1.0, 1.0, 0.0));
+        assert_eq!(selection(&app), [Item::Prop(0)]);
+        click(&mut app, Vec3::new(0.0, 0.1, 2.0));
+        assert_eq!(selection(&app), [Item::Spawn("start".to_owned())]);
+        click(&mut app, Vec3::new(-2.0, 0.0, -2.0));
+        assert_eq!(selection(&app), []);
+        // With shift, a click adds; the lamp is a sphere of light.
+        click(&mut app, Vec3::new(1.0, 1.0, 0.0));
+        app.write_message(RawInput::KeyDown(Key::Shift));
+        click(&mut app, Vec3::new(0.0, 2.0, 0.0));
+        app.write_message(RawInput::KeyUp(Key::Shift));
+        assert_eq!(selection(&app), [Item::Prop(0), Item::Light(0)]);
+
+        // The cube alone, and a drag of the square of its gizmo over the floor: 30
+        // frames with the button down.
+        click(&mut app, Vec3::new(-2.0, 0.0, -2.0));
+        click(&mut app, Vec3::new(1.0, 1.0, 0.0));
+        let loads = app.world().resource::<CurrentRoom>().loads;
+        let (from, to) = (Vec3::new(1.0, 0.5, 0.0), Vec3::new(-1.3, 0.5, 1.6));
+        app.write_message(RawInput::PointerMoved(window_pixel(&app, from)));
+        frames(&mut app, 1);
+        app.write_message(RawInput::KeyDown(Key::MouseLeft));
+        frames(&mut app, 1);
+        for step in 1..=30 {
+            let at = window_pixel(&app, from.lerp(to, step as f32 / 30.0));
+            app.write_message(RawInput::PointerMoved(at));
+            frames(&mut app, 1);
+        }
+        app.write_message(RawInput::KeyUp(Key::MouseLeft));
+        frames(&mut app, 2);
+        // On the grid of 0.25 m, and the room was not loaded again.
+        let cube = |app: &App| {
+            app.world().resource::<Editor>().document.room.props[0]
+                .pose
+                .position
+        };
+        assert_eq!(cube(&app), [-1.25, 0.5, 1.5]);
+        assert_eq!(app.world().resource::<CurrentRoom>().loads, loads);
+        assert_eq!(app.world().resource::<Editor>().history_steps(), (1, 0));
+
+        request(&mut app, Command::Undo);
+        assert_eq!(cube(&app), [1.0, 0.5, 0.0]);
+        request(&mut app, Command::Redo);
+        assert_eq!(cube(&app), [-1.25, 0.5, 1.5]);
+
+        // A copy, then the copy is removed: the selection follows.
+        request(&mut app, Command::Duplicate);
+        assert_eq!(selection(&app), [Item::Prop(1)]);
+        request(&mut app, Command::Delete);
+        assert_eq!(selection(&app), []);
+        assert_eq!(
+            app.world().resource::<Editor>().document.room.props.len(),
+            1
+        );
+        // The comment of the cube is still the comment of the cube.
+        assert!(
+            app.world()
+                .resource::<Editor>()
+                .document
+                .text()
+                .contains("// The cube.\n        (name: \"cube\"")
+        );
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
+    use maki_events::{Builtin, EventDef, Page, Trigger};
+
+    let (app, directory) = editor_app("mover");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        request(&mut app, Command::New);
+        request(&mut app, Command::Add(Kind::Mover));
+        let mut editor = app.resource_mut::<Editor>();
+        assert_eq!(editor.selection, [Item::Mover(0)]);
+        let registry = editor.registry.clone();
+        let command = |command: Builtin| registry.command(command).unwrap();
+        editor.document.room.movers[0].seconds = 0.2;
+        editor.document.events.push(EventDef {
+            name: "lift".to_owned(),
+            area: Default::default(),
+            pages: vec![Page {
+                conditions: Vec::new(),
+                trigger: Trigger::Autorun,
+                commands: vec![
+                    command(Builtin::OpenDoor("mover".to_owned())),
+                    command(Builtin::SetFlag("up".to_owned(), true)),
+                ],
+            }],
+        });
+        let height = |app: &App| {
+            let world = app.world();
+            let mut movers = world
+                .try_query::<(&maki_scene::Mover, &Interpolated)>()
+                .unwrap();
+            movers.single(world).unwrap().1.current.translation.y
+        };
+        frames(&mut app, 2);
+        assert_eq!(height(&app), 0.5);
+
+        request(&mut app, Command::Play);
+        request(&mut app, Command::Answer(Answer::DoNotSave));
+        frames(&mut app, 30);
+        // At its pose `b`, one meter up; the event went on after the move.
+        assert_eq!(height(&app), 1.5);
+        assert!(app.world().resource::<GameState>().flag("up"));
+        request(&mut app, Command::Stop);
+        assert_eq!(height(&app), 0.5);
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
