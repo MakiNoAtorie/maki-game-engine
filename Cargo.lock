@@ -1532,6 +1532,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "maki-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libloading",
+ "maki-assets",
+ "maki-audio",
+ "maki-core",
+ "maki-devtools",
+ "maki-editor",
+ "maki-events",
+ "maki-gameplay",
+ "maki-gpu",
+ "maki-platform",
+ "maki-render",
+ "maki-scene",
+ "maki-ui",
+ "tracing",
+]
+
+[[package]]
 name = "maki-events"
 version = "0.1.0"
 dependencies = [
@@ -1558,6 +1579,7 @@ dependencies = [
  "maki-core",
  "maki-devtools",
  "maki-editor",
+ "maki-engine",
  "maki-events",
  "maki-gameplay",
  "maki-platform",
@@ -2757,6 +2779,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "spike-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "maki-core",
+ "maki-engine",
+ "maki-events",
+ "maki-gameplay",
+ "maki-platform",
+ "maki-scene",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "spike-scripts"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "glam 0.34.1",
+ "maki-core",
+ "maki-engine",
+ "maki-events",
+ "maki-gameplay",
+ "maki-scene",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

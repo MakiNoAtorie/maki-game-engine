@@ -2,6 +2,8 @@
 //! rooms and their events are data, in `game/assets/rooms`.
 
 mod scripts;
+// With `dynamic`, the script DLL has this file.
+#[cfg(not(feature = "dynamic"))]
 mod shake;
 
 use std::ffi::OsString;
@@ -93,9 +95,16 @@ fn main() -> anyhow::Result<()> {
         .add_module(maki_gameplay::SaveModule {
             file: PathBuf::from(SAVE_FILE),
             active: !editor,
-        })
-        .add_module(shake::ShakeModule)
-        .add_module(maki_render::RenderModule)
+        });
+    #[cfg(not(feature = "dynamic"))]
+    app.add_module(shake::ShakeModule);
+    // Spike of part 6: the modules of the script DLL, next to the program.
+    #[cfg(feature = "dynamic")]
+    maki_engine::load_project(
+        &mut app,
+        &std::env::current_exe()?.with_file_name("spike_scripts.dll"),
+    )?;
+    app.add_module(maki_render::RenderModule)
         .add_module(maki_ui::UiModule)
         // Debug tools, but for the message window of the events.
         .add_module(maki_ui::StatsPanelModule)
@@ -156,7 +165,7 @@ mod tests {
     /// The editor writes the room files of the game with all that they hold: the
     /// room, the events (also the commands of the audio module and of this game),
     /// and the comments. The loader finds nothing wrong in them.
-    #[cfg(feature = "editor")]
+    #[cfg(all(feature = "editor", not(feature = "dynamic")))]
     #[test]
     fn the_editor_writes_each_room_file_with_the_same_content() {
         // No sound device in a test.

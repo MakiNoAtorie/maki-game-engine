@@ -1,0 +1,28 @@
+[package]
+name = "maki-engine"
+version.workspace = true
+edition.workspace = true
+
+# Spike of part 6: all engine crates as one shared library. A program and a script
+# DLL that link to it share one copy of each engine crate.
+[lib]
+crate-type = ["dylib"]
+test = false
+doctest = false
+
+[dependencies]
+maki-core.workspace = true
+maki-platform.workspace = true
+maki-assets.workspace = true
+maki-scene.workspace = true
+maki-events.workspace = true
+maki-audio.workspace = true
+maki-gameplay.workspace = true
+maki-gpu.workspace = true
+maki-render.workspace = true
+maki-ui.workspace = true
+maki-devtools.workspace = true
+maki-editor.workspace = true
+anyhow.workspace = true
+libloading.workspace = true
+tracing.workspace = true

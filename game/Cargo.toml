@@ -8,6 +8,9 @@ edition.workspace = true
 profile = ["dep:tracing-tracy"]
 # The room editor: `maki-game --editor`. A build without it has no editor code.
 editor = ["dep:maki-editor"]
+# Spike of part 6: the engine is a DLL, and the code of `shake.rs` comes from the
+# script DLL (`spike/scripts`). Build with `--profile dynamic`.
+dynamic = ["dep:maki-engine"]
 
 [dependencies]
 maki-core.workspace = true
@@ -21,6 +24,7 @@ maki-render.workspace = true
 maki-ui.workspace = true
 maki-devtools.workspace = true
 maki-editor = { workspace = true, optional = true }
+maki-engine = { workspace = true, optional = true }
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true

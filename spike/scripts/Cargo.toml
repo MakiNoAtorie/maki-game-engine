@@ -1,0 +1,21 @@
+[package]
+name = "spike-scripts"
+version.workspace = true
+edition.workspace = true
+
+# Spike of part 6: the Rust code of a project, as a DLL that a program loads.
+[lib]
+crate-type = ["dylib"]
+test = false
+doctest = false
+
+[dependencies]
+maki-engine.workspace = true
+maki-core.workspace = true
+maki-events.workspace = true
+maki-gameplay.workspace = true
+maki-scene.workspace = true
+bevy_ecs.workspace = true
+glam.workspace = true
+serde.workspace = true
+tracing.workspace = true
