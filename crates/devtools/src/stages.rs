@@ -142,6 +142,7 @@ fn stage_target(path: &Path, start_spawn: &str) -> RoomTarget {
     RoomTarget {
         path: path.to_owned(),
         spawn,
+        text: None,
     }
 }
 

@@ -1,12 +1,13 @@
 //! The debug control of the light: the light actions move the first light of the room.
 
+use bevy_ecs::query::With;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
 use maki_core::{App, FixedUpdate, Interpolated, Module, Time, Update};
 use maki_events::run_events;
 use maki_platform::{Action, ActionState, FixedActionState, Key, add_bindings};
-use maki_scene::{Camera, CurrentRoom, Light, RoomDef};
+use maki_scene::{ActiveCamera, Camera, CurrentRoom, Light, RoomDef};
 
 use crate::controls::{MoveCapture, move_direction};
 
@@ -65,7 +66,7 @@ fn control_lights(
     capture: Res<MoveCapture>,
     time: Res<Time>,
     room: Res<CurrentRoom>,
-    cameras: Query<&Camera>,
+    cameras: Query<&Camera, With<ActiveCamera>>,
     // Only a light of the room file has a pose for fixed steps.
     mut lights: Query<(&mut Interpolated, &mut Light)>,
 ) {

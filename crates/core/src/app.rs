@@ -272,7 +272,9 @@ impl App {
             time.delta = delta;
             time.elapsed += delta;
             time.frame += 1;
-            time.accumulator += delta;
+            if !time.paused {
+                time.accumulator += delta;
+            }
             time.fixed_delta
         };
 

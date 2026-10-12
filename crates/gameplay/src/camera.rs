@@ -1,13 +1,14 @@
 //! The camera: one `Camera` entity that follows the player from a fixed direction.
 
 use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut};
+use bevy_ecs::component::Component;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Local, Query, Res};
 use glam::Vec3;
 use maki_core::{App, Module, Settings, Startup, Time, Transform, Update, interpolate_transforms};
-use maki_scene::{Camera, CurrentRoom, Player, RoomDef};
+use maki_scene::{ActiveCamera, Camera, CurrentRoom, Player, RoomDef};
 use serde::{Deserialize, Serialize};
 
 /// The target is moved onto the goal when it is nearer than this, in meters. Without
@@ -60,6 +61,11 @@ impl Settings for CameraSettings {
     }
 }
 
+/// Marks the camera that follows the player. A system that moves that camera for a
+/// frame (a shake) finds it with this, also while another camera is the active one.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct FollowCamera;
+
 /// Spawns the camera of the settings and moves it with the entity that has the
 /// `Player` component.
 pub struct CameraModule;
@@ -98,7 +104,8 @@ fn follow_goal(player: Vec3, settings: &CameraSettings, room: &RoomDef) -> Vec3 
 
 fn spawn_camera(mut commands: Commands, settings: Res<CameraSettings>) {
     // `follow_player` puts it at the player when the first room is loaded.
-    commands.spawn(camera_at(settings.target.into(), &settings));
+    let camera = camera_at(settings.target.into(), &settings);
+    commands.spawn((camera, FollowCamera, ActiveCamera));
 }
 
 /// Runs in `Update`. A system that moves the camera away from this place for a frame
@@ -108,7 +115,7 @@ pub fn follow_player(
     settings: Res<CameraSettings>,
     room: Res<CurrentRoom>,
     players: Query<&Transform, With<Player>>,
-    mut cameras: Query<&mut Camera>,
+    mut cameras: Query<&mut Camera, With<FollowCamera>>,
     // Where the camera looks without what other systems add. Not read back from the
     // `Camera`: an offset of one frame must not become a part of the path.
     mut target: Local<Option<Vec3>>,

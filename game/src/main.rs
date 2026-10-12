@@ -19,9 +19,19 @@ const LOG_ENV: &str = "MAKI_LOG";
 /// Where the game starts if the config file names no room.
 const START_ROOM: &str = "game/assets/rooms/room_a.ron";
 const START_SPAWN: &str = "start";
+/// The room files of the game: where the editor opens and saves.
+#[cfg(feature = "editor")]
+const ROOMS: &str = "game/assets/rooms";
 
 fn usage() -> String {
-    format!("usage: maki-game [CONFIG] {}", maki_devtools::USAGE)
+    #[cfg(feature = "editor")]
+    let editor = maki_editor::USAGE;
+    #[cfg(not(feature = "editor"))]
+    let editor = "";
+    format!(
+        "usage: maki-game [CONFIG] {editor} {}",
+        maki_devtools::USAGE
+    )
 }
 
 fn init_logging() {
@@ -53,6 +63,12 @@ fn main() -> anyhow::Result<()> {
 
     let args = std::env::args_os().skip(1);
     let (bench, args) = maki_devtools::parse_args(args, scripts::SCRIPTS).with_context(usage)?;
+    #[cfg(feature = "editor")]
+    let (editor, args) = maki_editor::parse_args(args).with_context(usage)?;
+    #[cfg(feature = "editor")]
+    let (editor, resave) = (editor.open, editor.resave);
+    #[cfg(not(feature = "editor"))]
+    let editor = false;
     let config_path = config_path(args).with_context(usage)?;
 
     let mut app = App::new(ConfigFile::load(&config_path)?)?;
@@ -76,19 +92,35 @@ fn main() -> anyhow::Result<()> {
         .add_module(maki_ui::StatsPanelModule)
         .add_module(maki_ui::RenderPanelModule)
         .add_module(maki_devtools::GameplayPanelModule)
-        .add_module(maki_ui::EventsUiModule)
-        .add_module(maki_devtools::StagesModule)
-        .add_module(maki_devtools::BenchModule {
-            start: bench,
-            scripts: scripts::SCRIPTS,
-        })
-        .add_module(maki_gameplay::LightControlModule)
-        .add_module(maki_gameplay::MoverToggleModule);
+        .add_module(maki_ui::EventsUiModule);
+    // The stage list goes to a room with no word to the editor: the editor has
+    // "Open" in its place.
+    if !editor {
+        app.add_module(maki_devtools::StagesModule);
+    }
+    app.add_module(maki_devtools::BenchModule {
+        start: bench,
+        scripts: scripts::SCRIPTS,
+    })
+    .add_module(maki_gameplay::LightControlModule)
+    .add_module(maki_gameplay::MoverToggleModule);
+    // After the modules of the game: the editor reads the room files with their
+    // event commands.
+    #[cfg(feature = "editor")]
+    if editor {
+        app.add_module(maki_editor::EditorModule {
+            rooms: PathBuf::from(ROOMS),
+        });
+    }
 
     // All modules are added: the errors of all config tables, with the table and
     // the key. Then the start room: a bad one, and the game does not start. The
     // error has the file and the line.
     app.check_config()?;
+    #[cfg(feature = "editor")]
+    if !resave.is_empty() {
+        return maki_editor::resave(&app, &resave);
+    }
     maki_gameplay::check_start_room(&app)?;
     tracing::info!(path = %config_path.display(), "config loaded");
 
@@ -106,5 +138,33 @@ mod tests {
         assert_eq!(path(&["my.toml"]).unwrap(), PathBuf::from("my.toml"));
         assert!(path(&["--bench"]).is_err());
         assert!(path(&["a.toml", "b.toml"]).is_err());
+    }
+
+    /// The editor writes the room files of the game with all that they hold: the
+    /// room, the events (also the command of this game), and the comments.
+    #[cfg(feature = "editor")]
+    #[test]
+    fn the_editor_writes_each_room_file_with_the_same_content() {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_platform::PlatformModule)
+            .add_module(maki_scene::SceneModule)
+            .add_module(maki_events::EventsModule)
+            .add_module(maki_gameplay::CameraModule)
+            .add_module(shake::ShakeModule);
+        let registry = app.world().resource::<maki_events::CommandRegistry>();
+        let checks = app.world().resource::<maki_scene::RoomValidators>();
+        let mut events = 0;
+        for name in ["room_a.ron", "room_b.ron", "room_c.ron"] {
+            // A test runs in the directory of its package.
+            let path = PathBuf::from("assets/rooms").join(name);
+            let document = maki_editor::Document::read(&path, registry, checks).unwrap();
+            let text = document.text();
+            assert_eq!(maki_scene::parse_room(&text).unwrap(), document.room);
+            assert_eq!(registry.parse_events(&text).unwrap(), document.events);
+            assert_eq!(maki_editor::read_notes(&text), document.notes);
+            assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
+            events += document.events.len();
+        }
+        assert_eq!(events, 7);
     }
 }

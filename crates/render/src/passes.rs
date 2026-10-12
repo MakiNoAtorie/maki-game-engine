@@ -552,8 +552,9 @@ impl Pass for Compose {
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
+        let left = ctx.world.resource::<ExtractedFrame>().picture_left;
         ctx.gpu
-            .copy_to_corner(ctx.image(self.output), ctx.image(self.window))
+            .copy_into(ctx.image(self.output), ctx.image(self.window), left)
             .expect("compose copy");
     }
 }

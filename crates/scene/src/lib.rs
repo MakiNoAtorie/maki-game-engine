@@ -17,8 +17,8 @@ pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use room::{
     CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef, RoomDef,
-    RoomEntity, RoomModels, RoomRequest, RoomTarget, RoomValidator, RoomValidators, TextureDef,
-    load_requested_room, parse_room, read_room, ron_options,
+    RoomEntity, RoomItem, RoomModels, RoomRequest, RoomTarget, RoomValidator, RoomValidators,
+    TextureDef, check_room, load_requested_room, parse_room, patch_room, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
@@ -107,7 +107,12 @@ impl Default for Light {
     }
 }
 
-/// The point of view of the picture. The game spawns one entity with this component.
+/// Marks the camera whose view the picture shows. One entity has it at a time: a
+/// module that brings a second camera (an editor) moves the marker.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct ActiveCamera;
+
+/// A point of view. The picture shows that of the entity with [`ActiveCamera`].
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Camera {
     /// Where the camera is, in world space.

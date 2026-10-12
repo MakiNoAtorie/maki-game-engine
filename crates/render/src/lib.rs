@@ -46,7 +46,7 @@ use bevy_ecs::system::{Commands, Res, ResMut};
 use bevy_ecs::world::World;
 use maki_core::{App, Extract, Module, Present, Render, Startup, Time};
 use maki_gpu::{Gpu, GpuDesc};
-use maki_platform::{Window, WindowSettings, WindowSize};
+use maki_platform::{Window, WindowMargin, WindowSettings, WindowSize};
 use maki_scene::{CurrentRoom, ScreenFade};
 
 pub use accumulation::{Accumulation, RESET_ACCUMULATION};
@@ -119,9 +119,12 @@ impl RenderWorld {
 pub struct ExtractedFrame {
     /// Size of the images that the path tracer writes, in pixels.
     pub internal_resolution: (u32, u32),
-    /// Size of the picture in pixels: `window_width` and `window_height` of the
-    /// config. The window shows it in its top left corner, not scaled.
+    /// Size of the picture in pixels: `width` and `height` of the `[window]`
+    /// settings. The window shows it at its top edge, not scaled.
     pub picture_size: (u32, u32),
+    /// The picture starts this many pixels from the left edge of the window: the
+    /// room for panels at the left (`WindowMargin::left`).
+    pub picture_left: u32,
     /// Size of the window in physical pixels: the picture and the room for the panels.
     pub window_size: (u32, u32),
     /// True: a frame waits for the display refresh.
@@ -315,6 +318,7 @@ pub(crate) fn extract_frame(
     config: Res<RenderSettings>,
     window: Res<WindowSettings>,
     size: Res<WindowSize>,
+    margin: Res<WindowMargin>,
     time: Res<Time>,
     debug_view: Res<DebugView>,
     // The two come from `maki_scene::SceneModule`. A game without it has no rooms.
@@ -337,6 +341,7 @@ pub(crate) fn extract_frame(
     render_world.0.insert_resource(ExtractedFrame {
         internal_resolution: internal_resolution(&config, picture),
         picture_size: picture,
+        picture_left: margin.left,
         window_size: (size.width, size.height),
         vsync: window.vsync,
         frame: time.frame,

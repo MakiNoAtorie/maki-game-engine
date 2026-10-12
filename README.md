@@ -14,6 +14,7 @@ cargo build
 cargo run -p maki-game                 # uses ./config.toml; run it in the repository root (room files)
 cargo run -p maki-game -- my.toml      # uses the given config file
 cargo run -p maki-game --release -- --bench-frames 300   # benchmark, see below
+cargo run -p maki-game --features editor -- --editor     # the room editor, see below
 ```
 
 If the config file does not exist, the game writes one with the default values of all modules.
@@ -36,7 +37,7 @@ Debug keys: L gives the move keys to the first light of the room (and back), Q a
 
 ## Debug panels
 
-The picture has a fixed size (`width` and `height` of `[window]`) and is in the top left corner of the window, not scaled. The panels are the sections of a column at the right of the picture: no panel hides the picture. Click a title to unfold a section. The window is as large as the picture and the column; in a larger window the column gets the rest.
+The picture has a fixed size (`width` and `height` of `[window]`) and is at the top of the window, not scaled. The panels are the sections of a column at the right of the picture: no panel hides the picture. Click a title to unfold a section. The window is as large as the picture and the column; in a larger window the column gets the rest. The first row of the column is the menu "Panels", with one checkbox for each panel: a panel that is not checked has no section.
 
 | Panel | Content |
 |---|---|
@@ -50,9 +51,25 @@ The picture has a fixed size (`width` and `height` of `[window]`) and is in the 
 | Game state | Flags and variables of the events, with a field to add one; the events that run |
 | Message | The text of a `Message` command. A window on top of the picture, at its bottom (`maki_ui::add_window`). Open only while a message waits |
 
-While the mouse pointer is on a panel, the mouse wheel starts no action. While a text field of a panel has the keyboard focus, keys start no action.
+While the mouse pointer is on a panel, the mouse (buttons, wheel, motion) starts no action. While a text field of a panel has the keyboard focus, keys start no action.
 
-To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the section and the game world. `crates/ui/src/stats.rs` is an example.
+To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the section and the game world. `crates/ui/src/stats.rs` is an example. `maki_ui::add_left_panel` adds a panel at the left of the picture (the outliner of the editor): the picture then starts at the right of it, and the window is wider by it.
+
+## Editor
+
+`cargo run -p maki-game --features editor -- --editor` starts the game in the room editor, with the start room open. The editor is the crate `crates/editor`, behind the cargo feature `editor` of the game: a build without the feature has no editor code and no `--editor` option.
+
+- At the left: the menu "File" (new room, open a room file of `game/assets/rooms`, save, save as, quit), "Play" with the spawn point where the game starts, and the outliner: the room, its doorways, doors, props, movers, lights, spawn points, and events. An item with no name shows its kind and its index.
+- At the right, in the panel column: "Properties" has the values of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. Events are shown, not changed (stage 28).
+- The view: drag with the right mouse button to turn it, with the middle button to move it, the wheel goes nearer and farther. T is the view from the top, G the view of the game camera. The help panel lists the keys of the editor while the room is edited, and those of the game while it is played.
+- Play (the button or F5) runs the game in the room as it is in the editor, from the selected spawn point (a room with none: from the point that the view looks at). Stop (the button, or the quit key of the game) goes back to the editor: the room and the game state are those of before the play. What events did (flags, lights, doors, another room, a fade, a message) is gone.
+- New, open, play, and quit ask first if the room has changes that are not saved.
+
+The editor changes a document (the room, its events, its comments), not the world. The world is made from the document: a change of a light or of the pose of a prop changes the entities in place, with no stop of the picture; each other change loads the room again from the text of the document (each mesh of the room is built again on the GPU, some milliseconds). Only the document is saved.
+
+A saved file is RON as a person writes it: the field order of `RoomDef`, no field that has its default, one item on one line if it is not longer than 110 characters, and the `//` comments of the file. A comment before an item of a list (`props`, `lights`, `events`, ...) or in it is the note of that item and stays with it; each other comment is a note of the room and goes to the top of the file. `maki-game --editor-resave ROOM` writes a room file again in this form, with no window.
+
+With a picture of 1280 pixels the editor window is 1960 pixels wide (240 for the outliner, 440 for the column). On a smaller display, set `width` and `height` of `[window]`.
 
 ## Benchmark
 
@@ -95,7 +112,7 @@ The config file is TOML, with one table for each module. A module declares its t
 | Key | Default | Meaning |
 |---|---|---|
 | `title` | `maki` | Window title |
-| `width`, `height` | 1280, 720 | Size of the picture, in pixels. The window is wider by the panel column |
+| `width`, `height` | 1280, 720 | Size of the picture, in pixels. The window is wider by the panel column, and in the editor by the panel at the left |
 | `vsync` | `true` | Vertical sync |
 
 `[render]` (`crates/render`):
@@ -226,7 +243,7 @@ The camera rays do not hit the back side of the room box, so the camera looks in
 
 ## Rooms and events
 
-A room is a RON file in `game/assets/rooms`: the size of the room, its doorways, props, lights, doors, movers, spawn points, and events. `RoomDef` in `crates/scene/src/room.rs` is the format of the room, `EventDef` in `crates/events/src/model.rs` that of an event. A change of a room file needs no build: start the game again, or press F5.
+A room is a RON file in `game/assets/rooms`: the size of the room, its doorways, props, lights, doors, movers, spawn points, and events. `RoomDef` in `crates/scene/src/room.rs` is the format of the room, `EventDef` in `crates/events/src/model.rs` that of an event. A change of a room file needs no build: start the game again, or press F5. The editor (above) writes the same files.
 
 - A bad room file: the error names the file, the line, and the column. A bad start room stops the game at start; a transfer into a bad room does not happen.
 - The room box, a cube, a cuboid, and a sphere can have a texture: see "Textures" above.
@@ -265,7 +282,7 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | Crate | Role |
 |---|---|
 | `crates/core` | Config file and the settings trait, app and schedules, time, transform, interpolation between fixed steps |
-| `crates/platform` | Window, input actions (an open set: a module adds its own, with their keys), input capture |
+| `crates/platform` | Window, input actions (an open set: a module adds its own, with their keys and mouse buttons), input modes (the bindings of the game, of the editor), the pointer, input capture |
 | `crates/assets` | Asset stores and handles, mesh asset with its material and texture coordinates, texture asset and its store, glTF loader, mesh generators |
 | `crates/scene` | The components that describe the world (mesh instance, light, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |
 | `crates/events` | Game state (flags, variables), event definitions, the event interpreter, the command registry and the built-in commands |
@@ -274,4 +291,5 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
 | `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the message window and the game state panel of the events |
 | `crates/devtools` | Tools that a game opts into: benchmark runner with its command line options and panel, list of the room files, panel of the gameplay settings |
+| `crates/editor` | The room editor, behind the feature `editor` of the game: the document (room, events, comments), the writer of room files, the free camera, the outliner and the property panel, play and stop |
 | `game` | The binary: the module list, the benchmark scripts, the `ShakeCamera` command. The rooms are in `game/assets/rooms` |

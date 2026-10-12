@@ -18,15 +18,16 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Use current stable crate versions and verify APIs against their docs.
 
 ## Workspace
-`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, and `game/` (the only binary).
+`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, and `game/` (the only binary).
 - `scene`: the components that describe the world, the room data format, load and unload of rooms.
 - `events`: flags and variables, event definitions, the event interpreter, the registry of event commands.
 - `gameplay`: generic gameplay modules (camera follow, walking controller, start room, debug controls), each with its own settings.
 - `devtools`: tools that a game opts into (benchmark runner, room list, gameplay panel).
+- `editor`: the room editor. The game has it behind the cargo feature `editor` (`maki-game --editor`); a build without the feature has no editor code. It edits a document (room, events, comments) and builds the world from it; it never saves the world.
 - `game/`: content, the module list, and code that is specific to this game. Generic code goes into an engine crate.
 
 ## Architecture rules (do not break)
-1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> gameplay -> gpu -> render -> ui -> devtools -> game. A crate depends only on crates to its left. `scene`, `events`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
+1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> gameplay -> gpu -> render -> ui -> devtools -> editor -> game. A crate depends only on crates to its left. `scene`, `events`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
 2. No `ash` or Vulkan type in any public API outside the `gpu` crate.
 3. The renderer reads only data copied into it during the Extract stage, never game state directly.
 4. Gameplay code reads input actions, never raw keys.

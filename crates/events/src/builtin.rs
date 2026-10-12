@@ -119,6 +119,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
                 world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
                     path,
                     spawn: Some(spawn.clone()),
+                    text: None,
                 });
                 // `CurrentRoom::loads` when the room was asked for.
                 *step.memory::<u64>() = loads;

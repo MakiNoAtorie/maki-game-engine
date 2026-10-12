@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Local, Res, ResMut};
@@ -16,69 +17,121 @@ use maki_core::App;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Action(pub &'static str);
 
-/// A physical input that a binding can use: a key, or one direction of the mouse wheel.
-/// Letter keys are positions on a US keyboard, so W/A/S/D keep their shape on other layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Key {
-    W,
-    A,
-    S,
-    D,
-    Q,
-    E,
-    R,
-    Z,
-    L,
-    O,
-    /// The left or the right Shift key.
-    Shift,
-    Enter,
-    ArrowUp,
-    ArrowDown,
-    ArrowLeft,
-    ArrowRight,
-    F1,
-    F5,
-    PageUp,
-    PageDown,
-    Escape,
-    WheelUp,
-    WheelDown,
+/// A physical input that a binding can use: a key, a mouse button, or one direction
+/// of the mouse wheel. Letter keys are positions on a US keyboard, so W/A/S/D keep
+/// their shape on other layouts.
+///
+/// One row of the table for each input: the name, the winit key codes that give it
+/// (none for an input of the mouse), and the text for the user. A new key is a new row.
+macro_rules! keys {
+    ($($key:ident [$($code:ident),*] $label:literal,)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum Key {
+            $($key,)*
+        }
+
+        impl Key {
+            /// Name to show to the user.
+            pub fn label(self) -> &'static str {
+                match self {
+                    $(Key::$key => $label,)*
+                }
+            }
+
+            /// The key of a winit key code. `None`: no binding can use that key.
+            pub(crate) fn from_winit(code: winit::keyboard::KeyCode) -> Option<Key> {
+                use winit::keyboard::KeyCode;
+                match code {
+                    $($(KeyCode::$code => Some(Key::$key),)*)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+keys! {
+    A [KeyA] "A",
+    B [KeyB] "B",
+    C [KeyC] "C",
+    D [KeyD] "D",
+    E [KeyE] "E",
+    F [KeyF] "F",
+    G [KeyG] "G",
+    H [KeyH] "H",
+    I [KeyI] "I",
+    J [KeyJ] "J",
+    K [KeyK] "K",
+    L [KeyL] "L",
+    M [KeyM] "M",
+    N [KeyN] "N",
+    O [KeyO] "O",
+    P [KeyP] "P",
+    Q [KeyQ] "Q",
+    R [KeyR] "R",
+    S [KeyS] "S",
+    T [KeyT] "T",
+    U [KeyU] "U",
+    V [KeyV] "V",
+    W [KeyW] "W",
+    X [KeyX] "X",
+    Y [KeyY] "Y",
+    Z [KeyZ] "Z",
+    Digit0 [Digit0, Numpad0] "0",
+    Digit1 [Digit1, Numpad1] "1",
+    Digit2 [Digit2, Numpad2] "2",
+    Digit3 [Digit3, Numpad3] "3",
+    Digit4 [Digit4, Numpad4] "4",
+    Digit5 [Digit5, Numpad5] "5",
+    Digit6 [Digit6, Numpad6] "6",
+    Digit7 [Digit7, Numpad7] "7",
+    Digit8 [Digit8, Numpad8] "8",
+    Digit9 [Digit9, Numpad9] "9",
+    Shift [ShiftLeft, ShiftRight] "Shift",
+    Control [ControlLeft, ControlRight] "Ctrl",
+    Alt [AltLeft, AltRight] "Alt",
+    Enter [Enter, NumpadEnter] "Enter",
+    Space [Space] "Space",
+    Tab [Tab] "Tab",
+    Backspace [Backspace] "Backspace",
+    Delete [Delete] "Delete",
+    Insert [Insert] "Insert",
+    Home [Home] "Home",
+    End [End] "End",
+    ArrowUp [ArrowUp] "Up",
+    ArrowDown [ArrowDown] "Down",
+    ArrowLeft [ArrowLeft] "Left",
+    ArrowRight [ArrowRight] "Right",
+    PageUp [PageUp] "Page up",
+    PageDown [PageDown] "Page down",
+    Escape [Escape] "Esc",
+    F1 [F1] "F1",
+    F2 [F2] "F2",
+    F3 [F3] "F3",
+    F4 [F4] "F4",
+    F5 [F5] "F5",
+    F6 [F6] "F6",
+    F7 [F7] "F7",
+    F8 [F8] "F8",
+    F9 [F9] "F9",
+    F10 [F10] "F10",
+    F11 [F11] "F11",
+    F12 [F12] "F12",
+    MouseLeft [] "Left mouse button",
+    MouseRight [] "Right mouse button",
+    MouseMiddle [] "Middle mouse button",
+    WheelUp [] "Wheel up",
+    WheelDown [] "Wheel down",
 }
 
 impl Key {
     /// True for an input of the mouse, false for a key of the keyboard.
     pub fn is_pointer(self) -> bool {
-        matches!(self, Key::WheelUp | Key::WheelDown)
-    }
-
-    /// Name to show to the user.
-    pub fn label(self) -> &'static str {
-        match self {
-            Key::W => "W",
-            Key::A => "A",
-            Key::S => "S",
-            Key::D => "D",
-            Key::Q => "Q",
-            Key::E => "E",
-            Key::R => "R",
-            Key::Z => "Z",
-            Key::L => "L",
-            Key::O => "O",
-            Key::Shift => "Shift",
-            Key::Enter => "Enter",
-            Key::ArrowUp => "Up",
-            Key::ArrowDown => "Down",
-            Key::ArrowLeft => "Left",
-            Key::ArrowRight => "Right",
-            Key::F1 => "F1",
-            Key::F5 => "F5",
-            Key::PageUp => "Page up",
-            Key::PageDown => "Page down",
-            Key::Escape => "Esc",
-            Key::WheelUp => "Wheel up",
-            Key::WheelDown => "Wheel down",
-        }
+        use Key::*;
+        matches!(
+            self,
+            MouseLeft | MouseRight | MouseMiddle | WheelUp | WheelDown
+        )
     }
 }
 
@@ -88,6 +141,25 @@ pub struct Binding {
     pub action: Action,
     /// Text for the help panel.
     pub description: &'static str,
+    /// The binding is in use only while [`InputMode`] has this value.
+    pub mode: InputMode,
+}
+
+/// Which bindings are in use: a key starts only the actions of the bindings of the
+/// current mode. A tool that takes the keys of the game for itself (an editor) adds
+/// its bindings with a mode of its own and writes the resource.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputMode(pub &'static str);
+
+impl InputMode {
+    /// The game is played. The mode at start.
+    pub const GAME: InputMode = InputMode("game");
+}
+
+impl Default for InputMode {
+    fn default() -> Self {
+        Self::GAME
+    }
 }
 
 /// The single source of truth for controls: the input system and the help panel both read it.
@@ -96,8 +168,13 @@ pub struct Binding {
 pub struct Bindings(pub Vec<Binding>);
 
 /// Adds the default keys of the actions of a module: key, action, text for the help
-/// panel. Call from `Module::build`.
+/// panel. Call from `Module::build`. The bindings are those of [`InputMode::GAME`].
 pub fn add_bindings(app: &mut App, table: &[(Key, Action, &'static str)]) {
+    add_mode_bindings(app, InputMode::GAME, table);
+}
+
+/// As [`add_bindings`], for the bindings of another mode.
+pub fn add_mode_bindings(app: &mut App, mode: InputMode, table: &[(Key, Action, &'static str)]) {
     // The table normally comes from `PlatformModule`. This keeps a module
     // independent of the order in which the modules are added.
     app.init_resource::<Bindings>();
@@ -105,6 +182,7 @@ pub fn add_bindings(app: &mut App, table: &[(Key, Action, &'static str)]) {
         key,
         action,
         description,
+        mode,
     });
     app.resource_mut::<Bindings>().0.extend(bindings);
 }
@@ -165,8 +243,20 @@ pub(crate) fn clear_fixed_changes(mut fixed: ResMut<FixedActionState>) {
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InputCapture {
     pub keyboard: bool,
-    /// The mouse: buttons and wheel.
+    /// The mouse: buttons, wheel, and motion.
     pub pointer: bool,
+}
+
+/// The mouse pointer in this frame. Updated in the `Input` schedule. The buttons are
+/// keys: bind an action to `Key::MouseLeft`. A drag is that action held, and `delta`.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
+pub struct Pointer {
+    /// Where the pointer is, in physical pixels from the top left corner of the
+    /// window. `None`: the pointer is not in the window.
+    pub position: Option<[f32; 2]>,
+    /// How far the pointer moved since the frame before, in physical pixels. Zero
+    /// while another consumer has the pointer (`InputCapture`).
+    pub delta: [f32; 2],
 }
 
 impl InputCapture {
@@ -192,12 +282,41 @@ pub enum RawInput {
     KeyUp(Key),
     /// The window lost keyboard focus. The OS sends no key-up after this.
     FocusLost,
+    /// The pointer is at this place of the window, in physical pixels.
+    PointerMoved([f32; 2]),
+    /// The pointer went out of the window.
+    PointerLeft,
 }
 
+pub(crate) fn update_pointer(
+    mut events: MessageReader<RawInput>,
+    capture: Res<InputCapture>,
+    mut pointer: ResMut<Pointer>,
+) {
+    let before = pointer.position;
+    let mut position = before;
+    for event in events.read() {
+        match *event {
+            RawInput::PointerMoved(at) => position = Some(at),
+            RawInput::PointerLeft => position = None,
+            _ => {}
+        }
+    }
+    let delta = match (before, position) {
+        (Some(from), Some(to)) if !capture.pointer => [to[0] - from[0], to[1] - from[1]],
+        _ => [0.0; 2],
+    };
+    // Only a different value is a write.
+    pointer.set_if_neq(Pointer { position, delta });
+}
+
+// A system: each argument is a system parameter.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_actions(
     mut events: MessageReader<RawInput>,
     mut held: Local<HashSet<Key>>,
     bindings: Res<Bindings>,
+    mode: Res<InputMode>,
     capture: Res<InputCapture>,
     scripted: Res<ScriptedActions>,
     mut state: ResMut<ActionState>,
@@ -223,6 +342,7 @@ pub(crate) fn update_actions(
             }
             // Without this, a key held during Alt+Tab would stay down.
             RawInput::FocusLost => held.clear(),
+            RawInput::PointerMoved(_) | RawInput::PointerLeft => {}
         }
     }
     down.extend(held.iter());
@@ -230,7 +350,7 @@ pub(crate) fn update_actions(
     let pressed: HashSet<Action> = bindings
         .0
         .iter()
-        .filter(|binding| down.contains(&binding.key))
+        .filter(|binding| binding.mode == *mode && down.contains(&binding.key))
         .map(|binding| binding.action)
         .chain(scripted.0.iter().copied())
         .collect();

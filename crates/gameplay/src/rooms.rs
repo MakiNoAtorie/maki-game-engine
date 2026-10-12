@@ -41,6 +41,7 @@ impl StartRoom {
         RoomTarget {
             path: self.path.clone(),
             spawn: Some(self.spawn.clone()),
+            text: None,
         }
     }
 }
@@ -96,6 +97,7 @@ fn reload_on_action(
         request.0 = Some(RoomTarget {
             path: room.path.clone(),
             spawn: None,
+            text: None,
         });
     }
 }

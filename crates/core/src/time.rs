@@ -21,8 +21,11 @@ pub struct Time {
     pub alpha: f32,
     /// `Some`: each frame counts as this much time, whatever the real time was. The
     /// simulation then does the same steps in each run: for a benchmark with a script.
-    /// The one value that a system can write. It applies from the next frame.
+    /// A system can write it. It applies from the next frame.
     pub frame_time: Option<Duration>,
+    /// True: no fixed step runs, so the simulation stands still. `Update` and the
+    /// renderer go on. A system can write it (an editor, a pause).
+    pub paused: bool,
     /// Frame time not yet consumed by fixed steps.
     pub(crate) accumulator: Duration,
 }

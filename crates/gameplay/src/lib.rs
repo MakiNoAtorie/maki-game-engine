@@ -16,7 +16,7 @@ mod light_control;
 mod player;
 mod rooms;
 
-pub use camera::{CameraModule, CameraSettings, follow_player};
+pub use camera::{CameraModule, CameraSettings, FollowCamera, follow_player};
 pub use controls::{
     ControlsModule, MOVE_BACK, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, MoveCapture, MoverToggleModule,
     QUIT, RUN, TOGGLE_MOVERS, move_direction,

@@ -6,7 +6,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Query, ResMut};
 use glam::Vec3;
 use maki_core::{App, Extract};
-use maki_scene::Camera;
+use maki_scene::{ActiveCamera, Camera};
 
 use crate::RenderWorld;
 
@@ -45,19 +45,25 @@ pub(crate) fn build(app: &mut App) {
     app.add_systems(Extract, extract_camera);
 }
 
-// ponytail: the first camera wins. Add an "active" marker when the game has more than one.
+/// The picture shows the view of the camera with the `ActiveCamera` marker.
 fn extract_camera(
-    cameras: Query<Ref<Camera>>,
+    cameras: Query<(Ref<Camera>, Ref<ActiveCamera>)>,
     mut removed: RemovedComponents<Camera>,
+    mut unmarked: RemovedComponents<ActiveCamera>,
     mut render_world: ResMut<RenderWorld>,
 ) {
-    // A camera is new, was written, or went away: the picture needs new samples. The
-    // old ones stay: the denoiser finds them at their new place in the picture.
-    if removed.read().count() > 0 || cameras.iter().any(|camera| camera.is_changed()) {
+    // The active camera is new, was written, or went away, or another camera is the
+    // active one now: the picture needs new samples. The old ones stay: the denoiser
+    // finds them at their new place in the picture.
+    let changed = |(camera, marker): (Ref<Camera>, Ref<ActiveCamera>)| {
+        camera.is_changed() || marker.is_changed()
+    };
+    let gone = removed.read().count() + unmarked.read().count() > 0;
+    if gone || cameras.iter().any(changed) {
         tracing::trace!("the camera changed");
         render_world.wake_accumulation();
     }
-    let current = cameras.iter().next().map_or_else(Camera::default, |c| *c);
+    let current = cameras.iter().next().map_or_else(Camera::default, |c| *c.0);
     // The resource still holds the camera of the frame before.
     let previous = render_world
         .0
@@ -83,7 +89,9 @@ mod tests {
             position: Vec3::new(x, 0.0, 0.0),
             ..Camera::default()
         };
-        let entity = world.spawn(at(1.0)).id();
+        // A camera without the marker is not the view.
+        world.spawn(at(9.0));
+        let entity = world.spawn((at(1.0), ActiveCamera)).id();
         let mut schedule = Schedule::default();
         schedule.add_systems(extract_camera);
         let mut extract = |world: &mut World| {

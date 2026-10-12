@@ -18,7 +18,7 @@ pub struct EventDef {
     /// For the debug panel and the log.
     pub name: String,
     /// Where the event is, for the triggers `Interact` and `Touch`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Area::is_empty")]
     pub area: Area,
     pub pages: Vec<Page>,
 }
@@ -34,6 +34,12 @@ pub struct Area {
 }
 
 impl Area {
+    /// True for the default: an event with no place. Such an area is not written to
+    /// a room file.
+    fn is_empty(&self) -> bool {
+        *self == Area::default()
+    }
+
     /// The distance on the floor from a point to the rectangle. 0.0 in it.
     pub fn distance(&self, x: f32, z: f32) -> f32 {
         let beside = |at: f32, axis: usize| {
@@ -56,10 +62,10 @@ impl Area {
 #[serde(deny_unknown_fields)]
 pub struct Page {
     /// All must hold. None: the page is always possible.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
     pub trigger: Trigger,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<Command>,
 }
 

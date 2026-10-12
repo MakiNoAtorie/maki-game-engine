@@ -8,12 +8,12 @@ use bevy_ecs::schedule::common_conditions::resource_exists;
 use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
-    Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, Key, RawInput,
-    ScriptedActions, add_bindings,
+    Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, InputMode, Key,
+    Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings,
 };
 pub use window::{
-    QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSettings, WindowSize,
-    run,
+    QuitHold, QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSettings,
+    WindowSize, run,
 };
 
 /// Adds input actions and window data to the app. `run` opens the window.
@@ -27,16 +27,24 @@ impl Module for PlatformModule {
             .add_message::<RawWindowEvent>()
             .init_resource::<Bindings>()
             .init_resource::<InputCapture>()
+            .init_resource::<InputMode>()
+            .init_resource::<Pointer>()
+            .init_resource::<QuitHold>()
             .init_resource::<ScriptedActions>()
             .init_resource::<ActionState>()
             .init_resource::<FixedActionState>()
             .init_resource::<QuitRequested>()
+            // Each writer asks for the end. A module that holds the app open
+            // (`QuitHold`) takes the request in this frame or in the next one.
+            .allow_ambiguous_resource::<QuitRequested>()
             .init_resource::<WindowMargin>()
             .add_systems(FixedLast, input::clear_fixed_changes)
             .add_systems(
                 Input,
                 (
-                    input::update_actions,
+                    // In this order: a system that writes `InputCapture` in this
+                    // schedule names only the first one.
+                    (input::update_actions, input::update_pointer).chain(),
                     // `run` adds `WindowSize` with the window. A headless app has none.
                     window::update_window_size.run_if(resource_exists::<WindowSize>),
                     // It reads only the picture size of the settings. The order to a system that
@@ -208,6 +216,41 @@ mod tests {
                 (false, false)
             ]
         );
+    }
+
+    #[test]
+    fn the_pointer_moves_and_a_mode_has_its_own_bindings() {
+        use RawInput::*;
+
+        const PICK: Action = Action("pick");
+        let tool = InputMode("tool");
+        let mut app = app("");
+        add_mode_bindings(&mut app, tool, &[(Key::MouseLeft, PICK, "Pick")]);
+        let pointer = |app: &App| *app.world().resource::<Pointer>();
+        let pressed = |app: &App, action| app.world().resource::<ActionState>().pressed(action);
+
+        // The first place has no place before it: no motion.
+        frame(&mut app, &[PointerMoved([10.0, 10.0])]);
+        assert_eq!(pointer(&app).delta, [0.0, 0.0]);
+        frame(
+            &mut app,
+            &[PointerMoved([12.0, 10.0]), PointerMoved([15.0, 12.0])],
+        );
+        assert_eq!(pointer(&app).position, Some([15.0, 12.0]));
+        assert_eq!(pointer(&app).delta, [5.0, 2.0]);
+        frame(&mut app, &[]);
+        assert_eq!(pointer(&app).delta, [0.0, 0.0]);
+
+        // The game mode: the key of the game, not the button of the tool.
+        frame(&mut app, &[KeyDown(Key::MouseLeft), KeyDown(Key::W)]);
+        assert!(pressed(&app, FORWARD) && !pressed(&app, PICK));
+        // The mode of the tool: the keys that are held start its actions.
+        *app.resource_mut::<InputMode>() = tool;
+        frame(&mut app, &[]);
+        assert!(!pressed(&app, FORWARD) && pressed(&app, PICK));
+
+        frame(&mut app, &[PointerLeft]);
+        assert_eq!(pointer(&app).position, None);
     }
 
     #[derive(bevy_ecs::resource::Resource, Default)]

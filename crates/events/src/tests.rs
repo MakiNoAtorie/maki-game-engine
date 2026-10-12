@@ -57,6 +57,7 @@ fn game(directory: &std::path::Path) -> App {
                 request.0 = Some(RoomTarget {
                     path: path.clone(),
                     spawn: Some("start".to_owned()),
+                    text: None,
                 });
             },
         );

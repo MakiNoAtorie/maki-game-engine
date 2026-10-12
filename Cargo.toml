@@ -9,7 +9,7 @@ edition = "2024"
 # All versions live here; crates use `name.workspace = true`.
 [workspace.dependencies]
 # Dependency rule: core -> platform -> assets -> scene -> events -> gameplay -> gpu -> render
-# -> ui -> devtools -> game.
+# -> ui -> devtools -> editor -> game.
 # A crate may depend only on crates to its left.
 maki-core = { path = "crates/core" }
 maki-platform = { path = "crates/platform" }
@@ -21,6 +21,7 @@ maki-gpu = { path = "crates/gpu" }
 maki-render = { path = "crates/render" }
 maki-ui = { path = "crates/ui" }
 maki-devtools = { path = "crates/devtools" }
+maki-editor = { path = "crates/editor" }
 
 anyhow = "1.0.104"
 ash = "0.38.0"

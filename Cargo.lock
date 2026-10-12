@@ -1373,6 +1373,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "maki-editor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "glam 0.34.1",
+ "maki-assets",
+ "maki-core",
+ "maki-events",
+ "maki-gameplay",
+ "maki-platform",
+ "maki-scene",
+ "maki-ui",
+ "tracing",
+]
+
+[[package]]
 name = "maki-events"
 version = "0.1.0"
 dependencies = [
@@ -1397,6 +1414,7 @@ dependencies = [
  "maki-assets",
  "maki-core",
  "maki-devtools",
+ "maki-editor",
  "maki-events",
  "maki-gameplay",
  "maki-platform",

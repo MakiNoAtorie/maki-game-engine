@@ -1,5 +1,5 @@
 //! The OS window and the winit event loop that drives the app.
-//! winit types stay in this file, with one exception for the UI: `egui-winit` reads
+//! winit types stay in this file and in the key table of `input`, with one exception for the UI: `egui-winit` reads
 //! winit events, so [`RawWindowEvent`] and [`Window::winit`] show them to the ui crate.
 
 use std::sync::Arc;
@@ -13,9 +13,9 @@ use maki_core::{App, Settings};
 use serde::{Deserialize, Serialize};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
@@ -56,11 +56,13 @@ pub struct WindowSize {
     pub height: u32,
 }
 
-/// Room in the window at the right of the picture, in physical pixels. The module that
-/// draws there writes it (the panel column of the ui crate). The window is as large as
-/// the picture of the config and this room.
+/// Room in the window at the left and at the right of the picture, in physical
+/// pixels. The module that draws there writes it (the panels of the ui crate). The
+/// window is as large as the picture of the config and this room, and the picture
+/// starts `left` pixels from the left edge.
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WindowMargin {
+    pub left: u32,
     pub right: u32,
 }
 
@@ -94,7 +96,7 @@ impl Settings for WindowSettings {
 
 /// The size of the window for a picture size and a margin.
 fn window_size(config: &WindowSettings, margin: WindowMargin) -> PhysicalSize<u32> {
-    PhysicalSize::new(config.width + margin.right, config.height)
+    PhysicalSize::new(margin.left + config.width + margin.right, config.height)
 }
 
 /// Gives the window a new size when the picture size of the settings or the margin
@@ -125,9 +127,16 @@ pub struct WindowResized {
 #[derive(Message, Debug, Clone)]
 pub struct RawWindowEvent(pub WindowEvent);
 
-/// Set `0` to true to end the app after the current frame.
+/// Set `0` to true to end the app after the current frame. The close button of the
+/// window does the same.
 #[derive(Resource, Debug, Default)]
 pub struct QuitRequested(pub bool);
+
+/// True: a quit request does not end the app. The module that wrote this reads
+/// `QuitRequested`, sets it back, and decides (an editor with changes that are not
+/// saved). To end the app, it sets this to false and the request to true.
+#[derive(Resource, Debug, Default)]
+pub struct QuitHold(pub bool);
 
 pub(crate) fn update_window_size(
     mut resized: MessageReader<WindowResized>,
@@ -216,7 +225,8 @@ impl ApplicationHandler for Runner {
             app.write_message(RawWindowEvent(event.clone()));
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // The next frame ends the app, if no module holds it open (`QuitHold`).
+            WindowEvent::CloseRequested => app.resource_mut::<QuitRequested>().0 = true,
             WindowEvent::Resized(size) => {
                 // A minimized window has a zero size. The renderer cannot use that size,
                 // so it is not sent, and frames stop until the window is back.
@@ -239,7 +249,7 @@ impl ApplicationHandler for Runner {
             WindowEvent::KeyboardInput { event, .. } => {
                 // `repeat`: the OS sends more key-downs while a key is held. Not a new press.
                 if let PhysicalKey::Code(code) = event.physical_key
-                    && let Some(key) = key_from_winit(code)
+                    && let Some(key) = Key::from_winit(code)
                     && !event.repeat
                 {
                     app.write_message(match event.state {
@@ -265,6 +275,25 @@ impl ApplicationHandler for Runner {
                         .write_message(RawInput::KeyUp(key));
                 }
             }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let key = match button {
+                    MouseButton::Left => Key::MouseLeft,
+                    MouseButton::Right => Key::MouseRight,
+                    MouseButton::Middle => Key::MouseMiddle,
+                    _ => return,
+                };
+                app.write_message(match state {
+                    ElementState::Pressed => RawInput::KeyDown(key),
+                    ElementState::Released => RawInput::KeyUp(key),
+                });
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = [position.x as f32, position.y as f32];
+                app.write_message(RawInput::PointerMoved(at));
+            }
+            WindowEvent::CursorLeft { .. } => {
+                app.write_message(RawInput::PointerLeft);
+            }
             WindowEvent::Focused(false) => {
                 app.write_message(RawInput::FocusLost);
             }
@@ -275,7 +304,8 @@ impl ApplicationHandler for Runner {
                     return;
                 }
                 app.update();
-                if app.world().resource::<QuitRequested>().0 {
+                let world = app.world();
+                if world.resource::<QuitRequested>().0 && !world.resource::<QuitHold>().0 {
                     event_loop.exit();
                 }
                 // While the user drags the window border or title bar, Windows runs its
@@ -298,31 +328,4 @@ impl ApplicationHandler for Runner {
             window.request_redraw();
         }
     }
-}
-
-fn key_from_winit(code: KeyCode) -> Option<Key> {
-    Some(match code {
-        KeyCode::KeyW => Key::W,
-        KeyCode::KeyA => Key::A,
-        KeyCode::KeyS => Key::S,
-        KeyCode::KeyD => Key::D,
-        KeyCode::KeyQ => Key::Q,
-        KeyCode::KeyE => Key::E,
-        KeyCode::KeyR => Key::R,
-        KeyCode::KeyZ => Key::Z,
-        KeyCode::KeyL => Key::L,
-        KeyCode::KeyO => Key::O,
-        KeyCode::ShiftLeft | KeyCode::ShiftRight => Key::Shift,
-        KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
-        KeyCode::ArrowUp => Key::ArrowUp,
-        KeyCode::ArrowDown => Key::ArrowDown,
-        KeyCode::ArrowLeft => Key::ArrowLeft,
-        KeyCode::ArrowRight => Key::ArrowRight,
-        KeyCode::F1 => Key::F1,
-        KeyCode::F5 => Key::F5,
-        KeyCode::PageUp => Key::PageUp,
-        KeyCode::PageDown => Key::PageDown,
-        KeyCode::Escape => Key::Escape,
-        _ => return None,
-    })
 }

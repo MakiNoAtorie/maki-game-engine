@@ -2,13 +2,14 @@
 //! game adds a command: no engine crate knows it, and a room file uses it as it uses
 //! the built-in commands.
 
+use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
 use maki_core::{App, Module, Time, Update};
 use maki_events::CommandRegistry;
-use maki_gameplay::follow_player;
+use maki_gameplay::{FollowCamera, follow_player};
 use maki_scene::Camera;
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +52,11 @@ impl Module for ShakeModule {
     }
 }
 
-fn shake_camera(time: Res<Time>, mut shake: ResMut<CameraShake>, mut cameras: Query<&mut Camera>) {
+fn shake_camera(
+    time: Res<Time>,
+    mut shake: ResMut<CameraShake>,
+    mut cameras: Query<&mut Camera, With<FollowCamera>>,
+) {
     if shake.left <= 0.0 {
         return;
     }
@@ -98,6 +103,7 @@ mod tests {
         let target = RoomTarget {
             path: path.clone(),
             spawn: Some("start".to_owned()),
+            text: None,
         };
         app.add_systems(
             Startup,

@@ -964,11 +964,12 @@ impl Gpu {
         Ok(())
     }
 
-    /// Makes `target` black and copies `source` into its top left corner, not scaled.
-    /// A source that is larger than the target is cut at the right and at the bottom.
+    /// Makes `target` black and copies `source` into it, not scaled, with its top left
+    /// corner `left` pixels from the left edge. A source that does not fit is cut at
+    /// the right and at the bottom.
     /// `source` must be in [`Access::TransferSrc`], `target` in [`Access::TransferDst`].
-    pub fn copy_to_corner(&mut self, source: ImageHandle, target: ImageHandle) -> Result<()> {
-        ensure!(self.active.is_some(), "copy_to_corner outside of a frame");
+    pub fn copy_into(&mut self, source: ImageHandle, target: ImageHandle, left: u32) -> Result<()> {
+        ensure!(self.active.is_some(), "copy_into outside of a frame");
         let image = |handle| self.images.get(handle).context("stale image handle");
         let (source_raw, source_extent) = image(source).map(|image| (image.raw, image.extent))?;
         let (target_raw, target_extent) = image(target).map(|image| (image.raw, image.extent))?;
@@ -994,20 +995,34 @@ impl Gpu {
             base_array_layer: 0,
             layer_count: 1,
         };
-        // The same box in the two images: the blit does not scale.
-        let corners = [
-            vk::Offset3D::default(),
-            vk::Offset3D {
-                x: source_extent.width.min(target_extent.width) as i32,
-                y: source_extent.height.min(target_extent.height) as i32,
-                z: 1,
-            },
-        ];
+        let width = source_extent
+            .width
+            .min(target_extent.width.saturating_sub(left));
+        let height = source_extent.height.min(target_extent.height);
+        // A target that is narrower than `left`: all of the source is cut.
+        if width == 0 {
+            return Ok(());
+        }
+        // A box of the same size in the two images: the blit does not scale.
+        let corners = |x: u32| {
+            [
+                vk::Offset3D {
+                    x: x as i32,
+                    y: 0,
+                    z: 0,
+                },
+                vk::Offset3D {
+                    x: (x + width) as i32,
+                    y: height as i32,
+                    z: 1,
+                },
+            ]
+        };
         let region = vk::ImageBlit::default()
             .src_subresource(layers)
-            .src_offsets(corners)
+            .src_offsets(corners(0))
             .dst_subresource(layers)
-            .dst_offsets(corners);
+            .dst_offsets(corners(left));
         unsafe {
             self.ctx.device.cmd_blit_image(
                 cmd,

@@ -18,11 +18,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use bevy_ecs::world::{Mut, World};
 use glam::{EulerRot, Quat, Vec3};
 use maki_assets::{
     Assets, Doorway, Handle, LoadState, Material, Mesh, Model, TextureRef, Textures, load_gltf,
@@ -43,39 +45,58 @@ pub struct RoomDef {
     pub depth: f32,
     /// Along Y.
     pub height: f32,
-    #[serde(default)]
-    pub doorways: Vec<Doorway>,
-    #[serde(default)]
-    pub props: Vec<PropDef>,
-    #[serde(default)]
-    pub lights: Vec<LightDef>,
-    #[serde(default)]
-    pub doors: Vec<DoorDef>,
-    #[serde(default)]
-    pub movers: Vec<MoverDef>,
     /// The texture of the floor of the room and of its passages. Its coordinates are
     /// meters: with `scale: 1.0` the image is one meter wide.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floor: Option<TextureDef>,
     /// The same for the walls.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walls: Option<TextureDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doorways: Vec<Doorway>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doors: Vec<DoorDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<PropDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub movers: Vec<MoverDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<LightDef>,
     /// Places where the player can enter the room, by name: X, Y, Z.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spawns: BTreeMap<String, [f32; 3]>,
     /// The events of the room. Not read here: see the module comment.
     #[serde(default, skip_serializing)]
     pub events: IgnoredAny,
 }
 
+// The fields of this file that have a default are not written when they have it
+// (`skip_serializing_if`): a file that a tool saves is as short as one that a person
+// wrote.
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 /// Where a thing is. Each field has a default, so a file gives only what differs.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PoseDef {
+    #[serde(skip_serializing_if = "is_default")]
     pub position: [f32; 3],
     /// Degrees around X, Y, and Z. The turn around Z is done first, then X, then Y.
+    #[serde(skip_serializing_if = "is_default")]
     pub rotation: [f32; 3],
+    #[serde(skip_serializing_if = "is_ones")]
     pub scale: [f32; 3],
+}
+
+fn is_ones(scale: &[f32; 3]) -> bool {
+    *scale == [1.0; 3]
 }
 
 impl Default for PoseDef {
@@ -142,14 +163,18 @@ pub struct TextureDef {
     /// The texture coordinates are multiplied by this: 2.0 shows the image two times
     /// where it showed one time. The coordinates of the room box, a cube, and a
     /// cuboid are meters; those of a sphere go one time around it.
-    #[serde(default = "one")]
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub scale: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub filter: Filter,
 }
 
 fn one() -> f32 {
     1.0
+}
+
+fn is_one(value: &f32) -> bool {
+    *value == 1.0
 }
 
 /// How a texture shows when its texels are larger than the pixels of the picture.
@@ -178,13 +203,17 @@ impl TextureDef {
 #[serde(deny_unknown_fields, default)]
 pub struct LookDef {
     /// The color texture. The color multiplies it: give a texture the color white.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub texture: Option<TextureDef>,
     /// Linear RGB. `None`: the color of the generator.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
     /// `None`: diffuse.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub material: Option<Material>,
     /// A light of its own, linear RGB: the mesh shows with this color and lights
     /// the room by bounce rays. `None`: no light.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub emissive: Option<[f32; 3]>,
 }
 
@@ -210,19 +239,36 @@ impl LookDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropDef {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub mesh: MeshDef,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pose: PoseDef,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub look: LookDef,
     /// True: the box around the prop blocks the player.
-    #[serde(default = "yes")]
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub collider: bool,
     /// For a file: the radius of each light of the file, in meters.
-    #[serde(default = "default_light_radius")]
+    #[serde(
+        default = "default_light_radius",
+        skip_serializing_if = "is_default_light_radius"
+    )]
     pub light_radius: f32,
+}
+
+impl Default for PropDef {
+    /// A cube of 1 m at the origin.
+    fn default() -> Self {
+        Self {
+            name: None,
+            mesh: MeshDef::Cube(1.0),
+            pose: PoseDef::default(),
+            look: LookDef::default(),
+            collider: true,
+            light_radius: default_light_radius(),
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -233,10 +279,14 @@ fn default_light_radius() -> f32 {
     0.15
 }
 
+fn is_default_light_radius(radius: &f32) -> bool {
+    *radius == default_light_radius()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LightDef {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub position: [f32; 3],
     /// Meters.
@@ -244,15 +294,32 @@ pub struct LightDef {
     /// Linear RGB.
     pub color: [f32; 3],
     pub intensity: f32,
-    #[serde(default = "yes")]
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub on: bool,
     /// A cone light: the direction of the middle of the cone. `None`: straight down.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<[f32; 3]>,
     /// A cone light: degrees from `direction` to the edge of the cone. `None`: light
     /// in all directions.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cone: Option<f32>,
+}
+
+impl LightDef {
+    /// The component of the light. Its place is `position`.
+    pub fn light(&self) -> Light {
+        Light {
+            radius: self.radius,
+            color: self.color.into(),
+            intensity: self.intensity,
+            on: self.on,
+            direction: self
+                .direction
+                .and_then(|direction| Vec3::from(direction).try_normalize())
+                .unwrap_or(Vec3::NEG_Y),
+            cone_degrees: self.cone.unwrap_or(180.0),
+        }
+    }
 }
 
 /// A door in a doorway of the room. It turns on the side of the opening that is
@@ -260,18 +327,24 @@ pub struct LightDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DoorDef {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Index in `doorways`, from 0.
     pub doorway: usize,
     /// Seconds from closed to open.
-    #[serde(default = "default_door_seconds")]
+    #[serde(
+        default = "default_door_seconds",
+        skip_serializing_if = "is_default_door_seconds"
+    )]
     pub seconds: f32,
     /// Linear RGB.
-    #[serde(default = "default_door_color")]
+    #[serde(
+        default = "default_door_color",
+        skip_serializing_if = "is_default_door_color"
+    )]
     pub color: [f32; 3],
     /// True: the door is open when the room loads.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub open: bool,
 }
 
@@ -279,18 +352,26 @@ fn default_door_seconds() -> f32 {
     1.2
 }
 
+fn is_default_door_seconds(seconds: &f32) -> bool {
+    *seconds == default_door_seconds()
+}
+
 fn default_door_color() -> [f32; 3] {
     [0.35, 0.2, 0.1]
+}
+
+fn is_default_door_color(color: &[f32; 3]) -> bool {
+    *color == default_door_color()
 }
 
 /// A thing that moves between two poses: see [`Mover`]. Its mesh is a generated shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoverDef {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub mesh: MeshDef,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub look: LookDef,
     /// The pose at the start.
     pub a: PoseDef,
@@ -315,7 +396,12 @@ pub fn parse_room(text: &str) -> Result<RoomDef, ron::error::SpannedError> {
 pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, String)> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read room file {}", path.display()))?;
-    let room = parse_room(&text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
+    Ok((check_room(path, &text, validators)?, text))
+}
+
+/// Reads and checks the text of a room file. `path` is for the error text.
+pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Result<RoomDef> {
+    let room = parse_room(text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
     for door in &room.doors {
         if door.doorway >= room.doorways.len() {
             return Err(anyhow!(
@@ -327,9 +413,9 @@ pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, S
         }
     }
     for validate in &validators.0 {
-        validate(&text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
+        validate(text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
     }
-    Ok((room, text))
+    Ok(room)
 }
 
 /// Checks of other crates for a room file: each gets the text of the file and returns
@@ -348,6 +434,17 @@ pub type RoomValidator = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomEntity;
 
+/// The item of the room file that an entity was made from: the index in its list of
+/// [`RoomDef`]. A tool finds the entity of an item, and the item of an entity, with
+/// it. The entities of a model file all have the item of their prop.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoomItem {
+    Prop(usize),
+    Light(usize),
+    Door(usize),
+    Mover(usize),
+}
+
 /// Ask for a room: write `Some`. `load_requested_room` takes it in the next `Update`.
 #[derive(Resource, Debug, Default)]
 pub struct RoomRequest(pub Option<RoomTarget>);
@@ -358,6 +455,10 @@ pub struct RoomTarget {
     /// The spawn point of the room where the player goes. `None`: the player stays
     /// where it is (a reload of the same room).
     pub spawn: Option<String>,
+    /// `Some`: the text of the room, in place of the text of the file (a tool shows a
+    /// room that is not saved). `path` then is the name of the room, and its
+    /// directory is where the files that the room names are.
+    pub text: Option<String>,
 }
 
 /// The room that is loaded. Change detection tells a system that the room changed.
@@ -390,6 +491,7 @@ pub(crate) struct PendingModel {
     model: Handle<Model>,
     collider: bool,
     light_radius: f32,
+    item: RoomItem,
 }
 
 /// Runs in `Update`: unloads the current room and loads the requested one. A room
@@ -412,9 +514,13 @@ pub fn load_requested_room(
     if request.0.is_none() {
         return;
     }
-    let target = request.0.take().expect("tested above");
+    let mut target = request.0.take().expect("tested above");
     let start = std::time::Instant::now();
-    let loaded = read_room(&target.path, &validators).and_then(|(def, source)| {
+    let read = match target.text.take() {
+        Some(text) => check_room(&target.path, &text, &validators).map(|def| (def, text)),
+        None => read_room(&target.path, &validators),
+    };
+    let loaded = read.and_then(|(def, source)| {
         let spawn =
             match &target.spawn {
                 Some(name) => Some(*def.spawns.get(name).with_context(|| {
@@ -550,31 +656,23 @@ impl Spawner<'_, '_, '_> {
         for collider in room_colliders(width, depth, height, &def.doorways) {
             self.commands.spawn((RoomEntity, collider));
         }
-        for door in &def.doors {
-            self.door(door, &def.doorways[door.doorway], width, depth);
+        for (index, door) in def.doors.iter().enumerate() {
+            let item = RoomItem::Door(index);
+            self.door(door, item, &def.doorways[door.doorway], width, depth);
         }
-        for prop in &def.props {
-            self.prop(prop);
+        for (index, prop) in def.props.iter().enumerate() {
+            self.prop(prop, RoomItem::Prop(index));
         }
-        for mover in &def.movers {
-            self.mover(mover);
+        for (index, mover) in def.movers.iter().enumerate() {
+            self.mover(mover, RoomItem::Mover(index));
         }
-        for light in &def.lights {
+        for (index, light) in def.lights.iter().enumerate() {
             let mut entity = self.commands.spawn((
                 RoomEntity,
+                RoomItem::Light(index),
                 // A light can move in fixed steps (a script, a debug control).
                 Interpolated::at(Transform::from_translation(light.position.into())),
-                Light {
-                    radius: light.radius,
-                    color: light.color.into(),
-                    intensity: light.intensity,
-                    on: light.on,
-                    direction: light
-                        .direction
-                        .and_then(|direction| Vec3::from(direction).try_normalize())
-                        .unwrap_or(Vec3::NEG_Y),
-                    cone_degrees: light.cone.unwrap_or(180.0),
-                },
+                light.light(),
             ));
             if let Some(name) = &light.name {
                 entity.insert(Name(name.clone()));
@@ -582,7 +680,7 @@ impl Spawner<'_, '_, '_> {
         }
     }
 
-    fn prop(&mut self, prop: &PropDef) {
+    fn prop(&mut self, prop: &PropDef, item: RoomItem) {
         let transform = prop.pose.transform();
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
@@ -601,6 +699,7 @@ impl Spawner<'_, '_, '_> {
                         model,
                         collider: prop.collider,
                         light_radius: prop.light_radius,
+                        item,
                     },
                 ))
             }
@@ -609,9 +708,9 @@ impl Spawner<'_, '_, '_> {
                 let mesh = prop.look.apply(mesh, self.directory, self.textures);
                 let collider = prop.collider.then(|| collider_around(&mesh, &transform));
                 let handle = self.add(mesh);
-                let mut entity = self
-                    .commands
-                    .spawn((RoomEntity, transform, MeshInstance(handle)));
+                let mut entity =
+                    self.commands
+                        .spawn((RoomEntity, item, transform, MeshInstance(handle)));
                 if let Some(collider) = collider {
                     entity.insert(collider);
                 }
@@ -623,7 +722,7 @@ impl Spawner<'_, '_, '_> {
         }
     }
 
-    fn mover(&mut self, mover: &MoverDef) {
+    fn mover(&mut self, mover: &MoverDef, item: RoomItem) {
         let Some(mesh) = mover.mesh.generate() else {
             tracing::error!(name = ?mover.name, "a mover cannot have a file as its mesh: left out");
             return;
@@ -633,6 +732,7 @@ impl Spawner<'_, '_, '_> {
         let (a, b) = (mover.a.transform(), mover.b.transform());
         let mut entity = self.commands.spawn((
             RoomEntity,
+            item,
             MeshInstance(handle),
             Interpolated::at(a),
             Mover::new(a, b, mover.seconds),
@@ -643,7 +743,7 @@ impl Spawner<'_, '_, '_> {
     }
 
     /// The door leaf: a thin box that fills the doorway when it is closed.
-    fn door(&mut self, door: &DoorDef, doorway: &Doorway, width: f32, depth: f32) {
+    fn door(&mut self, door: &DoorDef, item: RoomItem, doorway: &Doorway, width: f32, depth: f32) {
         const THICKNESS: f32 = 0.06;
         // The open door stands at this angle to the wall, in degrees. Not a quarter
         // turn: the open door then does not lie in the side of the passage.
@@ -691,6 +791,7 @@ impl Spawner<'_, '_, '_> {
         let handle = self.add(leaf);
         let mut entity = self.commands.spawn((
             RoomEntity,
+            item,
             MeshInstance(handle),
             Interpolated::at(if door.open { open } else { closed }),
             mover,
@@ -711,6 +812,78 @@ fn collider_around(mesh: &Mesh, transform: &Transform) -> Collider {
     Collider::around(transform.matrix(), min, max)
 }
 
+/// Changes the entities of the current room in place, so they show `room`. Only for a
+/// room that differs from the current one in values that need no new mesh and no new
+/// entity: a light (but for its name), and the pose of a prop with a generated mesh.
+/// Returns false, with no change, for each other difference: load the room again.
+///
+/// For a tool that shows each step of a change (an editor, while a slider moves): no
+/// mesh is built, and the picture keeps its history. `text` is the room as a text.
+pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
+    let old = &world.resource::<CurrentRoom>().def;
+    let same_count = old.lights.len() == room.lights.len() && old.props.len() == room.props.len();
+    if !same_count {
+        return false;
+    }
+    // The old room with the values that a patch can change taken from the new one.
+    let mut patched = old.clone();
+    for (light, new) in patched.lights.iter_mut().zip(&room.lights) {
+        let name = light.name.take();
+        *light = LightDef {
+            name,
+            ..new.clone()
+        };
+    }
+    for (prop, new) in patched.props.iter_mut().zip(&room.props) {
+        if !matches!(prop.mesh, MeshDef::File(_)) {
+            prop.pose = new.pose;
+        }
+    }
+    if patched != *room {
+        return false;
+    }
+
+    let mut lights = world.query::<(&RoomItem, &mut Light, &mut Interpolated)>();
+    for (item, mut light, mut pose) in lights.iter_mut(world) {
+        let RoomItem::Light(index) = *item else {
+            continue;
+        };
+        let def = &room.lights[index];
+        // Only a different value is a write: a write is a change for the renderer.
+        light.set_if_neq(def.light());
+        if pose.current.translation != Vec3::from(def.position) {
+            pose.snap(Transform::from_translation(def.position.into()));
+        }
+    }
+    world.resource_scope(|world, meshes: Mut<Assets<Mesh>>| {
+        let mut props = world.query::<(
+            &RoomItem,
+            &mut Transform,
+            &MeshInstance,
+            Option<&mut Collider>,
+        )>();
+        for (item, mut transform, instance, collider) in props.iter_mut(world) {
+            let RoomItem::Prop(index) = *item else {
+                continue;
+            };
+            let new = room.props[index].pose.transform();
+            if *transform == new {
+                continue;
+            }
+            *transform = new;
+            if let (Some(mut collider), Some(mesh)) = (collider, meshes.get(instance.0)) {
+                *collider = collider_around(mesh, &new);
+            }
+        }
+    });
+    // No change for the readers of the room: it was not loaded again.
+    let mut current = world.resource_mut::<CurrentRoom>();
+    let current = current.bypass_change_detection();
+    current.def = room.clone();
+    current.source = text;
+    true
+}
+
 /// Runs in `Update`. Polls the pending models. This system does not know if the
 /// loader is synchronous (the model is ready in the first frame) or not (it is ready
 /// some frames later).
@@ -726,8 +899,12 @@ pub(crate) fn spawn_loaded_models(
             Some(LoadState::Ready) => {
                 let model = models.get(pending.model).expect("the state is Ready");
                 for handle in &model.meshes {
-                    let mut entity =
-                        commands.spawn((RoomEntity, *transform, MeshInstance(*handle)));
+                    let mut entity = commands.spawn((
+                        RoomEntity,
+                        pending.item,
+                        *transform,
+                        MeshInstance(*handle),
+                    ));
                     if pending.collider
                         && let Some(mesh) = meshes.get(*handle)
                     {
@@ -737,6 +914,7 @@ pub(crate) fn spawn_loaded_models(
                 for light in &model.lights {
                     commands.spawn((
                         RoomEntity,
+                        pending.item,
                         Transform::from_translation(
                             transform.matrix().transform_point3(light.position),
                         ),
@@ -915,7 +1093,14 @@ mod tests {
                 directory: Path::new(""),
                 owned: Vec::new(),
             };
-            spawner.door(&room.doors[0], &room.doorways[0], room.width, room.depth);
+            let item = RoomItem::Door(0);
+            spawner.door(
+                &room.doors[0],
+                item,
+                &room.doorways[0],
+                room.width,
+                room.depth,
+            );
             world.flush();
             let mover = *world.query::<&Mover>().single(&world).unwrap();
             let (_, along, _, inward) = wall.frame(room.width, room.depth);
@@ -968,6 +1153,7 @@ mod tests {
             app.write_message(RequestRoom(RoomTarget {
                 path: path.to_owned(),
                 spawn: spawn.map(str::to_owned),
+                text: None,
             }));
             app.advance(Duration::from_millis(16));
             let world = app.world();
@@ -1053,6 +1239,7 @@ mod tests {
             app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
                 path: directory.join(name),
                 spawn: None,
+                text: None,
             });
             app.advance(Duration::from_millis(16));
             let world = app.world();

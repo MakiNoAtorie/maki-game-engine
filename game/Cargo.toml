@@ -6,6 +6,8 @@ edition.workspace = true
 [features]
 # Sends tracing spans to the Tracy profiler.
 profile = ["dep:tracing-tracy"]
+# The room editor: `maki-game --editor`. A build without it has no editor code.
+editor = ["dep:maki-editor"]
 
 [dependencies]
 maki-core.workspace = true
@@ -17,6 +19,7 @@ maki-gameplay.workspace = true
 maki-render.workspace = true
 maki-ui.workspace = true
 maki-devtools.workspace = true
+maki-editor = { workspace = true, optional = true }
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true

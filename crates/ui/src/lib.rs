@@ -1,9 +1,11 @@
-//! The debug UI: egui panels in a column at the right of the picture.
+//! The debug UI: egui panels in a column at the right of the picture, and the panels
+//! of a tool at its left.
 //!
-//! The picture has a fixed size (the `[window]` settings) and is in the top left corner of the
-//! window. The column fills the window at the right of it: no panel hides the picture.
-//! This crate tells the platform crate the width of the column (`WindowMargin`), and
-//! the window is as large as the two.
+//! The picture has a fixed size (the `[window]` settings) and is not scaled. The
+//! column fills the window at the right of it, and a left panel the room at its left:
+//! no panel hides the picture. This crate tells the platform crate the width of the
+//! two (`WindowMargin`), and the window is as large as the three. The first row of
+//! the column is a menu with one checkbox for each panel.
 //!
 //! Data flow of one frame:
 //! 1. `Input` schedule: `feed_events` gives the window events to egui (`egui-winit`).
@@ -14,8 +16,9 @@
 //! 4. The `ui_overlay` pass of the frame graph (`overlay` module) draws the triangles
 //!    into the window image, after the compose pass and before the copy to the window.
 //!
-//! A module adds a debug panel with [`add_panel`], and a window on top of the picture
-//! (game text) with [`add_window`]. The help panel (`help` module), the stats panel
+//! A module adds a debug panel with [`add_panel`], a panel at the left of the picture
+//! with [`add_left_panel`], and a window on top of the picture (game text) with
+//! [`add_window`]. The help panel (`help` module), the stats panel
 //! (`stats` module), the panel of the renderer settings (`render_panel` module), and
 //! the message window and game state panel of the events (`events` module) are
 //! added in the same way.
@@ -52,6 +55,8 @@ pub type PanelFn = Box<dyn FnMut(&mut egui::Ui, &mut World) + Send + Sync>;
 struct Panel {
     name: &'static str,
     open: bool,
+    /// For a section of the column: it is unfolded when it shows for the first time.
+    unfolded: bool,
     place: Place,
     draw: PanelFn,
 }
@@ -61,6 +66,8 @@ struct Panel {
 enum Place {
     /// A section of the column at the right of the picture.
     Column,
+    /// A part of the panel at the left of the picture.
+    Left,
     /// An egui window on top of the picture.
     Window,
     /// Text with no window in the top left corner of the picture. Gets no input.
@@ -70,37 +77,54 @@ enum Place {
 /// Width of the panel column in egui points. A window that is wider than the picture
 /// and this gives the rest to the column.
 const COLUMN_WIDTH: f32 = 440.0;
+/// Width of the panel at the left of the picture, in egui points.
+const LEFT_WIDTH: f32 = 240.0;
 
 /// The panel registry: all panels, by name. Each open panel is one section of the
-/// column, or one egui window on top of the picture.
+/// column, one part of the left panel, or one egui window on top of the picture.
 #[derive(Resource, Default)]
-pub struct Panels(Vec<Panel>);
+pub struct Panels {
+    panels: Vec<Panel>,
+    /// True after `close_all`: no column, so no menu.
+    hidden: bool,
+}
 
 impl Panels {
+    fn named(&mut self, name: &str) -> impl Iterator<Item = &mut Panel> {
+        self.panels
+            .iter_mut()
+            .filter(move |panel| panel.name == name)
+    }
+
     /// False also if no panel has the name.
     pub fn is_open(&self, name: &str) -> bool {
-        self.0.iter().any(|panel| panel.name == name && panel.open)
+        let mut panels = self.panels.iter();
+        panels.any(|panel| panel.name == name && panel.open)
     }
 
     /// Shows or hides a panel. Does nothing if no panel has the name.
     pub fn set_open(&mut self, name: &str, open: bool) {
-        for panel in self.0.iter_mut().filter(|panel| panel.name == name) {
-            panel.open = open;
-        }
+        self.named(name).for_each(|panel| panel.open = open);
     }
 
-    /// Hides each panel: the window shows the picture alone (a screenshot).
+    /// Hides each panel and the menu: the window shows the picture alone (a
+    /// screenshot).
     pub fn close_all(&mut self) {
-        for panel in &mut self.0 {
+        self.hidden = true;
+        for panel in &mut self.panels {
             panel.open = false;
         }
     }
 
     /// Shows a hidden panel, hides a shown one. Does nothing if no panel has the name.
     pub fn toggle(&mut self, name: &str) {
-        for panel in self.0.iter_mut().filter(|panel| panel.name == name) {
-            panel.open = !panel.open;
-        }
+        self.named(name).for_each(|panel| panel.open = !panel.open);
+    }
+
+    /// The section of a panel of the column is unfolded when it shows for the first
+    /// time. Call from `Module::build`, after `add_panel`.
+    pub fn unfold(&mut self, name: &str) {
+        self.named(name).for_each(|panel| panel.unfolded = true);
     }
 }
 
@@ -108,8 +132,6 @@ impl Panels {
 /// the start. Call from `Module::build`. `name` is the title and must be unique. `open`
 /// is the state at startup: a panel that is not open has no section. `draw` runs in
 /// each frame while the section is unfolded.
-// ponytail: no list of panels on screen, so only code can open a closed panel (the help
-// panel has an action). Add a menu with one checkbox for each name if that is needed.
 pub fn add_panel(
     app: &mut App,
     name: &'static str,
@@ -117,6 +139,18 @@ pub fn add_panel(
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
     register(app, name, open, Place::Column, Box::new(draw));
+}
+
+/// Adds a panel at the left of the picture: for a tool that needs the two sides (the
+/// outliner of an editor). The window is wider by the panel while one such panel is
+/// open. More than one: one below the other. The parameters are those of [`add_panel`].
+pub fn add_left_panel(
+    app: &mut App,
+    name: &'static str,
+    open: bool,
+    draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
+) {
+    register(app, name, open, Place::Left, Box::new(draw));
 }
 
 /// Adds a small readout in the top left corner of the picture, with no window around
@@ -149,12 +183,13 @@ fn register(app: &mut App, name: &'static str, open: bool, place: Place, draw: P
         .allow_ambiguous_resource::<Panels>();
     let mut panels = app.resource_mut::<Panels>();
     assert!(
-        panels.0.iter().all(|other| other.name != name),
+        panels.panels.iter().all(|other| other.name != name),
         "panel `{name}` was added two times"
     );
-    panels.0.push(Panel {
+    panels.panels.push(Panel {
         name,
         open,
+        unfolded: false,
         place,
         draw,
     });
@@ -240,38 +275,65 @@ fn run_ui(world: &mut World) {
     world.resource_scope(|world, mut ui: Mut<UiContext>| {
         world.resource_scope(|world, mut panels: Mut<Panels>| {
             let ui = &mut *ui;
+            let panels = &mut *panels;
             let input = match (&mut ui.winit, world.get_resource::<Window>()) {
                 (Some(state), Some(window)) => state.take_egui_input(window.winit()),
                 _ => egui::RawInput::default(),
             };
             let window = world.resource::<WindowSettings>();
             let picture_pixels = egui::vec2(window.width as f32, window.height as f32);
+            let Panels { panels, hidden } = panels;
+            let shown = |panel: &Panel, place| panel.open && panel.place == place;
+            let left = panels.iter().any(|panel| shown(panel, Place::Left));
+            let left_width = if left { LEFT_WIDTH } else { 0.0 };
+            // After `close_all` the egui frame is empty (a screenshot).
+            let in_menu = |panel: &Panel| matches!(panel.place, Place::Column | Place::Left);
+            let column = !*hidden && panels.iter().any(in_menu);
             let output = ui.ctx.run_ui(input, |root| {
                 // The place of the picture in the window, in egui points.
                 let picture = egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
+                    egui::pos2(left_width, 0.0),
                     picture_pixels / root.ctx().pixels_per_point(),
                 );
-                // No open panel, no column: the egui frame is empty (a screenshot).
-                let shown = |panel: &Panel, place| panel.open && panel.place == place;
-                if panels.0.iter().any(|panel| shown(panel, Place::Column)) {
+                if left {
+                    egui::Panel::left("left panels")
+                        .exact_size(LEFT_WIDTH)
+                        .resizable(false)
+                        .show(root, |ui| {
+                            for panel in panels.iter_mut() {
+                                if shown(panel, Place::Left) {
+                                    (panel.draw)(ui, world);
+                                }
+                            }
+                        });
+                }
+                if column {
                     // All of the window at the right of the picture.
-                    let width = root.ctx().content_rect().width() - picture.width();
+                    let width = root.ctx().content_rect().width() - picture.max.x;
                     egui::Panel::right("panels")
                         .exact_size(width.max(COLUMN_WIDTH))
                         .resizable(false)
                         .show(root, |ui| {
-                            egui::ScrollArea::both().show(ui, |ui| {
-                                for panel in &mut panels.0 {
+                            ui.menu_button("Panels", |ui| {
+                                for panel in panels.iter_mut().filter(|panel| in_menu(panel)) {
+                                    ui.checkbox(&mut panel.open, panel.name);
+                                }
+                            });
+                            // Not as narrow as the content: a text field of a
+                            // panel has the width of the column.
+                            let scroll = egui::ScrollArea::both().auto_shrink(false);
+                            scroll.show(ui, |ui| {
+                                for panel in panels.iter_mut() {
                                     if shown(panel, Place::Column) {
                                         egui::CollapsingHeader::new(panel.name)
+                                            .default_open(panel.unfolded)
                                             .show(ui, |ui| (panel.draw)(ui, world));
                                     }
                                 }
                             });
                         });
                 }
-                for panel in &mut panels.0 {
+                for panel in panels.iter_mut() {
                     if shown(panel, Place::Corner) {
                         egui::Area::new(egui::Id::new(panel.name))
                             .fixed_pos(picture.min + egui::vec2(8.0, 8.0))
@@ -297,10 +359,12 @@ fn run_ui(world: &mut World) {
 
             ui.primitives = ui.ctx.tessellate(output.shapes, output.pixels_per_point);
             ui.pixels_per_point = output.pixels_per_point;
-            // The column in physical pixels: the platform crate makes the window wider by
-            // it, after the first frame. Only a different value is a write.
+            // The panels in physical pixels: the platform crate makes the window wider
+            // by them, after the first frame. Only a different value is a write.
+            let pixels = |points: f32| (points * output.pixels_per_point).round() as u32;
             let margin = WindowMargin {
-                right: (COLUMN_WIDTH * output.pixels_per_point).round() as u32,
+                left: pixels(left_width),
+                right: pixels(COLUMN_WIDTH),
             };
             if let Some(mut current) = world.get_resource_mut::<WindowMargin>() {
                 current.set_if_neq(margin);
@@ -377,12 +441,17 @@ mod tests {
             let _ = frame(&[]);
             // Open at startup: egui made triangles for it.
             assert_eq!(frame(&[]), (true, false));
-            assert_eq!(frame(&[RawInput::KeyDown(help_key)]), (false, true));
+            // With no open panel, the column still has the menu of the panels.
+            assert_eq!(frame(&[RawInput::KeyDown(help_key)]), (false, false));
             // A held key is one press.
-            assert_eq!(frame(&[]), (false, true));
-            assert_eq!(frame(&[RawInput::KeyUp(help_key)]), (false, true));
+            assert_eq!(frame(&[]), (false, false));
+            assert_eq!(frame(&[RawInput::KeyUp(help_key)]), (false, false));
             assert!(frame(&[RawInput::KeyDown(help_key)]).0);
             assert!(!app.world().resource::<Panels>().is_open("Test"));
+            // For a screenshot: no panel and no menu, so nothing to draw.
+            app.resource_mut::<Panels>().close_all();
+            app.advance(Duration::from_millis(16));
+            assert!(app.world().resource::<UiContext>().primitives.is_empty());
         });
     }
 
@@ -392,7 +461,10 @@ mod tests {
             key: Key::R,
             action: maki_platform::Action("quit"),
             description: "Changed binding",
+            mode: maki_platform::InputMode::GAME,
         }]);
-        assert_eq!(help::rows(&bindings), [("R", "Changed binding")]);
+        let mode = maki_platform::InputMode::GAME;
+        assert_eq!(help::rows(&bindings, mode), [("R", "Changed binding")]);
+        assert!(help::rows(&bindings, maki_platform::InputMode("other")).is_empty());
     }
 }

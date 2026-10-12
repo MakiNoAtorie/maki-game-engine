@@ -16,7 +16,7 @@ use maki_core::{
 };
 use maki_events::{EventRunner, run_events};
 use maki_platform::FixedActionState;
-use maki_scene::{Camera, Collider, MeshInstance, Player, move_circle};
+use maki_scene::{ActiveCamera, Camera, Collider, MeshInstance, Player, move_circle};
 use serde::{Deserialize, Serialize};
 
 use crate::controls::{MoveCapture, RUN, move_direction};
@@ -166,7 +166,7 @@ pub fn steer_player(
     capture: Res<MoveCapture>,
     events: Res<EventRunner>,
     settings: Res<PlayerSettings>,
-    cameras: Query<&Camera>,
+    cameras: Query<&Camera, With<ActiveCamera>>,
     mut players: Query<&mut Walker, With<Player>>,
 ) {
     // An event that runs has the control: the player reads a message, or a fade runs.
