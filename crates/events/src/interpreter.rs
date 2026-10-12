@@ -287,7 +287,7 @@ fn faces((position, facing): (Vec3, Vec3), event: &EventDef) -> bool {
 }
 
 /// Runs in `Update` after the room loader: reads the events of a new room.
-pub(crate) fn load_room_events(
+pub fn load_room_events(
     room: Res<CurrentRoom>,
     registry: Res<CommandRegistry>,
     mut runner: ResMut<EventRunner>,

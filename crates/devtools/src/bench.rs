@@ -34,6 +34,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::script::{Script, Scripts};
 use anyhow::{Context, bail};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -41,7 +42,7 @@ use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
 use maki_core::{App, Input, Interpolated, Module, Startup, Time, Update, interpolate_transforms};
 use maki_gameplay::{StartRoom, clamp_to_room};
-use maki_platform::{Action, QuitRequested, ScriptedActions, WindowSettings};
+use maki_platform::{QuitRequested, ScriptedActions, WindowSettings};
 use maki_render::{
     Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld, half_to_f32, setup_renderer,
 };
@@ -89,14 +90,6 @@ pub struct BenchRun {
     /// `Some`: the script runs, and the light does not move.
     pub script: Option<Script>,
 }
-
-/// A script: from each frame number on, the actions that are held down. The actions
-/// of frame N move the player in the fixed step of frame N + 1, and the picture shows
-/// that step in frame N + 2 (see `maki_core::interpolation`).
-pub type Script = &'static [(u64, &'static [Action])];
-
-/// Scripts by name.
-pub type Scripts = &'static [(&'static str, Script)];
 
 fn find_script(scripts: Scripts, name: &str) -> Option<Script> {
     let named = scripts.iter().find(|(script, _)| *script == name);
@@ -160,30 +153,40 @@ pub fn parse_args(
     Ok((Some(run), rest))
 }
 
-/// The actions that a script holds in a frame.
-fn script_actions(script: Script, frame: u64) -> &'static [Action] {
-    let passed = script.iter().take_while(|(first, _)| *first <= frame);
-    passed.last().map_or(&[], |(_, actions)| actions)
-}
-
 fn run_script(
     time: Res<Time>,
-    bench: Res<Bench>,
+    mut bench: ResMut<Bench>,
     room: Res<CurrentRoom>,
+    events: Option<Res<maki_events::EventRunner>>,
     players: Query<&Interpolated, bevy_ecs::query::With<maki_scene::Player>>,
     mut scripted: ResMut<ScriptedActions>,
 ) {
+    use bevy_ecs::change_detection::DetectChangesMut;
+
+    let player = players.iter().next().map(|pose| pose.current.translation);
     // No run, or a run with no script: nothing is held, also after a run that stopped.
-    let script = bench.active.as_ref().and_then(|active| {
+    // The progress of the script has no reader: no change of the resource.
+    let active = bench.bypass_change_detection().active.as_mut();
+    let script = active.and_then(|active| {
         let script = active.run.script?;
-        Some(script_actions(script, active.bench_frame(time.frame)))
+        let frame = active.bench_frame(time.frame);
+        let world = crate::script::World {
+            player: player.unwrap_or_default(),
+            room: &room.def,
+            events: events.as_ref().map_or(&[], |runner| runner.events()),
+            loads: room.loads,
+            blocked: events.as_ref().is_some_and(|runner| runner.blocks_player()),
+        };
+        let progress = &mut active.progress;
+        let actions = crate::script::actions(script, progress, frame, &world);
+        Some((actions, progress.step))
     });
-    let actions = script.unwrap_or(&[]);
+    let (actions, step) = script.unwrap_or((&[], 0));
     // Only a change is a write.
     if scripted.0.len() != actions.len() || !actions.iter().all(|a| scripted.0.contains(a)) {
-        let player = players.iter().next().map(|pose| pose.current.translation);
         tracing::debug!(
             frame = time.frame,
+            step,
             ?actions,
             ?player,
             room = %room.path.display(),
@@ -212,7 +215,11 @@ impl Module for BenchModule {
             (
                 // The light jumps to its place of the frame: no blend between fixed steps.
                 move_lights.before(interpolate_transforms),
-                run_script,
+                // After the events of a new room are read: a script finds the place
+                // of an event in the frame of the room change.
+                run_script
+                    .after(move_lights)
+                    .after(maki_events::load_room_events),
             )
                 .after(load_requested_room),
         );
@@ -314,6 +321,8 @@ struct Active {
     loads: u64,
     /// The vsync value of the settings before the run.
     vsync: bool,
+    /// Where the script of the run is.
+    progress: crate::script::Progress,
 }
 
 impl Active {
@@ -408,6 +417,7 @@ fn record_frame(
             last_start: None,
             loads: room.loads,
             vsync,
+            progress: Default::default(),
             run,
         });
     }
@@ -563,21 +573,7 @@ mod tests {
         assert!(half_to_f32(0x7E00).is_nan());
     }
 
-    const LEFT: Action = Action("left");
-    const UP: Action = Action("up");
-    const SCRIPT: Script = &[(40, &[LEFT]), (95, &[UP, LEFT]), (120, &[])];
-
-    #[test]
-    fn a_script_holds_the_actions_of_the_last_entry_that_started() {
-        let held = |frame| script_actions(SCRIPT, frame);
-        assert_eq!(held(1), &[]);
-        assert_eq!(held(40), &[LEFT]);
-        assert_eq!(held(94), &[LEFT]);
-        assert_eq!(held(95), &[UP, LEFT]);
-        // Nothing is held from the last entry on, and after the script.
-        assert_eq!(held(120), &[]);
-        assert_eq!(held(620), &[]);
-    }
+    const SCRIPT: Script = &[crate::script::Step::Hold(40, &[])];
 
     #[test]
     fn the_command_line_gives_the_run_and_leaves_the_other_arguments() {

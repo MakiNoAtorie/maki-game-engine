@@ -355,8 +355,13 @@ impl Mesh {
     /// A box with sides along the axes, from the corner `min` to the corner `max`.
     /// The normals point out. The origin of the mesh can be outside of the box: a door
     /// is a box with the origin on its hinge.
+    ///
+    /// The corners can be in any order, and a side has a length of 1 mm at least: a
+    /// box with no height (a number that a person types in a tool, digit by digit)
+    /// is a thin plate, not a mesh with no normals.
     pub fn cuboid(min: Vec3, max: Vec3) -> Self {
-        let size = max - min;
+        let (min, max) = (min.min(max), min.max(max));
+        let size = (max - min).max(Vec3::splat(1e-3));
         // The texture coordinates start at the corner `min`: a texture that is as
         // large as a side shows one time on it, with no cut in the middle.
         let mut quads = Quads {
@@ -622,6 +627,18 @@ fn smooth_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_box_with_no_height_or_with_its_corners_in_the_other_order_is_a_valid_mesh() {
+        let flat = Mesh::cuboid(Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5));
+        assert!(flat.normals().iter().all(|normal| normal.is_finite()));
+        let turned = Mesh::cuboid(Vec3::ONE, Vec3::ZERO);
+        assert_eq!(
+            turned.normals(),
+            Mesh::cuboid(Vec3::ZERO, Vec3::ONE).normals()
+        );
+        assert_eq!(Mesh::cube(0.0).positions().len(), 24);
+    }
 
     /// Each triangle has area, and its front side agrees with its three vertex normals.
     fn assert_winding_agrees_with_normals(mesh: &Mesh) {

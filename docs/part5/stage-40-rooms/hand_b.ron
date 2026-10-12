@@ -1,0 +1,86 @@
+(
+    width: 6.0,
+    depth: 5.0,
+    height: 3.0,
+    doorways: [
+        (wall: NegX, offset: 0.0, width: 1.2, height: 2.1, depth: 1.5),
+    ],
+    props: [
+        (
+            name: "post",
+            mesh: Cuboid((-0.15, 0.0, -0.15), (0.15, 0.9, 0.15)),
+            pose: (position: (2.2, 0.0, -1.5)),
+            look: (color: (0.3, 0.3, 0.32)),
+        ),
+        (
+            name: "button",
+            mesh: Cube(0.16),
+            pose: (position: (2.2, 0.98, -1.5)),
+            look: (color: (0.8, 0.05, 0.05)),
+            collider: false,
+        ),
+        (
+            mesh: Sphere(radius: 0.4, segments: 32, rings: 16),
+            pose: (position: (-1.2, 0.4, -1.4)),
+            look: (color: (0.85, 0.85, 0.85), material: Mirror),
+        ),
+        (
+            mesh: Cube(0.8),
+            pose: (position: (0.6, 0.4, 1.3), rotation: (0.0, 30.0, 0.0)),
+            look: (color: (0.25, 0.5, 0.3)),
+        ),
+        (name: "cabinet", mesh: File("models/cabinet.glb"), pose: (position: (-2.3, 0.0, -2.2))),
+    ],
+    lights: [
+        (name: "lamp_b", position: (0.0, 2.3, 0.2), radius: 0.15, color: (0.9, 0.95, 1.0), intensity: 9.0),
+        (name: "pilot", position: (2.2, 1.35, -1.5), radius: 0.04, color: (1.0, 0.15, 0.1), intensity: 0.5),
+    ],
+    spawns: {
+        "west": (-2.2, 0.0, 0.0),
+    },
+    events: [
+        (
+            name: "switch",
+            area: (center: (2.2, -1.5), size: (0.6, 0.6)),
+            pages: [
+                (
+                    trigger: Interact,
+                    commands: [
+                        PlaySound("sounds/click.wav", 1.0),
+                        SetFlag("power_off", true),
+                        LightOff("lamp_b"),
+                        Message("Click. The lamp dies. Far away, a lock lets go."),
+                        SavePoint,
+                    ],
+                ),
+                (
+                    conditions: [Flag("power_off")],
+                    trigger: Interact,
+                    commands: [Message("The switch does not move.")],
+                ),
+            ],
+        ),
+        (
+            name: "lamp is dead",
+            pages: [(conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")])],
+        ),
+        (
+            name: "mirror ball",
+            area: (center: (-1.2, -1.4), size: (0.8, 0.8)),
+            pages: [
+                (
+                    trigger: Interact,
+                    commands: [
+                        ShakeCamera(0.6, 0.06),
+                        Message("The ball rings. Something under the floor answers."),
+                    ],
+                ),
+            ],
+        ),
+        (
+            name: "to room a",
+            area: (center: (-3.9, 0.0), size: (0.8, 1.2)),
+            pages: [(trigger: Touch, commands: [FadeOut(0.4), Transfer("room_a.ron", "east"), FadeIn(0.4)])],
+        ),
+    ],
+)

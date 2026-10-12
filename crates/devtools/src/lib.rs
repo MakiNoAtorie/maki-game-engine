@@ -7,8 +7,10 @@
 
 mod bench;
 mod gameplay_panel;
+mod script;
 mod stages;
 
-pub use bench::{BenchModule, BenchRun, OUTPUT_PATH, Script, Scripts, USAGE, parse_args};
+pub use bench::{BenchModule, BenchRun, OUTPUT_PATH, USAGE, parse_args};
 pub use gameplay_panel::GameplayPanelModule;
+pub use script::{Axis, Pace, Place, Script, Scripts, Step};
 pub use stages::{NEXT_STAGE, PREVIOUS_STAGE, RoomDirs, StagesModule};

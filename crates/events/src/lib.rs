@@ -30,7 +30,9 @@ use maki_scene::{RoomValidators, load_requested_room, move_movers};
 pub use builtin::Builtin;
 pub use check::{CheckContext, Finding, Problem};
 pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, Step};
-pub use interpreter::{ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, run_events};
+pub use interpreter::{
+    ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, load_room_events, run_events,
+};
 pub use model::{Area, Compare, Condition, EventDef, Page, Trigger, active_page, all_hold};
 
 /// Starts the event that the player faces, closes a message, and takes the marked
