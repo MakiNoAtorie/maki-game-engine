@@ -22,7 +22,7 @@ use maki_gpu::{BufferDesc, BufferHandle, FRAMES_IN_FLIGHT};
 
 use crate::{MAX_INSTANCES, RenderGpu, RenderWorld, setup_renderer};
 
-/// Bytes of the camera buffer: `PreviousCamera` in `shaders/trace.comp`.
+/// Bytes of the camera buffer: `PreviousCamera` in `shaders/trace.glsl`.
 const CAMERA_BYTES: usize = 64;
 /// Bytes of one instance in the instance buffer: three rows of a matrix.
 const INSTANCE_BYTES: usize = 48;
@@ -84,7 +84,7 @@ impl Projection {
 
     /// Where the camera sees a world point, in pixels of a picture of `size`. (0, 0) is
     /// the top left corner. `None` for a point that is not in front of the camera.
-    /// The shader has the same steps (`previous_pixel` in `shaders/trace.comp`): this
+    /// The shader has the same steps (`previous_pixel` in `shaders/trace.glsl`): this
     /// copy is for the unit test of the math.
     #[cfg(test)]
     pub fn pixel(&self, point: Vec3, size: glam::Vec2) -> Option<glam::Vec2> {
@@ -96,7 +96,7 @@ impl Projection {
         (depth > 0.0).then(|| (glam::Vec2::new(x, -y) / depth * 0.5 + 0.5) * size)
     }
 
-    /// `PreviousCamera` of `shaders/trace.comp`: four vec3, each with 4 bytes of padding.
+    /// `PreviousCamera` of `shaders/trace.glsl`: four vec3, each with 4 bytes of padding.
     pub fn bytes(&self) -> Vec<u8> {
         [self.origin, self.right, self.up, self.forward]
             .iter()

@@ -22,6 +22,7 @@ use crate::graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, ResourceId, SizeMode, TransientDesc,
 };
 use crate::light::{LightBuffers, light_bytes};
+use crate::meshes::TextureUse;
 use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
 use crate::noise::NoiseBuffer;
 use crate::{
@@ -40,7 +41,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         size: SizeMode::Internal,
     };
     // The light that each pixel gets, in three parts: the mean of the samples of this
-    // frame (see `shaders/trace.comp`). Linear color with values far above 1.0 (the
+    // frame (see `shaders/trace.glsl`). Linear color with values far above 1.0 (the
     // light itself), at the internal resolution.
     // 16-bit floats: one frame needs no more, and the smaller image is faster to read.
     let direct = graph.add_transient(internal("direct", Format::Rgba16Float));
@@ -60,7 +61,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         size: SizeMode::Window,
     });
 
-    // The surface that each pixel shows, for the denoiser: see `shaders/trace.comp`.
+    // The surface that each pixel shows, for the denoiser: see `shaders/trace.glsl`.
     // World normal in xyz, distance from the camera in w. With history: the denoiser
     // compares it with the surface of the frame before.
     let (normal, previous_normal) =
@@ -90,10 +91,14 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         mean_indirect,
         previous_mean_indirect,
     };
+    let mut trace_pipeline = |spirv| gpu.create_compute_pipeline(spirv).expect("trace pipeline");
     graph.add_pass(Trace {
-        pipeline: gpu
-            .create_compute_pipeline(shader_spirv!("trace.comp"))
-            .expect("trace pipeline"),
+        // In the order of `TextureUse`.
+        pipelines: [
+            trace_pipeline(shader_spirv!("trace.comp")),
+            trace_pipeline(shader_spirv!("trace_textured.comp")),
+            trace_pipeline(shader_spirv!("trace_cutout.comp")),
+        ],
         images: trace,
         lights_logged: false,
     });
@@ -116,6 +121,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
             .create_sampler(&SamplerDesc {
                 linear: true,
                 repeat: false,
+                mipmaps: false,
             })
             .expect("tonemap sampler"),
         hdr: resolved,
@@ -220,6 +226,7 @@ impl Pass for BuildTlas {
                 transform,
                 // On a hit, the shader gets this number and finds the mesh data with it.
                 custom_index: mesh.group_first,
+                two_sided: mesh.two_sided,
             });
             previous.push(matrix_rows(instance.previous_transform));
         }
@@ -263,9 +270,13 @@ impl Pass for BuildTlas {
 
 /// The path tracer: follows random light paths from the camera for each pixel and
 /// writes the mean of the light that they bring, in three parts, and the surface that
-/// the pixel shows. See `shaders/trace.comp` for the steps.
+/// the pixel shows. See `shaders/trace.glsl` for the steps.
 struct Trace {
-    pipeline: ComputePipelineHandle,
+    /// The shader in three forms: with no texture code, with textures, and with
+    /// textures that have holes. A frame runs the first one that its meshes permit
+    /// (`GpuMeshes::texture_use`): the texture code costs 2 % and the holes 3 % more
+    /// GPU time for all rays, also in a scene that has neither (measured, stage 25).
+    pipelines: [ComputePipelineHandle; 3],
     /// The pass writes the images of this frame, and reads `previous_normal` and
     /// `previous_mean_indirect`.
     images: denoise::TraceImages,
@@ -376,21 +387,46 @@ impl Pass for Trace {
             // starts the picture again.
             u32::from(frame.blue_noise)
                 | u32::from(frame.bounce_light && !reset_frame) << 1
-                | frame.max_bounces << 8,
+                | frame.max_bounces << 8
+                | texture_detail(frame) << 16
+                // A signed number of 8 bits, in steps of 1/8 of a mip level.
+                | ((frame.texture_bias * 8.0).round() as i32 as u32 & 0xFF) << 24,
             // Two bindless indices in one field: each is below 65536.
             ctx.bindless_index(self.images.previous_mean_indirect)
                 | ctx.bindless_index(self.images.previous_normal) << 16,
         ]);
         // The shader has a vec2 at `jitter`: it starts at a multiple of 8 bytes.
         debug_assert_eq!(fields.len() - 4, 112 / 4);
+        let pipeline = match ctx.world.resource::<GpuMeshes>().texture_use() {
+            TextureUse::None => self.pipelines[0],
+            TextureUse::Textures => self.pipelines[1],
+            TextureUse::Cutout => self.pipelines[2],
+        };
         ctx.gpu
             .dispatch_compute(
-                self.pipeline,
+                pipeline,
                 &push_constants(&fields),
                 groups(ctx.extent(self.images.direct)),
             )
             .expect("trace dispatch");
     }
+}
+
+/// Bits 16 to 23 of the `flags` of the trace shader: the size of a pixel of the
+/// picture as a part of the size of a traced pixel, 1 to 255 for 1/255 to 1.
+///
+/// The shader selects the mip level of a texture for the size of a pixel. With a
+/// render scale below 1 the traced pixels are larger than those of the picture, but
+/// the anti-aliasing puts the frames together to a picture with the detail of the
+/// picture size (each frame traces through another point of the pixel). So the
+/// texture must have the detail of the picture size.
+fn texture_detail(frame: &ExtractedFrame) -> u32 {
+    if !frame.taa {
+        return 255;
+    }
+    let part = frame.internal_resolution.1 as f32 / frame.picture_size.1.max(1) as f32;
+    // Not above 1: a picture that is smaller than the traced image gets no blur.
+    (part.min(1.0) * 255.0).round().clamp(1.0, 255.0) as u32
 }
 
 /// The picture (`resolved`, at the output resolution) to display color. With a debug view

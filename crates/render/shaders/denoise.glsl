@@ -1,4 +1,4 @@
-// Shared by the denoiser shaders (denoise_*.comp) and trace.comp. See src/denoise.rs
+// Shared by the denoiser shaders (denoise_*.comp) and trace.glsl. See src/denoise.rs
 // for the method.
 
 // The largest light value. The largest value of a 16-bit float is 65504.

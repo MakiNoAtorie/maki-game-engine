@@ -1,0 +1,4 @@
+#version 460
+// The path tracer for a scene with textures. The code is in trace.glsl.
+#define TEXTURES
+#include "trace.glsl"

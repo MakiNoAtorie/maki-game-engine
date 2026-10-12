@@ -42,7 +42,7 @@ pub struct ExtractedLights(pub Vec<ExtractedLight>);
 
 /// The light buffer has room for this many lights. More are not used by the renderer.
 pub const MAX_LIGHTS: usize = 256;
-/// Bytes of one light in the light buffer: `LightData` in `shaders/trace.comp`.
+/// Bytes of one light in the light buffer: `LightData` in `shaders/trace.glsl`.
 const LIGHT_BYTES: usize = 48;
 
 /// The light buffers on the GPU: one for each frame slot, because the CPU writes the
@@ -51,7 +51,7 @@ const LIGHT_BYTES: usize = 48;
 #[derive(Resource)]
 pub(crate) struct LightBuffers(pub [BufferHandle; FRAMES_IN_FLIGHT]);
 
-/// `LightData` of `shaders/trace.comp` for each light, in std430 layout.
+/// `LightData` of `shaders/trace.glsl` for each light, in std430 layout.
 pub(crate) fn light_bytes(lights: &[ExtractedLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len() * LIGHT_BYTES);
     for light in lights.iter().take(MAX_LIGHTS) {

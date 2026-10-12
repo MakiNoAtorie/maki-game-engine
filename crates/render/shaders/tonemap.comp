@@ -63,7 +63,7 @@ const uint CURVE_NEUTRAL = 1u;
 const uint MODE_PICTURE = 0u;   // the picture `hdr`, through the tone curve
 const uint MODE_LIGHT = 1u;     // rgb of `a` as light, through the tone curve
 // `a * (b + c) + d` as light, plus the fourth channels of b, c, d as a color: albedo,
-// direct, indirect, specular, and the emission (see trace.comp).
+// direct, indirect, specular, and the emission (see trace.glsl).
 const uint MODE_SUM = 2u;
 const uint MODE_MOTION = 3u;    // `a`: screen motion in pixels
 const uint MODE_DEPTH = 4u;     // the distance of `normal`
@@ -181,7 +181,7 @@ vec3 tone_curve(vec3 light) {
 }
 
 // A random number from 0.0 to 1.0 for a pixel and a frame (the PCG hash, as in
-// trace.comp).
+// trace.glsl).
 float pixel_random(uvec3 v) {
     uint state = (v.x + v.y * 7919u + v.z * 104729u) * 747796405u + 2891336453u;
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;

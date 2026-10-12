@@ -29,7 +29,7 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
 // Must agree with `DenoiseFilter::execute` in src/denoise.rs.
 // A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
 layout(push_constant) uniform Push {
-    // The ray of a pixel is `forward + x * right + y * up`, as in trace.comp.
+    // The ray of a pixel is `forward + x * right + y * up`, as in trace.glsl.
     vec3 right;
     uint src;    // index in `images_rgba16f`
     vec3 up;

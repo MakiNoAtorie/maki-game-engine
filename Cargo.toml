@@ -34,6 +34,8 @@ glam = "0.34.1"
 # `import` reads the buffers of a file. It also brings the `image` crate, for textures later.
 # The two extensions describe glass: how much light goes through, and how much it bends.
 gltf = { version = "1.4.1", features = ["KHR_materials_transmission", "KHR_materials_ior", "KHR_lights_punctual"] }
+# Decodes texture files. The gltf crate has it too: the same version, no second copy.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 # No reflection and no thread pool: schedules run on the calling thread.
 # `debug` puts system names in schedule error messages.
 bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "debug"] }

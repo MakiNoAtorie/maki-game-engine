@@ -16,8 +16,8 @@ use maki_core::{App, FixedUpdate, Module, Update, interpolate_transforms};
 pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use room::{
-    CurrentRoom, DoorDef, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef, RoomDef,
-    RoomEntity, RoomModels, RoomRequest, RoomTarget, RoomValidator, RoomValidators,
+    CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef, RoomDef,
+    RoomEntity, RoomModels, RoomRequest, RoomTarget, RoomValidator, RoomValidators, TextureDef,
     load_requested_room, parse_room, read_room, ron_options,
 };
 
@@ -30,6 +30,7 @@ impl Module for SceneModule {
         // independent of the order in which the modules are added.
         app.init_resource::<maki_assets::Assets<Mesh>>()
             .init_resource::<maki_assets::Assets<maki_assets::Model>>()
+            .init_resource::<maki_assets::Textures>()
             .init_resource::<CurrentRoom>()
             .init_resource::<RoomRequest>()
             .init_resource::<RoomModels>()

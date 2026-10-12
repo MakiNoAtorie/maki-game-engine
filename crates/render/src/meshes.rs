@@ -6,9 +6,12 @@
 //!   geometry for each mesh. One BLAS for a model and not one for each mesh: rays are
 //!   faster against one structure than against many that overlap.
 //! - one normal buffer: the normals of the three corners of each triangle, mesh after mesh.
+//! - one buffer of texture coordinates, with the same order, for the meshes of the
+//!   group that have a texture. A group with no texture has none.
 //!
-//! One more buffer, the mesh table, has an entry for each mesh with its material and
-//! the address of its normals. The meshes of a group have table indices in sequence, in
+//! One more buffer, the mesh table, has an entry for each mesh with its material, its
+//! textures (the `textures` module), and the addresses of its normals and texture
+//! coordinates. The meshes of a group have table indices in sequence, in
 //! the order of the BLAS geometries: a hit gives the first index (from the TLAS
 //! instance) and the geometry number, and the sum is the table index of the mesh.
 //! `shaders/scene.glsl` has the same layouts on the shader side.
@@ -33,11 +36,12 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Query, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::{Mat4, Vec3};
-use maki_assets::{Assets, Handle, Material, Mesh, Model};
+use maki_assets::{Assets, Handle, Material, Mesh, Model, Textures};
 use maki_core::{App, Extract, Render, Startup, Transform};
 use maki_gpu::{BlasDesc, BlasGeometry, BlasHandle, BufferDesc, BufferHandle, Gpu};
 use maki_scene::MeshInstance;
 
+use crate::textures::{GpuTextures, NO_TEXTURE};
 use crate::{RenderGpu, RenderWorld, setup_renderer};
 
 /// Size of the mesh table, in entries.
@@ -46,9 +50,11 @@ use crate::{RenderGpu, RenderWorld, setup_renderer};
 pub const MAX_MESHES: u32 = 1024;
 
 /// Bytes of one entry of the mesh table: `MeshEntry` in `scene.glsl`.
-const ENTRY_BYTES: usize = 48;
-/// `NormalBuffer` in `scene.glsl` declares this alignment for its address.
+const ENTRY_BYTES: usize = 64;
+/// `NormalBuffer` and `UvBuffer` in `scene.glsl` declare this alignment for their address.
 const BUFFER_ALIGNMENT: u64 = 4;
+/// Bytes of the texture coordinates of one triangle corner: two `f32`.
+const UV_BYTES: u64 = 8;
 
 /// One mesh to draw. A resource of the render world holds the list.
 #[derive(Debug, Clone, Copy)]
@@ -81,11 +87,27 @@ pub struct GpuMesh {
     /// Table index of the first mesh of the group, and the number of meshes in it.
     pub(crate) group_first: u32,
     pub(crate) group_len: u32,
+    /// False: the camera does not see the back side of the group (`Mesh::open_back`).
+    pub(crate) two_sided: bool,
+}
+
+/// How much of the texture code the trace pass needs: each step costs GPU time for
+/// all rays, so a scene pays only for what its meshes use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextureUse {
+    None,
+    Textures,
+    /// Textures, and a mesh with holes.
+    Cutout,
 }
 
 /// What the meshes of one group share.
 struct Group {
     normals: BufferHandle,
+    /// `None`: no mesh of the group has a texture.
+    uvs: Option<BufferHandle>,
+    /// A mesh of the group has holes (a cut-out texture).
+    cutout: bool,
     first: u32,
     len: u32,
 }
@@ -96,6 +118,7 @@ pub struct GpuMeshes {
     table: BufferHandle,
     meshes: HashMap<Handle<Mesh>, GpuMesh>,
     groups: HashMap<BlasHandle, Group>,
+    textures: GpuTextures,
     /// True for each table index that a mesh uses.
     used: Vec<bool>,
     /// The time of the last `sync`.
@@ -113,6 +136,7 @@ impl GpuMeshes {
             table,
             meshes: HashMap::new(),
             groups: HashMap::new(),
+            textures: GpuTextures::new(gpu)?,
             used: vec![false; MAX_MESHES as usize],
             last_sync_time: std::time::Duration::ZERO,
         })
@@ -138,6 +162,22 @@ impl GpuMeshes {
         self.meshes.len()
     }
 
+    /// The number of textures on the GPU.
+    pub fn texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
+    /// What the trace shader needs for the meshes that are on the GPU.
+    pub(crate) fn texture_use(&self) -> TextureUse {
+        if self.groups.values().any(|group| group.cutout) {
+            TextureUse::Cutout
+        } else if self.groups.values().any(|group| group.uvs.is_some()) {
+            TextureUse::Textures
+        } else {
+            TextureUse::None
+        }
+    }
+
     /// Number of meshes in the group of a BLAS. 0 if no group has this BLAS.
     pub(crate) fn get_group_len(&self, blas: BlasHandle) -> u32 {
         self.groups.get(&blas).map_or(0, |group| group.len)
@@ -147,9 +187,19 @@ impl GpuMeshes {
         self.meshes.is_empty()
     }
 
-    /// Makes the GPU meshes agree with the stores.
-    fn sync(&mut self, gpu: &mut Gpu, assets: &Assets<Mesh>, models: &Assets<Model>) {
+    /// Makes the GPU meshes and textures agree with the stores.
+    fn sync(
+        &mut self,
+        gpu: &mut Gpu,
+        assets: &Assets<Mesh>,
+        models: &Assets<Model>,
+        textures: &Textures,
+    ) {
         let start = std::time::Instant::now();
+        // The textures first: the table entry of a mesh names its textures.
+        // ponytail: a texture that is not loaded when its mesh is uploaded never
+        // shows. With a loader thread, write the table entry again when it arrives.
+        self.textures.sync(gpu, textures);
         // This is where the GPU memory of a mesh is freed while the game runs.
         // `destroy_buffer` waits until no frame in flight can read the buffer.
         // At shutdown, `Gpu` frees all buffers that are left.
@@ -168,6 +218,9 @@ impl GpuMeshes {
             self.meshes.retain(|_, mesh| mesh.blas != blas);
             gpu.destroy_blas(blas);
             gpu.destroy_buffer(group.normals);
+            if let Some(uvs) = group.uvs {
+                gpu.destroy_buffer(uvs);
+            }
             self.used[group.first as usize..][..group.len as usize].fill(false);
             tracing::info!(
                 first_index = group.first,
@@ -238,12 +291,45 @@ impl GpuMeshes {
             .flat_map(|(_, mesh)| normal_bytes(mesh))
             .collect();
         let (normals, normal_address) = create_filled(gpu, name, &normal_bytes)?;
-        // The table entries, each with the address of the normals of its mesh.
+        // The textures of each mesh, as the table names them.
+        let slots: Vec<[u32; 2]> = group
+            .iter()
+            .map(|(_, mesh)| {
+                [mesh.base_color_texture(), mesh.emissive_texture()]
+                    .map(|texture| self.textures.slot(gpu, texture))
+            })
+            .collect();
+        let textured = |slots: &[u32; 2]| slots.iter().any(|slot| *slot != NO_TEXTURE);
+        // Texture coordinates only for the meshes that have a texture.
+        let uv_bytes: Vec<u8> = group
+            .iter()
+            .zip(&slots)
+            .filter(|(_, slots)| textured(slots))
+            .flat_map(|((_, mesh), _)| uv_bytes(mesh))
+            .collect();
+        let uvs = if uv_bytes.is_empty() {
+            None
+        } else {
+            Some(create_filled(gpu, name, &uv_bytes).inspect_err(|_| gpu.destroy_buffer(normals))?)
+        };
+        let destroy_buffers = |gpu: &mut Gpu| {
+            gpu.destroy_buffer(normals);
+            if let Some((uvs, _)) = uvs {
+                gpu.destroy_buffer(uvs);
+            }
+        };
+        // The table entries, each with the addresses of the data of its mesh.
         let mut entries = Vec::with_capacity(group.len() * ENTRY_BYTES);
         let mut address = normal_address;
-        for (_, mesh) in group {
-            entries.extend(entry_bytes(address, mesh));
-            address += mesh.indices().len() as u64 * 4;
+        let mut uv_address = uvs.map_or(0, |(_, address)| address);
+        for ((_, mesh), slots) in group.iter().zip(&slots) {
+            let corners = mesh.indices().len() as u64;
+            let mesh_uvs = if textured(slots) { uv_address } else { 0 };
+            entries.extend(entry_bytes(address, mesh_uvs, *slots, mesh));
+            address += corners * 4;
+            if textured(slots) {
+                uv_address += corners * UV_BYTES;
+            }
         }
 
         let positions: Vec<Vec<[f32; 3]>> = group
@@ -253,9 +339,13 @@ impl GpuMeshes {
         let geometries: Vec<_> = group
             .iter()
             .zip(&positions)
-            .map(|((_, mesh), positions)| BlasGeometry {
+            .zip(&slots)
+            .map(|(((_, mesh), positions), slots)| BlasGeometry {
                 positions,
                 indices: mesh.indices(),
+                // Holes need the alpha of the color texture. Only such a mesh pays
+                // for the test in the ray query loop.
+                opaque: mesh.alpha_cutoff().is_none() || slots[0] == NO_TEXTURE,
             })
             .collect();
         // The BLAS is built here, one time: the triangles of a mesh do not change.
@@ -270,14 +360,19 @@ impl GpuMeshes {
                     .inspect_err(|_| gpu.destroy_blas(blas))?;
                 Ok(blas)
             })
-            .inspect_err(|_| gpu.destroy_buffer(normals))?;
+            .inspect_err(|_| destroy_buffers(gpu))?;
 
         let len = group.len() as u32;
+        // The camera looks through the back side of the room box only. A model has
+        // parts with one side (a leaf, a sheet of cloth): they show from the two sides.
+        let two_sided = !group.iter().all(|(_, mesh)| mesh.open_back());
         self.used[first as usize..][..group.len()].fill(true);
         self.groups.insert(
             blas,
             Group {
                 normals,
+                uvs: uvs.map(|(buffer, _)| buffer),
+                cutout: geometries.iter().any(|geometry| !geometry.opaque),
                 first,
                 len,
             },
@@ -291,6 +386,7 @@ impl GpuMeshes {
                 blas,
                 group_first: first,
                 group_len: len,
+                two_sided,
             };
             self.meshes.insert(*handle, gpu_mesh);
         }
@@ -356,8 +452,20 @@ fn normal_bytes(mesh: &Mesh) -> Vec<u8> {
     corners.flat_map(u32::to_ne_bytes).collect()
 }
 
-/// `MeshEntry` of `scene.glsl`, in std430 layout.
-fn entry_bytes(normal_address: u64, mesh: &Mesh) -> Vec<u8> {
+/// `UvBuffer` of `scene.glsl`: the texture coordinates of each corner of each
+/// triangle, two `f32`. Not packed: coordinates in meters go far past 0 to 1, and a
+/// 16-bit float is then too coarse for a texture of some hundred pixels.
+fn uv_bytes(mesh: &Mesh) -> Vec<u8> {
+    let corners = mesh
+        .indices()
+        .iter()
+        .map(|index| mesh.uvs()[*index as usize]);
+    corners.flatten().flat_map(f32::to_ne_bytes).collect()
+}
+
+/// `MeshEntry` of `scene.glsl`, in std430 layout. `textures`: the slots of the color
+/// texture and of the emissive texture.
+fn entry_bytes(normal_address: u64, uv_address: u64, textures: [u32; 2], mesh: &Mesh) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(ENTRY_BYTES);
     bytes.extend(normal_address.to_ne_bytes()); // byte 0
     // The `MATERIAL_*` numbers of `scene.glsl`, and the number of the material:
@@ -372,9 +480,20 @@ fn entry_bytes(normal_address: u64, mesh: &Mesh) -> Vec<u8> {
     };
     bytes.extend(material.to_ne_bytes()); // byte 8
     bytes.extend(param.to_ne_bytes()); // byte 12
-    bytes.extend(mesh.base_color().iter().flat_map(|c| c.to_ne_bytes())); // byte 16
+    // The fourth value of the two colors holds two numbers of the textures.
+    let [r, g, b, alpha] = mesh.base_color();
+    let color = [r, g, b, mesh.uvs_per_meter()];
+    bytes.extend(color.iter().flat_map(|c| c.to_ne_bytes())); // byte 16
+    // The shader tests the alpha of the texture alone, so the alpha of the color is
+    // in the limit. 0: no holes.
+    let cutoff = match mesh.alpha_cutoff() {
+        Some(cutoff) if textures[0] != NO_TEXTURE => cutoff / alpha.max(1e-6),
+        _ => 0.0,
+    };
     let [r, g, b] = mesh.emissive();
-    bytes.extend([r, g, b, 0.0].iter().flat_map(|c| c.to_ne_bytes())); // byte 32
+    bytes.extend([r, g, b, cutoff].iter().flat_map(|c| c.to_ne_bytes())); // byte 32
+    bytes.extend(uv_address.to_ne_bytes()); // byte 48
+    bytes.extend(textures.iter().flat_map(|slot| slot.to_ne_bytes())); // byte 56
     debug_assert_eq!(bytes.len(), ENTRY_BYTES);
     bytes
 }
@@ -385,6 +504,7 @@ pub(crate) fn build(app: &mut App) {
     // independent of the order in which the modules are added.
     app.init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<Model>>()
+        .init_resource::<Textures>()
         .add_systems(Startup, setup_meshes.after(setup_renderer))
         .add_systems(Extract, (extract_meshes, extract_instances))
         .add_systems(Render, log_scene);
@@ -400,13 +520,23 @@ fn setup_meshes(mut gpu: ResMut<RenderGpu>, mut render_world: ResMut<RenderWorld
 fn extract_meshes(
     assets: Res<Assets<Mesh>>,
     models: Res<Assets<Model>>,
+    textures: Res<Textures>,
     mut gpu: ResMut<RenderGpu>,
     mut render_world: ResMut<RenderWorld>,
 ) {
-    // The store changes only when an asset is added, finished, or removed.
+    // The store changes only when an asset is added, finished, or removed. A texture
+    // comes and goes with the meshes that use it.
     if assets.is_changed() {
         let mut meshes = render_world.0.resource_mut::<GpuMeshes>();
-        meshes.sync(&mut gpu.0, &assets, &models);
+        meshes.sync(&mut gpu.0, &assets, &models, &textures);
+        // For a check that a room change frees what the old room had. A destroyed
+        // resource is counted until no frame in flight can use it.
+        tracing::debug!(
+            meshes = meshes.len(),
+            textures = meshes.texture_count(),
+            gpu_bytes = gpu.0.allocated_bytes(),
+            "meshes and textures on the GPU"
+        );
         // An instance whose mesh was not on the GPU can show now, or the reverse.
         render_world.reset_accumulation();
     }
@@ -509,21 +639,41 @@ mod tests {
         let corner = mesh.normals()[mesh.indices()[4] as usize];
         assert_eq!(u32_at(&normals, 16), pack_normal(corner));
 
-        let entry = entry_bytes(0x1122_3344_5566_7788, &mesh);
+        let entry = entry_bytes(0x1122_3344_5566_7788, 0, [NO_TEXTURE; 2], &mesh);
         assert_eq!(entry.len(), ENTRY_BYTES);
         assert_eq!(entry[..8], 0x1122_3344_5566_7788_u64.to_ne_bytes());
         assert_eq!(u32_at(&entry, 8), 2);
         assert_eq!(f32_at(&entry, 12), 1.5);
         assert_eq!(f32_at(&entry, 16), mesh.base_color()[0]);
-        assert_eq!(f32_at(&entry, 28), mesh.base_color()[3]);
-        // No light of its own.
+        // A cube has texture coordinates in meters.
+        assert_eq!(f32_at(&entry, 28), 1.0);
+        // No light of its own, no holes, no texture.
         assert_eq!(f32_at(&entry, 32), 0.0);
+        assert_eq!(f32_at(&entry, 44), 0.0);
+        assert_eq!(entry[48..56], [0; 8]);
+        assert_eq!([u32_at(&entry, 56), u32_at(&entry, 60)], [NO_TEXTURE; 2]);
+
+        // A texture with holes: the limit, over the alpha of the color. Two floats
+        // of texture coordinates for each index.
+        let leaf = Mesh::cube(1.0)
+            .with_base_color([1.0, 1.0, 1.0, 0.5])
+            .with_alpha_cutoff(0.25);
+        let entry = entry_bytes(0, 0x99, [7 | 3 << 16, NO_TEXTURE], &leaf);
+        assert_eq!(f32_at(&entry, 44), 0.5);
+        assert_eq!(entry[48..56], 0x99_u64.to_ne_bytes());
+        assert_eq!(u32_at(&entry, 56), 7 | 3 << 16);
+        let uvs = uv_bytes(&leaf);
+        assert_eq!(uvs.len(), leaf.indices().len() * UV_BYTES as usize);
+        let corner = leaf.uvs()[leaf.indices()[4] as usize];
+        assert_eq!([f32_at(&uvs, 32), f32_at(&uvs, 36)], corner);
+        // With no texture the holes cannot be read: none.
+        assert_eq!(f32_at(&entry_bytes(0, 0, [NO_TEXTURE; 2], &leaf), 44), 0.0);
 
         // A roughness below the limit is the limit; the light of the mesh follows the color.
         let lamp = Mesh::cube(1.0)
             .with_material(Material::Metal { roughness: 0.0 })
             .with_emissive([3.0, 2.0, 1.0]);
-        let entry = entry_bytes(0, &lamp);
+        let entry = entry_bytes(0, 0, [NO_TEXTURE; 2], &lamp);
         assert_eq!(u32_at(&entry, 8), 3);
         assert_eq!(f32_at(&entry, 12), Material::MIN_ROUGHNESS);
         assert_eq!(

@@ -6,6 +6,8 @@ use anyhow::{Result, ensure};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+use crate::TextureRef;
+
 /// How a surface sends light back.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Material {
@@ -88,8 +90,9 @@ impl Doorway {
     }
 }
 
-/// A triangle mesh with one color and one material. Coordinates are right-handed with +Y up.
-/// The front side of a triangle is the side where its corners go counter-clockwise.
+/// A triangle mesh with one material: a kind, a color, and its textures. Coordinates
+/// are right-handed with +Y up. The front side of a triangle is the side where its
+/// corners go counter-clockwise.
 ///
 /// [`Mesh::new`] checks the data, so users (the GPU upload, later the shaders) can
 /// trust each mesh: every index is in range and no value is NaN.
@@ -99,9 +102,14 @@ pub struct Mesh {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
     indices: Vec<u32>,
+    uvs: Vec<[f32; 2]>,
     base_color: [f32; 4],
     material: Material,
     emissive: [f32; 3],
+    base_color_texture: Option<TextureRef>,
+    emissive_texture: Option<TextureRef>,
+    alpha_cutoff: Option<f32>,
+    open_back: bool,
 }
 
 impl Mesh {
@@ -146,13 +154,74 @@ impl Mesh {
         );
         Ok(Self {
             name,
+            uvs: vec![[0.0; 2]; positions.len()],
             positions,
             normals,
             indices,
             base_color,
             material: Material::Diffuse,
             emissive: [0.0; 3],
+            base_color_texture: None,
+            emissive_texture: None,
+            alpha_cutoff: None,
+            open_back: false,
         })
+    }
+
+    /// The same mesh with texture coordinates: one for each position. (0, 0) is the
+    /// top left corner of the texture, (1, 1) the bottom right one; a texture repeats
+    /// outside of that range.
+    pub fn with_uvs(mut self, uvs: Vec<[f32; 2]>) -> Result<Self> {
+        ensure!(
+            uvs.len() == self.positions.len(),
+            "mesh `{}` has {} positions but {} texture coordinates",
+            self.name,
+            self.positions.len(),
+            uvs.len()
+        );
+        ensure!(
+            uvs.iter().flatten().all(|value| value.is_finite()),
+            "mesh `{}` has a texture coordinate that is not a finite number",
+            self.name
+        );
+        self.uvs = uvs;
+        Ok(self)
+    }
+
+    /// The same mesh with each texture coordinate multiplied by `scale`: 2.0 shows a
+    /// texture two times where it showed one time.
+    pub fn with_uv_scale(mut self, scale: f32) -> Self {
+        for uv in &mut self.uvs {
+            *uv = uv.map(|value| value * scale);
+        }
+        self
+    }
+
+    /// The same mesh with a texture for its color. The base color multiplies it.
+    pub fn with_base_color_texture(mut self, texture: TextureRef) -> Self {
+        self.base_color_texture = Some(texture);
+        self
+    }
+
+    /// The same mesh with a texture for its own light. The emissive color multiplies it.
+    pub fn with_emissive_texture(mut self, texture: TextureRef) -> Self {
+        self.emissive_texture = Some(texture);
+        self
+    }
+
+    /// The same mesh with holes: where the alpha of its color (the base color times
+    /// the texture) is below `cutoff`, there is no surface. Light and rays go through.
+    pub fn with_alpha_cutoff(mut self, cutoff: f32) -> Self {
+        self.alpha_cutoff = Some(cutoff);
+        self
+    }
+
+    /// The same mesh, and the camera does not see its back side: the room box, which
+    /// the camera looks into through its near walls. For light and reflections the
+    /// mesh stays solid from the two sides.
+    pub fn with_open_back(mut self) -> Self {
+        self.open_back = true;
+        self
     }
 
     /// The same mesh with another material.
@@ -192,6 +261,51 @@ impl Mesh {
         &self.indices
     }
 
+    /// One texture coordinate for each position. All zero for a mesh that has none.
+    pub fn uvs(&self) -> &[[f32; 2]] {
+        &self.uvs
+    }
+
+    pub fn base_color_texture(&self) -> Option<TextureRef> {
+        self.base_color_texture
+    }
+
+    pub fn emissive_texture(&self) -> Option<TextureRef> {
+        self.emissive_texture
+    }
+
+    /// `Some`: the mesh has holes where the alpha of its color is below this.
+    pub fn alpha_cutoff(&self) -> Option<f32> {
+        self.alpha_cutoff
+    }
+
+    /// True: the camera does not see the back side. See [`Mesh::with_open_back`].
+    pub fn open_back(&self) -> bool {
+        self.open_back
+    }
+
+    /// How long one meter of the surface is in texture coordinates: the median over
+    /// the triangles. The renderer selects the mip level of a texture with it.
+    /// 0.0 for a mesh with no texture coordinates.
+    pub fn uvs_per_meter(&self) -> f32 {
+        let mut ratios: Vec<f32> = self
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter_map(|triangle| {
+                let [a, b, c] = triangle.map(|index| index as usize);
+                let p = &self.positions;
+                let area = (p[b] - p[a]).cross(p[c] - p[a]).length();
+                let uv = |index: usize| glam::Vec2::from(self.uvs[index]);
+                let uv_area = (uv(b) - uv(a)).perp_dot(uv(c) - uv(a)).abs();
+                (area > 0.0).then(|| (uv_area / area).sqrt())
+            })
+            .collect();
+        ratios.sort_by(f32::total_cmp);
+        ratios.get(ratios.len() / 2).copied().unwrap_or(0.0)
+    }
+
     pub fn base_color(&self) -> [f32; 4] {
         self.base_color
     }
@@ -215,51 +329,22 @@ impl Mesh {
     /// [`Mesh::room`] with openings in its walls. Behind each opening is a passage: a
     /// floor, two sides, a top, and a wall at its end. A doorway that does not fit in
     /// its wall, or that overlaps one before it, is left out with a warning.
+    ///
+    /// The texture coordinates are meters (see `planar_uv`): a texture that repeats
+    /// keeps its size in a room of any size.
     pub fn room_with_doorways(width: f32, depth: f32, height: f32, doorways: &[Doorway]) -> Self {
-        let corner = Vec3::new(-width / 2.0, 0.0, -depth / 2.0);
-        let mut quads = Quads::default();
-        // The normal of a quad is `u x v`.
-        quads.add(corner, Vec3::Z * depth, Vec3::X * width); // floor, faces +Y
-        let up = Vec3::Y;
-        for wall in [Wall::NegX, Wall::PosX, Wall::NegZ, Wall::PosZ] {
-            let (start, along, length, inward) = wall.frame(width, depth);
-            let mut doors: Vec<_> = doorways.iter().filter(|door| door.wall == wall).collect();
-            doors.sort_by(|a, b| a.offset.total_cmp(&b.offset));
-            // The wall is built up to this distance from its start.
-            let mut built = 0.0;
-            for door in doors {
-                let (from, to) = door.span(length);
-                // `!(..)` is true also for NaN.
-                if !(from >= built && to <= length && door.width > 0.0 && door.depth > 0.0)
-                    || !(door.height > 0.0 && door.height <= height)
-                {
-                    tracing::warn!(?door, "the doorway does not fit in its wall: left out");
-                    continue;
-                }
-                if from > built {
-                    let piece = along * (from - built);
-                    quads.add_facing(start + along * built, piece, up * height, inward);
-                }
-                let (side, top) = (up * door.height, along * door.width);
-                let opening = start + along * from;
-                if door.height < height {
-                    quads.add_facing(opening + side, top, up * (height - door.height), inward);
-                }
-                // The passage goes out of the room.
-                let out = -inward * door.depth;
-                quads.add_facing(opening, top, out, up);
-                quads.add_facing(opening, out, side, along);
-                quads.add_facing(opening + top, out, side, -along);
-                quads.add_facing(opening + out, top, side, inward);
-                quads.add_facing(opening + side, top, out, -up);
-                built = to;
-            }
-            if length > built {
-                let piece = along * (length - built);
-                quads.add_facing(start + along * built, piece, up * height, inward);
-            }
-        }
-        quads.build("room", [0.8, 0.8, 0.8, 1.0])
+        let quads = room_quads(width, depth, height, doorways);
+        quads.build("room", ROOM_COLOR, |_| true).with_open_back()
+    }
+
+    /// The same room as two meshes, so each can have its own texture: the floors (of
+    /// the room and of the passages), and all the rest.
+    pub fn room_parts(width: f32, depth: f32, height: f32, doorways: &[Doorway]) -> (Self, Self) {
+        let quads = room_quads(width, depth, height, doorways);
+        let is_floor = |normal: Vec3| normal.y > 0.5;
+        let floor = quads.build("room floor", ROOM_COLOR, is_floor);
+        let walls = quads.build("room walls", ROOM_COLOR, |normal| !is_floor(normal));
+        (floor.with_open_back(), walls.with_open_back())
     }
 
     /// A cube with its center at the origin. The normals point out.
@@ -272,7 +357,12 @@ impl Mesh {
     /// is a box with the origin on its hinge.
     pub fn cuboid(min: Vec3, max: Vec3) -> Self {
         let size = max - min;
-        let mut quads = Quads::default();
+        // The texture coordinates start at the corner `min`: a texture that is as
+        // large as a side shows one time on it, with no cut in the middle.
+        let mut quads = Quads {
+            uv_origin: min,
+            ..Quads::default()
+        };
         // `a = b x c` for each of the three rotations of the axes.
         for (a, b, c) in [
             (Vec3::X, Vec3::Y, Vec3::Z),
@@ -283,7 +373,7 @@ impl Mesh {
             quads.add(min + a, b, c);
             quads.add(min, c, b);
         }
-        quads.build("cube", [0.8, 0.3, 0.2, 1.0])
+        quads.build("cube", [0.8, 0.3, 0.2, 1.0], |_| true)
     }
 
     /// A capsule that stands on the origin: a cylinder along Y with a half sphere at
@@ -296,6 +386,7 @@ impl Mesh {
         let half = (height / 2.0 - radius).max(0.0);
         let mut positions = Vec::new();
         let mut normals = Vec::new();
+        let mut uvs = Vec::new();
         let mut indices = Vec::new();
         // The rows of vertices from the top: the upper half sphere, then the lower one.
         // The band between the two is the cylinder.
@@ -312,6 +403,11 @@ impl Mesh {
                 let normal = Vec3::new(sin_polar * cos_around, cos_polar, sin_polar * sin_around);
                 positions.push(normal * radius + Vec3::Y * (center + half + radius));
                 normals.push(normal);
+                // The texture goes one time around, from the top to the bottom.
+                uvs.push([
+                    segment as f32 / segments as f32,
+                    row as f32 / (rows - 1) as f32,
+                ]);
             }
         }
         for row in 0..rows - 1 {
@@ -339,6 +435,7 @@ impl Mesh {
             indices,
             [0.75, 0.7, 0.6, 1.0],
         )
+        .and_then(|mesh| mesh.with_uvs(uvs))
         .expect("the capsule generator makes a valid mesh")
     }
 
@@ -348,9 +445,11 @@ impl Mesh {
     pub fn sphere(radius: f32, segments: u32, rings: u32) -> Self {
         let (segments, rings) = (segments.max(3), rings.max(2));
         let mut normals = Vec::new();
+        let mut uvs = Vec::new();
         let mut indices = Vec::new();
         // The last vertex of each ring is at the position of the first one. The
-        // duplicate keeps the grid regular (and gives texture coordinates a seam later).
+        // duplicate keeps the grid regular, and it is the seam of the texture
+        // coordinates: the texture goes one time around, from pole to pole.
         for ring in 0..=rings {
             let (sin_polar, cos_polar) = (PI * ring as f32 / rings as f32).sin_cos();
             for segment in 0..=segments {
@@ -360,6 +459,7 @@ impl Mesh {
                     cos_polar,
                     sin_polar * sin_around,
                 ));
+                uvs.push([segment as f32 / segments as f32, ring as f32 / rings as f32]);
             }
         }
         for ring in 0..rings {
@@ -380,7 +480,71 @@ impl Mesh {
         let positions = normals.iter().map(|normal| *normal * radius).collect();
         let base_color = [0.2, 0.4, 0.8, 1.0];
         Self::new("sphere", positions, Some(normals), indices, base_color)
+            .and_then(|mesh| mesh.with_uvs(uvs))
             .expect("the sphere generator makes a valid mesh")
+    }
+}
+
+const ROOM_COLOR: [f32; 4] = [0.8, 0.8, 0.8, 1.0];
+
+/// The quads of a room: see [`Mesh::room_with_doorways`].
+fn room_quads(width: f32, depth: f32, height: f32, doorways: &[Doorway]) -> Quads {
+    let corner = Vec3::new(-width / 2.0, 0.0, -depth / 2.0);
+    let mut quads = Quads::default();
+    // The normal of a quad is `u x v`.
+    quads.add(corner, Vec3::Z * depth, Vec3::X * width); // floor, faces +Y
+    let up = Vec3::Y;
+    for wall in [Wall::NegX, Wall::PosX, Wall::NegZ, Wall::PosZ] {
+        let (start, along, length, inward) = wall.frame(width, depth);
+        let mut doors: Vec<_> = doorways.iter().filter(|door| door.wall == wall).collect();
+        doors.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        // The wall is built up to this distance from its start.
+        let mut built = 0.0;
+        for door in doors {
+            let (from, to) = door.span(length);
+            // `!(..)` is true also for NaN.
+            if !(from >= built && to <= length && door.width > 0.0 && door.depth > 0.0)
+                || !(door.height > 0.0 && door.height <= height)
+            {
+                tracing::warn!(?door, "the doorway does not fit in its wall: left out");
+                continue;
+            }
+            if from > built {
+                let piece = along * (from - built);
+                quads.add_facing(start + along * built, piece, up * height, inward);
+            }
+            let (side, top) = (up * door.height, along * door.width);
+            let opening = start + along * from;
+            if door.height < height {
+                quads.add_facing(opening + side, top, up * (height - door.height), inward);
+            }
+            // The passage goes out of the room.
+            let out = -inward * door.depth;
+            quads.add_facing(opening, top, out, up);
+            quads.add_facing(opening, out, side, along);
+            quads.add_facing(opening + top, out, side, -along);
+            quads.add_facing(opening + out, top, side, inward);
+            quads.add_facing(opening + side, top, out, -up);
+            built = to;
+        }
+        if length > built {
+            let piece = along * (length - built);
+            quads.add_facing(start + along * built, piece, up * height, inward);
+        }
+    }
+    quads
+}
+
+/// The texture coordinate of a point of a flat surface with sides along the axes, in
+/// meters. The texture is upright on a wall and not mirrored for a viewer in front of
+/// it; on a floor its top is at -Z. Surfaces that touch continue the pattern.
+fn planar_uv(position: Vec3, normal: Vec3) -> [f32; 2] {
+    if normal.y.abs() > 0.5 {
+        [position.x, position.z * normal.y.signum()]
+    } else {
+        // "Right" for a viewer who looks at the surface.
+        let right = Vec3::Y.cross(normal);
+        [position.dot(right), -position.y]
     }
 }
 
@@ -389,19 +553,21 @@ impl Mesh {
 struct Quads {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
-    indices: Vec<u32>,
+    uvs: Vec<[f32; 2]>,
+    /// The point with the texture coordinates (0, 0).
+    uv_origin: Vec3,
 }
 
 impl Quads {
     /// A quad with one corner at `origin` and the sides `u` and `v`. Its front side
     /// and its normal face the direction `u x v`.
     fn add(&mut self, origin: Vec3, u: Vec3, v: Vec3) {
-        let first = self.positions.len() as u32;
-        self.positions
-            .extend([origin, origin + u, origin + u + v, origin + v]);
-        self.normals.extend([u.cross(v).normalize(); 4]);
-        self.indices
-            .extend([0, 1, 2, 0, 2, 3].map(|corner| first + corner));
+        let corners = [origin, origin + u, origin + u + v, origin + v];
+        let normal = u.cross(v).normalize();
+        self.positions.extend(corners);
+        self.normals.extend([normal; 4]);
+        self.uvs
+            .extend(corners.map(|corner| planar_uv(corner - self.uv_origin, normal)));
     }
 
     /// A quad as `add` makes it, with its front side toward `facing`.
@@ -413,13 +579,23 @@ impl Quads {
         }
     }
 
-    fn build(self, name: &str, base_color: [f32; 4]) -> Mesh {
-        let Self {
-            positions,
-            normals,
-            indices,
-        } = self;
+    /// The mesh of the quads whose normal passes `keep`.
+    fn build(&self, name: &str, base_color: [f32; 4], keep: impl Fn(Vec3) -> bool) -> Mesh {
+        let (mut positions, mut normals, mut uvs) = (Vec::new(), Vec::new(), Vec::new());
+        let mut indices = Vec::new();
+        // Each quad has four vertices in sequence.
+        for quad in (0..self.positions.len()).step_by(4) {
+            if !keep(self.normals[quad]) {
+                continue;
+            }
+            let first = positions.len() as u32;
+            positions.extend(&self.positions[quad..quad + 4]);
+            normals.extend(&self.normals[quad..quad + 4]);
+            uvs.extend(&self.uvs[quad..quad + 4]);
+            indices.extend([0, 1, 2, 0, 2, 3].map(|corner| first + corner));
+        }
         Mesh::new(name, positions, Some(normals), indices, base_color)
+            .and_then(|mesh| mesh.with_uvs(uvs))
             .expect("the quad generator makes a valid mesh")
     }
 }
@@ -460,6 +636,69 @@ mod tests {
                 assert!(face.dot(normal) > 0.0, "{}: wrong winding", mesh.name());
             }
         }
+    }
+
+    #[test]
+    fn generated_meshes_have_texture_coordinates() {
+        // The room: meters. The floor has (x, z), a wall is upright.
+        let room = Mesh::room(8.0, 6.0, 3.0);
+        assert!(room.open_back());
+        for ((position, normal), uv) in room.positions().iter().zip(room.normals()).zip(room.uvs())
+        {
+            if normal.y > 0.5 {
+                assert_eq!(*uv, [position.x, position.z]);
+            } else {
+                assert_eq!(uv[1], -position.y);
+                assert!(uv[0].abs() == position.x.abs() || uv[0].abs() == position.z.abs());
+            }
+        }
+        assert!((room.uvs_per_meter() - 1.0).abs() < 1e-6);
+        assert!((room.with_uv_scale(2.0).uvs_per_meter() - 2.0).abs() < 1e-6);
+
+        // The two parts of a room have the triangles of the room.
+        let door = Doorway {
+            wall: Wall::NegZ,
+            offset: 0.0,
+            width: 1.0,
+            height: 2.0,
+            depth: 1.0,
+        };
+        let whole = Mesh::room_with_doorways(8.0, 6.0, 3.0, &[door]);
+        let (floor, walls) = Mesh::room_parts(8.0, 6.0, 3.0, &[door]);
+        assert_eq!(
+            floor.indices().len() + walls.indices().len(),
+            whole.indices().len()
+        );
+        // The floor of the room and that of the passage.
+        assert_eq!(floor.indices().len(), 12);
+        assert!(floor.normals().iter().all(|normal| *normal == Vec3::Y));
+        assert!(floor.open_back() && walls.open_back());
+
+        // A cuboid: from 0 at its corner to its size in meters, on each side.
+        let cuboid = Mesh::cuboid(Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.5, 4.0, 6.0));
+        assert!(!cuboid.open_back());
+        let (low, high) =
+            cuboid
+                .uvs()
+                .iter()
+                .fold(([f32::MAX; 2], [f32::MIN; 2]), |(low, high), uv| {
+                    (
+                        [low[0].min(uv[0]), low[1].min(uv[1])],
+                        [high[0].max(uv[0]), high[1].max(uv[1])],
+                    )
+                });
+        assert_eq!((low, high), ([-3.0, -3.0], [3.0, 3.0]));
+        // A sphere and a capsule: one time around, from the top to the bottom.
+        for mesh in [Mesh::sphere(1.0, 8, 4), Mesh::capsule(0.3, 1.7, 8, 2)] {
+            let uvs = mesh.uvs();
+            assert_eq!((uvs[0], uvs[uvs.len() - 1]), ([0.0, 0.0], [1.0, 1.0]));
+            assert!(
+                uvs.iter()
+                    .flatten()
+                    .all(|value| (0.0..=1.0).contains(value))
+            );
+        }
+        assert!(Mesh::cube(1.0).with_uvs(vec![[0.0; 2]; 3]).is_err());
     }
 
     #[test]

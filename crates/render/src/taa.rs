@@ -82,6 +82,7 @@ pub(crate) fn add_pass(
             .create_sampler(&SamplerDesc {
                 linear: true,
                 repeat: false,
+                mipmaps: false,
             })
             .expect("taa sampler"),
         denoised,

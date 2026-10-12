@@ -12,7 +12,7 @@
 //! offset for each of the four random numbers that matter most (the point on the
 //! light and the bounce direction at the surface that the pixel shows) and adds a
 //! step for each frame, so a pixel gets a new, well spread number in each frame
-//! (see `blue()` in `shaders/trace.comp`). All other random numbers are white noise.
+//! (see `blue()` in `shaders/trace.glsl`). All other random numbers are white noise.
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;

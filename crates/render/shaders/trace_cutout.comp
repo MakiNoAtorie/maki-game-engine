@@ -1,0 +1,5 @@
+#version 460
+// The path tracer for a scene with textures that have holes. The code is in trace.glsl.
+#define TEXTURES
+#define CUTOUT
+#include "trace.glsl"

@@ -49,6 +49,7 @@ pub(crate) fn add_passes(gpu: &mut Gpu, graph: &mut FrameGraph, picture: Resourc
         .create_sampler(&SamplerDesc {
             linear: true,
             repeat: false,
+            mipmaps: false,
         })
         .expect("bloom sampler");
     let image = |graph: &mut FrameGraph, name, level: usize| {

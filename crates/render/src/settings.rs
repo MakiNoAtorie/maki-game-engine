@@ -111,6 +111,10 @@ pub struct RenderSettings {
     /// mean of all frames since the last change, for a reference picture of a scene
     /// at rest.
     pub taa_blend: f32,
+    /// Added to the mip level that the renderer selects for a texture, -16 to 15.
+    /// 0: one texel for each pixel. Below: sharper, and a fine pattern can sparkle
+    /// (-16: always the full texture). Above: softer.
+    pub texture_bias: f32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
     /// Manual: an automatic exposure would take away the darkness that the game wants.
     pub exposure: f32,
@@ -152,6 +156,7 @@ impl Default for RenderSettings {
             history_clamp: 2.0,
             taa: true,
             taa_blend: 0.1,
+            texture_bias: 0.0,
             exposure: 1.0,
             tone_curve: ToneCurve::Agx,
             bloom: 0.04,
@@ -213,6 +218,10 @@ impl Settings for RenderSettings {
             (
                 (0.0..=1.0).contains(&self.taa_blend),
                 "taa_blend must be from 0 to 1",
+            ),
+            (
+                (-16.0..=15.0).contains(&self.texture_bias),
+                "texture_bias must be from -16 to 15",
             ),
             (
                 (0.0..=1.0).contains(&self.bloom) && (0.0..=1.0).contains(&self.vignette),

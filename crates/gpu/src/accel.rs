@@ -29,6 +29,10 @@ pub struct BlasGeometry<'a> {
     pub positions: &'a [[f32; 3]],
     /// Three for each triangle.
     pub indices: &'a [u32],
+    /// True: the first hit of a ray is final. False: the ray query asks the shader if
+    /// a triangle counts at the point of the hit (a texture with holes). Slower: only
+    /// for a mesh that needs it.
+    pub opaque: bool,
 }
 
 /// The content of a BLAS. A hit names the geometry by its place in the list.
@@ -47,6 +51,9 @@ pub struct TlasInstance {
     pub transform: [f32; 12],
     /// The shader gets this number back on a hit. 24 bits.
     pub custom_index: u32,
+    /// True: a ray that culls back faces (`gl_RayFlagsCullBackFacingTrianglesEXT`)
+    /// does not cull those of this instance.
+    pub two_sided: bool,
 }
 
 pub(crate) struct Blas {
@@ -155,9 +162,13 @@ impl Gpu {
                 vk::AccelerationStructureGeometryKHR::default()
                     .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
                     .geometry(vk::AccelerationStructureGeometryDataKHR { triangles })
-                    // Opaque: the first hit is final. The ray query does not ask the shader
-                    // if a triangle counts (the method for cut-out textures).
-                    .flags(vk::GeometryFlagsKHR::OPAQUE),
+                    // Opaque: the first hit is final. Not opaque: the ray query asks
+                    // the shader if a triangle counts (a cut-out texture).
+                    .flags(if geometry.opaque {
+                        vk::GeometryFlagsKHR::OPAQUE
+                    } else {
+                        vk::GeometryFlagsKHR::empty()
+                    }),
             );
             ranges.push(
                 vk::AccelerationStructureBuildRangeInfoKHR::default()
@@ -304,8 +315,15 @@ impl Gpu {
                 },
                 // Mask 0xFF: every ray sees the instance.
                 instance_custom_index_and_mask: vk::Packed24_8::new(instance.custom_index, 0xFF),
-                // No shader binding table (ray queries have none) and no flags.
-                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, 0),
+                // No shader binding table (ray queries have none).
+                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                    0,
+                    if instance.two_sided {
+                        vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8
+                    } else {
+                        0
+                    },
+                ),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                     device_handle: blas.address,
                 },

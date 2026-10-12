@@ -62,6 +62,7 @@ pub(crate) fn add_pass(mut gpu: ResMut<RenderGpu>, mut graph: ResMut<FrameGraph>
         .create_sampler(&SamplerDesc {
             linear: true,
             repeat: false,
+            mipmaps: false,
         })
         .expect("ui sampler");
     graph.add_pass_before(
@@ -228,6 +229,7 @@ impl UiOverlay {
                         name: "ui texture",
                         width: size[0],
                         height: size[1],
+                        mip_levels: 1,
                         format: Format::Rgba8Unorm,
                         storage: false,
                         sampled: true,

@@ -120,6 +120,7 @@ The config file is TOML, with one table for each module. A module declares its t
 | `denoise_specular_passes` | 2 | The same for the specular light: the reflection of a rough surface (metal, plastic). The reflection of a smooth surface and of glass gets no filter |
 | `denoise_reach` | 4096.0 | The filter gets narrower as the mean of a pixel gets more samples: a pass with `s` pixels between its points runs for a pixel while `s * s * samples` is at most this. 0: each pass runs at each pixel |
 | `indirect_clamp` | 8.0 | The largest light that one bounce ray adds to a pixel, in units of the light at the surface that the pixel shows. It removes the bright speckle of rare paths, and it makes light that comes by way of a mirror or through glass (caustics) darker. 0: no limit |
+| `texture_bias` | 0.0 | Added to the mip level that the renderer selects for a texture, -16 to 15. Below 0: sharper, and a fine pattern can sparkle (-16: always the full texture). Above: softer |
 | `exposure` | 1.0 | The picture is multiplied by this before the tone curve. Manual: an automatic exposure would take away the darkness that the game wants |
 | `tone_curve` | `"agx"` | The curve from light to display color. `"agx"`: the look of film, soft colors and contrast; a bright colored light goes to white with no change of its hue. `"neutral"` (Khronos PBR Neutral): colors as the scene has them, more contrast |
 | `bloom` | 0.04 | The part of a wide blur of the picture that is blended into it, 0 to 1: a soft glow around the lamp and its reflections. 0: none |
@@ -186,7 +187,19 @@ A `Light` is a sphere. With `direction` and `cone` (degrees from the direction t
 | Else: metallic factor 0.5 or more | Mirror with a roughness factor of 0.1 or less, else Metal with that roughness |
 | All others | Plastic with that roughness (0.05 at least) |
 
-Textures are not read.
+### Textures
+
+A material can have a color texture and a texture for its own light (emissive). The color and the emissive color of the material multiply them.
+
+- From a glTF file: the base color texture and the emissive texture of each material, with the first set of texture coordinates. The filter is that of the glTF sampler (`magFilter` nearest: pixel art). Alpha mode `MASK` gives a texture with holes: where the alpha is below the cutoff there is no surface, for the camera, for shadows, and for bounce light. `BLEND` shows as `MASK` with the cutoff 0.5. Not read: metallic, roughness, normal, and occlusion textures, texture transforms, other sets of texture coordinates, wrap modes (a texture always repeats).
+- From a room file: `floor` and `walls` of the room, and `texture` in the `look` of a prop or a mover: `(path: "bricks.png", scale: 2.0, filter: Nearest)`. The file is a PNG or JPEG, from the directory of the room file. The texture coordinates of the room box, a cube, and a cuboid are meters, so a tile keeps its size in a room of any size; `scale` multiplies them. A sphere and a capsule have the texture one time around.
+- An image file that two materials, two models, or a room and a model name is loaded one time. A room change removes the textures that no mesh uses any more (`maki_assets::Textures`).
+- On the GPU a texture is an sRGB image with mip levels (`crates/render/src/textures.rs`), made at load. The path tracer selects the mip level from the size of the piece of surface that a ray stands for (a ray cone): one pixel of the picture for a camera ray, also behind a mirror and with a render scale below 1; a wide piece after a diffuse bounce. `texture_bias` moves the level.
+- The surface color image of the denoiser (`albedo`) has the texture, so the filter does not blur it.
+- The camera sees a surface with one side (a leaf card) from the two sides. Only the room box is not seen from behind.
+- The trace shader exists in three forms: with no texture code, with textures, and with textures that have holes. A frame runs the smallest one that its meshes need. Measured in `test_1080p`: the texture code costs 1.9 % of the trace pass, the holes 3.4 % more, for all rays of the scene (`docs/part4/stage-25.md`).
+
+`python tools/gen_textured.py DIR` writes test textures and a textured model. The benchmark scenarios `textured_720p`, `textured_1080p`, and `textured_walk_720p` use them; after one run, the room is in the Stages panel.
 
 Known limit: light that reaches a diffuse surface by way of a mirror or through glass (a caustic) is too dark. The shadow ray finds only light that comes straight from the light, so such light comes from a bounce ray that finds the light by chance: a rare, very bright sample. `indirect_clamp` limits it. With `indirect_clamp = 0` the light is correct in the mean, and shows as bright speckle that goes away very slowly.
 
@@ -209,13 +222,14 @@ A change of the camera keeps the samples of each pixel. A change of the lighting
 3. Anti-aliasing and scaling (`taa`, `crates/render/src/taa.rs`). The trace pass moves all camera rays of a frame by one part of a pixel. The pass `taa` keeps the mean of the pictures of some frames at the window resolution: an edge gets smooth, also that of the lamp and of the background, which have no mean in the denoiser. With `render_scale` below 1 it puts each sample at its true place in the window grid. A point that moves on the screen takes more of the new frame, and its history counts only if it shows the same surface. This pass is the one step between the internal resolution and the window resolution: an upscaler (FSR, XeSS, MetalFX, DLSS) takes its place with the same inputs.
 4. The look (`bloom`, `tonemap`): a soft glow around the bright parts (`bloom`), darker corners (`vignette`), the exposure and the tone curve (`tone_curve`), the color grade, the sRGB curve, and dither: noise of one 8-bit step, so a dark gradient shows no bands.
 
-The camera rays do not hit the back side of a triangle, so the camera looks into the room through the near walls. For all other rays the walls are solid.
+The camera rays do not hit the back side of the room box, so the camera looks into the room through the near walls. For all other rays the walls are solid. Each other mesh shows from the two sides.
 
 ## Rooms and events
 
 A room is a RON file in `game/assets/rooms`: the size of the room, its doorways, props, lights, doors, movers, spawn points, and events. `RoomDef` in `crates/scene/src/room.rs` is the format of the room, `EventDef` in `crates/events/src/model.rs` that of an event. A change of a room file needs no build: start the game again, or press F5.
 
 - A bad room file: the error names the file, the line, and the column. A bad start room stops the game at start; a transfer into a bad room does not happen.
+- The room box, a cube, a cuboid, and a sphere can have a texture: see "Textures" above.
 - A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A glTF file (`File("path")`, from the directory of the room file) goes away with its room too, if the next room does not name it.
 - The player, the camera, and the game state (flags and variables) are not part of a room: they stay when the room changes.
 
@@ -238,7 +252,6 @@ An event has pages. A page has conditions (flags, variables), a trigger, and com
 | `Message("text")` | Show the text until the player presses interact |
 | `FadeOut(0.4)`, `FadeIn(0.4)` | To black and back, in seconds |
 | `Transfer("room_b.ron", "west")` | To a spawn point of another room. The event goes on in the new room |
-
 | `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
 
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.
@@ -253,11 +266,11 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 |---|---|
 | `crates/core` | Config file and the settings trait, app and schedules, time, transform, interpolation between fixed steps |
 | `crates/platform` | Window, input actions (an open set: a module adds its own, with their keys), input capture |
-| `crates/assets` | Asset stores and handles, mesh asset with its material, glTF loader, mesh generators |
+| `crates/assets` | Asset stores and handles, mesh asset with its material and texture coordinates, texture asset and its store, glTF loader, mesh generators |
 | `crates/scene` | The components that describe the world (mesh instance, light, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |
 | `crates/events` | Game state (flags, variables), event definitions, the event interpreter, the command registry and the built-in commands |
 | `crates/gameplay` | Gameplay that games of this kind share, each a module with its own settings: camera that follows the player, walking controller, start room and reload, move actions and quit, debug control of a light and of the movers |
-| `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
+| `crates/gpu` | Vulkan backend (resources, images with mip levels, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
 | `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the message window and the game state panel of the events |
 | `crates/devtools` | Tools that a game opts into: benchmark runner with its command line options and panel, list of the room files, panel of the gameplay settings |

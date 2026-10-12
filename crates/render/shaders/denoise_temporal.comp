@@ -1,7 +1,7 @@
 #version 460
 // Pass "denoise_temporal": the mean over time. See src/denoise.rs for the full method.
 //
-// The trace pass gives three kinds of light for each pixel (see trace.comp): `direct`
+// The trace pass gives three kinds of light for each pixel (see trace.glsl): `direct`
 // and `indirect` without the surface color, and `specular`. For each pixel:
 // 1. The `motion` image tells where the point of the pixel was on the screen one
 //    frame before. The history of the pixel is read there, from the images of the

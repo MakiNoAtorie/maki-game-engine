@@ -49,7 +49,7 @@ pub use raster::GraphicsPipelineDesc;
 pub use resources::{
     Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format,
     GraphicsPipelineHandle, ImageDesc, ImageHandle, ImageTarget, SamplerDesc, SamplerHandle,
-    TlasHandle,
+    TlasHandle, mip_level_count,
 };
 
 /// How many frames the CPU can record ahead of the GPU. See [`Gpu::frame_slot`].
@@ -309,6 +309,14 @@ impl Gpu {
             "image `{}` has no area",
             desc.name
         );
+        ensure!(
+            (1..=mip_level_count(desc.width, desc.height)).contains(&desc.mip_levels),
+            "image `{}` of {} x {} cannot have {} mip levels",
+            desc.name,
+            desc.width,
+            desc.height,
+            desc.mip_levels
+        );
         let mut image = Image {
             raw: vk::Image::null(),
             view: vk::ImageView::null(),
@@ -318,6 +326,7 @@ impl Gpu {
                 height: desc.height,
             },
             texel_bytes: desc.format.texel_bytes(),
+            mip_levels: desc.mip_levels,
             bindless_index: self.bindless.image_slots.alloc()?,
         };
         // Same error handling as `create_buffer`.
@@ -352,7 +361,7 @@ impl Gpu {
             .image_type(vk::ImageType::TYPE_2D)
             .format(format)
             .extent(image.extent.into())
-            .mip_levels(1)
+            .mip_levels(desc.mip_levels)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .usage(usage);
@@ -388,9 +397,21 @@ impl Gpu {
         } else {
             vk::SamplerAddressMode::CLAMP_TO_EDGE
         };
+        // With mip levels, a texture that shows small is always blended: see `SamplerDesc`.
+        let (min_filter, mipmap_mode, max_lod) = if desc.mipmaps {
+            (
+                vk::Filter::LINEAR,
+                vk::SamplerMipmapMode::LINEAR,
+                vk::LOD_CLAMP_NONE,
+            )
+        } else {
+            (filter, vk::SamplerMipmapMode::NEAREST, 0.0)
+        };
         let info = vk::SamplerCreateInfo::default()
             .mag_filter(filter)
-            .min_filter(filter)
+            .min_filter(min_filter)
+            .mipmap_mode(mipmap_mode)
+            .max_lod(max_lod)
             .address_mode_u(address_mode)
             .address_mode_v(address_mode)
             .address_mode_w(address_mode);
@@ -407,6 +428,114 @@ impl Gpu {
             raw,
             bindless_index,
         }))
+    }
+
+    /// Fills a new image, outside of the frame: `levels[i]` holds the pixels of mip level
+    /// `i`, row by row, in the format of the image. The image is then in
+    /// [`Access::Sampled`]. For a texture, which is written one time.
+    /// It waits for the GPU, as [`Gpu::create_blas`] does.
+    pub fn upload_image(&mut self, image: ImageHandle, levels: &[&[u8]]) -> Result<()> {
+        let target = self.images.get(image).context("stale image handle")?;
+        ensure!(
+            levels.len() == target.mip_levels as usize,
+            "upload_image: {} levels of data for an image of {} levels",
+            levels.len(),
+            target.mip_levels
+        );
+        let (raw, extent, texel_bytes) = (target.raw, target.extent, target.texel_bytes);
+        // One copy for each level, all from one staging buffer.
+        let mut regions = Vec::with_capacity(levels.len());
+        let mut offset = 0;
+        for (level, data) in (0u32..).zip(levels) {
+            let (width, height) = (
+                (extent.width >> level).max(1),
+                (extent.height >> level).max(1),
+            );
+            let bytes = u64::from(width) * u64::from(height) * u64::from(texel_bytes);
+            ensure!(
+                data.len() as u64 == bytes,
+                "upload_image: {} bytes of data for level {level} of {bytes} bytes",
+                data.len()
+            );
+            regions.push(
+                vk::BufferImageCopy::default()
+                    .buffer_offset(offset)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: level,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    }),
+            );
+            offset += bytes;
+        }
+        let staging = self.create_buffer(&BufferDesc {
+            name: "image upload",
+            size: offset,
+            cpu_writable: true,
+        })?;
+        let written = self.write_buffer(staging, 0, &levels.concat());
+        let source = self.buffers[staging].raw;
+        let (sampled_layout, sampled_stage, sampled_access) = Access::Sampled.to_vk();
+        let barrier = |old_layout,
+                       new_layout,
+                       stages: [vk::PipelineStageFlags2; 2],
+                       access: [vk::AccessFlags2; 2]| {
+            vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(stages[0])
+                .src_access_mask(access[0])
+                .dst_stage_mask(stages[1])
+                .dst_access_mask(access[1])
+                .old_layout(old_layout)
+                .new_layout(new_layout)
+                .image(raw)
+                .subresource_range(COLOR_RANGE)
+        };
+        use vk::AccessFlags2 as A;
+        use vk::ImageLayout as L;
+        use vk::PipelineStageFlags2 as S;
+        let to_copy = [barrier(
+            L::UNDEFINED,
+            L::TRANSFER_DST_OPTIMAL,
+            [S::NONE, S::ALL_TRANSFER],
+            [A::NONE, A::TRANSFER_WRITE],
+        )];
+        let to_sample = [barrier(
+            L::TRANSFER_DST_OPTIMAL,
+            sampled_layout,
+            [S::ALL_TRANSFER, sampled_stage],
+            [A::TRANSFER_WRITE, sampled_access],
+        )];
+        let uploaded = written.and_then(|()| {
+            self.run_now(|cmd| unsafe {
+                let device = &self.ctx.device;
+                device.cmd_pipeline_barrier2(
+                    cmd,
+                    &vk::DependencyInfo::default().image_memory_barriers(&to_copy),
+                );
+                device.cmd_copy_buffer_to_image(
+                    cmd,
+                    source,
+                    raw,
+                    L::TRANSFER_DST_OPTIMAL,
+                    &regions,
+                );
+                device.cmd_pipeline_barrier2(
+                    cmd,
+                    &vk::DependencyInfo::default().image_memory_barriers(&to_sample),
+                );
+            })
+        });
+        // `run_now` waited for the copy: no GPU work reads the buffer.
+        if let Some(buffer) = self.buffers.remove(staging) {
+            self.destroy_now(Garbage::Buffer(buffer));
+        }
+        uploaded
     }
 
     /// Makes a compute pipeline from SPIR-V bytes. The entry point is `main`.

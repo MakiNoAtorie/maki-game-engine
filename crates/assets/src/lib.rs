@@ -7,6 +7,7 @@
 
 mod mesh;
 mod model;
+mod texture;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -18,6 +19,7 @@ use slotmap::{DefaultKey, SlotMap};
 
 pub use mesh::{Doorway, Material, Mesh, Wall};
 pub use model::{Model, ModelLight, load_gltf};
+pub use texture::{Texture, TextureRef, Textures};
 
 /// A generational reference to an asset of type `T`. A handle of a removed asset never
 /// matches a new asset.
@@ -154,10 +156,12 @@ impl Module for AssetsModule {
     fn build(&self, app: &mut App) {
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Model>>()
+            .init_resource::<Textures>()
             // Each module adds its own assets and keeps the handles: the order of two
             // modules changes nothing that they can see.
             .allow_ambiguous_resource::<Assets<Mesh>>()
-            .allow_ambiguous_resource::<Assets<Model>>();
+            .allow_ambiguous_resource::<Assets<Model>>()
+            .allow_ambiguous_resource::<Textures>();
     }
 }
 

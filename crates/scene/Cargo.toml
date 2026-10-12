@@ -12,3 +12,7 @@ tracing.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 ron.workspace = true
+
+[dev-dependencies]
+# Writes the image files of the tests.
+image.workspace = true

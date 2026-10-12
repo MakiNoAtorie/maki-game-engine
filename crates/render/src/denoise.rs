@@ -5,7 +5,7 @@
 //! method is that of SVGF (Schied et al., "Spatiotemporal Variance-Guided Filtering",
 //! 2017).
 //!
-//! The trace pass gives three kinds of light for each pixel (see `shaders/trace.comp`),
+//! The trace pass gives three kinds of light for each pixel (see `shaders/trace.glsl`),
 //! and the picture is `albedo * (direct + indirect) + specular + emission`:
 //! - `direct`: light straight from the lights. Its noise is small (only where a light
 //!   is partly hidden), and its shadow edges are sharp: few filter passes.

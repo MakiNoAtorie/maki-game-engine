@@ -10,7 +10,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use glam::{Quat, Vec3};
-use maki_assets::{Assets, Handle, LoadState, Mesh, Model, load_gltf};
+use maki_assets::{Assets, Handle, LoadState, Mesh, Model, Textures, load_gltf};
 use maki_core::{
     App, FixedUpdate, Interpolated, Module, Settings, Startup, Time, Transform, Update,
 };
@@ -91,6 +91,7 @@ pub struct PlayerModule;
 impl Module for PlayerModule {
     fn build(&self, app: &mut App) {
         app.add_settings::<PlayerSettings>()
+            .init_resource::<Textures>()
             .init_resource::<MoveCapture>()
             .add_systems(Startup, spawn_player)
             // After the events: a transfer command and the player then agree in each step
@@ -105,6 +106,7 @@ fn spawn_player(
     settings: Res<PlayerSettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
+    mut textures: ResMut<Textures>,
 ) {
     // The room loader moves the player to a spawn point.
     let pose = Interpolated::at(Transform::IDENTITY);
@@ -115,7 +117,7 @@ fn spawn_player(
     };
     match &settings.model_path {
         Some(path) => {
-            let model = load_gltf(path, &mut models, &mut meshes);
+            let model = load_gltf(path, &mut models, &mut meshes, &mut textures);
             commands.spawn((Player, walker, pose, PendingPlayerModel(model)));
         }
         None => {

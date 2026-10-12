@@ -24,7 +24,9 @@ use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use glam::{EulerRot, Quat, Vec3};
-use maki_assets::{Assets, Doorway, Handle, LoadState, Material, Mesh, Model, load_gltf};
+use maki_assets::{
+    Assets, Doorway, Handle, LoadState, Material, Mesh, Model, TextureRef, Textures, load_gltf,
+};
 use maki_core::{Interpolated, Transform};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,13 @@ pub struct RoomDef {
     pub doors: Vec<DoorDef>,
     #[serde(default)]
     pub movers: Vec<MoverDef>,
+    /// The texture of the floor of the room and of its passages. Its coordinates are
+    /// meters: with `scale: 1.0` the image is one meter wide.
+    #[serde(default)]
+    pub floor: Option<TextureDef>,
+    /// The same for the walls.
+    #[serde(default)]
+    pub walls: Option<TextureDef>,
     /// Places where the player can enter the room, by name: X, Y, Z.
     #[serde(default)]
     pub spawns: BTreeMap<String, [f32; 3]>,
@@ -123,10 +132,53 @@ impl MeshDef {
     }
 }
 
+/// A texture for a generated mesh.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextureDef {
+    /// An image file (PNG or JPEG). A path that is not absolute starts at the
+    /// directory of the room file.
+    pub path: PathBuf,
+    /// The texture coordinates are multiplied by this: 2.0 shows the image two times
+    /// where it showed one time. The coordinates of the room box, a cube, and a
+    /// cuboid are meters; those of a sphere go one time around it.
+    #[serde(default = "one")]
+    pub scale: f32,
+    #[serde(default)]
+    pub filter: Filter,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+/// How a texture shows when its texels are larger than the pixels of the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Filter {
+    /// Texels blend.
+    #[default]
+    Linear,
+    /// Texels keep their hard edges: pixel art.
+    Nearest,
+}
+
+impl TextureDef {
+    /// The mesh with this texture as its color texture.
+    fn apply(&self, mesh: Mesh, directory: &Path, textures: &mut Textures) -> Mesh {
+        mesh.with_uv_scale(self.scale)
+            .with_base_color_texture(TextureRef {
+                texture: textures.load(&directory.join(&self.path)),
+                nearest: self.filter == Filter::Nearest,
+            })
+    }
+}
+
 /// How a generated mesh looks. A file has its own colors and materials.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LookDef {
+    /// The color texture. The color multiplies it: give a texture the color white.
+    pub texture: Option<TextureDef>,
     /// Linear RGB. `None`: the color of the generator.
     pub color: Option<[f32; 3]>,
     /// `None`: diffuse.
@@ -137,7 +189,10 @@ pub struct LookDef {
 }
 
 impl LookDef {
-    fn apply(&self, mut mesh: Mesh) -> Mesh {
+    fn apply(&self, mut mesh: Mesh, directory: &Path, textures: &mut Textures) -> Mesh {
+        if let Some(texture) = &self.texture {
+            mesh = texture.apply(mesh, directory, textures);
+        }
         if let Some([r, g, b]) = self.color {
             mesh = mesh.with_base_color([r, g, b, 1.0]);
         }
@@ -348,6 +403,7 @@ pub fn load_requested_room(
     validators: Res<RoomValidators>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
+    mut textures: ResMut<Textures>,
     mut cache: ResMut<RoomModels>,
     room_entities: Query<Entity, With<RoomEntity>>,
     mut players: Query<&mut Interpolated, With<Player>>,
@@ -410,12 +466,19 @@ pub fn load_requested_room(
         commands: &mut commands,
         meshes: &mut meshes,
         models: &mut models,
+        textures: &mut textures,
         cache: &mut cache,
         directory,
         owned: Vec::new(),
     };
     spawner.room(&def);
     let owned = spawner.owned;
+    // The textures of the old room that no mesh uses now. The models of the new
+    // room are loaded: their meshes are in the store.
+    let removed = textures.remove_unused(&meshes);
+    if removed > 0 {
+        tracing::info!(removed, "textures of the old room removed");
+    }
     tracing::info!(
         path = %target.path.display(),
         props = def.props.len(),
@@ -445,6 +508,7 @@ struct Spawner<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
     meshes: &'a mut Assets<Mesh>,
     models: &'a mut Assets<Model>,
+    textures: &'a mut Textures,
     cache: &'a mut RoomModels,
     /// Of the room file.
     directory: &'a Path,
@@ -461,14 +525,28 @@ impl Spawner<'_, '_, '_> {
 
     fn room(&mut self, def: &RoomDef) {
         let (width, depth, height) = (def.width, def.depth, def.height);
-        let shell = self.add(Mesh::room_with_doorways(
-            width,
-            depth,
-            height,
-            &def.doorways,
-        ));
-        self.commands
-            .spawn((RoomEntity, Transform::IDENTITY, MeshInstance(shell)));
+        let shell = if def.floor.is_none() && def.walls.is_none() {
+            vec![Mesh::room_with_doorways(
+                width,
+                depth,
+                height,
+                &def.doorways,
+            )]
+        } else {
+            // A mesh has one material: the floor and the walls are two meshes.
+            let (floor, walls) = Mesh::room_parts(width, depth, height, &def.doorways);
+            let parts = [(floor, &def.floor), (walls, &def.walls)];
+            let textured = parts.map(|(mesh, texture)| match texture {
+                Some(texture) => texture.apply(mesh, self.directory, self.textures),
+                None => mesh,
+            });
+            textured.into()
+        };
+        for mesh in shell {
+            let mesh = self.add(mesh);
+            self.commands
+                .spawn((RoomEntity, Transform::IDENTITY, MeshInstance(mesh)));
+        }
         for collider in room_colliders(width, depth, height, &def.doorways) {
             self.commands.spawn((RoomEntity, collider));
         }
@@ -510,11 +588,12 @@ impl Spawner<'_, '_, '_> {
             MeshDef::File(path) => {
                 let path = self.directory.join(path);
                 let (models, meshes) = (&mut *self.models, &mut *self.meshes);
+                let textures = &mut *self.textures;
                 let model = *self
                     .cache
                     .0
                     .entry(path.clone())
-                    .or_insert_with(|| load_gltf(&path, models, meshes));
+                    .or_insert_with(|| load_gltf(&path, models, meshes, textures));
                 self.commands.spawn((
                     RoomEntity,
                     transform,
@@ -527,7 +606,7 @@ impl Spawner<'_, '_, '_> {
             }
             generated => {
                 let mesh = generated.generate().expect("not a file");
-                let mesh = prop.look.apply(mesh);
+                let mesh = prop.look.apply(mesh, self.directory, self.textures);
                 let collider = prop.collider.then(|| collider_around(&mesh, &transform));
                 let handle = self.add(mesh);
                 let mut entity = self
@@ -549,7 +628,8 @@ impl Spawner<'_, '_, '_> {
             tracing::error!(name = ?mover.name, "a mover cannot have a file as its mesh: left out");
             return;
         };
-        let handle = self.add(mover.look.apply(mesh));
+        let mesh = mover.look.apply(mesh, self.directory, self.textures);
+        let handle = self.add(mesh);
         let (a, b) = (mover.a.transform(), mover.b.transform());
         let mut entity = self.commands.spawn((
             RoomEntity,
@@ -716,6 +796,11 @@ mod tests {
                     color: Some([1.0, 0.0, 0.0]),
                     material: Some(Material::Glass { ior: 1.5 }),
                     emissive: None,
+                    texture: Some(TextureDef {
+                        path: PathBuf::from("ball.png"),
+                        scale: 2.0,
+                        filter: Filter::Nearest,
+                    }),
                 },
                 collider: true,
                 light_radius: 0.15,
@@ -748,6 +833,8 @@ mod tests {
                 },
                 seconds: 2.0,
             }],
+            floor: None,
+            walls: None,
             spawns: BTreeMap::from([("start".to_owned(), [0.0, 0.0, 1.0])]),
             events: IgnoredAny,
         }
@@ -817,11 +904,13 @@ mod tests {
             let mut world = bevy_ecs::world::World::new();
             let (mut meshes, mut models) = (Assets::<Mesh>::default(), Assets::<Model>::default());
             let mut cache = RoomModels::default();
+            let mut textures = Textures::default();
             let mut commands = world.commands();
             let mut spawner = Spawner {
                 commands: &mut commands,
                 meshes: &mut meshes,
                 models: &mut models,
+                textures: &mut textures,
                 cache: &mut cache,
                 directory: Path::new(""),
                 owned: Vec::new(),
@@ -921,4 +1010,80 @@ mod tests {
     /// Test access to the room request: `App` gives no mutable world.
     #[derive(bevy_ecs::message::Message, Clone)]
     struct RequestRoom(RoomTarget);
+
+    #[test]
+    fn a_room_takes_textures_from_its_file_and_the_next_room_removes_them() {
+        use maki_assets::Textures;
+
+        let directory = std::env::temp_dir().join(format!("maki-textures-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        for name in ["floor.png", "bricks.png"] {
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 255]))
+                .save(directory.join(name))
+                .unwrap();
+        }
+        let textured = r#"(
+            width: 4, depth: 4, height: 3,
+            floor: (path: "floor.png"),
+            walls: (path: "bricks.png", scale: 2.0, filter: Nearest),
+            props: [(mesh: Cube(1.0), look: (texture: (path: "floor.png", scale: 0.5)))],
+        )"#;
+        std::fs::write(directory.join("textured.ron"), textured).unwrap();
+        std::fs::write(
+            directory.join("plain.ron"),
+            "(width: 4, depth: 4, height: 3)",
+        )
+        .unwrap();
+        let def = parse_room(textured).unwrap();
+        assert_eq!(
+            def.walls.as_ref().map(|walls| walls.filter),
+            Some(Filter::Nearest)
+        );
+        assert_eq!(def.floor.as_ref().map(|floor| floor.scale), Some(1.0));
+        // What the editor writes is read as the same room.
+        assert_eq!(
+            parse_room(&ron_options().to_string(&def).unwrap()).unwrap(),
+            def
+        );
+
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        let mut load = |name: &str| {
+            app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+                path: directory.join(name),
+                spawn: None,
+            });
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let meshes: Vec<Mesh> = world
+                .resource::<Assets<Mesh>>()
+                .iter()
+                .map(|(_, mesh)| mesh.clone())
+                .collect();
+            (meshes, world.resource::<Textures>().iter().count())
+        };
+        // The floor, the walls, and the cube. Two image files: two textures.
+        let (meshes, textures) = load("textured.ron");
+        assert_eq!((meshes.len(), textures), (3, 2));
+        let named = |name: &str| meshes.iter().find(|mesh| mesh.name() == name).unwrap();
+        let (floor, walls, cube) = (named("room floor"), named("room walls"), named("cube"));
+        assert_eq!(
+            floor.base_color_texture().unwrap().texture,
+            cube.base_color_texture().unwrap().texture
+        );
+        assert!(
+            walls.base_color_texture().unwrap().nearest
+                && !floor.base_color_texture().unwrap().nearest
+        );
+        // Meters, times the scale.
+        assert!((walls.uvs_per_meter() - 2.0).abs() < 1e-6);
+        assert!((cube.uvs_per_meter() - 0.5).abs() < 1e-6);
+
+        // A room with no texture is one mesh, and the textures are gone.
+        let (meshes, textures) = load("plain.ron");
+        assert_eq!((meshes.len(), textures), (1, 0));
+        assert_eq!(load("textured.ron").1, 2);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 }

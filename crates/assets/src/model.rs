@@ -2,11 +2,13 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use glam::{Mat3, Mat4, Vec3};
+use gltf::material::AlphaMode;
 use gltf::mesh::Mode;
+use gltf::texture::MagFilter;
 
-use crate::{Assets, Handle, Material, Mesh};
+use crate::{Assets, Handle, Material, Mesh, Texture, TextureRef, Textures};
 
 /// The content of one model file: a mesh for each primitive of each mesh node, and
 /// the point lights. All are in the space of the model, so one transform places the model.
@@ -36,9 +38,10 @@ pub fn load_gltf(
     path: &Path,
     models: &mut Assets<Model>,
     meshes: &mut Assets<Mesh>,
+    textures: &mut Textures,
 ) -> Handle<Model> {
     let handle = models.reserve();
-    let model = match read_gltf(path) {
+    let model = match read_gltf(path, textures) {
         Ok((loaded, lights)) => Some(Model {
             meshes: loaded.into_iter().map(|mesh| meshes.add(mesh)).collect(),
             lights,
@@ -52,11 +55,98 @@ pub fn load_gltf(
     handle
 }
 
+/// What `read_primitive` needs to find the textures of a material.
+struct Images<'a> {
+    path: &'a Path,
+    buffers: &'a [gltf::buffer::Data],
+    textures: &'a mut Textures,
+}
+
+impl Images<'_> {
+    /// The texture of a material slot. `None`, with a warning, if the mesh cannot
+    /// show it.
+    fn texture(&mut self, info: Option<gltf::texture::Info>, has_uvs: bool) -> Option<TextureRef> {
+        let info = info?;
+        if info.tex_coord() != 0 || !has_uvs {
+            // ponytail: only the first set of texture coordinates is read.
+            tracing::warn!(
+                "{}: a texture uses texture coordinates that the mesh does not have in set 0: not shown",
+                self.path.display()
+            );
+            return None;
+        }
+        let texture = info.texture();
+        let image = texture.source();
+        let base = self.path.parent();
+        let handle = match image.source() {
+            // An image file of its own: a second model that names it gets the same texture.
+            gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+                self.textures.load(&base.unwrap_or(Path::new("")).join(uri))
+            }
+            // In the model file.
+            source => {
+                let (path, buffers) = (self.path, self.buffers);
+                self.textures
+                    .load_with((path.to_owned(), Some(image.index())), || {
+                        let data = gltf::image::Data::from_source(source, base, buffers)?;
+                        let name = format!("{}#{}", path.display(), image.index());
+                        Texture::new(name, data.width, data.height, rgba8(&data)?)
+                    })
+            }
+        };
+        Some(TextureRef {
+            texture: handle,
+            // The sampler of the file: its filter for a texture that shows large.
+            nearest: texture.sampler().mag_filter() == Some(MagFilter::Nearest),
+        })
+    }
+}
+
+/// The pixels of a decoded image as four bytes each.
+fn rgba8(image: &gltf::image::Data) -> Result<Vec<u8>> {
+    use gltf::image::Format;
+    let pixels = &image.pixels;
+    Ok(match image.format {
+        Format::R8G8B8A8 => pixels.clone(),
+        Format::R8G8B8 => pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|[r, g, b]| [*r, *g, *b, 255])
+            .collect(),
+        Format::R8 => pixels.iter().flat_map(|v| [*v, *v, *v, 255]).collect(),
+        Format::R8G8 => pixels
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|[v, a]| [*v, *v, *v, *a])
+            .collect(),
+        other => bail!("the image format {other:?} is not read (8 bits for each channel only)"),
+    })
+}
+
 /// Reads all triangle primitives and all point lights of the default scene.
-fn read_gltf(path: &Path) -> Result<(Vec<Mesh>, Vec<ModelLight>)> {
+fn read_gltf(path: &Path, textures: &mut Textures) -> Result<(Vec<Mesh>, Vec<ModelLight>)> {
     let gltf::Gltf { document, blob } = gltf::Gltf::open(path)?;
-    // Not `gltf::import`: that also decodes all images, and textures are not used yet.
+    // Not `gltf::import`: that decodes all images of the file. `Images` decodes those
+    // that a material uses and that the texture store does not have.
     let buffers = gltf::import_buffers(&document, path.parent(), blob)?;
+    if document
+        .extensions_used()
+        .any(|name| name == "KHR_texture_transform")
+    {
+        // ponytail: no texture transform. Read `KHR_texture_transform` into the
+        // texture coordinates when a file from a modelling tool needs it.
+        tracing::warn!(
+            "{}: the file uses texture transforms, which are not read",
+            path.display()
+        );
+    }
+    let mut images = Images {
+        path,
+        buffers: &buffers,
+        textures,
+    };
     let scene = document
         .default_scene()
         .or_else(|| document.scenes().next())
@@ -86,7 +176,7 @@ fn read_gltf(path: &Path) -> Result<(Vec<Mesh>, Vec<ModelLight>)> {
                     );
                     continue;
                 }
-                meshes.push(read_primitive(&primitive, &buffers, to_model, name)?);
+                meshes.push(read_primitive(&primitive, &mut images, to_model, name)?);
             }
         }
         // Spot and directional lights are skipped: the renderer has sphere lights only.
@@ -110,10 +200,11 @@ fn read_gltf(path: &Path) -> Result<(Vec<Mesh>, Vec<ModelLight>)> {
 // node transform apart (one mesh, many instances) when a file makes this expensive.
 fn read_primitive(
     primitive: &gltf::Primitive,
-    buffers: &[gltf::buffer::Data],
+    images: &mut Images,
     to_model: Mat4,
     name: String,
 ) -> Result<Mesh> {
+    let buffers = images.buffers;
     let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|data| &data.0[..]));
     let positions: Vec<Vec3> = reader
         .read_positions()
@@ -138,11 +229,33 @@ fn read_primitive(
             .map(|normal| (normal_matrix * Vec3::from(normal)).normalize_or_zero())
             .collect()
     });
+    let uvs: Option<Vec<[f32; 2]>> = reader
+        .read_tex_coords(0)
+        .map(|uvs| uvs.into_f32().collect());
     let material = primitive.material();
-    let base_color = material.pbr_metallic_roughness().base_color_factor();
-    Ok(Mesh::new(name, positions, normals, indices, base_color)?
+    let pbr = material.pbr_metallic_roughness();
+    let mut mesh = Mesh::new(name, positions, normals, indices, pbr.base_color_factor())?
         .with_material(material_kind(&material))
-        .with_emissive(material.emissive_factor()))
+        .with_emissive(material.emissive_factor());
+    let has_uvs = uvs.is_some();
+    if let Some(uvs) = uvs {
+        mesh = mesh.with_uvs(uvs)?;
+    }
+    if let Some(texture) = images.texture(pbr.base_color_texture(), has_uvs) {
+        mesh = mesh.with_base_color_texture(texture);
+    }
+    if let Some(texture) = images.texture(material.emissive_texture(), has_uvs) {
+        mesh = mesh.with_emissive_texture(texture);
+    }
+    // ponytail: `BLEND` (a surface that is partly clear) shows as `MASK` with the
+    // cutoff 0.5: each point is there or not. Enough for leaves and fences. Glass
+    // has its own material kind.
+    match material.alpha_mode() {
+        AlphaMode::Opaque => {}
+        AlphaMode::Mask => mesh = mesh.with_alpha_cutoff(material.alpha_cutoff().unwrap_or(0.5)),
+        AlphaMode::Blend => mesh = mesh.with_alpha_cutoff(0.5),
+    }
+    Ok(mesh)
 }
 
 /// A roughness factor from this value on is a diffuse surface.
@@ -309,7 +422,7 @@ mod tests {
                 offset,
                 ("", ""),
             );
-            let model = load_gltf(&path, &mut models, &mut meshes);
+            let model = load_gltf(&path, &mut models, &mut meshes, &mut Textures::default());
             fs::remove_file(&path).unwrap();
             fs::remove_file(path.with_extension("bin")).unwrap();
             let model = models.get(model).expect("the model is ready");
@@ -395,7 +508,7 @@ mod tests {
         let mut meshes = Assets::default();
         for (name, pbr, material, expected) in cases {
             let path = write_gltf(name, &source, true, Vec3::ZERO, (pbr, &material));
-            let model = load_gltf(&path, &mut models, &mut meshes);
+            let model = load_gltf(&path, &mut models, &mut meshes, &mut Textures::default());
             fs::remove_file(&path).unwrap();
             fs::remove_file(path.with_extension("bin")).unwrap();
             let model = models.get(model).expect("the model is ready");
@@ -408,8 +521,137 @@ mod tests {
     fn missing_file_gives_a_failed_handle() {
         let mut models = Assets::default();
         let mut meshes = Assets::default();
-        let model = load_gltf(Path::new("no such file.gltf"), &mut models, &mut meshes);
+        let textures = &mut Textures::default();
+        let model = load_gltf(
+            Path::new("no such file.gltf"),
+            &mut models,
+            &mut meshes,
+            textures,
+        );
         assert_eq!(models.state(model), Some(LoadState::Failed));
         assert_eq!(meshes.iter().count(), 0);
+    }
+
+    /// Writes a model of one triangle with texture coordinates and a material with
+    /// textures: `material` is the JSON text of the material. The image is the file
+    /// `image` in the same directory.
+    fn write_textured_gltf(name: &str, image: &str, material: &str) -> PathBuf {
+        let floats: [f32; 15] = [
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // positions
+            0.0, 1.0, 2.0, 1.0, 0.0, -1.0, // texture coordinates
+        ];
+        let bin: Vec<u8> = floats.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"TEXCOORD_0":1}},"material":0}}]}}],
+"materials":[{material}],
+"textures":[{{"source":0,"sampler":0}},{{"source":0}}],
+"samplers":[{{"magFilter":9728}}],
+"images":[{{"uri":"{image}"}}],
+"buffers":[{{"uri":"{name}.bin","byteLength":60}}],
+"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":24}}],
+"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}},
+{{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}}]}}"#
+        );
+        let dir = std::env::temp_dir().join(format!("maki-assets-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.bin")), bin).unwrap();
+        let path = dir.join(format!("{name}.gltf"));
+        fs::write(&path, json).unwrap();
+        path
+    }
+
+    #[test]
+    fn gltf_textures_alpha_mode_and_texture_coordinates_are_read() {
+        let dir = std::env::temp_dir().join(format!("maki-assets-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // An image of 2 x 1 pixels, without alpha.
+        image::RgbImage::from_raw(2, 1, vec![255, 0, 0, 0, 0, 255])
+            .unwrap()
+            .save(dir.join("shared.png"))
+            .unwrap();
+        let (mut models, mut meshes) = (Assets::default(), Assets::default());
+        let mut textures = Textures::default();
+        let mut load = |name: &str, material: &str, textures: &mut Textures| {
+            let path = write_textured_gltf(name, "shared.png", material);
+            let model = load_gltf(&path, &mut models, &mut meshes, textures);
+            let mesh = models.get(model).expect("the model is ready").meshes[0];
+            meshes.get(mesh).unwrap().clone()
+        };
+
+        // Texture 0 has the sampler with the nearest filter, texture 1 has none.
+        let cutout = load(
+            "cutout",
+            r#"{"alphaMode":"MASK","alphaCutoff":0.3,"emissiveTexture":{"index":1},
+                "pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}"#,
+            &mut textures,
+        );
+        assert_eq!(cutout.uvs(), [[0.0, 1.0], [2.0, 1.0], [0.0, -1.0]]);
+        assert_eq!(cutout.alpha_cutoff(), Some(0.3));
+        let (base, emissive) = (
+            cutout.base_color_texture().unwrap(),
+            cutout.emissive_texture().unwrap(),
+        );
+        assert!(base.nearest && !emissive.nearest);
+        // The two textures are one image: one texture asset.
+        assert_eq!(base.texture, emissive.texture);
+        // The triangle has half a square meter and 2 square units of texture.
+        assert_eq!(cutout.uvs_per_meter(), 2.0);
+
+        // A second model with the same image file gets the same texture.
+        let plain = load(
+            "plain",
+            r#"{"alphaMode":"BLEND","pbrMetallicRoughness":{"baseColorTexture":{"index":1}}}"#,
+            &mut textures,
+        );
+        assert_eq!(plain.base_color_texture().unwrap().texture, base.texture);
+        assert_eq!(plain.emissive_texture(), None);
+        // `BLEND` shows as a cutout at one half.
+        assert_eq!(plain.alpha_cutoff(), Some(0.5));
+        let texture = textures.get(base.texture).expect("the image is decoded");
+        assert_eq!((texture.width, texture.height), (2, 1));
+        assert_eq!(texture.pixels, [255, 0, 0, 255, 0, 0, 255, 255]);
+        assert_eq!(textures.iter().count(), 1);
+
+        // A texture on set 1 of the texture coordinates is not shown.
+        let other_set = load(
+            "set1",
+            r#"{"pbrMetallicRoughness":{"baseColorTexture":{"index":0,"texCoord":1}}}"#,
+            &mut textures,
+        );
+        assert_eq!(other_set.base_color_texture(), None);
+        assert_eq!(other_set.alpha_cutoff(), None);
+    }
+
+    #[test]
+    fn a_texture_that_no_mesh_uses_is_removed() {
+        let dir = std::env::temp_dir().join(format!("maki-assets-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("kept.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]))
+            .save(&file)
+            .unwrap();
+        let mut textures = Textures::default();
+        let mut meshes = Assets::default();
+        let kept = textures.load(&file);
+        // The same file again: the same texture.
+        assert_eq!(textures.load(&file), kept);
+        let missing = textures.load(&dir.join("no such file.png"));
+        assert!(textures.get(kept).is_some() && textures.get(missing).is_none());
+        let made = textures.add(Texture::new("made", 1, 1, vec![0; 4]).unwrap());
+
+        let mesh = meshes.add(Mesh::cube(1.0).with_base_color_texture(TextureRef {
+            texture: kept,
+            nearest: false,
+        }));
+        // The failed load and the texture with no user go.
+        assert_eq!(textures.remove_unused(&meshes), 2);
+        assert!(textures.get(kept).is_some() && textures.get(made).is_none());
+        assert_eq!(textures.remove_unused(&meshes), 0);
+        // Without its mesh, the last one goes too, and a new load reads the file again.
+        meshes.remove(mesh);
+        assert_eq!(textures.remove_unused(&meshes), 1);
+        assert_ne!(textures.load(&file), kept);
+        assert!(Texture::new("short", 2, 2, vec![0; 15]).is_err());
     }
 }

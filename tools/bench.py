@@ -41,6 +41,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True  # no tools/__pycache__ in the repository
 from gen_scene import triangle_count, write_scene  # noqa: E402
+from gen_textured import write_textured  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "bench"  # ignored by git
@@ -96,6 +97,13 @@ SCENARIOS = {
     "test_1080p_bounces2": ((1920, 1080), None, {"render.max_bounces": 2}),
     "heavy_mixed_lights8_1080p_bounces2": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {"render.max_bounces": 2}),
     "heavy_mixed_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {}),
+    # The textured test room (tools/gen_textured.py, `TEXTURED_ROOM` below): floor and
+    # wall textures, pixel art, textures with holes, an emissive texture, and a mirror
+    # and a glass ball that show them.
+    "textured_720p": ((1280, 720), "textured", {}),
+    "textured_1080p": ((1920, 1080), "textured", {}),
+    # The same with the player in motion (the walk script; no door in this room).
+    "textured_walk_720p": ((1280, 720), "textured", {"camera.follow_time": 0.0}, ["--bench-script", "walk"]),
 }
 
 
@@ -107,6 +115,24 @@ MODEL_ROOM = """(
     doors: [(doorway: 0)],
     props: [(mesh: File(MODEL), collider: false)],
     lights: [(position: (0.0, 2.0, 2.0), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)],
+    spawns: {"start": (-0.5, 0.0, 2.6)},
+)
+"""
+
+
+# The room file of the `textured_*` scenarios. The files that it names are next to it.
+TEXTURED_ROOM = """(
+    width: 8.0, depth: 8.0, height: 3.0,
+    floor: (path: "checker.png"),
+    walls: (path: "bricks.png", scale: 2.0, filter: Nearest),
+    props: [
+        (mesh: File("props.glb"), collider: false),
+        (mesh: Cube(0.7), pose: (position: (2.6, 0.35, 1.6), rotation: (0.0, 25.0, 0.0)),
+            look: (color: (1.0, 1.0, 1.0), texture: (path: "crate.png", scale: 1.4286, filter: Nearest))),
+        (mesh: Sphere(radius: 0.5, segments: 48, rings: 24), pose: (position: (-3.0, 0.5, 0.6)), look: (color: (0.9, 0.9, 0.9), material: Mirror)),
+        (mesh: Sphere(radius: 0.45, segments: 48, rings: 24), pose: (position: (0.9, 0.45, 2.2)), look: (color: (1.0, 1.0, 1.0), material: Glass(ior: 1.5))),
+    ],
+    lights: [(position: (0.0, 2.3, 1.0), radius: 0.15, color: (1.0, 0.92, 0.82), intensity: 12.0)],
     spawns: {"start": (-0.5, 0.0, 2.6)},
 )
 """
@@ -179,7 +205,12 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
     params = f"render={width}x{height};window={WINDOW[0]}x{WINDOW[1]};frames={frames};warmup={warmup}"
     params += "".join(f";{key}={value}" for key, value in extra.items())
     params += "".join(f";{argument}" for argument in arguments)
-    if scene:
+    if scene == "textured":
+        write_textured(work)
+        room_path = work / "room.ron"
+        room_path.write_text(TEXTURED_ROOM)
+        params += ";textured"
+    elif scene:
         scene_text = ";".join(f"{key}={value}" for key, value in scene.items())
         # The generator is seeded: a file with these arguments in its name has this content.
         scene_path = work / f"scene;{scene_text}.glb".replace(";", "_").replace("=", "")

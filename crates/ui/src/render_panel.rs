@@ -73,6 +73,10 @@ impl Module for RenderPanelModule {
                         .text("anti-aliasing: part of a new frame (0: reference mean)"),
                 );
                 ui.add(
+                    egui::Slider::new(&mut config.texture_bias, -4.0..=4.0)
+                        .text("texture mip bias (below 0: sharper)"),
+                );
+                ui.add(
                     egui::Slider::new(&mut config.exposure, 0.1..=8.0)
                         .logarithmic(true)
                         .text("exposure"),

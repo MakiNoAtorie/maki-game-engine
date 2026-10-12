@@ -356,6 +356,7 @@ impl FrameGraph {
                     name: desc.name,
                     width: size.0,
                     height: size.1,
+                    mip_levels: 1,
                     format: desc.format,
                     // ponytail: every transient permits the two shader uses. Take the
                     // flags from the declared accesses if a format does not permit both.

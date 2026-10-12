@@ -37,6 +37,7 @@ mod noise;
 mod passes;
 mod settings;
 mod taa;
+mod textures;
 
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::resource::Resource;
@@ -167,6 +168,8 @@ pub struct ExtractedFrame {
     pub taa: bool,
     /// `taa_blend` of the config: the part of a new frame in the picture.
     pub taa_blend: f32,
+    /// `texture_bias` of the settings: added to the mip level of each texture.
+    pub texture_bias: f32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
     pub look: Look,
@@ -358,6 +361,7 @@ pub(crate) fn extract_frame(
         },
         taa: config.taa,
         taa_blend: config.taa_blend,
+        texture_bias: config.texture_bias,
         exposure: config.exposure,
         look: Look {
             tone_curve: config.tone_curve,

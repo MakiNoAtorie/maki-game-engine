@@ -31,6 +31,9 @@ pub struct BufferDesc<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Rgba8Unorm,
+    /// As `Rgba8Unorm`, with sRGB-encoded color: a shader that samples the image gets
+    /// linear color, and the filter blends linear color. For color textures.
+    Rgba8Srgb,
     Rgba16Float,
     /// Four 32-bit float channels. For a mean over many frames: a 16-bit float is
     /// too coarse for the small change that a late frame makes.
@@ -45,7 +48,7 @@ impl Format {
     /// Bytes of one pixel.
     pub fn texel_bytes(self) -> u32 {
         match self {
-            Format::Rgba8Unorm | Format::R32Float | Format::Rg16Float => 4,
+            Format::Rgba8Unorm | Format::Rgba8Srgb | Format::R32Float | Format::Rg16Float => 4,
             Format::Rgba16Float => 8,
             Format::Rgba32Float => 16,
         }
@@ -54,6 +57,7 @@ impl Format {
     pub(crate) fn to_vk(self) -> vk::Format {
         match self {
             Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
+            Format::Rgba8Srgb => vk::Format::R8G8B8A8_SRGB,
             Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
             Format::Rgba32Float => vk::Format::R32G32B32A32_SFLOAT,
             Format::R32Float => vk::Format::R32_SFLOAT,
@@ -62,12 +66,16 @@ impl Format {
     }
 }
 
-/// A 2D color image with one mip level.
+/// A 2D color image.
 #[derive(Debug, Clone, Copy)]
 pub struct ImageDesc<'a> {
     pub name: &'a str,
     pub width: u32,
     pub height: u32,
+    /// 1: the image alone. More: each next level has half the width and height (not
+    /// below 1 pixel), for a texture that shows small without noise. See
+    /// [`mip_level_count`] and [`Gpu::upload_image`](crate::Gpu::upload_image).
+    pub mip_levels: u32,
     pub format: Format,
     /// Shaders can read and write it (`image2D`, bindless binding 1).
     pub storage: bool,
@@ -155,10 +163,20 @@ pub enum ImageTarget {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SamplerDesc {
-    /// True: blend between texels. False: use the nearest texel.
+    /// True: blend between texels. False: use the nearest texel (pixel art stays crisp).
     pub linear: bool,
     /// True: the texture repeats outside 0..1. False: the edge color continues.
     pub repeat: bool,
+    /// True: the sampler reads all mip levels of the image and blends between two
+    /// levels. A texture that shows smaller than it is then blends between texels
+    /// also with `linear: false`: the nearest texel of a far surface is noise.
+    /// False: the first level only.
+    pub mipmaps: bool,
+}
+
+/// The number of mip levels of an image of this size, down to a level of 1 x 1.
+pub fn mip_level_count(width: u32, height: u32) -> u32 {
+    width.max(height).max(1).ilog2() + 1
 }
 
 pub(crate) struct Buffer {
@@ -177,6 +195,7 @@ pub(crate) struct Image {
     pub extent: vk::Extent2D,
     /// Bytes of one pixel, to check the size of uploaded data.
     pub texel_bytes: u32,
+    pub mip_levels: u32,
     pub bindless_index: u32,
 }
 
@@ -199,7 +218,7 @@ pub(crate) enum Garbage {
 pub(crate) const COLOR_RANGE: vk::ImageSubresourceRange = vk::ImageSubresourceRange {
     aspect_mask: vk::ImageAspectFlags::COLOR,
     base_mip_level: 0,
-    level_count: 1,
+    level_count: vk::REMAINING_MIP_LEVELS,
     base_array_layer: 0,
     layer_count: 1,
 };

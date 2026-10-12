@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Side of the blue-noise pattern, in pixels. Must agree with `noise.rs` and
-/// `trace.comp`.
+/// `trace.glsl`.
 const NOISE_SIZE: usize = 64;
 
 /// A blue-noise pattern: `NOISE_SIZE` x `NOISE_SIZE` values from 0.0 to 1.0, each value
