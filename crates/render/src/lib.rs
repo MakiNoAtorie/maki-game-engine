@@ -46,7 +46,7 @@ use bevy_ecs::system::{Commands, Res, ResMut};
 use bevy_ecs::world::World;
 use maki_core::{App, Extract, Module, Present, Render, Startup, Time};
 use maki_gpu::{Gpu, GpuDesc};
-use maki_platform::{Window, WindowMargin, WindowSettings, WindowSize};
+use maki_platform::{Picture, Window, WindowSettings, WindowSize, update_picture};
 use maki_scene::{CurrentRoom, ScreenFade};
 
 pub use accumulation::{Accumulation, RESET_ACCUMULATION};
@@ -119,12 +119,12 @@ impl RenderWorld {
 pub struct ExtractedFrame {
     /// Size of the images that the path tracer writes, in pixels.
     pub internal_resolution: (u32, u32),
-    /// Size of the picture in pixels: `width` and `height` of the `[window]`
+    /// Size of the picture in pixels (`maki_platform::Picture`): in the game, `width` and `height` of the `[window]`
     /// settings. The window shows it at its top edge, not scaled.
     pub picture_size: (u32, u32),
-    /// The picture starts this many pixels from the left edge of the window: the
-    /// room for panels at the left (`WindowMargin::left`).
-    pub picture_left: u32,
+    /// The top left corner of the picture in the window: the room for panels at
+    /// the left of it and above it.
+    pub picture_corner: (u32, u32),
     /// Size of the window in physical pixels: the picture and the room for the panels.
     pub window_size: (u32, u32),
     /// True: a frame waits for the display refresh.
@@ -271,7 +271,7 @@ impl Module for RenderModule {
             // have to name the private systems of another module to declare an order.
             .allow_ambiguous_resource::<RenderGpu>()
             .add_systems(Startup, setup_renderer)
-            .add_systems(Extract, extract_frame)
+            .add_systems(Extract, extract_frame.after(update_picture))
             .add_systems(Render, render_frame)
             .add_systems(Present, end_frame.run_if(frame_active));
         if std::env::var_os(SELFTEST_ENV).is_some() {
@@ -318,7 +318,7 @@ pub(crate) fn extract_frame(
     config: Res<RenderSettings>,
     window: Res<WindowSettings>,
     size: Res<WindowSize>,
-    margin: Res<WindowMargin>,
+    place: Res<Picture>,
     time: Res<Time>,
     debug_view: Res<DebugView>,
     // The two come from `maki_scene::SceneModule`. A game without it has no rooms.
@@ -333,15 +333,19 @@ pub(crate) fn extract_frame(
     // Another room: the old samples show the old room, also where a wall of the new
     // room is at the same place.
     let new_room = room.is_some_and(|room| room.is_changed());
-    if config.is_changed() || window.is_changed() || new_room {
+    // A picture of another size has new, empty images too.
+    let picture = (place.width.max(1), place.height.max(1));
+    let resized = render_world
+        .0
+        .get_resource::<ExtractedFrame>()
+        .is_some_and(|frame| frame.picture_size != picture);
+    if config.is_changed() || window.is_changed() || new_room || resized {
         render_world.reset_accumulation();
     }
-    // Never zero: the passes divide by it.
-    let picture = (window.width.max(1), window.height.max(1));
     render_world.0.insert_resource(ExtractedFrame {
         internal_resolution: internal_resolution(&config, picture),
         picture_size: picture,
-        picture_left: margin.left,
+        picture_corner: (place.left, place.top),
         window_size: (size.width, size.height),
         vsync: window.vsync,
         frame: time.frame,

@@ -10,7 +10,7 @@ use bevy_ecs::query::Without;
 use bevy_ecs::system::{Commands, Query, Res};
 use glam::Vec3;
 use maki_gameplay::{CameraSettings, FollowCamera};
-use maki_platform::{Action, ActionState, Key, Pointer, WindowSettings};
+use maki_platform::{Action, ActionState, Key, Picture, Pointer};
 use maki_scene::Camera;
 
 use crate::Editor;
@@ -52,7 +52,7 @@ pub struct EditorCamera {
 
 impl EditorCamera {
     /// The view that the game camera has at its start.
-    fn game_view(settings: &CameraSettings) -> Self {
+    pub(crate) fn game_view(settings: &CameraSettings) -> Self {
         let target = Vec3::from(settings.target);
         let offset = Vec3::from(settings.position) - target;
         let distance = offset.length().max(0.5);
@@ -89,7 +89,7 @@ pub(crate) fn spawn(mut commands: Commands, settings: Option<Res<CameraSettings>
 pub(crate) fn move_camera(
     actions: Res<ActionState>,
     pointer: Res<Pointer>,
-    window: Res<WindowSettings>,
+    picture: Res<Picture>,
     settings: Option<Res<CameraSettings>>,
     editor: Res<Editor>,
     // `Without`: the two cameras are different entities, so this system and the
@@ -119,7 +119,7 @@ pub(crate) fn move_camera(
             // The point under the pointer stays under it: meters for one pixel at
             // the distance of the target.
             let scale = 2.0 * (new.fov_y_degrees.to_radians() / 2.0).tan() * new.distance
-                / window.height.max(1) as f32;
+                / picture.height.max(1) as f32;
             let now = new.camera();
             let forward = (now.target - now.position).normalize();
             let right = forward.cross(Vec3::Y).normalize();

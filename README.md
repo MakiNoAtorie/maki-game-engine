@@ -53,14 +53,23 @@ The picture has a fixed size (`width` and `height` of `[window]`) and is at the 
 
 While the mouse pointer is on a panel, the mouse (buttons, wheel, motion) starts no action. While a text field of a panel has the keyboard focus, keys start no action.
 
-To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the section and the game world. `crates/ui/src/stats.rs` is an example. `maki_ui::add_left_panel` adds a panel at the left of the picture (the outliner of the editor): the picture then starts at the right of it, and the window is wider by it.
+To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, world| { ... })` in `Module::build`. The closure gets the egui `Ui` of the section and the game world. `crates/ui/src/stats.rs` is an example. `maki_ui::add_left_panel` adds a panel at the left of the picture: the picture then starts at the right of it, and the window is wider by it.
+
+A tool has another layout (`Panels::set_tool_layout`, the editor): panels at the top, the left, the right, under the picture, and a status row (`maki_ui::add_tool_panel` with a `ToolPlace`). The user drags the width of the side panels and the height of the bottom panel. The debug panels of the table are then one window, closed at the start. With `maki_platform::PictureFit::Window` the window starts maximized, the user sets its size, and the picture has the room that the panels leave.
+
+`maki_platform::Picture` is the one place that tells where the picture is in the window and how large it is, in pixels. `maki_platform::update_picture` makes it in `Extract` from the `[window]` settings (the game) or from the window size (a tool) and the room that the panels take (`WindowMargin`). The renderer, the UI, and the editor read it. In a tool, a new size waits until it did not change for 8 frames: a drag of a window edge or a panel edge does not make the images of the renderer again in each frame.
 
 ## Editor
 
 `cargo run -p maki-game --features editor -- --editor` starts the game in the room editor, with the start room open. The editor is the crate `crates/editor`, behind the cargo feature `editor` of the game: a build without the feature has no editor code and no `--editor` option.
 
-- At the left: the menu "File" (new room, open a room file of `game/assets/rooms`, save, save as, quit), "Play" with the spawn point where the game starts, and the outliner: the room, its doorways, doors, props, movers, lights, spawn points, and events. An item with no name shows its kind and its index.
-- At the right, in the panel column: "Properties" has the values of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. For an event it is the event panel (below).
+- The window starts maximized, and the picture has the room that the panels leave: it has the shape of that room, not that of the game. In the view of the game camera (G), a thin frame shows the picture of the game (`[window]` size). The title bar has the room file, ` *` for changes that are not saved, and "maki editor".
+- At the top: the menus "File" (new room, open a room file of `game/assets/rooms`, save, save as, quit), "Edit" (undo, redo, duplicate, delete), and "View" ("Debug panels": the panels of the game in one window). Below them the row with "Play" and the spawn point where the game starts, the tools, "Local", the snap, and "Add".
+- At the left: the outliner: the room, its doorways, doors, props, movers, lights, spawn points, and events. An item with no name shows its kind and its index.
+- At the right: the properties of the selected item, and its notes. A number changes by a drag or by a click and typed text; a text field changes the room when it loses the focus. For an event: its name and its area; the rest is in the event panel (below). "Where used" is a fold at the end.
+- At the bottom: the status row. What the last command did; in red why a command did not do its work, until the "x" closes it; at the right the count of errors and warnings in the events.
+- Drag the edge of the outliner, of the properties, or of the event panel to change its size. The sizes are saved in `[editor]`.
+- While the game is played (Play), the top row has "Stop" (and "Step", "Run" in a test), the left panel has the events that run, and the right panel has the game state.
 - The view: drag with the right mouse button to turn it, with the middle button to move it, the wheel goes nearer and farther. T is the view from the top, G the view of the game camera. The help panel lists the keys of the editor while the room is edited, and those of the game while it is played.
 - Selection: a click in the picture selects the item under the pointer (a prop, a door, a mover, a light, a spawn point, the area of an event); a click on a wall, the floor, or nothing selects nothing. Shift and a click adds an item or takes it out. The outliner has the same selection. The pick is against what the picture shows: a click goes through the near walls as the view does, and a mirror or a glass ball is selected itself, not what shows in it.
 - The gizmo is at the last selected item. "Move" (W): a handle for each axis, and the square at the origin moves the item over the floor. "Rotate" (E): a ring for each axis. "Scale" (R): a handle for each axis of the item. "Local" (Q): the handles follow the axes of the item, not those of the room. A light, a spawn point, and an event area only move. A mover has two poses: the gizmo moves pose `a`, or pose `b` with the checkbox in "Properties"; the marks show the mesh at pose `b` and the way between the two.
@@ -72,16 +81,17 @@ To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, w
 - Play (the button or F5) runs the game in the room as it is in the editor, from the selected spawn point (a room with none: from the point that the view looks at). Stop (the button, or the quit key of the game) goes back to the editor: the room and the game state are those of before the play. What events did (flags, lights, doors, another room, a fade, a message) is gone.
 - New, open, play, and quit ask first if the room has changes that are not saved.
 
-The event panel ("Properties" of a selected event; select it in the outliner or by its area in the picture):
+The event panel is under the picture while an event is selected (in the outliner or by its area in the picture). At its left the pages with their conditions and trigger, in the middle the command rows, at the right the arguments of the selected row:
 
-- Name, and the area on the floor (also by the gizmo). With the checkbox off the event has no area: for `Autorun` and `Parallel`.
+- In the properties: the name, and the area on the floor (also by the gizmo). With the checkbox off the event has no area: for `Autorun` and `Parallel`.
+- A name (a flag, a variable, a light, a door, a room file, a spawn point, a command of "Add") is picked from a list with a search field: type a part of the name, Enter takes the first one. The lists of flags and variables have the entry "New...": type the name, then Enter.
 - Pages as tabs, with add, copy, delete, and the two arrows for the order. A star marks the page that the game would run with the flags and variables of the "Game state" panel (the last page whose conditions hold): set a flag there to see another page get the star, and to play with that state. Stop gives the values of before the play back.
 - Conditions as rows: a kind (flag is set, flag is not set, variable is at least, variable is), a name, a value. The trigger is a choice of the four.
 - Commands as rows, one line each; the two lists of an `If` are under it, with `Else` and `End`. "Add" has each command of the game (the built-in ones and those of the modules, here `ShakeCamera`); the new command goes after the selected row (after `If`: into its first list; after `Else`: into the second). Drag a row to another row to move it. "Copy" and "Paste" use a buffer of the editor, which stays when another event or another room file is opened.
 - The arguments of the selected command: a light, a door, or a mover is picked from those of the room; a flag or a variable from each name that an event of any room file beside the open one uses, or typed as a new one; a `Transfer` picks a room file, then one of its spawn points. A command of a module that gives no widgets (`maki_editor::add_argument_editor`) is a text field with the command as a room file has it (`ShakeCamera(0.6, 0.06)`), checked with each key.
 - Checks, on the row and with `(!)` at the event in the outliner. Red, an error: a light, a door, or a mover that the room does not have; two events with one name. Yellow, a warning: a `Transfer` to a room file or a spawn point that does not exist. The room loader of the game makes the same checks with the same code (see "Rooms and events"): it does not load a room file with an error. A room with such a problem opens in the editor and can be saved; the status line gives the count.
 - A flag or a variable that an event reads and no event of any room file writes has the yellow mark "no event sets it", in the pick lists and in "Where used": a name with a wrong letter, or a flag that only a test sets.
-- "Test this page" plays the room and starts the page, whatever its trigger and conditions are, in step mode: each event waits before each command, "Step" (at the left) runs the next one, and the line under the file name shows the command that waits. "Run" ends the step mode.
+- "Test this page" plays the room and starts the page, whatever its trigger and conditions are, in step mode: each event waits before each command, "Step" (in the top row) runs the next one, and the left panel shows the command that waits. "Run" ends the step mode.
 
 The panel "Where used" lists each flag and each variable of the game with each place that reads or writes it: room file, event, page, and the condition or command.
 
@@ -197,6 +207,13 @@ The config file is TOML, with one table for each module. A module declares its t
 | `snap` | true | A drag of a gizmo handle snaps. Ctrl turns it around for one drag |
 | `grid_step` | 0.25 | Step of a position, in meters. Also the grid for a new item |
 | `angle_step` | 15.0 | Step of a rotation, in degrees |
+| `left_width`, `right_width`, `event_height` | 230, 340, 300 | Width of the outliner and of the properties, height of the event panel, in points of the UI. The editor writes them when the user drags an edge |
+
+`[ui]` (`crates/ui`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `scale` | 1.0 | Size of the text and the panels, 0.5 to 3.0, multiplied with the scale of the display. 1.5 on a display at 100 % shows as a display at 150 % does |
 
 `[time]` (`crates/core`):
 

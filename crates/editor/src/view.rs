@@ -262,11 +262,17 @@ mod tests {
         // The target is in the center of the picture.
         let center = view.project(view.camera.target).unwrap();
         assert!((center[0] - 640.0).abs() < 1e-3 && (center[1] - 360.0).abs() < 1e-3);
-        for point in [Vec3::new(2.0, 0.0, -1.5), Vec3::new(-3.0, 1.0, 2.0)] {
-            let pixel = view.project(point).unwrap();
-            let ray = view.ray(pixel);
-            let to_point = point - ray.origin;
-            assert!(ray.direction.cross(to_point).length() < 1e-3, "{point}");
+        // Also in a picture of another size and shape: the editor after a resize.
+        let tall = View::new(view.camera, [700.0, 1000.0]);
+        let center = tall.project(tall.camera.target).unwrap();
+        assert!((center[0] - 350.0).abs() < 1e-3 && (center[1] - 500.0).abs() < 1e-3);
+        for view in [&view, &tall] {
+            for point in [Vec3::new(2.0, 0.0, -1.5), Vec3::new(-3.0, 1.0, 2.0)] {
+                let pixel = view.project(point).unwrap();
+                let ray = view.ray(pixel);
+                let to_point = point - ray.origin;
+                assert!(ray.direction.cross(to_point).length() < 1e-3, "{point}");
+            }
         }
         // +X of the room is at the right, and up is up.
         assert!(view.project(Vec3::X).unwrap()[0] > 640.0);

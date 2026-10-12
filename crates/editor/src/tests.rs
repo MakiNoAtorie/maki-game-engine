@@ -279,15 +279,11 @@ fn window_pixel(app: &App, point: Vec3) -> [f32; 2] {
     let mut cameras = world
         .try_query_filtered::<&maki_scene::Camera, With<EditorCamera>>()
         .unwrap();
-    let window = world.resource::<maki_platform::WindowSettings>();
-    let size = [window.width as f32, window.height as f32];
-    let view = View::new(*cameras.single(world).unwrap(), size);
+    let picture = world.resource::<maki_platform::Picture>();
+    let view = View::new(*cameras.single(world).unwrap(), picture.size());
     let [x, y] = view.project(point).unwrap();
-    // The picture starts at the right of the left panel.
-    [
-        x + world.resource::<maki_platform::WindowMargin>().left as f32,
-        y,
-    ]
+    // The picture starts at the right of the left panel, under the top rows.
+    [x + picture.left as f32, y + picture.top as f32]
 }
 
 /// A press and a release of the left button at a point of the room.
@@ -310,7 +306,8 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
     app.run(|mut app| {
         frames(&mut app, 3);
         let selection = |app: &App| app.world().resource::<Editor>().selection.clone();
-        assert!(app.world().resource::<maki_platform::WindowMargin>().left > 0);
+        let picture = *app.world().resource::<maki_platform::Picture>();
+        assert!(picture.left > 0 && picture.top > 0);
 
         // The cube, then the spawn point (a mark, no mesh), then the floor.
         click(&mut app, Vec3::new(1.0, 1.0, 0.0));
@@ -376,6 +373,25 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         chord(&mut app, Key::R);
         assert_eq!(app.world().resource::<Editor>().tool, Tool::Scale);
         app.resource_mut::<Editor>().tool = Tool::Move;
+
+        // A window of another size: the picture follows after some frames, and a
+        // click still selects what the picture shows under the pointer.
+        click(&mut app, Vec3::new(-2.0, 0.0, -2.0));
+        let before = *app.world().resource::<maki_platform::Picture>();
+        app.insert_resource(maki_platform::WindowSize {
+            width: 1500,
+            height: 1100,
+        });
+        frames(&mut app, 12);
+        let picture = *app.world().resource::<maki_platform::Picture>();
+        assert_ne!(
+            (picture.width, picture.height),
+            (before.width, before.height)
+        );
+        click(&mut app, Vec3::new(-1.25, 1.0, 1.5));
+        assert_eq!(selection(&app), [Item::Prop(0)]);
+        click(&mut app, Vec3::new(0.0, 2.0, 0.0));
+        assert_eq!(selection(&app), [Item::Light(0)]);
 
         // A press and a move in the same frame: the click is at the press place.
         click(&mut app, Vec3::new(-2.0, 0.0, -2.0));

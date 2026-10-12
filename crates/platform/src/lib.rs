@@ -12,8 +12,8 @@ pub use input::{
     Modifiers, Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings,
 };
 pub use window::{
-    QuitHold, QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSettings,
-    WindowSize, run,
+    Picture, PictureFit, QuitHold, QuitRequested, RawWindowEvent, Window, WindowMargin,
+    WindowResized, WindowSettings, WindowSize, WindowTitle, run, update_picture,
 };
 
 /// Adds input actions and window data to the app. `run` opens the window.
@@ -21,7 +21,23 @@ pub struct PlatformModule;
 
 impl Module for PlatformModule {
     fn build(&self, app: &mut App) {
-        app.add_settings::<WindowSettings>()
+        app.add_settings::<WindowSettings>();
+        let window = app.world().resource::<WindowSettings>().clone();
+        let margin = WindowMargin::default();
+        app.insert_resource(WindowTitle(window.title.clone()))
+            // The picture of the first frame, before the first `Extract`.
+            .insert_resource(Picture {
+                left: margin.left,
+                top: margin.top,
+                width: window.width.max(1),
+                height: window.height.max(1),
+            })
+            .init_resource::<PictureFit>()
+            // It reads what the frame wrote, and it is the one writer of the picture.
+            .add_systems(
+                maki_core::Extract,
+                window::update_picture.ambiguous_with_all(),
+            )
             .add_message::<RawInput>()
             .add_message::<WindowResized>()
             .add_message::<RawWindowEvent>()
@@ -51,6 +67,9 @@ impl Module for PlatformModule {
                     // writes the settings decides only if the window follows in this frame or
                     // in the next one.
                     window::fit_window
+                        .run_if(resource_exists::<Window>)
+                        .ambiguous_with_all(),
+                    window::apply_title
                         .run_if(resource_exists::<Window>)
                         .ambiguous_with_all(),
                 ),

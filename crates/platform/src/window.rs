@@ -56,14 +56,112 @@ pub struct WindowSize {
     pub height: u32,
 }
 
-/// Room in the window at the left and at the right of the picture, in physical
-/// pixels. The module that draws there writes it (the panels of the ui crate). The
-/// window is as large as the picture of the config and this room, and the picture
-/// starts `left` pixels from the left edge.
+/// Room in the window around the picture, in physical pixels. The module that draws
+/// there writes it (the panels of the ui crate). [`Picture`] is made from it.
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WindowMargin {
     pub left: u32,
     pub right: u32,
+    pub top: u32,
+    pub bottom: u32,
+}
+
+/// Where the picture is in the window, and how large it is, in physical pixels. The
+/// one place that tells it: the renderer, the UI, and a tool read it, and
+/// [`update_picture`] alone writes it.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Picture {
+    /// The top left corner, from the top left corner of the window.
+    pub left: u32,
+    pub top: u32,
+    /// Never 0.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Picture {
+    fn of_settings(config: &WindowSettings, margin: WindowMargin) -> Self {
+        Self {
+            left: margin.left,
+            top: margin.top,
+            width: config.width.max(1),
+            height: config.height.max(1),
+        }
+    }
+
+    /// A place of the window (the pointer) as a place in the picture: from its top
+    /// left corner. It can be out of the picture.
+    pub fn from_window(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        [x - self.left as f32, y - self.top as f32]
+    }
+
+    pub fn size(&self) -> [f32; 2] {
+        [self.width as f32, self.height as f32]
+    }
+}
+
+/// What decides the size of the picture.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PictureFit {
+    /// The game: the picture has the size of the `[window]` settings, and the
+    /// window is as large as the picture and the margin.
+    #[default]
+    Settings,
+    /// A tool: the user sets the size of the window (it starts maximized), and the
+    /// picture has the room that the margin leaves.
+    Window,
+}
+
+/// A new size of the room for the picture is the size of the picture after this many
+/// frames with no other change.
+// Each picture size makes each image of the renderer again and starts the picture
+// again. In a drag of a window edge or a panel edge the size changes in each frame.
+const PICTURE_REST_FRAMES: u32 = 8;
+
+/// Runs in `Extract`: the picture for this frame. A system that copies it for a
+/// renderer runs `.after(update_picture)`.
+pub fn update_picture(
+    config: Res<WindowSettings>,
+    margin: Res<WindowMargin>,
+    fit: Res<PictureFit>,
+    size: Option<Res<WindowSize>>,
+    mut picture: ResMut<Picture>,
+    // The size that waits, and the frames that it did not change.
+    mut waiting: Local<Option<((u32, u32), u32)>>,
+) {
+    let mut new = Picture::of_settings(&config, *margin);
+    if let (PictureFit::Window, Some(size)) = (*fit, size) {
+        let room = (
+            size.width.saturating_sub(margin.left + margin.right).max(1),
+            size.height
+                .saturating_sub(margin.top + margin.bottom)
+                .max(1),
+        );
+        let frames = match *waiting {
+            Some((size, frames)) if size == room => frames + 1,
+            _ => 0,
+        };
+        *waiting = Some((room, frames));
+        // The place follows at once. The old size is cut by the window.
+        (new.width, new.height) = if frames >= PICTURE_REST_FRAMES {
+            room
+        } else {
+            (picture.width, picture.height)
+        };
+    }
+    // Only a different value is a write: a change starts the picture again.
+    picture.set_if_neq(new);
+}
+
+/// The text of the title bar of the window. A tool writes it (the open file).
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct WindowTitle(pub String);
+
+pub(crate) fn apply_title(title: Res<WindowTitle>, window: Res<Window>) {
+    use bevy_ecs::change_detection::DetectChanges;
+    if title.is_changed() {
+        window.0.set_title(&title.0);
+    }
 }
 
 /// The window and the picture in it. The `[window]` table of the config file.
@@ -96,7 +194,10 @@ impl Settings for WindowSettings {
 
 /// The size of the window for a picture size and a margin.
 fn window_size(config: &WindowSettings, margin: WindowMargin) -> PhysicalSize<u32> {
-    PhysicalSize::new(margin.left + config.width + margin.right, config.height)
+    PhysicalSize::new(
+        margin.left + config.width + margin.right,
+        margin.top + config.height + margin.bottom,
+    )
 }
 
 /// Gives the window a new size when the picture size of the settings or the margin
@@ -104,9 +205,14 @@ fn window_size(config: &WindowSettings, margin: WindowMargin) -> PhysicalSize<u3
 pub(crate) fn fit_window(
     config: Res<WindowSettings>,
     margin: Res<WindowMargin>,
+    fit: Res<PictureFit>,
     window: Res<Window>,
     mut last: Local<Option<PhysicalSize<u32>>>,
 ) {
+    // The user sets the size of the window of a tool.
+    if *fit == PictureFit::Window {
+        return;
+    }
     let target = window_size(&config, *margin);
     // Only a new target is a request: a size that the user gave the window stays.
     if last.replace(target) != Some(target) && window.0.inner_size() != target {
@@ -193,9 +299,12 @@ impl ApplicationHandler for Runner {
 
         let config = app.world().resource::<WindowSettings>();
         let margin = *app.world().resource::<WindowMargin>();
+        let title = &app.world().resource::<WindowTitle>().0;
+        let maximized = *app.world().resource::<PictureFit>() == PictureFit::Window;
         let attributes = winit::window::Window::default_attributes()
-            .with_title(&config.title)
-            .with_inner_size(window_size(config, margin));
+            .with_title(title)
+            .with_inner_size(window_size(config, margin))
+            .with_maximized(maximized);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => {

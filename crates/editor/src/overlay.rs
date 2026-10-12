@@ -101,6 +101,38 @@ impl Pen<'_> {
     }
 }
 
+/// While the view is that of the game camera: the frame of the picture of the game.
+/// The view of the editor has the shape of its place in the window, so it shows
+/// more or less of the room at the sides than the game does.
+fn game_frame(world: &mut World, pen: &Pen, picture: egui::Rect, stroke: Stroke) {
+    let game = world.resource::<maki_platform::WindowSettings>();
+    let aspect = game.width.max(1) as f32 / game.height.max(1) as f32;
+    let label = format!("picture of the game, {} x {}", game.width, game.height);
+    let settings = world.get_resource::<maki_gameplay::CameraSettings>();
+    let game_view = crate::camera::EditorCamera::game_view(&settings.cloned().unwrap_or_default());
+    let mut cameras = world.query::<&crate::camera::EditorCamera>();
+    if cameras.iter(world).next() != Some(&game_view) {
+        return;
+    }
+    // The same angle from top to bottom: the same height, another width.
+    let size = egui::vec2(picture.height() * aspect, picture.height());
+    let frame = egui::Rect::from_center_size(picture.center(), size);
+    let kind = egui::StrokeKind::Inside;
+    pen.painter.rect_stroke(frame, 0.0, stroke, kind);
+    let (text, at) = if frame.width() > picture.width() {
+        (
+            format!("{label}: wider than this view"),
+            picture.center_top(),
+        )
+    } else {
+        (label, frame.center_top())
+    };
+    let font = egui::FontId::proportional(12.0);
+    let anchor = egui::Align2::CENTER_TOP;
+    pen.painter
+        .text(at + egui::vec2(0.0, 4.0), anchor, text, font, stroke.color);
+}
+
 /// The panel function of the overlay.
 pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
     if editor.playing() {
@@ -117,6 +149,7 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         points: 1.0 / ui.ctx().pixels_per_point(),
     };
     let thin = |color| Stroke::new(1.0, color);
+    game_frame(world, &pen, picture, thin(GRID));
     let selected = |item: &Item| editor.selection.contains(item);
     // The stroke of a mark: that of the selection if its item is selected.
     let stroke = |item: &Item, color| {

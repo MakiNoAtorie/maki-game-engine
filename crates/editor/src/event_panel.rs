@@ -24,7 +24,7 @@ use crate::events::{
 use crate::widgets::{choice, drag, number, optional, same_kind, text};
 use crate::{Command as EditorCommand, Editor};
 
-const ERROR: Color32 = Color32::from_rgb(255, 110, 90);
+pub(crate) const ERROR: Color32 = Color32::from_rgb(255, 110, 90);
 /// A warning of a check, and the mark of a name that no event writes.
 pub(crate) const HINT: Color32 = Color32::from_rgb(235, 190, 80);
 /// The mark of a flag or a variable that an event reads and no event writes.
@@ -96,47 +96,132 @@ struct Lists {
     rooms: Vec<(String, Vec<String>)>,
 }
 
-/// A name of a list, by a click. A name that the list does not have shows in red.
-fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
-    pick_marked(ui, salt, value, known, &[])
+/// What a click in a list of names took.
+enum Picked {
+    Name(String),
+    /// The entry "New...".
+    New,
 }
 
-/// As [`pick`]. A name of `marked` has the mark [`NEVER_WRITTEN`] in the list.
-fn pick_marked(
+/// A button that opens a list of names, with a search field above them. `marked`:
+/// the names with the mark [`NEVER_WRITTEN`]. `new`: the list has the entry "New...".
+fn name_list(
+    ui: &mut Ui,
+    id: egui::Id,
+    button: egui::WidgetText,
+    names: &[String],
+    marked: &[String],
+    new: bool,
+) -> Option<Picked> {
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(button)
+        .height(320.0)
+        // A click into the search field does not close the list.
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            let search_id = id.with("search");
+            let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
+            let field = egui::TextEdit::singleline(&mut search)
+                .hint_text("search")
+                .desired_width(180.0);
+            // The keyboard is at the search field while the list is open: a key
+            // starts no tool of the editor.
+            ui.add(field).request_focus();
+            let wanted = search.to_lowercase();
+            let found: Vec<&String> = names
+                .iter()
+                .filter(|name| name.to_lowercase().contains(&wanted))
+                .collect();
+            if new && ui.selectable_label(false, "New...").clicked() {
+                picked = Some(Picked::New);
+            }
+            // Enter takes the first name that the search leaves.
+            if let (true, Some(first)) = (
+                ui.input(|input| input.key_pressed(egui::Key::Enter)),
+                found.first(),
+            ) {
+                picked = Some(Picked::Name((*first).clone()));
+            }
+            for name in found {
+                let label = if marked.contains(name) {
+                    egui::RichText::new(format!("{name}  ({NEVER_WRITTEN})")).color(HINT)
+                } else {
+                    egui::RichText::new(name)
+                };
+                if ui.selectable_label(false, label).clicked() {
+                    picked = Some(Picked::Name(name.clone()));
+                }
+            }
+            if picked.is_some() {
+                search.clear();
+                ui.close();
+            }
+            ui.data_mut(|data| data.insert_temp(search_id, search));
+        });
+    picked
+}
+
+/// A name of a list, by a click, with a search field. A name that the list does not
+/// have shows in red. `new`: the list has the entry "New..." for a name that it does
+/// not have; the name is typed then, and Enter takes it.
+fn picker(
     ui: &mut Ui,
     salt: &str,
     value: &mut String,
     known: &[String],
     marked: &[String],
+    new: bool,
 ) -> bool {
-    let mut changed = false;
+    let id = ui.make_persistent_id(("picker", salt));
+    let typed_id = id.with("new");
+    if let Some(mut typed) = ui.data(|data| data.get_temp::<String>(typed_id)) {
+        let field = egui::TextEdit::singleline(&mut typed)
+            .hint_text("new name, then Enter")
+            .desired_width(180.0);
+        let response = ui.add(field);
+        // Esc, or a click at another place: no new name.
+        if response.lost_focus() {
+            ui.data_mut(|data| data.remove::<String>(typed_id));
+            let name = typed.trim();
+            let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if enter && !name.is_empty() && name != value {
+                *value = name.to_owned();
+                return true;
+            }
+            return false;
+        }
+        response.request_focus();
+        ui.data_mut(|data| data.insert_temp(typed_id, typed));
+        return false;
+    }
     let shown = egui::RichText::new(value.as_str());
     let shown = if known.contains(value) {
         shown
     } else {
         shown.color(ERROR)
     };
-    egui::ComboBox::from_id_salt(salt)
-        .selected_text(shown)
-        .show_ui(ui, |ui| {
-            for name in known {
-                let label = if marked.contains(name) {
-                    egui::RichText::new(format!("{name}  ({NEVER_WRITTEN})")).color(HINT)
-                } else {
-                    egui::RichText::new(name)
-                };
-                if ui.selectable_label(name == value, label).clicked() && name != value {
-                    value.clone_from(name);
-                    changed = true;
-                }
-            }
-        });
-    changed
+    match name_list(ui, id, shown.into(), known, marked, new) {
+        Some(Picked::Name(name)) if name != *value => {
+            *value = name;
+            true
+        }
+        Some(Picked::New) => {
+            ui.data_mut(|data| data.insert_temp(typed_id, String::new()));
+            false
+        }
+        _ => false,
+    }
 }
 
-/// The name of a flag or a variable: one that an event of the game uses, by a click,
-/// or a new one, typed. `unset`: the names that no event writes. Such a name has a
-/// mark: it can be a name with a wrong letter.
+/// A name of a list that the room or the game gives: a light, a door, a room file.
+fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
+    picker(ui, salt, value, known, &[], false)
+}
+
+/// The name of a flag or a variable: one that an event of the game uses, or a new
+/// one ("New..."). `unset`: the names that no event writes. Such a name has a mark:
+/// it can be a name with a wrong letter.
 fn pick_or_new(
     ui: &mut Ui,
     salt: &str,
@@ -144,16 +229,11 @@ fn pick_or_new(
     known: &[String],
     unset: &[String],
 ) -> bool {
-    let changed = ui.horizontal(|ui| {
-        let picked = pick_marked(ui, salt, value, known, unset);
-        let typed = ui.push_id(salt, |ui| text(ui, "new:", value)).inner;
-        picked | typed
-    });
-    // On its own line: the text field takes the rest of the line.
+    let changed = picker(ui, salt, value, known, unset, true);
     if unset.contains(value) {
         ui.colored_label(HINT, format!("`{value}`: {NEVER_WRITTEN}"));
     }
-    changed.inner
+    changed
 }
 
 fn pick_flag(ui: &mut Ui, value: &mut String, lists: &Lists) -> bool {
@@ -328,23 +408,14 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
     changed
 }
 
-/// The property panel of an event. True: the event was changed. `None`: the
-/// document has no such event. `old_name`: set if the name was changed.
-pub(crate) fn event_panel(
-    ui: &mut Ui,
-    world: &mut World,
-    editor: &mut Editor,
-    index: usize,
-    old_name: &mut Option<Option<String>>,
-) -> Option<bool> {
+/// The names that the pickers offer for the open room, and what the checks find in
+/// one event.
+fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>) {
     let registry = editor.registry.clone();
     let others = editor.others().to_vec();
     let used = names(&editor.document, &others);
-    let problems: Vec<Problem> = problems(&editor.document, &others, &registry);
-    let problems: Vec<&Problem> = problems
-        .iter()
-        .filter(|problem| problem.event == index)
-        .collect();
+    let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
+    problems.retain(|problem| problem.event == index);
     let room = &editor.document.room;
     let named = |names: Vec<&Option<String>>| -> Vec<String> {
         names.into_iter().flatten().cloned().collect()
@@ -370,19 +441,20 @@ pub(crate) fn event_panel(
         ),
         rooms: std::iter::once(own).chain(other_rooms).collect(),
     };
-    let state = world.resource::<GameState>().clone();
-    let editors = world
-        .get_resource::<ArgumentEditors>()
-        .cloned()
-        .unwrap_or_default();
+    (lists, problems)
+}
 
-    let Editor {
-        document,
-        event_ui,
-        queue,
-        ..
-    } = editor;
-    let event = document.events.get_mut(index)?;
+/// The part of an event in the property panel: its name and its area. True: the
+/// event was changed. `None`: the document has no such event. `old_name`: set if the
+/// name was changed.
+pub(crate) fn event_properties(
+    ui: &mut Ui,
+    editor: &mut Editor,
+    index: usize,
+    old_name: &mut Option<Option<String>>,
+) -> Option<bool> {
+    let (_, problems) = lists_and_problems(editor, index);
+    let event = editor.document.events.get_mut(index)?;
     let mut changed = false;
 
     let old = event.name.clone();
@@ -416,30 +488,109 @@ pub(crate) fn event_panel(
     for problem in problems.iter().filter(|problem| problem.command.is_none()) {
         ui.colored_label(color(problem), problem.text.as_str());
     }
-    ui.separator();
+    ui.weak("Pages and commands: the panel under the picture.");
+    Some(changed)
+}
 
-    // The pages, as tabs. The one that the game would run now has a star.
+/// The event panel, under the picture: the pages with their conditions and trigger
+/// at the left, the command rows in the middle, the arguments of the selected row
+/// at the right. True: the event was changed. `None`: the document has no such event.
+pub(crate) fn event_panel(
+    ui: &mut Ui,
+    world: &mut World,
+    editor: &mut Editor,
+    index: usize,
+) -> Option<bool> {
+    let registry = editor.registry.clone();
+    let (lists, problems) = lists_and_problems(editor, index);
+    let problems: Vec<&Problem> = problems.iter().collect();
+    let state = world.resource::<GameState>().clone();
+    let editors = world
+        .get_resource::<ArgumentEditors>()
+        .cloned()
+        .unwrap_or_default();
+
+    let Editor {
+        document,
+        event_ui,
+        queue,
+        ..
+    } = editor;
+    let event = document.events.get_mut(index)?;
+    let mut changed = false;
     if event.pages.is_empty() {
         event.pages.push(empty_page());
         changed = true;
     }
+    let scroll = |salt: &'static str| egui::ScrollArea::both().id_salt(salt).auto_shrink(false);
+
+    let frame = egui::Frame::NONE.inner_margin(6);
+    let part = |panel: egui::Panel| {
+        panel
+            .resizable(true)
+            .default_size(SIDE_WIDTH)
+            .size_range(200.0..=600.0)
+            .frame(frame)
+    };
+    part(egui::Panel::left("event pages")).show(ui, |ui| {
+        scroll("pages").show(ui, |ui| {
+            changed |= pages(ui, event, event_ui, &state, &lists, queue);
+        });
+    });
+    let at = event_ui.page;
+    // Another event or another page: the row and the typed command are of the old one.
+    if std::mem::replace(&mut event_ui.shown, (index, at)) != (index, at) {
+        event_ui.row = None;
+        event_ui.draft = None;
+    }
+    let page = &mut event.pages[at];
+    part(egui::Panel::right("event arguments")).show(ui, |ui| {
+        scroll("arguments").show(ui, |ui| {
+            changed |= command_arguments(ui, page, event_ui, &lists, &registry, &editors);
+        });
+    });
+    egui::Frame::NONE.inner_margin(6).show(ui, |ui| {
+        scroll("commands").show(ui, |ui| {
+            changed |= command_rows(ui, page, event_ui, &lists, &registry, &problems, at);
+        });
+    });
+    Some(changed)
+}
+
+/// The width of the left and of the right part of the event panel at the start.
+const SIDE_WIDTH: f32 = 340.0;
+
+/// The left part of the event panel: the pages as tabs, and the conditions and the
+/// trigger of the page that shows.
+fn pages(
+    ui: &mut Ui,
+    event: &mut maki_events::EventDef,
+    event_ui: &mut EventUi,
+    state: &GameState,
+    lists: &Lists,
+    queue: &mut Vec<EditorCommand>,
+) -> bool {
+    let mut changed = false;
+    // The pages, as tabs. The one that the game would run now has a star.
     let count = event.pages.len();
     event_ui.page = event_ui.page.min(count - 1);
-    let active = active_page(event, &state);
+    let active = active_page(event, state);
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
         for page in 0..count {
             let star = if active == Some(page) { " *" } else { "" };
-            if ui
+            let tab = ui
                 .selectable_label(event_ui.page == page, format!("{}{star}", page + 1))
-                .clicked()
-            {
+                .on_hover_text(
+                    "* the page that is active with the flags and variables of the \
+                     Game state panel: the last one whose conditions hold",
+                );
+            if tab.clicked() {
                 event_ui.page = page;
                 event_ui.row = None;
             }
         }
     });
-    ui.weak("* the page that is active with the flags and variables of the Game state panel: the last one whose conditions hold");
     let at = event_ui.page;
     ui.horizontal(|ui| {
         let before = (event.pages.clone(), at);
@@ -484,17 +635,13 @@ pub(crate) fn event_panel(
         }
     });
     let at = event_ui.page;
-    if std::mem::replace(&mut event_ui.shown, (index, at)) != (index, at) {
-        event_ui.row = None;
-        event_ui.draft = None;
-    }
     let name = event.name.clone();
     let page = &mut event.pages[at];
 
     ui.label("Conditions (all must hold)");
     changed |= ui
         .indent("conditions", |ui| {
-            conditions(ui, &mut page.conditions, &lists)
+            conditions(ui, &mut page.conditions, lists)
         })
         .inner;
     let triggers = [
@@ -514,12 +661,6 @@ pub(crate) fn event_panel(
         ui.weak("Autorun runs one time when the page gets active (also when the room loads), not again and again as in RPG Maker.");
     }
     ui.separator();
-
-    changed |= commands(
-        ui, page, event_ui, &lists, &registry, &editors, &problems, at,
-    );
-
-    ui.separator();
     if ui
         .button("Test this page")
         .on_hover_text("Plays the room and runs this page, one command for each step")
@@ -527,7 +668,7 @@ pub(crate) fn event_panel(
     {
         queue.push(EditorCommand::Test(name, at));
     }
-    Some(changed)
+    changed
 }
 
 /// Red for an error of a check (the game does not load the room), else yellow.
@@ -543,15 +684,13 @@ fn empty_page() -> Page {
     }
 }
 
-/// The command list of a page, and the arguments of the selected row.
-#[allow(clippy::too_many_arguments)]
-fn commands(
+/// The middle part of the event panel: the command rows of a page.
+fn command_rows(
     ui: &mut Ui,
     page: &mut Page,
     event_ui: &mut EventUi,
     lists: &Lists,
     registry: &CommandRegistry,
-    editors: &ArgumentEditors,
     problems: &[&Problem],
     page_index: usize,
 ) -> bool {
@@ -576,28 +715,25 @@ fn commands(
 
     ui.horizontal(|ui| {
         ui.label("Commands");
-        ui.menu_button("Add", |ui| {
-            for name in registry.names() {
-                if ui.button(name).clicked() {
-                    match new_command(name, lists, registry) {
-                        Some(command) => insert.push(command),
-                        // A command with arguments that the editor does not know:
-                        // the user types them.
-                        None => {
-                            let (list, index) = place.clone();
-                            let text = format!("{name}(");
-                            event_ui.draft = Some(Draft {
-                                list,
-                                index,
-                                replace: false,
-                                text,
-                            });
-                        }
-                    }
-                    ui.close();
+        let names: Vec<String> = registry.names().into_iter().map(str::to_owned).collect();
+        let add = ui.make_persistent_id("add command");
+        if let Some(Picked::Name(name)) = name_list(ui, add, "Add".into(), &names, &[], false) {
+            match new_command(&name, lists, registry) {
+                Some(command) => insert.push(command),
+                // A command with arguments that the editor does not know: the
+                // user types them.
+                None => {
+                    let (list, index) = place.clone();
+                    let text = format!("{name}(");
+                    event_ui.draft = Some(Draft {
+                        list,
+                        index,
+                        replace: false,
+                        text,
+                    });
                 }
             }
-        });
+        }
         let some = selected_command.is_some();
         if ui.add_enabled(some, egui::Button::new("Delete")).clicked()
             && let Some(row) = selected_command
@@ -698,6 +834,22 @@ fn commands(
         }
     }
 
+    changed
+}
+
+/// The right part of the event panel: the arguments of the selected command row, or
+/// the text of a command that is typed.
+fn command_arguments(
+    ui: &mut Ui,
+    page: &mut Page,
+    event_ui: &mut EventUi,
+    lists: &Lists,
+    registry: &CommandRegistry,
+    editors: &ArgumentEditors,
+) -> bool {
+    let list = &mut page.commands;
+    let mut changed = false;
+    ui.label("Arguments");
     // The arguments of the selected command.
     if let Some(row) = event_ui
         .row
@@ -705,9 +857,7 @@ fn commands(
         .filter(|row| row.kind == RowKind::Command)
         && let Some(command) = row.command(list).cloned()
     {
-        ui.separator();
         let new = if let Some(mut builtin) = command.get::<Builtin>().cloned() {
-            ui.label("Arguments");
             arguments(ui, &mut builtin, lists)
                 .then(|| registry.command(builtin))
                 .flatten()
@@ -738,7 +888,6 @@ fn commands(
     } else if let Some(draft) = &mut event_ui.draft {
         // A new command that is typed. It goes into the list with the button: a
         // text can read as a command before all of it is typed (`Wait(1` and `0)`).
-        ui.separator();
         let new = draft_field(ui, draft, registry);
         let insert = ui
             .add_enabled(new.is_some(), egui::Button::new("Put into the list"))
@@ -758,6 +907,9 @@ fn commands(
                 changed = true;
             }
         }
+    }
+    if event_ui.row.is_none() && event_ui.draft.is_none() {
+        ui.weak("Select a command row.");
     }
     changed
 }

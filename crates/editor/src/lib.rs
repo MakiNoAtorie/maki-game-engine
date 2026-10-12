@@ -55,14 +55,14 @@ use maki_core::{App, Input, Interpolated, Module, ResetPlay, Settings, Startup, 
 use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
 use maki_gameplay::StartRoom;
 use maki_platform::{
-    Action, ActionState, Chord, InputMode, Key, Pointer, QuitHold, QuitRequested, WindowMargin,
-    WindowSettings, add_mode_bindings,
+    Action, ActionState, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
+    QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
     ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomRequest, RoomTarget,
     load_requested_room, patch_room,
 };
-use maki_ui::{Panels, TOGGLE_HELP};
+use maki_ui::{PanelSizes, Panels, TOGGLE_HELP};
 use serde::{Deserialize, Serialize};
 
 pub use camera::{EditorCamera, ORBIT, PAN, VIEW_GAME, VIEW_TOP, ZOOM_IN, ZOOM_OUT};
@@ -128,6 +128,11 @@ pub struct EditorSettings {
     pub grid_step: f32,
     /// A rotation snaps to steps of this, in degrees.
     pub angle_step: f32,
+    /// The width of the outliner and of the property panel, and the height of the
+    /// event panel, in points of the UI. The user drags their edges.
+    pub left_width: f32,
+    pub right_width: f32,
+    pub event_height: f32,
 }
 
 impl Default for EditorSettings {
@@ -136,6 +141,19 @@ impl Default for EditorSettings {
             snap: true,
             grid_step: 0.25,
             angle_step: 15.0,
+            left_width: 230.0,
+            right_width: 340.0,
+            event_height: 300.0,
+        }
+    }
+}
+
+impl EditorSettings {
+    fn panel_sizes(&self) -> PanelSizes {
+        PanelSizes {
+            left: self.left_width,
+            right: self.right_width,
+            bottom: self.event_height,
         }
     }
 }
@@ -177,6 +195,8 @@ pub enum Command {
     Redo,
     /// Ends the app.
     Quit,
+    /// Shows or hides the window with the debug panels of the game.
+    DebugPanels,
     /// The answer to the question that a command asked for a document with changes
     /// that are not saved.
     Answer(Answer),
@@ -222,8 +242,10 @@ pub struct Editor {
     /// The spawn point where the game starts on `Play`. `None`, or a name that the
     /// room does not have: the first one.
     pub play_from: Option<String>,
-    /// One line for the user: what the last command did, or why it did not.
+    /// One line for the user: what the last command did.
     pub status: String,
+    /// Why a command did not do its work. It shows until the user closes it.
+    pub error: Option<String>,
     /// The directory of the room files of the game.
     rooms: PathBuf,
     queue: Vec<Command>,
@@ -325,10 +347,9 @@ impl Editor {
         );
         let settings = world.resource::<EditorSettings>();
         let steps = (settings.snap != switch).then_some((settings.grid_step, settings.angle_step));
-        // The picture starts at the right of the left panel.
-        let left = world.resource::<WindowMargin>().left as f32;
+        let picture = *world.resource::<Picture>();
         let pointer = *world.resource::<Pointer>();
-        let in_picture = |[x, y]: [f32; 2]| [x - left, y];
+        let in_picture = |at: [f32; 2]| picture.from_window(at);
         let pixel = pointer.position.map(in_picture);
         // A click is where the button went down: the pointer can be at another place
         // at the end of the frame.
@@ -399,6 +420,7 @@ impl Editor {
                     Ok(document) => {
                         self.open(document);
                         self.status = "Opened".to_owned();
+                        self.error = None;
                     }
                     Err(error) => self.fail(format!("{error:#}")),
                 }
@@ -469,6 +491,11 @@ impl Editor {
                 world.resource_mut::<QuitHold>().0 = false;
                 world.resource_mut::<QuitRequested>().0 = true;
             }
+            Command::DebugPanels => {
+                let mut panels = world.resource_mut::<Panels>();
+                let open = panels.debug_window();
+                panels.set_debug_window(!open);
+            }
             Command::Answer(answer) => {
                 let Some(pending) = self.pending.take() else {
                     return;
@@ -499,6 +526,7 @@ impl Editor {
             Ok(()) => {
                 // A "Save as" is a new file among the others.
                 self.others = None;
+                self.error = None;
                 self.status = match self.problems().len() {
                     0 => "Saved".to_owned(),
                     count => format!("Saved, with {count} problems in the events"),
@@ -510,7 +538,16 @@ impl Editor {
 
     fn fail(&mut self, error: String) {
         tracing::error!("{error}");
-        self.status = error;
+        self.error = Some(error);
+    }
+
+    /// The text of the title bar: the room file, the mark of a change that is not
+    /// saved, and the name of the editor.
+    pub fn title(&self) -> String {
+        let path = &self.document.path;
+        let file = path.file_name().unwrap_or(path.as_os_str());
+        let changed = if self.document.dirty { " *" } else { "" };
+        format!("{}{changed} - maki editor", file.to_string_lossy())
     }
 
     /// A file name in the room directory that no file has.
@@ -635,9 +672,13 @@ impl Editor {
         }
 
         let ask = self.pending.is_some();
+        // The event panel is under the picture while an event is selected.
+        let event = !playing && matches!(self.primary(), Item::Event(_));
         let mut panels = world.resource_mut::<Panels>();
-        if panels.is_open(panels::CONFIRM) != ask {
-            panels.set_open(panels::CONFIRM, ask);
+        for (panel, open) in [(panels::CONFIRM, ask), (panels::EVENT, event)] {
+            if panels.is_open(panel) != open {
+                panels.set_open(panel, open);
+            }
         }
     }
 }
@@ -676,8 +717,7 @@ impl Editor {
 
 /// The view of the editor camera. `None`: the app has no editor camera.
 pub(crate) fn editor_view(world: &mut World) -> Option<View> {
-    let window = world.resource::<WindowSettings>();
-    let size = [window.width.max(1) as f32, window.height.max(1) as f32];
+    let size = world.resource::<Picture>().size();
     let mut cameras = world.query_filtered::<&Camera, With<EditorCamera>>();
     let camera = *cameras.iter(world).next()?;
     Some(View::new(camera, size))
@@ -706,8 +746,14 @@ impl Module for EditorModule {
     fn build(&self, app: &mut App) {
         let start = app.world().resource::<StartRoom>().clone();
         let registry = app.world().resource::<CommandRegistry>().clone();
-        // Written back to the config file: the grid step of the last session.
+        // Written back to the config file: the grid step and the panel sizes of
+        // the last session.
         app.add_saved_settings::<EditorSettings>();
+        let sizes = app.world().resource::<EditorSettings>().panel_sizes();
+        app.init_resource::<Panels>();
+        app.resource_mut::<Panels>().set_tool_layout(sizes);
+        // The picture has the room that the panels leave in the window.
+        *app.resource_mut::<PictureFit>() = PictureFit::Window;
         add_mode_bindings(app, MODE, &camera::BINDINGS);
         add_mode_bindings(app, MODE, &BINDINGS);
         add_mode_bindings(app, MODE, &CHORDS);
@@ -732,6 +778,7 @@ impl Module for EditorModule {
             test: None,
             play_from: Some(start.spawn),
             status: String::new(),
+            error: None,
             rooms: self.rooms.clone(),
             // In the first frame: all modules have added their event commands then.
             queue: vec![Command::Open(start.path)],
@@ -840,6 +887,23 @@ fn run_commands(world: &mut World) {
         }
         editor.sync(world);
         editor.apply_mode(world);
+        let title = WindowTitle(editor.title());
+        world.resource_mut::<WindowTitle>().set_if_neq(title);
+        // The panel sizes that the user dragged go to the settings, and so to the
+        // config file.
+        if let Some(sizes) = world.resource::<Panels>().tool_sizes() {
+            let old = world.resource::<EditorSettings>();
+            let rounded = |size: f32| size.round();
+            let new = EditorSettings {
+                left_width: rounded(sizes.left),
+                right_width: rounded(sizes.right),
+                event_height: rounded(sizes.bottom),
+                ..old.clone()
+            };
+            if new != *old {
+                *world.resource_mut::<EditorSettings>() = new;
+            }
+        }
         // A test: its page starts when the events of the room are loaded.
         if let Some((event, page)) = &editor.test
             && world
