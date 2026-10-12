@@ -37,6 +37,7 @@ mod overlay;
 mod panels;
 mod pictures;
 mod ron_text;
+pub mod sources;
 mod view;
 pub mod widgets;
 
@@ -151,6 +152,9 @@ pub struct EditorSettings {
     /// The command that opens a file at a line in the code editor ("Open in
     /// editor"). `{file}` and `{line}` are replaced.
     pub code_editor: String,
+    /// The program file of Blender, for the `.blend` and `.obj` files of the asset
+    /// folder (`sources` module). Empty: the editor looks at the usual places.
+    pub blender: String,
 }
 
 impl Default for EditorSettings {
@@ -160,6 +164,7 @@ impl Default for EditorSettings {
             grid_step: 0.25,
             angle_step: 15.0,
             code_editor: "code -g \"{file}:{line}\"".to_owned(),
+            blender: String::new(),
         }
     }
 }
@@ -274,6 +279,9 @@ pub struct Editor {
     pub error: Option<String>,
     /// The item whose row of the outliner becomes a text field in the next frame.
     pub(crate) renaming: Option<Item>,
+    /// The converters of the source files of other programs: the file lists mark
+    /// a file that has a source.
+    pub(crate) converters: sources::Converters,
     /// An event was the selected item in the frame before.
     event_selected: bool,
     /// True until the cancel key is up: its press was for the game.
@@ -1327,6 +1335,10 @@ impl Module for EditorModule {
         // A quit request is a command of the editor: it asks for changes that are
         // not saved, and in a game it is a stop.
         app.resource_mut::<QuitHold>().0 = true;
+        // The source files of other programs in the asset folder: a thread
+        // converts them, at the start and when one is saved.
+        let blender = app.world().resource::<EditorSettings>().blender.clone();
+        sources::start(app, &self.rooms, &blender);
         let mut document = Document::new_room(self.rooms.join("untitled.ron"));
         document.dirty = false;
         audio::add_argument_editors(app);
@@ -1348,6 +1360,7 @@ impl Module for EditorModule {
             status: String::new(),
             error: None,
             renaming: None,
+            converters: app.world().resource::<sources::Converters>().clone(),
             event_selected: false,
             ignore_cancel: false,
             hover: None,
@@ -1373,7 +1386,12 @@ impl Module for EditorModule {
         .init_resource::<AssetWatch>()
         .add_message::<AssetChanged>()
         .add_message::<AssetFailed>()
-        .add_systems(Update, tell_asset_changes.before(run_commands))
+        .add_systems(
+            Update,
+            (tell_asset_changes, sources::tell_reports)
+                .chain()
+                .before(run_commands),
+        )
         .add_systems(
             Update,
             (

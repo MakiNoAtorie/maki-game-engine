@@ -1569,6 +1569,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "glam 0.34.1",
+ "image",
  "maki-assets",
  "maki-audio",
  "maki-core",

@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use maki_assets::Material;
 use maki_scene::{Filter, LookDef, MeshDef, PoseDef, TextureDef};
 use maki_ui::egui::{self, Ui};
+
+use crate::sources::Converters;
 pub(crate) use maki_ui::widgets::{
     choice, color, drag, number as number_or, optional, row, same_kind, text, toggle, vector,
 };
@@ -37,8 +39,14 @@ pub(crate) fn name(ui: &mut Ui, value: &mut Option<String>) -> bool {
 }
 
 /// The files with one of these extensions in a directory and one level below it,
-/// as a room file names them: from that directory, with `/`.
-pub(crate) fn files(directory: &Path, extensions: &[&str]) -> Vec<PathBuf> {
+/// as a room file names them: from that directory, with `/`. Also the result file
+/// that a source file of another program will give (`crate::sources`), while it is
+/// not there yet: a room can name it, and it shows when it is converted.
+pub(crate) fn files(
+    directory: &Path,
+    extensions: &[&str],
+    converters: &Converters,
+) -> Vec<PathBuf> {
     let files_of = |directory: &Path| -> Vec<PathBuf> {
         let entries = std::fs::read_dir(directory).into_iter().flatten().flatten();
         entries.map(|entry| entry.path()).collect()
@@ -53,7 +61,9 @@ pub(crate) fn files(directory: &Path, extensions: &[&str]) -> Vec<PathBuf> {
         extension.is_some_and(|extension| extensions.contains(&extension.to_lowercase().as_str()))
     };
     let mut found: Vec<PathBuf> = top.iter().cloned().chain(below).filter(wanted).collect();
+    found.extend(converters.missing_results(directory, extensions));
     found.sort();
+    found.dedup();
     let relative = |path: PathBuf| {
         path.strip_prefix(directory)
             .map(Path::to_owned)
@@ -65,11 +75,25 @@ pub(crate) fn files(directory: &Path, extensions: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The directory of the open room file, for the file pickers of this frame. The
-/// property panel sets it before it draws.
-pub(crate) fn set_room_directory(ui: &Ui, directory: &Path) {
+/// The directory of the open room file, and the converter table, for the file
+/// pickers of this frame. The property panel sets them before it draws.
+pub(crate) fn set_room_directory(ui: &Ui, directory: &Path, converters: &Converters) {
     let id = egui::Id::new("room directory");
-    ui.data_mut(|data| data.insert_temp(id, directory.to_owned()));
+    ui.data_mut(|data| data.insert_temp(id, (directory.to_owned(), converters.clone())));
+}
+
+/// The mark of a file that the editor makes from a source file of another program
+/// (`crate::sources`), in a file list: its hover text names the source.
+pub(crate) fn source_mark(ui: &mut Ui, file: &Path, converters: &Converters) {
+    let Some(source) = converters.source_of(file) else {
+        return;
+    };
+    let source = source.file_name().unwrap_or_default().to_string_lossy();
+    let text = match file.exists() {
+        true => format!("Made from {source}: the editor writes it again when that file is saved."),
+        false => format!("Not there yet: the editor makes it from {source}."),
+    };
+    ui.weak(maki_ui::theme::icon::SOURCE).on_hover_text(text);
 }
 
 /// A file of the directory of the room file, picked from the list of the files
@@ -77,15 +101,19 @@ pub(crate) fn set_room_directory(ui: &Ui, directory: &Path) {
 /// file and a model file show with a small picture, in the list and at the value.
 pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -> bool {
     let id = egui::Id::new("room directory");
-    let directory: PathBuf = ui.data(|data| data.get_temp(id)).unwrap_or_default();
-    let known: Vec<String> = files(&directory, extensions)
+    let set: Option<(PathBuf, Converters)> = ui.data(|data| data.get_temp(id));
+    let (directory, converters) = set.unwrap_or_default();
+    let known: Vec<String> = files(&directory, extensions, &converters)
         .iter()
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
     // Forward slashes: the same room file on each system.
     let mut name = value.to_string_lossy().replace('\\', "/");
     row(ui, text, |ui| {
-        let show = |ui: &mut Ui, name: &str| crate::pictures::show(ui, &directory.join(name));
+        let show = |ui: &mut Ui, name: &str| {
+            crate::pictures::show(ui, &directory.join(name));
+            source_mark(ui, &directory.join(name), &converters);
+        };
         let pictures = crate::pictures::has_picture(extensions);
         if pictures && !name.is_empty() {
             show(ui, &name);

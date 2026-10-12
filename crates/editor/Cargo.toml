@@ -16,5 +16,7 @@ maki-ui.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true
+# Writes the picture of a Photoshop file as PNG (`sources` module).
+image.workspace = true
 serde.workspace = true
 tracing.workspace = true

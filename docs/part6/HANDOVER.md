@@ -1,6 +1,6 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 45. For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 46. For the session that goes on with part 6.
 
 ## State
 
@@ -12,6 +12,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 43 (the editor program, and the game as a project) is done: `maki-engine`, the engine DLL, `programs/editor`, the project `game/` with its script crate. Report: `stage-43.md`.
 - Stage 44 (a new build of the script DLL while the editor runs) is done: the watch, the build behind the work, the load into a new app in the same window, the panel "Build", "Open in editor". Stage file `stage-44-script-reload.md` (written by the session, not seen by the owner), report `stage-44.md`.
 - Stage 45 (a changed asset file shows at once) is done: the watch of the asset files (`maki_assets::AssetWatch`), each store forgets a changed file, the room loads again. Report: `stage-45.md`.
+- Stage 46 (source files of other programs) is done: the table of converters in the editor crate (`sources.rs`), `.blend` and `.obj` to `.glb` by Blender with no window, `.psd` to `.png` by own code, one thread that looks at the folder of the room files. Report: `stage-46.md`.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
@@ -38,12 +39,12 @@ The owner, 2026-10-12, for part 6: after each stage, always a sanity check, fill
 
 The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short.
 
-## Next: stage 46, source files of other programs
+## Next: stage 47, the object model (in discussion)
 
-1. Read `stage-46-source-files.md` (a proposal that the owner did not change: taken as given) and build what its prompt says. It names programs of others (Blender) and file formats: a new crate that the stage file does not name is a case to stop and ask.
-2. The base of the benchmark is the run `s45` (`tools/bench_history.csv`).
+1. Stage 47 is "in discussion" in the stage table: do not start it. Ask the owner, by questions and answers, and write the stage file only after the owner says so.
+2. The base of the benchmark is the run `s46` (`tools/bench_history.csv`).
 3. The loop of `CLAUDE.md`.
-4. Stage 47 (the object model) is "in discussion" in the stage table: stop there and ask the owner.
+4. Do not start a program of the owner that has documents (Photoshop) for a check: see `stage-46.md`, section 7. Blender with `--background --factory-startup` is fine.
 
 ## Facts that cost time to find
 

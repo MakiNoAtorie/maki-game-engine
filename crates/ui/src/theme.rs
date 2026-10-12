@@ -72,6 +72,8 @@ pub mod icon {
     pub const INSPECTOR: &str = "🔧";
     pub const EVENTS: &str = "⚡";
     pub const BUILD: &str = "⚙";
+    /// A file that the editor makes from a file of another program.
+    pub const SOURCE: &str = "↻";
 }
 
 /// Gives egui the values of the table. For the layout of a tool: the panels of a

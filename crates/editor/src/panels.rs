@@ -209,10 +209,11 @@ fn with_editor(world: &mut World, draw: impl FnOnce(&mut World, &mut Editor)) {
 
 /// The glTF files in the directory of the room file and one level below it, as a
 /// room file names them: from that directory, with `/`.
-fn model_files(room: &Path) -> Vec<PathBuf> {
+fn model_files(room: &Path, converters: &crate::sources::Converters) -> Vec<PathBuf> {
     crate::widgets::files(
         room.parent().unwrap_or(Path::new("")),
         &crate::widgets::MODELS,
+        converters,
     )
 }
 
@@ -361,15 +362,16 @@ fn tools(ui: &mut Ui, world: &mut World) {
 fn add_files(ui: &mut Ui, editor: &mut Editor) {
     ui.add_enabled_ui(!editor.playing(), |ui| {
         ui.menu_button("Model file", |ui| {
-            let models = model_files(&editor.document.path);
+            let models = model_files(&editor.document.path, &editor.converters);
             if models.is_empty() {
-                ui.weak("No .gltf or .glb file at the room file");
+                ui.weak("No .gltf, .glb, .blend, or .obj file at the room file");
             }
             let directory = editor.document.path.parent().unwrap_or(Path::new(""));
             let directory = directory.to_owned();
             for path in models {
                 let row = ui.horizontal(|ui| {
                     crate::pictures::show(ui, &directory.join(&path));
+                    crate::widgets::source_mark(ui, &directory.join(&path), &editor.converters);
                     ui.button(path.to_string_lossy()).clicked()
                 });
                 if row.inner {
@@ -380,7 +382,8 @@ fn add_files(ui: &mut Ui, editor: &mut Editor) {
         });
         ui.menu_button("Prefab file", |ui| {
             let directory = editor.document.path.parent().unwrap_or(Path::new(""));
-            let prefabs = crate::widgets::files(directory, &crate::widgets::PREFABS);
+            let prefabs =
+                crate::widgets::files(directory, &crate::widgets::PREFABS, &editor.converters);
             if prefabs.is_empty() {
                 ui.weak("No .prefab file at the room file. Edit > Make prefab writes one.");
             }
@@ -714,7 +717,7 @@ fn where_used(ui: &mut Ui, editor: &mut Editor) {
 fn properties(ui: &mut Ui, _world: &mut World, editor: &mut Editor) {
     // For the file pickers of the widgets.
     let directory = editor.document.path.parent().unwrap_or(Path::new(""));
-    crate::widgets::set_room_directory(ui, directory);
+    crate::widgets::set_room_directory(ui, directory, &editor.converters);
     let item = editor.primary();
     if editor.selection.len() > 1 {
         ui.weak(format!(

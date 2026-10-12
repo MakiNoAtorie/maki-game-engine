@@ -725,7 +725,7 @@ pub(crate) fn event_panel(
     } = editor;
     // For the file pickers of the arguments.
     let directory = document.path.parent().unwrap_or(std::path::Path::new(""));
-    crate::widgets::set_room_directory(ui, directory);
+    crate::widgets::set_room_directory(ui, directory, &editor.converters);
     let room = &document.room;
     let event = document.events.get_mut(index)?;
     let mut changed = false;
