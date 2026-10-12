@@ -1,5 +1,8 @@
 //! Widgets of the property panel: one function for each kind of value of a room
 //! file. Each returns true in a frame where the user changed the value.
+//!
+//! The public ones are for the argument widgets of the commands of a module
+//! (`add_argument_editor`).
 
 use std::path::{Path, PathBuf};
 
@@ -50,7 +53,7 @@ fn unit(label: &str) -> &'static str {
 }
 
 /// A number with a label and its unit. Drag it, or click it and type.
-pub(crate) fn number(
+pub fn number(
     ui: &mut Ui,
     text: &str,
     value: &mut f32,
@@ -181,7 +184,7 @@ pub(crate) fn set_room_directory(ui: &Ui, directory: &Path) {
 
 /// A file of the directory of the room file, picked from the list of the files
 /// with these extensions. A path that the list does not have shows in red.
-pub(crate) fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -> bool {
+pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -> bool {
     let id = egui::Id::new("room directory");
     let directory: PathBuf = ui.data(|data| data.get_temp(id)).unwrap_or_default();
     let known: Vec<String> = files(&directory, extensions)
@@ -201,6 +204,18 @@ pub(crate) fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&
     .inner
 }
 
+/// A name of a list, picked from it by a click, with a search field: a thing of the
+/// room that a command names. A name that the list does not have shows in red.
+pub fn pick(ui: &mut Ui, text: &str, value: &mut String, known: &[String]) -> bool {
+    ui.horizontal(|ui| {
+        label(ui, text);
+        crate::event_panel::picker(ui, text, value, known, &[], false)
+    })
+    .inner
+}
+
+/// The extensions of the sound files.
+pub const SOUNDS: [&str; 2] = ["wav", "ogg"];
 /// The extensions of the picture files that a texture can be.
 const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
 /// The extensions of the model files.

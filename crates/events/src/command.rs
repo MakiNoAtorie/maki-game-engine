@@ -27,6 +27,7 @@ use std::sync::{Arc, RwLock};
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
+use maki_scene::RoomDef;
 use serde::de::value::EnumAccessDeserializer;
 use serde::de::{
     DeserializeOwned, DeserializeSeed, EnumAccess, Error as _, IntoDeserializer, VariantAccess,
@@ -160,7 +161,13 @@ struct Set {
     texts: Option<Texts>,
     /// The command lists that the commands of the enum hold (`add_lists`).
     lists: Option<Lists>,
+    /// A new command for a name of the enum (`add_defaults`).
+    defaults: Option<Defaults>,
 }
+
+/// A new command for a name, with arguments from the room. `None`: the module gives
+/// none for the name.
+type Defaults = Arc<dyn Fn(&str, &RoomDef) -> Option<Arc<dyn AnyCommand>> + Send + Sync>;
 
 /// The command lists in a command, with the label of each, and the command made
 /// again with other lists.
@@ -233,6 +240,7 @@ impl CommandRegistry {
             check: None,
             texts: None,
             lists: None,
+            defaults: None,
         });
     }
 
@@ -354,6 +362,33 @@ impl CommandRegistry {
             let command = command.downcast_ref().expect("a value of this enum");
             check(command, context)
         }));
+    }
+
+    /// Gives a tool (an editor) a new command for the names of the enum `T`: what
+    /// its "add a command" list makes. `new` gets the name and the room, and takes
+    /// an argument that the room has where it can (the name of a light). `None`
+    /// for a name: the tool asks the user for the text of the command. Call after
+    /// `add::<T>`.
+    ///
+    /// Panics if the enum `T` was not added.
+    pub fn add_defaults<T: CommandSet>(&self, new: fn(&str, &RoomDef) -> Option<T>) {
+        let mut sets = self.0.write().expect("no writer panics");
+        let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
+        let set = set.expect("add the commands before their defaults");
+        set.defaults = Some(Arc::new(move |name, room| {
+            new(name, room).map(|command| Arc::new(command) as Arc<dyn AnyCommand>)
+        }));
+    }
+
+    /// A new command of this name for a room, if its module gave one
+    /// (`add_defaults`).
+    pub fn new_command(&self, name: &str, room: &RoomDef) -> Option<Command> {
+        let set = self.find(name)?;
+        Some(Command {
+            value: (set.defaults?)(name, room)?,
+            run: set.run,
+            order: 0,
+        })
     }
 
     /// What the check of its module finds in a command.

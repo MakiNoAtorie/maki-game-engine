@@ -91,8 +91,8 @@ The event panel is under the picture while an event is selected (in the outliner
 - Pages as tabs, with add, copy, delete, and the two arrows for the order. A star marks the page that the game would run with the flags and variables of the "Game state" panel (the last page whose conditions hold): set a flag there to see another page get the star, and to play with that state. Stop gives the values of before the play back.
 - Conditions as rows: a kind (flag is set, flag is not set, variable is at least, variable is), a name, a value. The trigger is a choice of the four.
 - Commands as rows, one line each, as text for a reader (`Message: The door is locked.`, `If power_off and count >= 3`); the text of the room file is the hover text. A module gives the row text and one line of help for its commands with `CommandRegistry::add_texts` (`game/src/shake.rs`); without it the row is the text of the room file. The two lists of an `If` are under it, with `Else` and `End`. "Add" has each command of the game, with its help as hover text; the new command goes after the selected row (after `If`: into its first list; after `Else`: into the second). Drag a row to another row to move it: a line shows where it goes. Shift and a click selects the rows from the row of the click before to this one, in one list; "Delete", "Duplicate", "Copy", and "Paste" take the range. The buffer of "Copy" stays when another event or another room is opened.
-- The arguments of the selected command: a light, a door, or a mover is picked from those of the room; a flag or a variable from each name that an event of any room file beside the open one uses, or typed as a new one; a `Transfer` picks a room file, then one of its spawn points. A command of a module that gives no widgets (`maki_editor::add_argument_editor`) is a text field with the command as a room file has it (`ShakeCamera(0.6, 0.06)`), checked with each key.
-- Checks, on the row and with `(!)` at the event in the outliner. Red, an error: a light, a door, or a mover that the room does not have; two events with one name. Yellow, a warning: a `Transfer` to a room file or a spawn point that does not exist. The room loader of the game makes the same checks with the same code (see "Rooms and events"): it does not load a room file with an error. A room with such a problem opens in the editor and can be saved; the status line gives the count.
+- The arguments of the selected command: a light, a door, or a mover is picked from those of the room; a flag or a variable from each name that an event of any room file beside the open one uses, or typed as a new one; a `Transfer` picks a room file, then one of its spawn points. The audio commands pick a sound file of the directory of the room file (and one level below it), and a light that has a sound. A module gives the widgets of its commands with `maki_editor::add_argument_editor` (`maki_editor::widgets` has a number, a file, and a name of a list), and the new command of "Add" with `CommandRegistry::add_defaults`: `crates/editor/src/audio.rs` is the example. A command with none of the two is a text field with the command as a room file has it (`ShakeCamera(0.6, 0.06)`), checked with each key.
+- Checks, on the row and with `(!)` at the event in the outliner. Red, an error: a light, a door, or a mover that the room does not have; a `SoundOn` or `SoundOff` for a light with no sound; two events with one name. Yellow, a warning: a `Transfer` to a room file or a spawn point that does not exist, a sound file that does not exist. The room loader of the game makes the same checks with the same code (see "Rooms and events"): it does not load a room file with an error. A room with such a problem opens in the editor and can be saved; the status line gives the count.
 - A flag or a variable that an event reads and no event of any room file writes has the yellow mark "no event sets it", in the pick lists and in "Where used": a name with a wrong letter, or a flag that only a test sets.
 - "Test this page" plays the room and starts the page, whatever its trigger and conditions are, in step mode: each event waits before each command, "Step" (in the top row) runs the next one, and the left panel shows the command that waits. "Run" ends the step mode.
 
@@ -203,6 +203,13 @@ The config file is TOML, with one table for each module. A module declares its t
 | `start` | not set | The room file that the game starts in. Not set: the room of the game, `game/assets/rooms/room_a.ron`. A path that is not absolute starts at the working directory |
 | `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the game, `start` |
 
+`[audio]` (`crates/audio`, `AudioModule`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `volume` | 1.0 | The volume of all sound. 1.0: as loud as the files are. 0.0: silent |
+| `output` | true | False: the game opens no sound device and does the same work with no sound (the benchmark, a test). With no device that can be opened, the game logs a warning and runs the same way |
+
 `[editor]` (`crates/editor`, only with the feature `editor`):
 
 | Key | Default | Meaning |
@@ -296,7 +303,9 @@ A room is a RON file in `game/assets/rooms`: the size of the room, its doorways,
 - A bad room file: the error names the file, the line, and the column. A bad start room stops the game at start; a transfer into a bad room does not happen.
 - The room box, a cube, a cuboid, and a sphere can have a texture: see "Textures" above.
 - A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A glTF file (`File("path")`, from the directory of the room file) goes away with its room too, if the next room does not name it.
-- The player, the camera, and the game state (flags and variables) are not part of a room: they stay when the room changes.
+- A light can have a sound (`sound: (file: "sounds/hum.wav", volume: 0.5, reach: 12.0, on: true)`): the file plays as a loop at the place of the light, louder near the player, silent beyond `reach` meters, from the side where the picture shows the light. It starts and stops with a fade of half a second. `SoundOn` and `SoundOff` find it by the name of the light.
+- A sound file is WAV or Ogg Vorbis, from the directory of the room file. The two files of the game (`game/assets/rooms/sounds`) are placeholders that `python tools/gen_sounds.py` makes.
+- The player, the camera, the game state (flags and variables), and the music are not part of a room: they stay when the room changes.
 
 An event has pages. A page has conditions, a trigger, and commands. The active page is the last one whose conditions all hold. An event with no `area` has no place: for `Autorun` and `Parallel`.
 
@@ -323,13 +332,17 @@ An event has pages. A page has conditions, a trigger, and commands. The active p
 | `Choice("question", [("Yes", [...]), ("No", [...])])` | Show the question and the answers. The player moves the mark (up, down) and presses interact; the list of that answer runs, then the commands after the question |
 | `FadeOut(0.4)`, `FadeIn(0.4)` | To black and back, in seconds |
 | `Transfer("room_b.ron", "west")` | To a spawn point of another room. The event goes on in the new room |
+| `PlaySound("sounds/click.wav", 1.0)` | Play a sound file one time, with this volume (1.0: as loud as the file). The event does not wait for its end. A command of the audio module (`crates/audio`), as the next four |
+| `PlayMusic("sounds/theme.ogg", 0.8)` | Start a file as music: a loop, read from the file while it plays, in place of the music that plays. The file of the music that plays: no change |
+| `StopMusic` | The music fades out in one second |
+| `SoundOn("name")`, `SoundOff("name")` | Turn the sound of a light of the room on or off |
 | `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
 
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.
 
 The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/src/shake.rs` is the example. A command that holds lists of commands (`If`, `Choice`) tells so with `CommandRegistry::add_lists`: the checks of the loader and the event panel of the editor then walk and show the lists of each module in the same way, with the label of each list as a row (`Else`, `Answer: Yes`).
 
-The loader checks the events of a room file (`crates/events/src/check.rs`). An error has the file and the line of the command, and the room does not load: a light, a door, or a mover that the room does not have, and two events with one name. A warning is logged, and the room loads: a `Transfer` to a room file or a spawn point that does not exist. The commands of a page after a `Transfer` run in the other room and are not checked. A module adds the check of its own commands with `CommandRegistry::add_check`.
+The loader checks the events of a room file (`crates/events/src/check.rs`). An error has the file and the line of the command, and the room does not load: a light, a door, or a mover that the room does not have, a `SoundOn` or `SoundOff` for a light with no sound, and two events with one name. A warning is logged, and the room loads: a `Transfer` to a room file or a spawn point that does not exist, a sound file that does not exist. The commands of a page after a `Transfer` run in the other room and are not checked. A module adds the check of its own commands with `CommandRegistry::add_check`.
 
 `python tools/convert_rooms.py FILES` converts a room file of before stage 29 (`If("flag", ..)`, `VariableAtLeast`, `VariableEquals`, an area of size 0). Comments stay.
 
@@ -342,8 +355,9 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/core` | Config file and the settings trait, app and schedules, time, transform, interpolation between fixed steps |
 | `crates/platform` | Window, input actions (an open set: a module adds its own, with their keys and mouse buttons), input modes (the bindings of the game, of the editor), the pointer, input capture |
 | `crates/assets` | Asset stores and handles, mesh asset with its material and texture coordinates, texture asset and its store, glTF loader, mesh generators |
-| `crates/scene` | The components that describe the world (mesh instance, light, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |
+| `crates/scene` | The components that describe the world (mesh instance, light, sound source, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |
 | `crates/events` | Game state (flags, variables), event definitions, the event interpreter with its step mode, the command registry and the built-in commands |
+| `crates/audio` | The sound output (`kira`; no type of it in the public API), sound assets with handles, music from a stream, the sounds at a place in the room with the player as the listener, the audio event commands. With no device it does the same work with no sound |
 | `crates/gameplay` | Gameplay that games of this kind share, each a module with its own settings: camera that follows the player, walking controller, start room and reload, move actions and quit, debug control of a light and of the movers |
 | `crates/gpu` | Vulkan backend (resources, images with mip levels, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |

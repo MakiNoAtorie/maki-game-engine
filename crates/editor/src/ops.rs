@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use maki_assets::{Doorway, Wall};
-use maki_events::{Area, Builtin, Command, CommandRegistry, EventDef, Page, Trigger};
+use maki_audio::AudioCommand;
+use maki_events::{Area, Builtin, Command, CommandRegistry, CommandSet, EventDef, Page, Trigger};
 use maki_scene::{DoorDef, LightDef, MeshDef, MoverDef, PoseDef, PropDef, RoomDef};
 
 use crate::ron_text::Notes;
@@ -139,8 +140,9 @@ impl Document {
     }
 
     /// Call after the name of a light, a door, a mover, or an event was changed
-    /// from `old`. The new name is made unique, and the built-in commands of the
-    /// events of this room that name the item get the new name. Returns a text for
+    /// from `old`. The new name is made unique, and the commands of the events of
+    /// this room that name the item (built-in, and of the audio module) get the new
+    /// name. Returns a text for
     /// the user if something more than the name itself was changed.
     pub fn renamed(
         &mut self,
@@ -175,16 +177,27 @@ impl Document {
         }
         let users = match (&old, item) {
             (Some(old), Item::Light(_)) => {
-                self.rename_in_events(registry, |command| match command {
+                let light = self.rename_in_events(registry, |command: &Builtin| match command {
                     Builtin::LightOn(name) if name == old => Some(Builtin::LightOn(new.clone())),
                     Builtin::LightOff(name) if name == old => Some(Builtin::LightOff(new.clone())),
                     Builtin::LightIntensity(name, value) if name == old => {
                         Some(Builtin::LightIntensity(new.clone(), *value))
                     }
                     _ => None,
-                })
+                });
+                // The sound of the light has the name of the light.
+                let sound = |command: &AudioCommand| match command {
+                    AudioCommand::SoundOn(name) if name == old => {
+                        Some(AudioCommand::SoundOn(new.clone()))
+                    }
+                    AudioCommand::SoundOff(name) if name == old => {
+                        Some(AudioCommand::SoundOff(new.clone()))
+                    }
+                    _ => None,
+                };
+                light + self.rename_in_events(registry, sound)
             }
-            (Some(old), _) => self.rename_in_events(registry, |command| match command {
+            (Some(old), _) => self.rename_in_events(registry, |command: &Builtin| match command {
                 Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
                 Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
                 _ => None,
@@ -203,17 +216,17 @@ impl Document {
         status
     }
 
-    /// Replaces each built-in command of the events for which `change` gives a new
-    /// one. Returns the number of the commands that were replaced.
-    pub(crate) fn rename_in_events(
+    /// Replaces each command of the enum `T` in the events for which `change` gives
+    /// a new one. Returns the number of the commands that were replaced.
+    pub(crate) fn rename_in_events<T: CommandSet>(
         &mut self,
         registry: &CommandRegistry,
-        change: impl Fn(&Builtin) -> Option<Builtin>,
+        change: impl Fn(&T) -> Option<T>,
     ) -> usize {
-        fn walk(
+        fn walk<T: CommandSet>(
             commands: &mut [Command],
             registry: &CommandRegistry,
-            change: &dyn Fn(&Builtin) -> Option<Builtin>,
+            change: &dyn Fn(&T) -> Option<T>,
         ) -> usize {
             let mut count = 0;
             for command in commands {
@@ -229,7 +242,7 @@ impl Document {
                 let new = if inner > 0 {
                     registry.with_lists(command, lists)
                 } else {
-                    let new = command.get::<Builtin>().and_then(change);
+                    let new = command.get::<T>().and_then(change);
                     new.inspect(|_| count += 1)
                         .and_then(|new| registry.command(new))
                 };
@@ -306,6 +319,7 @@ impl Document {
                     on: true,
                     direction: None,
                     cone: None,
+                    sound: None,
                 });
                 let name = self.unique_name(&item, "light");
                 self.room.lights.last_mut().expect("pushed above").name = Some(name);

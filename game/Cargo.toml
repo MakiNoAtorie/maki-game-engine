@@ -15,6 +15,7 @@ maki-platform.workspace = true
 maki-assets.workspace = true
 maki-scene.workspace = true
 maki-events.workspace = true
+maki-audio.workspace = true
 maki-gameplay.workspace = true
 maki-render.workspace = true
 maki-ui.workspace = true

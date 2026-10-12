@@ -344,6 +344,7 @@ pub fn problems(
     let context = CheckContext {
         room: &document.room,
         file: &file_name(document),
+        directory: document.path.parent().unwrap_or(Path::new("")),
         spawn: &spawn,
     };
     registry.check_events(&document.events, &context)

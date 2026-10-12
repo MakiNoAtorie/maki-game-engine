@@ -64,6 +64,7 @@ impl Document {
             on: true,
             direction: None,
             cone: None,
+            sound: None,
         };
         Self {
             path,

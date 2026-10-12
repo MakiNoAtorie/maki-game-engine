@@ -33,7 +33,10 @@ use maki_core::{Interpolated, Transform};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
-use crate::{Collider, Door, Light, MeshInstance, Mover, MoverState, Name, Player, room_colliders};
+use crate::{
+    Collider, Door, Light, MeshInstance, Mover, MoverState, Name, Player, SoundSource,
+    room_colliders,
+};
 
 /// The content of a room file.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -303,6 +306,58 @@ pub struct LightDef {
     /// in all directions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cone: Option<f32>,
+    /// A sound that loops at the place of the light: a lamp that hums.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<SoundDef>,
+}
+
+/// A sound that loops at the place of a thing of the room.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoundDef {
+    /// A sound file (WAV or Ogg Vorbis). A path that is not absolute starts at the
+    /// directory of the room file.
+    pub file: PathBuf,
+    /// 1.0: as loud as the file is.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub volume: f32,
+    /// Meters. The sound is silent for a listener that is farther away.
+    #[serde(default = "default_reach", skip_serializing_if = "is_default_reach")]
+    pub reach: f32,
+    /// False: silent until an event turns the sound on.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub on: bool,
+}
+
+impl Default for SoundDef {
+    fn default() -> Self {
+        Self {
+            file: PathBuf::new(),
+            volume: 1.0,
+            reach: default_reach(),
+            on: true,
+        }
+    }
+}
+
+fn default_reach() -> f32 {
+    12.0
+}
+
+fn is_default_reach(reach: &f32) -> bool {
+    *reach == default_reach()
+}
+
+impl SoundDef {
+    /// The component of the sound. `directory`: of the room file.
+    pub fn source(&self, directory: &Path) -> SoundSource {
+        SoundSource {
+            path: directory.join(&self.file),
+            volume: self.volume,
+            reach: self.reach,
+            on: self.on,
+        }
+    }
 }
 
 impl LightDef {
@@ -720,6 +775,9 @@ impl Spawner<'_, '_, '_> {
             if let Some(name) = &light.name {
                 entity.insert(Name(name.clone()));
             }
+            if let Some(sound) = &light.sound {
+                entity.insert(sound.source(self.directory));
+            }
         }
     }
 
@@ -857,7 +915,7 @@ fn collider_around(mesh: &Mesh, transform: &Transform) -> Collider {
 
 /// Changes the entities of the current room in place, so they show `room`. Only for a
 /// room that differs from the current one in values that need no new mesh and no new
-/// entity: a light (but for its name), the pose of a prop with a generated mesh, and
+/// entity: a light (but for its name and its sound), the pose of a prop with a generated mesh, and
 /// the poses and the time of a mover.
 /// Returns false, with no change, for each other difference: load the room again.
 ///
@@ -874,9 +932,11 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     // The old room with the values that a patch can change taken from the new one.
     let mut patched = old.clone();
     for (light, new) in patched.lights.iter_mut().zip(&room.lights) {
-        let name = light.name.take();
+        // Not the name and not the sound: they are components of their own.
+        let (name, sound) = (light.name.take(), light.sound.take());
         *light = LightDef {
             name,
+            sound,
             ..new.clone()
         };
     }
@@ -1052,6 +1112,12 @@ mod tests {
                 on: true,
                 direction: None,
                 cone: None,
+                sound: Some(SoundDef {
+                    file: PathBuf::from("hum.wav"),
+                    volume: 0.5,
+                    reach: 6.0,
+                    on: false,
+                }),
             }],
             doors: vec![DoorDef {
                 name: Some("door".to_owned()),

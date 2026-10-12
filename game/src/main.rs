@@ -78,6 +78,7 @@ fn main() -> anyhow::Result<()> {
         .add_module(maki_assets::AssetsModule)
         .add_module(maki_scene::SceneModule)
         .add_module(maki_events::EventsModule)
+        .add_module(maki_audio::AudioModule)
         .add_module(maki_gameplay::ControlsModule)
         .add_module(maki_gameplay::PlayerModule)
         .add_module(maki_gameplay::CameraModule)
@@ -145,14 +146,21 @@ mod tests {
     }
 
     /// The editor writes the room files of the game with all that they hold: the
-    /// room, the events (also the command of this game), and the comments.
+    /// room, the events (also the commands of the audio module and of this game),
+    /// and the comments. The loader finds nothing wrong in them.
     #[cfg(feature = "editor")]
     #[test]
     fn the_editor_writes_each_room_file_with_the_same_content() {
-        let mut app = App::new(ConfigFile::default()).unwrap();
+        // No sound device in a test.
+        let mut app = App::new(ConfigFile::from_text(
+            "[audio]
+output = false",
+        ))
+        .unwrap();
         app.add_module(maki_platform::PlatformModule)
             .add_module(maki_scene::SceneModule)
             .add_module(maki_events::EventsModule)
+            .add_module(maki_audio::AudioModule)
             .add_module(maki_gameplay::CameraModule)
             .add_module(shake::ShakeModule);
         let registry = app.world().resource::<maki_events::CommandRegistry>();
@@ -160,6 +168,8 @@ mod tests {
         for name in ["room_a.ron", "room_b.ron", "room_c.ron"] {
             // A test runs in the directory of its package.
             let path = PathBuf::from("assets/rooms").join(name);
+            let validators = app.world().resource::<maki_scene::RoomValidators>();
+            maki_scene::read_room(&path, validators).unwrap();
             let document = maki_editor::Document::read(&path, registry).unwrap();
             let text = document.text();
             assert_eq!(maki_scene::parse_room(&text).unwrap(), document.room);

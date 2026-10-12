@@ -26,6 +26,7 @@
 //! This crate is the last one before the game. A game adds [`EditorModule`] after
 //! its own modules, behind a cargo feature: a build without it has no editor code.
 
+mod audio;
 mod camera;
 mod document;
 mod event_panel;
@@ -36,7 +37,7 @@ mod overlay;
 mod panels;
 mod ron_text;
 mod view;
-mod widgets;
+pub mod widgets;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -828,7 +829,9 @@ impl Editor {
             (SAVE, Command::Save),
         ];
         for (action, command) in commands {
-            if pressed(action) {
+            // Not in a game: the press of the play key that stops the game would
+            // start it again, after the stop in the same queue.
+            if pressed(action) && !self.playing() {
                 self.request(command);
             }
         }
@@ -921,6 +924,7 @@ impl Module for EditorModule {
         app.resource_mut::<QuitHold>().0 = true;
         let mut document = Document::new_room(self.rooms.join("untitled.ron"));
         document.dirty = false;
+        audio::add_argument_editors(app);
         app.insert_resource(Editor {
             document,
             selection: Vec::new(),

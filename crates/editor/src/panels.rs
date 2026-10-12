@@ -14,7 +14,7 @@ use bevy_ecs::world::{Mut, World};
 use maki_assets::Wall;
 use maki_core::App;
 use maki_events::{Builtin, EventRunner, Problem};
-use maki_scene::MeshDef;
+use maki_scene::{MeshDef, SoundDef};
 use maki_ui::egui::{self, Ui};
 use maki_ui::{ToolPlace, add_modal, add_overlay, add_tool_panel, game_state_panel};
 
@@ -797,6 +797,13 @@ fn item_properties(
                             )
                     })
                 }
+                // A lamp that hums. An event finds the sound by the name of the light.
+                | crate::widgets::optional(ui, "sound", &mut light.sound, SoundDef::default, |ui, sound| {
+                    crate::widgets::file(ui, "sound file", &mut sound.file, &crate::widgets::SOUNDS)
+                        | number(ui, "volume", &mut sound.volume, 0.01, 0.0..=4.0)
+                        | number(ui, "reach (radius)", &mut sound.reach, 0.05, 0.1..=100.0)
+                        | ui.checkbox(&mut sound.on, "on at the start").changed()
+                })
         }
         Item::Spawn(spawn) => {
             let mut new = spawn.clone();
@@ -810,7 +817,7 @@ fn item_properties(
                 // not changed: the user gets their names.
                 let file = file_name(&document.path);
                 let registry = editor.registry.clone();
-                document.rename_in_events(&registry, |command| match command {
+                document.rename_in_events(&registry, |command: &Builtin| match command {
                     Builtin::Transfer(room, to) if *room == file && to == spawn => {
                         Some(Builtin::Transfer(room.clone(), new.clone()))
                     }

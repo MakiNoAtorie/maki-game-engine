@@ -18,8 +18,8 @@ pub use mover::{Door, Mover, MoverState, move_movers};
 pub use room::{
     CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef,
     RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest,
-    RoomTarget, RoomValidator, RoomValidators, TextureDef, check_room, load_requested_room,
-    parse_room, patch_room, read_room, ron_options,
+    RoomTarget, RoomValidator, RoomValidators, SoundDef, TextureDef, check_room,
+    load_requested_room, parse_room, patch_room, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
@@ -115,6 +115,20 @@ impl Default for Light {
             cone_degrees: 180.0,
         }
     }
+}
+
+/// A sound file that plays as a loop at the place of the entity (the translation of
+/// its `Transform`). This crate only describes it: a sound module plays each entity
+/// that has one, as the renderer draws each `MeshInstance`.
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct SoundSource {
+    pub path: std::path::PathBuf,
+    /// 1.0: as loud as the file is.
+    pub volume: f32,
+    /// Meters. The sound is silent for a listener that is farther away.
+    pub reach: f32,
+    /// False: silent.
+    pub on: bool,
 }
 
 /// Marks the camera whose view the picture shows. One entity has it at a time: a

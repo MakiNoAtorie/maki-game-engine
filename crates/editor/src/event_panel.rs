@@ -15,7 +15,7 @@ use maki_events::{
     Area, Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, GameState, Page,
     Problem, Trigger, active_page,
 };
-use maki_scene::ron_options;
+use maki_scene::{RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
 
 use crate::events::{
@@ -183,8 +183,9 @@ struct Draft {
 
 /// Draws the widgets for the arguments of a command of a type that the editor does
 /// not know. `None`: the command is not of the type of this editor.
-type ArgumentEditor =
-    Arc<dyn Fn(&mut Ui, &Command, &CommandRegistry) -> Option<Option<Command>> + Send + Sync>;
+type ArgumentEditor = Arc<
+    dyn Fn(&mut Ui, &Command, &CommandRegistry, &RoomDef) -> Option<Option<Command>> + Send + Sync,
+>;
 
 /// The argument editors that modules gave for their commands.
 #[derive(Resource, Default, Clone)]
@@ -192,15 +193,20 @@ pub struct ArgumentEditors(pub(crate) Vec<ArgumentEditor>);
 
 /// Gives the event panel widgets for the arguments of the commands of the enum `T`
 /// (a command enum of the game). `edit` draws them for one value and returns true if
-/// it changed the value. Without this, such a command has a text field.
+/// it changed the value. It gets the open room, for a list of the names that the
+/// command can have; `crate::widgets` has the widgets. Without this, such a command
+/// has a text field.
+///
+/// The "Add" list makes a new command of a module with
+/// `CommandRegistry::add_defaults`.
 pub fn add_argument_editor<T: CommandSet>(
     app: &mut App,
-    edit: impl Fn(&mut Ui, &mut T) -> bool + Send + Sync + 'static,
+    edit: impl Fn(&mut Ui, &mut T, &RoomDef) -> bool + Send + Sync + 'static,
 ) {
     app.init_resource::<ArgumentEditors>();
-    let editor: ArgumentEditor = Arc::new(move |ui, command, registry| {
+    let editor: ArgumentEditor = Arc::new(move |ui, command, registry, room| {
         let mut value = command.get::<T>()?.clone();
-        let changed = edit(ui, &mut value);
+        let changed = edit(ui, &mut value, room);
         Some(changed.then(|| registry.command(value)).flatten())
     });
     app.resource_mut::<ArgumentEditors>().0.push(editor);
@@ -479,11 +485,17 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
 }
 
 /// A new command for a name of the "Add" menu, with arguments that exist where the
-/// lists have some. `None`: not a built-in command, and not one with no argument.
-fn new_command(name: &str, lists: &Lists, registry: &CommandRegistry) -> Option<Command> {
+/// lists have some. `None`: a command of a module that gives no new command for the
+/// name, and that has arguments.
+fn new_command(
+    name: &str,
+    lists: &Lists,
+    registry: &CommandRegistry,
+    room: &RoomDef,
+) -> Option<Command> {
     let first =
         |names: &[String], or: &str| names.first().cloned().unwrap_or_else(|| or.to_owned());
-    let (room, spawns) = lists.rooms.first().cloned().unwrap_or_default();
+    let (file, spawns) = lists.rooms.first().cloned().unwrap_or_default();
     let builtin = match name {
         "SetFlag" => Builtin::SetFlag(first(&lists.flags, "flag"), true),
         "SetVariable" => Builtin::SetVariable(first(&lists.variables, "variable"), 0),
@@ -505,9 +517,13 @@ fn new_command(name: &str, lists: &Lists, registry: &CommandRegistry) -> Option<
         "Message" => Builtin::Message(String::new()),
         "FadeOut" => Builtin::FadeOut(0.4),
         "FadeIn" => Builtin::FadeIn(0.4),
-        "Transfer" => Builtin::Transfer(room, first(&spawns, "")),
-        // A command of another module with no argument is its name.
-        other => return registry.parse_command(other).ok(),
+        "Transfer" => Builtin::Transfer(file, first(&spawns, "")),
+        // A command of another module: what the module gives for the name, or the
+        // name alone for a command with no argument.
+        other => {
+            let new = registry.new_command(other, room);
+            return new.or_else(|| registry.parse_command(other).ok());
+        }
     };
     registry.command(builtin)
 }
@@ -698,6 +714,10 @@ pub(crate) fn event_panel(
         queue,
         ..
     } = editor;
+    // For the file pickers of the arguments.
+    let directory = document.path.parent().unwrap_or(std::path::Path::new(""));
+    crate::widgets::set_room_directory(ui, directory);
+    let room = &document.room;
     let event = document.events.get_mut(index)?;
     let mut changed = false;
     if event.pages.is_empty() {
@@ -728,12 +748,14 @@ pub(crate) fn event_panel(
     let page = &mut event.pages[at];
     part(egui::Panel::right("event arguments")).show(ui, |ui| {
         scroll("arguments").show(ui, |ui| {
-            changed |= command_arguments(ui, page, event_ui, &lists, &registry, &editors);
+            let places = (&lists, &registry, &editors, room);
+            changed |= command_arguments(ui, page, event_ui, places);
         });
     });
     egui::Frame::NONE.inner_margin(6).show(ui, |ui| {
         scroll("commands").show(ui, |ui| {
-            changed |= command_rows(ui, page, event_ui, &lists, &registry, &problems, at);
+            let places = (&lists, &registry, room);
+            changed |= command_rows(ui, page, event_ui, places, &problems, at);
         });
     });
     Some(changed)
@@ -871,8 +893,7 @@ fn command_rows(
     ui: &mut Ui,
     page: &mut Page,
     event_ui: &mut EventUi,
-    lists: &Lists,
-    registry: &CommandRegistry,
+    (lists, registry, room): (&Lists, &CommandRegistry, &RoomDef),
     problems: &[&Problem],
     page_index: usize,
 ) -> bool {
@@ -904,7 +925,7 @@ fn command_rows(
         let help = |name: &str| registry.help(name);
         let picked = described_list(ui, add, "Add".into(), &names, &[], false, &help);
         if let Some(Picked::Name(name)) = picked {
-            match new_command(&name, lists, registry) {
+            match new_command(&name, lists, registry, room) {
                 Some(command) => insert.push(command),
                 // A command with arguments that the editor does not know: the
                 // user types them.
@@ -1056,9 +1077,7 @@ fn command_arguments(
     ui: &mut Ui,
     page: &mut Page,
     event_ui: &mut EventUi,
-    lists: &Lists,
-    registry: &CommandRegistry,
-    editors: &ArgumentEditors,
+    (lists, registry, editors, room): (&Lists, &CommandRegistry, &ArgumentEditors, &RoomDef),
 ) -> bool {
     let list = &mut page.commands;
     let mut changed = false;
@@ -1077,7 +1096,7 @@ fn command_arguments(
         } else if let Some(new) = editors
             .0
             .iter()
-            .find_map(|edit| edit(ui, &command, registry))
+            .find_map(|edit| edit(ui, &command, registry, room))
         {
             new
         } else {

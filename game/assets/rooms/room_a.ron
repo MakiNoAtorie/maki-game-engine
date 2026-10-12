@@ -41,8 +41,16 @@
         ),
     ],
     lights: [
-        // In front of the objects, so their shadows fall to the back.
-        (name: "lamp", position: (0.0, 2.0, 2.0), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0),
+        // In front of the objects, so their shadows fall to the back. It hums while
+        // the power is on. The file is a placeholder of tools/gen_sounds.py.
+        (
+            name: "lamp",
+            position: (0.0, 2.0, 2.0),
+            radius: 0.15,
+            color: (1.0, 0.9, 0.8),
+            intensity: 12.0,
+            sound: (file: "sounds/hum.wav", volume: 0.5),
+        ),
     ],
     spawns: {
         "start": (-0.5, 0.0, 2.6),
@@ -68,7 +76,8 @@
                 (trigger: Touch, commands: [FadeOut(0.4), Transfer("room_b.ron", "west"), FadeIn(0.4)]),
             ],
         ),
-        // With the power off, the lamp runs on what is left.
+        // With the power off, the lamp runs on what is left, and its hum is gone.
+        // `SoundOff` is a command of the audio module (crates/audio).
         (
             name: "flicker",
             pages: [
@@ -76,6 +85,7 @@
                     conditions: [Flag("power_off")],
                     trigger: Parallel,
                     commands: [
+                        SoundOff("lamp"),
                         LightIntensity("lamp", 3.0), Wait(0.06),
                         LightIntensity("lamp", 12.0), Wait(0.9),
                         LightIntensity("lamp", 6.0), Wait(0.05),

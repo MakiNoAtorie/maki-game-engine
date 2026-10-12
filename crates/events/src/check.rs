@@ -22,6 +22,8 @@ pub struct CheckContext<'a> {
     pub room: &'a RoomDef,
     /// The name of the room file.
     pub file: &'a str,
+    /// The directory of the room file: a file name of a command starts there.
+    pub directory: &'a Path,
     /// For another room file in the directory of the room, and a name: true if the
     /// file has a spawn point of that name. `None`: no such room file.
     pub spawn: &'a dyn Fn(&str, &str) -> Option<bool>,
@@ -136,6 +138,7 @@ impl CommandRegistry {
             let context = CheckContext {
                 room: check.room,
                 file: &file.to_string_lossy(),
+                directory,
                 spawn: &spawn,
             };
             let problems = registry.check_events(&events, &context);

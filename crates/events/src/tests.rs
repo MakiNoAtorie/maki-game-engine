@@ -473,6 +473,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     let context = CheckContext {
         room: &def,
         file: "a.ron",
+        directory: std::path::Path::new(""),
         spawn: &|_, _| None,
     };
     let problems = registry.check_events(&registry.parse_events(&text).unwrap(), &context);
@@ -497,6 +498,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         let context = CheckContext {
             room: &def,
             file: "a.ron",
+            directory: std::path::Path::new(""),
             spawn,
         };
         let events = registry.parse_events(&room(transfer)).unwrap();

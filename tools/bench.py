@@ -193,7 +193,8 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
     # A scenario can name another room of the game with the key `rooms.start`.
     room_name = extra.pop("rooms.start", "room_a.ron")
     # A key of `extra` takes the place of the same key below: TOML permits a key one time.
-    fixed = {"window.width": WINDOW[0], "window.height": WINDOW[1], "render.width": width, "render.height": height}
+    # No sound device: a benchmark is silent, and its work is the same on each machine.
+    fixed = {"window.width": WINDOW[0], "window.height": WINDOW[1], "render.width": width, "render.height": height, "audio.output": False}
     if "render.samples_per_frame" not in extra:
         # Not the automatic count: each run must do the same work.
         fixed["render.samples_per_frame"] = 1

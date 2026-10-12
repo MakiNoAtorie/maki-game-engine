@@ -63,6 +63,8 @@ impl Module for ShakeModule {
             },
             |_| Some("Shakes the camera for some seconds. The event does not wait for the end."),
         );
+        // What the "Add" list of the editor makes.
+        registry.add_defaults(|_, _| Some(GameCommand::ShakeCamera(0.5, 0.05)));
         // The proof that a module checks its own commands: the room loader runs
         // this for each room file, and the editor shows it on the row.
         registry.add_check(|command: &GameCommand, _room| {

@@ -68,11 +68,17 @@ fn editor_app(name: &str) -> (App, PathBuf) {
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("a.ron"), ROOM_A).unwrap();
     std::fs::write(directory.join("b.ron"), ROOM_B).unwrap();
-    let mut app = App::new(ConfigFile::default()).unwrap();
+    // No sound device in a test.
+    let mut app = App::new(ConfigFile::from_text(
+        "[audio]
+output = false",
+    ))
+    .unwrap();
     app.add_module(PlatformModule)
         .add_module(maki_assets::AssetsModule)
         .add_module(SceneModule)
         .add_module(EventsModule)
+        .add_module(maki_audio::AudioModule)
         .add_module(ControlsModule)
         .add_module(PlayerModule)
         .add_module(CameraModule)
@@ -538,10 +544,13 @@ fn a_module_gives_the_widgets_for_the_arguments_of_its_command() {
     let registry = app.world().resource::<CommandRegistry>().clone();
     registry.add(|_: &Sound, _, _| true);
     // The widgets of the module: here they only make the sound louder.
-    add_argument_editor(&mut app, |_ui, Sound::Play(_, volume): &mut Sound| {
-        *volume += 1.0;
-        true
-    });
+    add_argument_editor(
+        &mut app,
+        |_ui, Sound::Play(_, volume): &mut Sound, _room| {
+            *volume += 1.0;
+            true
+        },
+    );
     let editors = app.world().resource::<ArgumentEditors>().clone();
     let sound = registry.parse_command(r#"Play("door", 0.5)"#).unwrap();
     let wait = registry.parse_command("Wait(1.0)").unwrap();
@@ -550,7 +559,7 @@ fn a_module_gives_the_widgets_for_the_arguments_of_its_command() {
             editors
                 .0
                 .iter()
-                .find_map(|edit| edit(ui, command, &registry))
+                .find_map(|edit| edit(ui, command, &registry, &maki_scene::RoomDef::default()))
         };
         // A command of another enum: not this editor. Its own: the changed command.
         assert_eq!(edit(&wait), None);
@@ -697,6 +706,154 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
                 .contains("width: 7.0")
         );
         assert!(!editor(&app).document.dirty);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// The audio module in the editor: the sound of a light is a part of the room, and
+/// the audio commands are made and changed with no text field.
+#[test]
+fn a_sound_command_is_added_with_arguments_and_a_rename_of_its_light_follows() {
+    use maki_audio::{AudioCommand, AudioModule};
+    use maki_events::CommandRegistry;
+    use maki_ui::egui;
+
+    // No sound device in a test.
+    let mut app = App::new(ConfigFile::from_text("[audio]\noutput = false")).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule)
+        .add_module(AudioModule);
+    crate::audio::add_argument_editors(&mut app);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    let editors = app.world().resource::<ArgumentEditors>().clone();
+    let text = r#"(width: 6.0, depth: 6.0, height: 3.0,
+        lights: [
+            (name: "dark", position: (2.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
+            (name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5)),
+        ],
+        events: [(name: "power", pages: [(trigger: Interact, commands: [
+            SoundOff("lamp"), If([Flag("loud")], [SoundOn("lamp")], [PlaySound("click.wav", 1.0)]),
+        ])])])"#;
+    let mut document = Document::parse(Path::new("room.ron"), text, &registry).unwrap();
+    let room = document.room.clone();
+
+    // The "Add" list: a new command names the light that has a sound.
+    let new = |name: &str| registry.new_command(name, &room);
+    let lamp = || "lamp".to_owned();
+    assert_eq!(
+        new("SoundOn"),
+        registry.command(AudioCommand::SoundOn(lamp()))
+    );
+    assert_eq!(
+        new("PlaySound"),
+        registry.parse_command(r#"PlaySound("", 1.0)"#).ok()
+    );
+    assert_eq!(new("Wait"), None);
+    // The arguments of each audio command have widgets. With no input, no change.
+    let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        for name in ["PlaySound", "PlayMusic", "StopMusic", "SoundOn", "SoundOff"] {
+            let command = new(name).unwrap();
+            let mut edits = editors.0.iter();
+            let edited = edits.find_map(|edit| edit(ui, &command, &registry, &room));
+            assert_eq!(edited, Some(None), "{name}");
+        }
+    });
+    // egui panics when texture changes are dropped unread.
+    output.textures_delta.clear();
+
+    // What the loader finds, on the rows: the file of the click is not there.
+    let found = problems(&document, &[], &registry);
+    let texts: Vec<&str> = found.iter().map(|problem| problem.text.as_str()).collect();
+    assert_eq!(texts, ["no sound file `click.wav`"]);
+    assert!(found[0].warning);
+
+    // A rename of the light: the two sound commands follow, also the one in a list.
+    document.room.lights[1].name = Some("bulb".to_owned());
+    let status = document.renamed(&Item::Light(1), Some(lamp()), &registry);
+    assert!(status.contains("2 event commands"), "{status}");
+    let text = document.text();
+    assert!(text.contains(r#"SoundOff("bulb")"#) && text.contains(r#"SoundOn("bulb")"#));
+    assert!(
+        problems(&document, &[], &registry)
+            .iter()
+            .all(|problem| problem.warning)
+    );
+    // The saved text is the same room, with the sound of the light.
+    assert_eq!(parse_room(&text).unwrap(), document.room);
+    assert!(
+        text.contains(r#"sound: (file: "hum.wav", volume: 0.5)"#),
+        "{text}"
+    );
+}
+
+/// A WAV file of half a second of silence: one channel, 16 bits, 8000 Hz.
+fn write_wav(path: &Path) {
+    let samples = 4000_u32;
+    let mut bytes = Vec::new();
+    let parts: [&[u8]; 10] = [
+        b"RIFF",
+        &(36 + samples * 2).to_le_bytes(),
+        b"WAVEfmt ",
+        &16_u32.to_le_bytes(),
+        // PCM, one channel.
+        &[1, 0, 1, 0],
+        &8000_u32.to_le_bytes(),
+        &16000_u32.to_le_bytes(),
+        // Bytes and bits in a sample.
+        &[2, 0, 16, 0],
+        b"data",
+        &(samples * 2).to_le_bytes(),
+    ];
+    for part in parts {
+        bytes.extend(part);
+    }
+    bytes.resize(bytes.len() + samples as usize * 2, 0);
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn stop_ends_all_sound_and_a_room_that_the_editor_shows_is_silent() {
+    use maki_audio::Audio;
+    use maki_platform::{Key, RawInput};
+
+    let (app, directory) = editor_app("sound");
+    write_wav(&directory.join("hum.wav"));
+    // A lamp that hums, and an event that starts music and a sound.
+    let room = r#"(width: 6.0, depth: 6.0, height: 3.0,
+        lights: [(name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0, sound: (file: "hum.wav"))],
+        spawns: {"start": (0.0, 0.0, 2.0)},
+        events: [(name: "start", pages: [(trigger: Autorun, commands: [
+            PlayMusic("hum.wav", 1.0), PlaySound("hum.wav", 1.0)])])])"#;
+    std::fs::write(directory.join("c.ron"), room).unwrap();
+    // Music, the sounds that play one time, the sounds at a place.
+    let playing = |app: &App| {
+        let audio = app.world().resource::<Audio>();
+        let (effects, sources) = (audio.effects().len(), audio.sources().len());
+        (audio.music().is_some(), effects, sources)
+    };
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        request(&mut app, Command::Open(directory.join("c.ron")));
+        frames(&mut app, 5);
+        assert_eq!(playing(&app), (false, 0, 0));
+
+        request(&mut app, Command::Play);
+        frames(&mut app, 5);
+        assert_eq!(playing(&app), (true, 1, 1));
+
+        // The play key, held for some frames as a hand holds it: a stop, and no
+        // new game after it.
+        app.write_message(RawInput::KeyDown(Key::F5));
+        frames(&mut app, 6);
+        app.write_message(RawInput::KeyUp(Key::F5));
+        frames(&mut app, 2);
+        assert!(!app.world().resource::<Editor>().playing());
+        assert_eq!(playing(&app), (false, 0, 0));
+        // The room is shown again, with its lamp.
+        frames(&mut app, 5);
+        assert_eq!(lamp(&app).2, 0);
+        assert_eq!(playing(&app), (false, 0, 0));
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
