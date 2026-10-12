@@ -857,3 +857,41 @@ fn stop_ends_all_sound_and_a_room_that_the_editor_shows_is_silent() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// A glTF file with one triangle: the corners (0, 0, 0), (1, 0, 0), (0, 1, 0).
+const TRIANGLE: &str = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"buffers":[{"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA","byteLength":36}],
+"bufferViews":[{"buffer":0,"byteLength":36}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]}"#;
+
+#[test]
+fn a_click_on_a_model_from_a_file_selects_its_prop() {
+    let (app, directory) = editor_app("model");
+    std::fs::write(directory.join("triangle.gltf"), TRIANGLE).unwrap();
+    let room = r#"(width: 6.0, depth: 6.0, height: 3.0, props: [
+        (mesh: Cube(1.0), pose: (position: (2.0, 0.5, 0.0))),
+        (mesh: File("triangle.gltf"), pose: (position: (-1.0, 0.0, 0.0))),
+    ])"#;
+    std::fs::write(directory.join("m.ron"), room).unwrap();
+    app.run(|mut app| {
+        frames(&mut app, 3);
+        request(&mut app, Command::Open(directory.join("m.ron")));
+        // The file is read on a thread.
+        for _ in 0..500 {
+            frames(&mut app, 1);
+            if app.world().resource::<maki_assets::ModelLoads>().reading() == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        frames(&mut app, 2);
+        // A point of the triangle, then the floor.
+        click(&mut app, Vec3::new(-0.75, 0.25, 0.0));
+        let selection = |app: &App| app.world().resource::<Editor>().selection.clone();
+        assert_eq!(selection(&app), [Item::Prop(1)]);
+        click(&mut app, Vec3::new(-2.0, 0.0, 2.0));
+        assert_eq!(selection(&app), []);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}

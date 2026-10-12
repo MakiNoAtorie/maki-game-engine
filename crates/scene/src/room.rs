@@ -1502,4 +1502,76 @@ mod tests {
         assert_eq!(load("textured.ron").1, 2);
         std::fs::remove_dir_all(&directory).unwrap();
     }
+
+    /// A glTF file with one triangle: the corners (0, 0, 0), (1, 0, 0), (0, 1, 0).
+    const TRIANGLE: &str = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+"buffers":[{"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA","byteLength":36}],
+"bufferViews":[{"buffer":0,"byteLength":36}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]}"#;
+
+    #[test]
+    fn two_rooms_that_name_one_model_file_load_it_one_time() {
+        let directory = std::env::temp_dir().join(format!("maki-models-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("models")).unwrap();
+        std::fs::write(directory.join("models/triangle.gltf"), TRIANGLE).unwrap();
+        let rooms = [
+            (
+                "a.ron",
+                r#"props: [(mesh: Cube(1.0)), (mesh: File("models/triangle.gltf"))]"#,
+            ),
+            (
+                "b.ron",
+                r#"props: [(mesh: File("models/triangle.gltf"), pose: (position: (1.0, 0.0, 0.0)))]"#,
+            ),
+            ("c.ron", ""),
+        ];
+        for (name, props) in rooms {
+            let text = format!("(width: 4, depth: 4, height: 3, {props})");
+            std::fs::write(directory.join(name), text).unwrap();
+        }
+        // On the thread of the test: the model is there in the frame of the load.
+        let config = ConfigFile::from_text("[assets]\nbackground = false");
+        let mut app = App::new(config).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        // Loads a room. Gives the meshes of the model, and the place of each prop
+        // that shows one of them.
+        let mut load = |name: &str| {
+            app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+                path: directory.join(name),
+                spawn: None,
+                text: None,
+            });
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let meshes = world.resource::<Assets<Mesh>>();
+            let of_model: Vec<Handle<Mesh>> = meshes
+                .iter()
+                .filter(|(_, mesh)| mesh.name() == "mesh/0")
+                .map(|(handle, _)| handle)
+                .collect();
+            let mut shown = world
+                .try_query::<(&MeshInstance, &Transform, &RoomItem)>()
+                .unwrap();
+            let places: Vec<(Vec3, RoomItem)> = shown
+                .iter(world)
+                .filter(|(mesh, ..)| of_model.contains(&mesh.0))
+                .map(|(_, transform, item)| (transform.translation, *item))
+                .collect();
+            (of_model, places)
+        };
+        let (first, places) = load("a.ron");
+        assert_eq!(first.len(), 1);
+        assert_eq!(places, [(Vec3::ZERO, RoomItem::Prop(1))]);
+        // The next room names the file: the same mesh, at the place of its prop.
+        let (second, places) = load("b.ron");
+        assert_eq!(second, first);
+        assert_eq!(places, [(Vec3::X, RoomItem::Prop(0))]);
+        // A room with no model: the mesh is gone. Then the file is read again.
+        assert!(load("c.ron").0.is_empty());
+        let (again, _) = load("a.ron");
+        assert!(again.len() == 1 && again != first);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 }

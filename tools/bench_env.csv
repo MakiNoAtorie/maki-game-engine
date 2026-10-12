@@ -126,3 +126,4 @@ run_id,commit,gpu,driver,os,build,frames,warmup
 20261012T140359-s34,26d0c5d-dirty,NVIDIA GeForce RTX 5060 Ti,591.86,Windows 11 10.0.26200,release,700,100
 20261012T142917-s35,88d8f22-dirty,NVIDIA GeForce RTX 5060 Ti,591.86,Windows 11 10.0.26200,release,700,100
 20261012T145823-s36,db815ca-dirty,NVIDIA GeForce RTX 5060 Ti,591.86,Windows 11 10.0.26200,release,700,100
+20261012T153457-s37,d33b04a-dirty,NVIDIA GeForce RTX 5060 Ti,591.86,Windows 11 10.0.26200,release,700,100

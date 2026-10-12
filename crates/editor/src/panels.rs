@@ -298,8 +298,14 @@ fn tools(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
             if models.is_empty() {
                 ui.weak("No .gltf or .glb file at the room file");
             }
+            let directory = editor.document.path.parent().unwrap_or(Path::new(""));
+            let directory = directory.to_owned();
             for path in models {
-                if ui.button(path.to_string_lossy()).clicked() {
+                let row = ui.horizontal(|ui| {
+                    crate::pictures::show(ui, &directory.join(&path));
+                    ui.button(path.to_string_lossy()).clicked()
+                });
+                if row.inner {
                     editor.request(Command::Add(Kind::Model(path)));
                     ui.close();
                 }

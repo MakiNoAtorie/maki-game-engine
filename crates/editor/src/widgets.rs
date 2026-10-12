@@ -183,7 +183,8 @@ pub(crate) fn set_room_directory(ui: &Ui, directory: &Path) {
 }
 
 /// A file of the directory of the room file, picked from the list of the files
-/// with these extensions. A path that the list does not have shows in red.
+/// with these extensions. A path that the list does not have shows in red. An image
+/// file and a model file show with a small picture, in the list and at the value.
 pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -> bool {
     let id = egui::Id::new("room directory");
     let directory: PathBuf = ui.data(|data| data.get_temp(id)).unwrap_or_default();
@@ -195,7 +196,15 @@ pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -
     let mut name = value.to_string_lossy().replace('\\', "/");
     ui.horizontal(|ui| {
         label(ui, text);
-        let changed = crate::event_panel::picker(ui, text, &mut name, &known, &[], false);
+        let show = |ui: &mut Ui, name: &str| crate::pictures::show(ui, &directory.join(name));
+        let pictures = crate::pictures::has_picture(extensions);
+        if pictures && !name.is_empty() {
+            show(ui, &name);
+        }
+        let picture: Option<crate::event_panel::Picture> =
+            if pictures { Some(&show) } else { None };
+        let changed =
+            crate::event_panel::picker_with(ui, text, &mut name, &known, &[], false, picture);
         if changed {
             *value = PathBuf::from(name);
         }
@@ -217,7 +226,7 @@ pub fn pick(ui: &mut Ui, text: &str, value: &mut String, known: &[String]) -> bo
 /// The extensions of the sound files.
 pub const SOUNDS: [&str; 2] = ["wav", "ogg"];
 /// The extensions of the picture files that a texture can be.
-const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
+pub(crate) const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
 /// The extensions of the model files.
 pub(crate) const MODELS: [&str; 2] = ["gltf", "glb"];
 

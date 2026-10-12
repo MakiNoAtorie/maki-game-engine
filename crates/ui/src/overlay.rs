@@ -2,7 +2,8 @@
 //!
 //! A small egui renderer on the draw calls of the gpu crate. egui gives a list of
 //! meshes (2D triangles with a color and a texture coordinate at each vertex) and the
-//! changes of its textures (the font image). The pass copies all meshes of the frame
+//! changes of its textures (the font image, and each image that a panel gives to
+//! `egui::Context::load_texture`). The pass copies all meshes of the frame
 //! into one vertex buffer and one index buffer and does one draw for each mesh.
 
 use std::collections::HashMap;
@@ -56,20 +57,11 @@ pub(crate) fn add_pass(mut gpu: ResMut<RenderGpu>, mut graph: ResMut<FrameGraph>
             target_format: format,
         })
         .expect("ui pipeline");
-    // ponytail: one sampler for all textures. egui asks for a filter with each texture
-    // (`TextureOptions`); read it when a panel shows an image that needs another one.
-    let sampler = gpu
-        .create_sampler(&SamplerDesc {
-            linear: true,
-            repeat: false,
-            mipmaps: false,
-        })
-        .expect("ui sampler");
     graph.add_pass_before(
         "present",
         UiOverlay {
             pipeline,
-            sampler,
+            samplers: HashMap::new(),
             output,
             textures: HashMap::new(),
             buffers: Default::default(),
@@ -79,13 +71,24 @@ pub(crate) fn add_pass(mut gpu: ResMut<RenderGpu>, mut graph: ResMut<FrameGraph>
 
 struct UiOverlay {
     pipeline: GraphicsPipelineHandle,
-    sampler: SamplerHandle,
+    /// The samplers that the textures asked for, by (linear, repeat).
+    samplers: HashMap<(bool, bool), SamplerHandle>,
     output: ResourceId,
-    /// The GPU image of each egui texture, and its size in pixels.
-    textures: HashMap<TextureId, (ImageHandle, [u32; 2])>,
+    /// The GPU image of each egui texture.
+    textures: HashMap<TextureId, Texture>,
     /// The vertex and the index buffer of each frame slot: the CPU writes them in each
     /// frame, and the GPU can still read those of the frame before (`Gpu::frame_slot`).
     buffers: [[GrowBuffer; 2]; FRAMES_IN_FLIGHT],
+}
+
+/// The GPU image of an egui texture.
+#[derive(Clone, Copy)]
+struct Texture {
+    image: ImageHandle,
+    /// In pixels.
+    size: [u32; 2],
+    /// The sampler that egui asked for with the texture (`TextureOptions`).
+    sampler: SamplerHandle,
 }
 
 /// One draw call: a mesh of egui.
@@ -154,18 +157,15 @@ impl Pass for UiOverlay {
             let vertex_buffer = vertex_buffer.write(ctx.gpu, "ui vertices", &vertices);
             let index_buffer = index_buffer.write(ctx.gpu, "ui indices", &indices);
             let (width, height) = ctx.extent(self.output);
-            let sampler = ctx
-                .gpu
-                .sampler_index(self.sampler)
-                .expect("ui sampler is alive");
             let target = ctx.image(self.output);
             ctx.gpu.begin_rendering(target).expect("ui begin_rendering");
             for draw in draws {
-                // A texture that egui did not send (a user texture) is not drawn.
-                let Some(texture) = self
-                    .textures
-                    .get(&draw.texture)
-                    .and_then(|(image, _)| ctx.gpu.image_index(*image))
+                // A texture that egui did not send (`TextureId::User`) is not drawn.
+                let Some(texture) = self.textures.get(&draw.texture) else {
+                    continue;
+                };
+                let indices = ctx.gpu.image_index(texture.image);
+                let Some((texture, sampler)) = indices.zip(ctx.gpu.sampler_index(texture.sampler))
                 else {
                     continue;
                 };
@@ -189,8 +189,8 @@ impl Pass for UiOverlay {
 
         // After the draws: a mesh of this frame can still use a texture that egui frees.
         for id in changes.free.drain() {
-            if let Some((image, _)) = self.textures.remove(&id) {
-                ctx.gpu.destroy_image(image);
+            if let Some(texture) = self.textures.remove(&id) {
+                ctx.gpu.destroy_image(texture.image);
             }
         }
     }
@@ -207,22 +207,36 @@ impl UiOverlay {
         // sRGB-encoded with premultiplied alpha, the same as the vertex colors.
         let bytes: Vec<u8> = pixels.pixels.iter().flat_map(|c| c.to_array()).collect();
 
+        // ponytail: the filter of a texture that shows larger than it is, for the two
+        // directions, and no mip levels. A filter for each direction and mip levels
+        // when a panel shows a large image small.
+        let linear = delta.options.magnification == egui::TextureFilter::Linear;
+        let repeat = delta.options.wrap_mode != egui::TextureWrapMode::ClampToEdge;
+        let sampler = *self.samplers.entry((linear, repeat)).or_insert_with(|| {
+            let desc = SamplerDesc {
+                linear,
+                repeat,
+                mipmaps: false,
+            };
+            gpu.create_sampler(&desc).expect("ui sampler")
+        });
+
         let existing = self.textures.get(&id).copied();
         let (image, origin, old_use) = match (delta.pos, existing) {
             // New pixels for a part of the image. The other pixels stay.
-            (Some(origin), Some((image, _))) => (image, origin, Some(Access::Sampled)),
+            (Some(origin), Some(texture)) => (texture.image, origin, Some(Access::Sampled)),
             (Some(_), None) => {
                 tracing::error!(?id, "egui changed a part of a texture that does not exist");
                 return;
             }
             // The full image, with the size that it has.
-            (None, Some((image, old_size))) if old_size == size => {
-                (image, [0, 0], Some(Access::Sampled))
+            (None, Some(texture)) if texture.size == size => {
+                (texture.image, [0, 0], Some(Access::Sampled))
             }
             // The full image, new or with a new size.
             (None, old) => {
-                if let Some((old, _)) = old {
-                    gpu.destroy_image(old);
+                if let Some(old) = old {
+                    gpu.destroy_image(old.image);
                 }
                 let image = gpu
                     .create_image(&ImageDesc {
@@ -236,10 +250,19 @@ impl UiOverlay {
                         color_attachment: false,
                     })
                     .expect("ui texture");
-                self.textures.insert(id, (image, size));
+                let texture = Texture {
+                    image,
+                    size,
+                    sampler,
+                };
+                self.textures.insert(id, texture);
                 (image, [0, 0], None)
             }
         };
+        // The options can change with new pixels.
+        if let Some(texture) = self.textures.get_mut(&id) {
+            texture.sampler = sampler;
+        }
         // The graph does not know these images, so the pass records their barriers.
         let target = ImageTarget::Image(image);
         gpu.image_barrier(target, old_use, Access::TransferDst)

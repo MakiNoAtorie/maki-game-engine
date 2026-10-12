@@ -35,6 +35,7 @@ mod gizmo;
 mod ops;
 mod overlay;
 mod panels;
+mod pictures;
 mod ron_text;
 mod view;
 pub mod widgets;

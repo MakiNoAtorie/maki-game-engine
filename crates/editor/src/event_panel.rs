@@ -228,6 +228,9 @@ struct Lists {
     row_keys: [String; 4],
 }
 
+/// Draws the picture of a name of a list.
+pub(crate) type Picture<'a> = &'a dyn Fn(&mut Ui, &str);
+
 /// What a click in a list of names took.
 enum Picked {
     Name(String),
@@ -237,18 +240,9 @@ enum Picked {
 
 /// A button that opens a list of names, with a search field above them. `marked`:
 /// the names with the mark [`NEVER_WRITTEN`]. `new`: the list has the entry "New...".
-fn name_list(
-    ui: &mut Ui,
-    id: egui::Id,
-    button: egui::WidgetText,
-    names: &[String],
-    marked: &[String],
-    new: bool,
-) -> Option<Picked> {
-    described_list(ui, id, button, names, marked, new, &|_| None)
-}
-
-/// As [`name_list`]. `help`: the hover text of a name.
+/// `help`: the hover text of a name. `picture`: draws the picture of a name, at the
+/// left of it.
+#[allow(clippy::too_many_arguments)]
 fn described_list(
     ui: &mut Ui,
     id: egui::Id,
@@ -257,6 +251,7 @@ fn described_list(
     marked: &[String],
     new: bool,
     help: &dyn Fn(&str) -> Option<&'static str>,
+    picture: Option<Picture>,
 ) -> Option<Picked> {
     let mut picked = None;
     egui::ComboBox::from_id_salt(id)
@@ -294,7 +289,16 @@ fn described_list(
                 } else {
                     egui::RichText::new(name)
                 };
-                let mut entry = ui.selectable_label(false, label);
+                let mut entry = match picture {
+                    Some(picture) => {
+                        let row = ui.horizontal(|ui| {
+                            picture(ui, name);
+                            ui.selectable_label(false, label)
+                        });
+                        row.inner
+                    }
+                    None => ui.selectable_label(false, label),
+                };
                 if let Some(help) = help(name) {
                     entry = entry.on_hover_text(help);
                 }
@@ -321,6 +325,19 @@ pub(crate) fn picker(
     known: &[String],
     marked: &[String],
     new: bool,
+) -> bool {
+    picker_with(ui, salt, value, known, marked, new, None)
+}
+
+/// As [`picker`]. `picture`: draws the picture of a name in the list.
+pub(crate) fn picker_with(
+    ui: &mut Ui,
+    salt: &str,
+    value: &mut String,
+    known: &[String],
+    marked: &[String],
+    new: bool,
+    picture: Option<Picture>,
 ) -> bool {
     let id = ui.make_persistent_id(("picker", salt));
     let typed_id = id.with("new");
@@ -350,7 +367,7 @@ pub(crate) fn picker(
     } else {
         shown.color(ERROR)
     };
-    match name_list(ui, id, shown.into(), known, marked, new) {
+    match described_list(ui, id, shown.into(), known, marked, new, &|_| None, picture) {
         Some(Picked::Name(name)) if name != *value => {
             *value = name;
             true
@@ -923,7 +940,7 @@ fn command_rows(
         let add = ui.make_persistent_id("add command");
         // The hover text of a name: the line of help of its module.
         let help = |name: &str| registry.help(name);
-        let picked = described_list(ui, add, "Add".into(), &names, &[], false, &help);
+        let picked = described_list(ui, add, "Add".into(), &names, &[], false, &help, None);
         if let Some(Picked::Name(name)) = picked {
             match new_command(&name, lists, registry, room) {
                 Some(command) => insert.push(command),

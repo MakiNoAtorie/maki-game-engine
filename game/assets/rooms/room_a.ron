@@ -39,6 +39,9 @@
             pose: (position: (-3.0, 1.1, 0.8), rotation: (0.0, 63.0, 0.0), scale: (2.4, 2.2, 0.06)),
             look: (color: (0.9, 0.9, 0.9), material: Mirror),
         ),
+        // A cabinet at the back wall, in the left corner. The file is a placeholder
+        // of tools/gen_models.py. Room B names the same file: one load for the two.
+        (name: "cabinet", mesh: File("models/cabinet.glb"), pose: (position: (-3.2, 0.0, -3.7))),
     ],
     lights: [
         // In front of the objects, so their shadows fall to the back. It hums while

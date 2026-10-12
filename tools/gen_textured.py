@@ -130,10 +130,10 @@ def merge(parts):
     return positions, normals, uvs, indices
 
 
-def write_glb(path, images):
+def write_props(path, images):
     """`props.glb`. `images`: {name: PNG bytes}, stored in the file."""
     names = list(images)
-    texture = lambda name, nearest=False: {"index": names.index(name) * 2 + (1 if nearest else 0)}
+    texture = lambda name, nearest=False: texture_of(names, name, nearest)
     materials = [
         {"name": "crate", "pbrMetallicRoughness": {"baseColorTexture": texture("crate", True), "roughnessFactor": 1.0}},
         {"name": "leaves", "alphaMode": "MASK", "alphaCutoff": 0.5, "doubleSided": True,
@@ -156,7 +156,20 @@ def write_glb(path, images):
         # On the back wall, a little in front of it.
         ("sign", quad((-0.7, 0.0, 0.0), (1.4, 0.0, 0.0), (0.0, 0.7, 0.0), (1.0, 1.0)), 3, (-0.5, 1.7, -3.97)),
     ]
+    write_glb(path, images, materials, meshes, "maki tools/gen_textured.py")
 
+
+def texture_of(names, name, nearest=False):
+    """The texture of an image of `write_glb`, for a material. `names`: the names of
+    the images, in their order."""
+    return {"index": names.index(name) * 2 + (1 if nearest else 0)}
+
+
+def write_glb(path, images, materials, meshes, generator):
+    """A `.glb` file. `images`: {name: PNG bytes} for an image in the file, or
+    {name: text} for the path of an image file, from the directory of the `.glb`.
+    `meshes`: (name, (positions, normals, uvs, indices), material index, place)."""
+    names = list(images)
     parts, accessors, gltf_meshes, nodes = [], [], [], []
     for name, (positions, normals, uvs, indices), material, place in meshes:
         first = len(accessors)
@@ -175,10 +188,15 @@ def write_glb(path, images):
         gltf_meshes.append({"name": name, "primitives": [{"attributes": attributes, "indices": first + 3, "material": material}]})
         nodes.append({"name": name, "mesh": len(gltf_meshes) - 1, "translation": list(place)})
     image_views = []
+    gltf_images = []
     for name in names:
         data = images[name]
+        if isinstance(data, str):
+            gltf_images.append({"uri": data, "name": name})
+            continue
         parts.append(data + b"\0" * (-len(data) % 4))
         image_views.append((len(parts) - 1, len(data)))
+        gltf_images.append({"bufferView": len(parts) - 1, "mimeType": "image/png", "name": name})
 
     views, offset = [], 0
     for part in parts:
@@ -188,7 +206,7 @@ def write_glb(path, images):
         views[view]["byteLength"] = size
     blob = b"".join(parts)
     document = {
-        "asset": {"version": "2.0", "generator": "maki tools/gen_textured.py"},
+        "asset": {"version": "2.0", "generator": generator},
         "scene": 0,
         "scenes": [{"nodes": list(range(len(nodes)))}],
         "nodes": nodes,
@@ -197,7 +215,7 @@ def write_glb(path, images):
         # Two textures for each image: with the linear sampler and with the nearest one.
         "textures": [{"source": image, "sampler": sampler} for image in range(len(names)) for sampler in (0, 1)],
         "samplers": [{"magFilter": 9729, "minFilter": 9987}, {"magFilter": 9728, "minFilter": 9987}],
-        "images": [{"bufferView": view, "mimeType": "image/png", "name": name} for name, (view, _) in zip(names, image_views)],
+        "images": gltf_images,
         "buffers": [{"byteLength": len(blob)}],
         "bufferViews": views,
         "accessors": accessors,
@@ -225,7 +243,7 @@ def write_textured(directory):
     }
     for name, data in files.items():
         (directory / name).write_bytes(data)
-    write_glb(directory / "props.glb", {
+    write_props(directory / "props.glb", {
         "crate": files["crate.png"],
         "leaves": png(64, 64, leaves),
         "fence": png(16, 32, fence),
