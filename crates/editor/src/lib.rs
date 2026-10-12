@@ -925,6 +925,7 @@ impl Module for EditorModule {
         let mut document = Document::new_room(self.rooms.join("untitled.ron"));
         document.dirty = false;
         audio::add_argument_editors(app);
+        app.init_resource::<overlay::MarkDepth>();
         app.insert_resource(Editor {
             document,
             selection: Vec::new(),
@@ -961,6 +962,8 @@ impl Module for EditorModule {
                 run_commands
                     .before(load_requested_room)
                     .ambiguous_with_all(),
+                // It has the full world: the GPU, and the meshes of the mirrors.
+                overlay::read_depth.ambiguous_with_all(),
                 camera::move_camera,
             ),
         );

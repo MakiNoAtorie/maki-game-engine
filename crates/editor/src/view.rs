@@ -123,6 +123,35 @@ impl Ray {
         (u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0).then_some(t)
     }
 
+    /// The distance along the ray to the first triangle of a mesh at a matrix.
+    fn mesh(&self, mesh: &Mesh, matrix: Mat4) -> Option<f32> {
+        // The ray in the space of the mesh. The direction keeps its length there,
+        // so a distance along it is a distance in the room.
+        let inverse = matrix.inverse();
+        let local = Ray {
+            origin: inverse.transform_point3(self.origin),
+            direction: inverse.transform_vector3(self.direction),
+        };
+        let positions = mesh.positions();
+        let triangles = mesh.indices().as_chunks::<3>().0.iter();
+        let corners = |triangle: &[u32; 3]| triangle.map(|corner| positions[corner as usize]);
+        triangles
+            .filter_map(|triangle| local.triangle(corners(triangle), mesh.open_back()))
+            .min_by(f32::total_cmp)
+    }
+
+    /// True if the ray goes through a box between two corners.
+    fn in_box(&self, low: Vec3, high: Vec3) -> bool {
+        // The parts of the ray between the two planes of each axis must overlap.
+        let (to_low, to_high) = (
+            (low - self.origin) / self.direction,
+            (high - self.origin) / self.direction,
+        );
+        let enter = to_low.min(to_high).max_element();
+        let leave = to_low.max(to_high).min_element();
+        enter <= leave && leave >= 0.0
+    }
+
     /// The distance along the ray to the near side of a sphere.
     pub fn sphere(&self, center: Vec3, radius: f32) -> Option<f32> {
         let to_center = center - self.origin;
@@ -176,25 +205,14 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
         let Some(mesh) = meshes.get(instance.0) else {
             continue;
         };
-        // The ray in the space of the mesh. The direction keeps its length there,
-        // so a distance along it is a distance in the room.
-        let inverse = matrix.inverse();
-        let local = Ray {
-            origin: inverse.transform_point3(ray.origin),
-            direction: inverse.transform_vector3(ray.direction),
-        };
         let item = item.map(|item| match item {
             RoomItem::Prop(index) => Item::Prop(index),
             RoomItem::Light(index) => Item::Light(index),
             RoomItem::Door(index) => Item::Door(index),
             RoomItem::Mover(index) => Item::Mover(index),
         });
-        let positions = mesh.positions();
-        for triangle in mesh.indices().as_chunks::<3>().0 {
-            let corners = triangle.map(|corner| positions[corner as usize]);
-            if let Some(t) = local.triangle(corners, mesh.open_back()) {
-                hit(t, item.clone());
-            }
+        if let Some(t) = ray.mesh(mesh, matrix) {
+            hit(t, item);
         }
     }
 
@@ -224,6 +242,63 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
         }
     }
     nearest.1
+}
+
+/// The mirrors of the room, to test if one of them hides a point: the pixels of a
+/// mirror have the distance of what the mirror shows (`maki_render::Distances`).
+#[derive(Default)]
+pub struct Mirrors(Vec<Mirror>);
+
+/// A mirror mesh in the space of the room: the box around it, and its triangles.
+struct Mirror {
+    low: Vec3,
+    high: Vec3,
+    triangles: Vec<[Vec3; 3]>,
+}
+
+/// A mirror mesh with more triangles is not tested.
+// ponytail: each triangle of a mirror in the way of a ray is tested. A tree over the
+// triangles if a room has a mirror with many of them.
+const MIRROR_TRIANGLES: usize = 4096;
+
+impl Mirrors {
+    pub fn of(world: &mut World) -> Self {
+        let instances = instances(world);
+        let meshes = world.resource::<Assets<Mesh>>();
+        let mirrors = instances.into_iter().filter_map(|(matrix, instance, _)| {
+            let mesh = meshes.get(instance.0)?;
+            let (positions, indices) = (mesh.positions(), mesh.indices());
+            let is_mirror = mesh.material() == maki_assets::Material::Mirror;
+            if !is_mirror || indices.len() / 3 > MIRROR_TRIANGLES {
+                return None;
+            }
+            let corner = |index: &u32| matrix.transform_point3(positions[*index as usize]);
+            let triangles: Vec<[Vec3; 3]> = indices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|triangle| triangle.each_ref().map(corner))
+                .collect();
+            let corners = || triangles.iter().flatten().copied();
+            Some(Mirror {
+                low: corners().fold(Vec3::MAX, Vec3::min),
+                high: corners().fold(Vec3::MIN, Vec3::max),
+                triangles,
+            })
+        });
+        Self(mirrors.collect())
+    }
+
+    /// The distance along a ray to the first mirror.
+    pub fn hit(&self, ray: &Ray) -> Option<f32> {
+        let in_way = self
+            .0
+            .iter()
+            .filter(|mirror| ray.in_box(mirror.low, mirror.high));
+        let hits = in_way.flat_map(|mirror| &mirror.triangles);
+        hits.filter_map(|triangle| ray.triangle(*triangle, false))
+            .min_by(f32::total_cmp)
+    }
 }
 
 /// The boxes around the meshes of an item: for each, the matrix of the mesh and the
@@ -299,5 +374,9 @@ mod tests {
         assert_eq!(down.height(1.0).map(|hit| hit.1), Some(4.0));
         // The X axis passes 0.2 m beside the ray, at x = 0.2.
         assert!((down.along(Vec3::ZERO, Vec3::X) - 0.2).abs() < 1e-5);
+        // A box under the ray, and one beside it.
+        assert!(down.in_box(Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 2.0, 1.0)));
+        assert!(!down.in_box(Vec3::new(1.0, 1.0, 0.0), Vec3::new(2.0, 2.0, 1.0)));
+        assert!(!down.in_box(Vec3::new(0.0, 6.0, 0.0), Vec3::new(1.0, 7.0, 1.0)));
     }
 }

@@ -759,7 +759,7 @@ fn item_properties(
             let mover = room.movers.get_mut(*index)?;
             ui.checkbox(
                 &mut editor.second_pose,
-                "the gizmo moves the second pose (b)",
+                "the gizmo changes the second pose (b) only",
             );
             name(ui, &mut mover.name)
                 | mesh(ui, &mut mover.mesh)

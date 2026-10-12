@@ -42,7 +42,9 @@ use glam::Vec3;
 use maki_core::{App, Input, Interpolated, Module, Startup, Time, Update, interpolate_transforms};
 use maki_gameplay::{StartRoom, clamp_to_room};
 use maki_platform::{Action, QuitRequested, ScriptedActions, WindowSettings};
-use maki_render::{Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld, setup_renderer};
+use maki_render::{
+    Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld, half_to_f32, setup_renderer,
+};
 use maki_scene::{CurrentRoom, Light, RoomDef, RoomRequest, load_requested_room};
 use maki_ui::{Panels, add_panel, egui};
 
@@ -522,20 +524,6 @@ fn dump_picture(
         other => anyhow::bail!("cannot dump an image of format {other:?}"),
     }
     Ok(std::fs::write(path, bytes)?)
-}
-
-/// The value of a 16-bit float: 1 sign bit, 5 exponent bits, 10 fraction bits.
-fn half_to_f32(half: u16) -> f32 {
-    let sign = if half >> 15 == 0 { 1.0 } else { -1.0 };
-    let exponent = i32::from(half >> 10 & 0x1F);
-    let fraction = f32::from(half & 0x3FF) / 1024.0;
-    match exponent {
-        // Numbers too small for the normal form.
-        0 => sign * fraction * 2f32.powi(-14),
-        31 if fraction == 0.0 => sign * f32::INFINITY,
-        31 => f32::NAN,
-        _ => sign * (1.0 + fraction) * 2f32.powi(exponent - 15),
-    }
 }
 
 /// One line for each frame: frame number, CPU milliseconds, room load milliseconds, GPU

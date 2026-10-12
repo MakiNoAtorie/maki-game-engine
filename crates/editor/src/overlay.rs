@@ -5,17 +5,120 @@
 //! All are lines and text of the egui painter, from points of the room that `View`
 //! turns into pixels. Not a line pass of the frame graph: the marks then are drawn
 //! by the UI pass, after the tone curve, with no new GPU state. They are not in the
-//! path tracer, the denoiser, or the anti-aliasing, and they have no depth test: a
-//! mark behind an object shows through it, which a mark must do.
+//! path tracer, the denoiser, or the anti-aliasing.
+//!
+//! What is in front of a mark hides it ([`MarkDepth`]): the grid does not show on a
+//! prop. The lines are cut on the CPU, with the distance of each pixel that the trace
+//! pass has. The selection, the item under the pointer, and the gizmo are not cut:
+//! they show through an object, which they must do.
 
+use std::time::Instant;
+
+use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use glam::{Mat4, Vec3};
+use maki_render::{Accumulation, Distances, FrameGraph, RenderGpu, RenderWorld, read_distances};
 use maki_scene::RoomItem;
 use maki_ui::egui::{self, Color32, Stroke, Ui};
 
 use crate::gizmo::{Handle, SQUARE, Tool};
-use crate::view::{MARK_RADIUS, View, mesh_boxes};
+use crate::view::{MARK_RADIUS, Mirrors, View, mesh_boxes};
 use crate::{Editor, Item};
+
+/// What hides a point of the room from the camera of the editor, as of the last
+/// frame that changed the picture.
+#[derive(Resource, Default)]
+pub struct MarkDepth {
+    distances: Option<Distances>,
+    mirrors: Mirrors,
+    /// `Accumulation::samples` at the last look.
+    samples: u32,
+}
+
+/// A point is hidden if it is farther away than the surface of its pixel by more
+/// than `SLACK` meters and `SLACK_PART` of its distance. A mark on the floor is at
+/// the distance of the floor; the image has 16-bit floats (0.1 % of a distance), and
+/// one pixel of a floor that the camera sees at a flat angle has a range of distances.
+const SLACK: f32 = 0.02;
+const SLACK_PART: f32 = 0.005;
+/// A line is tested at steps of this many pixels.
+const CUT_STEP: f32 = 3.0;
+
+impl MarkDepth {
+    /// True if a surface of the picture is in front of the point.
+    pub fn hides(&self, view: &View, point: Vec3) -> bool {
+        let Some(distances) = &self.distances else {
+            return false;
+        };
+        let Some([x, y]) = view.project(point) else {
+            return true;
+        };
+        let distance = point.distance(view.camera.position);
+        let limit = distance * (1.0 - SLACK_PART) - SLACK;
+        let surface = distances.at(x / view.size[0], y / view.size[1]);
+        if surface > 0.0 && surface < limit {
+            return true;
+        }
+        // The pixel of a mirror has the distance of what the mirror shows.
+        let ray = view.ray([x, y]);
+        self.mirrors.hit(&ray).is_some_and(|mirror| mirror < limit)
+    }
+
+    /// The parts of a line of the room that no surface hides.
+    fn parts(&self, view: &View, a: Vec3, b: Vec3) -> Vec<[Vec3; 2]> {
+        let Some([from, to]) = view.segment(a, b) else {
+            return Vec::new();
+        };
+        let pixels = glam::Vec2::from(from).distance(to.into());
+        let steps = (pixels / CUT_STEP).ceil().clamp(1.0, 1024.0) as usize;
+        let point = |step: usize| a.lerp(b, step as f32 / steps as f32);
+        let mut parts = Vec::new();
+        // The first point of the part that is open.
+        let mut start = None;
+        for step in 0..=steps {
+            let hidden = self.hides(view, point(step));
+            match (hidden, start) {
+                (false, None) => start = Some(step),
+                (true, Some(first)) => {
+                    parts.push([point(first), point(step - 1)]);
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(first) = start {
+            parts.push([point(first), b]);
+        }
+        parts
+    }
+}
+
+/// Runs in `Update`, between two frames: reads the distances of the picture after
+/// the picture changed. While the camera moves, that is each frame, and the cut of
+/// the marks is one frame late.
+pub(crate) fn read_depth(world: &mut World) {
+    if world.resource::<Editor>().playing() || !world.contains_resource::<RenderGpu>() {
+        return;
+    }
+    let accumulation = world.resource::<RenderWorld>().0.resource::<Accumulation>();
+    let (samples, sampling) = (accumulation.samples(), accumulation.sampling());
+    let before = std::mem::replace(&mut world.resource_mut::<MarkDepth>().samples, samples);
+    // The count of the samples started again: the picture changed. The same count
+    // as before while new samples come: it starts again in each frame.
+    let changed = samples < before || (samples == before && sampling);
+    if !changed && world.resource::<MarkDepth>().distances.is_some() {
+        return;
+    }
+    let start = Instant::now();
+    let mirrors = Mirrors::of(world);
+    let distances = world.resource_scope(|world, mut gpu: bevy_ecs::world::Mut<RenderGpu>| {
+        let graph = world.get_resource::<FrameGraph>()?;
+        read_distances(graph, &mut gpu)
+    });
+    tracing::trace!(time = ?start.elapsed(), "the distances of the picture are read");
+    let mut depth = world.resource_mut::<MarkDepth>();
+    (depth.distances, depth.mirrors) = (distances, mirrors);
+}
 
 const GRID: Color32 = Color32::from_rgba_premultiplied(70, 70, 70, 70);
 const MARK: Color32 = Color32::from_rgb(120, 200, 255);
@@ -33,6 +136,8 @@ struct Pen<'a> {
     corner: egui::Pos2,
     /// egui points for one pixel.
     points: f32,
+    /// `Some`: what is in front of a line hides it. `None`: the line is on top.
+    depth: Option<&'a MarkDepth>,
 }
 
 impl Pen<'_> {
@@ -41,9 +146,15 @@ impl Pen<'_> {
     }
 
     fn line(&self, a: Vec3, b: Vec3, stroke: Stroke) {
-        if let Some([a, b]) = self.view.segment(a, b) {
-            self.painter
-                .line_segment([self.pos(a), self.pos(b)], stroke);
+        let parts = match self.depth {
+            Some(depth) => depth.parts(self.view, a, b),
+            None => vec![[a, b]],
+        };
+        for [a, b] in parts {
+            if let Some([a, b]) = self.view.segment(a, b) {
+                self.painter
+                    .line_segment([self.pos(a), self.pos(b)], stroke);
+            }
         }
     }
 
@@ -87,6 +198,9 @@ impl Pen<'_> {
     }
 
     fn text(&self, at: Vec3, text: &str, color: Color32) {
+        if self.depth.is_some_and(|depth| depth.hides(self.view, at)) {
+            return;
+        }
         if let Some(pixel) = self.view.project(at) {
             let font = egui::FontId::proportional(13.0);
             let at = self.pos(pixel) + egui::vec2(6.0, -6.0);
@@ -137,14 +251,31 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         return;
     };
     let picture = ui.clip_rect();
-    let pen = Pen {
+    // Out of the world while the pens have it: the marks need the world too.
+    let depth = world.remove_resource::<MarkDepth>().unwrap_or_default();
+    let pen = |depth| Pen {
         painter: ui.painter().with_clip_rect(picture),
         view: &view,
         corner: picture.min,
         points: 1.0 / ui.ctx().pixels_per_point(),
+        depth,
     };
+    // `pen` draws on top. `under` draws what no surface hides.
+    let (pen, under) = (pen(None), pen(Some(&depth)));
+    marks(world, editor, &view, picture, &pen, &under);
+    world.insert_resource(depth);
+}
+
+fn marks(
+    world: &mut World,
+    editor: &Editor,
+    view: &View,
+    picture: egui::Rect,
+    pen: &Pen,
+    under: &Pen,
+) {
     let thin = |color| Stroke::new(1.0, color);
-    game_frame(world, &pen, picture, thin(GRID));
+    game_frame(world, pen, picture, thin(GRID));
     let selected = |item: &Item| editor.selection.contains(item);
     // The stroke of a mark: that of the selection if its item is selected.
     let hovered = |item: &Item| editor.hover == Some(crate::Hover::Item(item.clone()));
@@ -158,20 +289,28 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
             thin(color)
         }
     };
+    // The pen of the mark of an item: on top if a click took it, or would take it.
+    let pen_of = |item: &Item| {
+        if selected(item) || hovered(item) {
+            pen
+        } else {
+            under
+        }
+    };
     let (room, events) = (&editor.document.room, &editor.document.events);
     let (half_width, half_depth) = (room.width / 2.0, room.depth / 2.0);
 
     // The floor grid: one line for each meter, from the center of the room.
     let lines = |half: f32| (-(half.floor() as i32)..=half.floor() as i32).map(|line| line as f32);
     for x in lines(half_width) {
-        pen.line(
+        under.line(
             Vec3::new(x, 0.0, -half_depth),
             Vec3::new(x, 0.0, half_depth),
             thin(GRID),
         );
     }
     for z in lines(half_depth) {
-        pen.line(
+        under.line(
             Vec3::new(-half_width, 0.0, z),
             Vec3::new(half_width, 0.0, z),
             thin(GRID),
@@ -197,13 +336,14 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
             (-1.0, 1.0),
             (-1.0, -1.0),
         ];
+        let pen = pen_of(&item);
         pen.path(&corners.map(|(x, z)| corner(x, z)), stroke(&item, AREA));
         pen.text(corner(-1.0, -1.0), &event.name, AREA);
     }
 
     for (name, position) in &room.spawns {
         let (at, item) = (Vec3::from(*position), Item::Spawn(name.clone()));
-        let stroke = stroke(&item, MARK);
+        let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         pen.circle(at, Vec3::X, Vec3::Z, MARK_RADIUS, stroke);
         pen.line(at, at + Vec3::Y * 2.0 * MARK_RADIUS, stroke);
         pen.text(at + Vec3::Y * 2.0 * MARK_RADIUS, name, MARK);
@@ -217,7 +357,7 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         // makes the door: it turns into the room.
         let (start, along, length, inward) = doorway.wall.frame(room.width, room.depth);
         let hinge = start + along * doorway.span(length).0;
-        let stroke = stroke(&Item::Door(index), MARK);
+        let (stroke, pen) = (stroke(&Item::Door(index), MARK), pen_of(&Item::Door(index)));
         let swing = |part: usize| {
             let (sin, cos) = (part as f32 / 8.0 * 85f32.to_radians()).sin_cos();
             hinge + (along * cos + inward * sin) * doorway.width
@@ -229,7 +369,10 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
 
     for (index, mover) in room.movers.iter().enumerate() {
         // The mesh shows at pose `a`: the box of the mesh at pose `b`, and the way.
-        let stroke = stroke(&Item::Mover(index), MARK);
+        let (stroke, pen) = (
+            stroke(&Item::Mover(index), MARK),
+            pen_of(&Item::Mover(index)),
+        );
         pen.line(mover.a.position.into(), mover.b.position.into(), stroke);
         for (_, low, high) in mesh_boxes(world, RoomItem::Mover(index)) {
             pen.cuboid(mover.b.transform().matrix(), low, high, stroke);
@@ -305,12 +448,35 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         }
     }
 
-    let Some(gizmo) = editor.gizmo(&view) else {
+    let Some(gizmo) = editor.gizmo(view) else {
         return;
     };
     let active = editor.dragged();
     // The handle under the pointer is brighter and thicker: a click takes it.
     let over = |handle: Handle| editor.hover == Some(crate::Hover::Handle(handle));
+    // The handles of the item itself: a square at each point.
+    for (handle, point) in gizmo.points() {
+        if handle == Handle::Aim {
+            pen.line(gizmo.origin, point, Stroke::new(1.0, SELECTED));
+        }
+        let Some(pixel) = view.project(point) else {
+            continue;
+        };
+        let side = if over(handle) { 13.0 } else { 9.0 } * pen.points;
+        let square = egui::Rect::from_center_size(pen.pos(pixel), egui::Vec2::splat(side));
+        let color = if active == Some(handle) {
+            SELECTED
+        } else {
+            Color32::WHITE
+        };
+        pen.painter.rect_filled(square, 0.0, color);
+        let outline = Stroke::new(1.0, Color32::BLACK);
+        pen.painter
+            .rect_stroke(square, 0.0, outline, egui::StrokeKind::Outside);
+    }
+    if !gizmo.posed {
+        return;
+    }
     let color = |axis: usize| {
         let handle = Handle::Axis(axis);
         let color = if active == Some(handle) {
@@ -358,5 +524,84 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
             Stroke::new(width, color),
             egui::StrokeKind::Middle,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use maki_scene::Camera;
+
+    use super::*;
+
+    #[test]
+    fn a_line_is_cut_where_a_surface_is_in_front_of_it() {
+        // The camera looks along -Z, from 10 m in front of the origin.
+        let camera = Camera {
+            position: Vec3::new(0.0, 0.0, 10.0),
+            target: Vec3::ZERO,
+            fov_y_degrees: 45.0,
+        };
+        let view = View::new(camera, [200.0, 100.0]);
+        // A picture of 2 x 1 places, as 16-bit floats. Left: a surface at 8 m.
+        // Right: one at 16 m.
+        let depth = |left: u16, right: u16| MarkDepth {
+            distances: Some(Distances::from_halves(2, 1, vec![left, right])),
+            ..MarkDepth::default()
+        };
+        let cut = depth(0x4800, 0x4C00);
+        // A point at 10 m: behind the left surface, in front of the right one.
+        assert!(cut.hides(&view, Vec3::new(-1.0, 0.0, 0.0)));
+        assert!(!cut.hides(&view, Vec3::new(1.0, 0.0, 0.0)));
+        // A point on a surface is not hidden by it: a mark on the floor.
+        assert!(!cut.hides(&view, Vec3::new(-0.5, 0.0, 2.0)));
+        // A line from the left to the right, at 10 m: its right half is left.
+        let parts = cut.parts(&view, Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0));
+        assert_eq!(parts.len(), 1);
+        let [from, to] = parts[0];
+        // The cut is at a step of the test, some pixels from the edge.
+        assert!(from.x.abs() < 0.2 && to.x == 2.0, "{parts:?}");
+        // Nothing in the way (0.0: the ray hit nothing): the whole line.
+        let open = depth(0, 0);
+        let parts = open.parts(&view, Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0));
+        assert_eq!(
+            parts,
+            [[Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]]
+        );
+        // No picture yet: nothing is hidden.
+        assert!(!MarkDepth::default().hides(&view, Vec3::new(-1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn a_mirror_hides_what_is_behind_it() {
+        use maki_assets::{Assets, Material, Mesh};
+        use maki_core::Transform;
+        use maki_scene::MeshInstance;
+
+        let camera = Camera {
+            position: Vec3::new(0.0, 0.0, 10.0),
+            target: Vec3::ZERO,
+            fov_y_degrees: 45.0,
+        };
+        let view = View::new(camera, [200.0, 100.0]);
+        // Two cubes, 5 m from the camera: a mirror at the left, a wall at the right.
+        let mut world = World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mirror = meshes.add(Mesh::cube(1.0).with_material(Material::Mirror));
+        let wall = meshes.add(Mesh::cube(1.0));
+        world.insert_resource(meshes);
+        let at = |x: f32| Transform::from_translation(Vec3::new(x, 0.0, 5.0));
+        world.spawn((at(-1.0), MeshInstance(mirror)));
+        world.spawn((at(1.0), MeshInstance(wall)));
+        // The picture has, for the mirror, what the mirror shows: 16 m away. Here
+        // it has the same for the wall, to show that only a mirror is tested.
+        let depth = MarkDepth {
+            distances: Some(Distances::from_halves(2, 1, vec![0x4C00, 0x4C00])),
+            mirrors: Mirrors::of(&mut world),
+            samples: 0,
+        };
+        assert!(depth.hides(&view, Vec3::new(-1.0, 0.0, 0.0)));
+        assert!(!depth.hides(&view, Vec3::new(1.0, 0.0, 0.0)));
+        // In front of the mirror.
+        assert!(!depth.hides(&view, Vec3::new(-1.0, 0.0, 7.0)));
     }
 }

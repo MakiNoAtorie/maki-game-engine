@@ -29,6 +29,7 @@ mod accumulation;
 mod bloom;
 mod camera;
 mod denoise;
+mod distance;
 mod graph;
 mod light;
 mod meshes;
@@ -52,6 +53,7 @@ use maki_scene::{CurrentRoom, ScreenFade};
 pub use accumulation::{Accumulation, RESET_ACCUMULATION};
 pub use camera::{ExtractedCamera, ray_basis};
 pub use denoise::MAX_DENOISE_PASSES;
+pub use distance::{Distances, half_to_f32, read_distances};
 pub use graph::{
     BACKBUFFER, FrameGraph, Pass, PassContext, PassTimings, ResourceId, SizeMode, TransientDesc,
 };

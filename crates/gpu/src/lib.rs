@@ -231,6 +231,20 @@ impl Gpu {
     // ---- Resources ----
 
     pub fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferHandle> {
+        // CpuToGpu memory stays mapped, so `write_buffer` can copy into it.
+        let location = if desc.cpu_writable {
+            MemoryLocation::CpuToGpu
+        } else {
+            MemoryLocation::GpuOnly
+        };
+        self.create_buffer_in(desc, location)
+    }
+
+    fn create_buffer_in(
+        &mut self,
+        desc: &BufferDesc,
+        location: MemoryLocation,
+    ) -> Result<BufferHandle> {
         ensure!(desc.size > 0, "buffer `{}` has size 0", desc.name);
         let mut buffer = Buffer {
             raw: vk::Buffer::null(),
@@ -241,7 +255,7 @@ impl Gpu {
         };
         // On an error, `destroy_now` frees the parts that exist. Vulkan and the
         // allocator ignore the parts that are still null.
-        if let Err(error) = self.init_buffer(&mut buffer, desc) {
+        if let Err(error) = self.init_buffer(&mut buffer, desc, location) {
             self.destroy_now(Garbage::Buffer(buffer));
             return Err(error);
         }
@@ -250,7 +264,12 @@ impl Gpu {
         Ok(self.buffers.insert(buffer))
     }
 
-    fn init_buffer(&mut self, buffer: &mut Buffer, desc: &BufferDesc) -> Result<()> {
+    fn init_buffer(
+        &mut self,
+        buffer: &mut Buffer,
+        desc: &BufferDesc,
+        location: MemoryLocation,
+    ) -> Result<()> {
         let device = &self.ctx.device;
         let info = vk::BufferCreateInfo::default().size(desc.size).usage(
             vk::BufferUsageFlags::STORAGE_BUFFER
@@ -264,12 +283,7 @@ impl Gpu {
         buffer.allocation = self.allocator.allocate(&AllocationCreateDesc {
             name: desc.name,
             requirements: unsafe { device.get_buffer_memory_requirements(buffer.raw) },
-            // CpuToGpu memory stays mapped, so `write_buffer` can copy into it.
-            location: if desc.cpu_writable {
-                MemoryLocation::CpuToGpu
-            } else {
-                MemoryLocation::GpuOnly
-            },
+            location,
             linear: true,
             allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         })?;
@@ -1049,16 +1063,31 @@ impl Gpu {
     /// again on return. Call between frames. Waits for the GPU, so it is for tools
     /// (benchmark dumps), not for a frame.
     pub fn read_image(&mut self, image: ImageHandle, state: Access) -> Result<Vec<u8>> {
+        self.read_image_with(image, state, <[u8]>::to_vec)
+    }
+
+    /// As [`Gpu::read_image`], for a caller that needs a part of the content: `read`
+    /// gets the pixels in the memory of the GPU buffer and returns what it takes.
+    pub fn read_image_with<T>(
+        &mut self,
+        image: ImageHandle,
+        state: Access,
+        read: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T> {
         ensure!(self.active.is_none(), "read_image in a frame");
         let source = self.images.get(image).context("stale image handle")?;
         let (raw, extent) = (source.raw, source.extent);
         let size =
             u64::from(extent.width) * u64::from(extent.height) * u64::from(source.texel_bytes);
-        let staging = self.create_buffer(&BufferDesc {
+        // GpuToCpu: memory that the CPU reads fast. The memory of a buffer that the
+        // CPU writes (CpuToGpu) can be write-combined: a read of it took 0.6 s for a
+        // picture of 3840 x 2160.
+        let desc = BufferDesc {
             name: "image readback",
             size,
             cpu_writable: true,
-        })?;
+        };
+        let staging = self.create_buffer_in(&desc, MemoryLocation::GpuToCpu)?;
         let buffer = self.buffers[staging].raw;
 
         let (layout, stage, access) = state.to_vk();
@@ -1102,12 +1131,13 @@ impl Gpu {
                 &vk::DependencyInfo::default().image_memory_barriers(&back),
             );
         });
-        let bytes = copied.and_then(|()| {
+        let content = copied.and_then(|()| {
             let mapped = self.buffers[staging].allocation.mapped_slice();
-            Ok(mapped.context("the readback buffer is not mapped")?[..size as usize].to_vec())
+            let mapped = mapped.context("the readback buffer is not mapped")?;
+            Ok(read(&mapped[..size as usize]))
         });
         self.destroy_buffer(staging);
-        bytes
+        content
     }
 
     /// Submits the commands of the frame and shows the swapchain image.

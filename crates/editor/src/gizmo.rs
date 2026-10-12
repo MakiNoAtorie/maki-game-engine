@@ -9,6 +9,8 @@
 //! - Rotate: one ring for each axis. The turn is the angle of the pointer around the
 //!   origin, on the screen.
 //! - Scale: one handle for each axis of the item itself.
+//! - Handles of the item itself, with each tool ([`Extra`]): where a cone light
+//!   points, the corners of an event area, the top corners of a doorway.
 //!
 //! A drag keeps the room of its start, and each frame of the drag makes the room
 //! again from that start and the full motion: no error adds up, and a snap is a snap
@@ -17,7 +19,7 @@
 
 use glam::{EulerRot, Quat, Vec3};
 use maki_events::EventDef;
-use maki_scene::RoomDef;
+use maki_scene::{PoseDef, RoomDef};
 
 use crate::document::Place;
 use crate::view::{Ray, View};
@@ -37,6 +39,73 @@ pub enum Handle {
     Axis(usize),
     /// The square at the origin: a move on the plane of the floor.
     Floor,
+    /// Where the middle of the cone of a light meets the floor.
+    Aim,
+    /// A corner of an event area (0 to 3, around it), or a top corner of a doorway
+    /// (0: toward the start of the wall, 1: the other one).
+    Corner(usize),
+}
+
+/// The handles that an item has beside those of the tool.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Extra {
+    None,
+    /// A cone light: the point that its handle is at.
+    Aim(Vec3),
+    /// This many corners.
+    Corners([Vec3; 4], usize),
+}
+
+/// The corners of an event area, around it: the signs of the half size in X and Z.
+/// The corner across from corner `n` is corner `n + 2`.
+const AREA_CORNERS: [[f32; 2]; 4] = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+/// A drag of a corner makes no area and no doorway smaller than this, in meters.
+const SMALLEST: f32 = 0.1;
+/// The aim handle of a light that does not point at the floor is this far from the
+/// light, in meters: the length of the cone that the overlay draws.
+const AIM_LENGTH: f32 = 2.0;
+
+impl Extra {
+    fn of(document: &Document, item: &Item) -> Self {
+        let room = &document.room;
+        match item {
+            Item::Light(index) => {
+                let Some(light) = room.lights.get(*index) else {
+                    return Self::None;
+                };
+                if light.cone.is_none_or(|degrees| degrees >= 180.0) {
+                    return Self::None;
+                }
+                let (at, to) = (Vec3::from(light.position), light.light().direction);
+                // Where the middle of the cone meets the floor, if it does near by.
+                let on_floor = (to.y < -1e-3).then(|| at + to * (at.y / -to.y));
+                let near = on_floor.filter(|point| point.distance(at) < 50.0);
+                Self::Aim(near.unwrap_or(at + to * AIM_LENGTH))
+            }
+            Item::Event(index) => {
+                let area = document.events.get(*index).and_then(|event| event.area);
+                let Some(area) = area else {
+                    return Self::None;
+                };
+                let corner = |[x, z]: [f32; 2]| {
+                    let [center_x, center_z] = area.center;
+                    let (half_x, half_z) = (area.size[0] / 2.0, area.size[1] / 2.0);
+                    Vec3::new(center_x + x * half_x, 0.0, center_z + z * half_z)
+                };
+                Self::Corners(AREA_CORNERS.map(corner), 4)
+            }
+            Item::Doorway(index) => {
+                let Some(doorway) = room.doorways.get(*index) else {
+                    return Self::None;
+                };
+                let (start, along, length, _) = doorway.wall.frame(room.width, room.depth);
+                let (from, to) = doorway.span(length);
+                let top = |along_wall: f32| start + along * along_wall + Vec3::Y * doorway.height;
+                Self::Corners([top(from), top(to), Vec3::ZERO, Vec3::ZERO], 2)
+            }
+            _ => Self::None,
+        }
+    }
 }
 
 /// Length of a handle on the screen, in pixels.
@@ -59,12 +128,16 @@ pub struct Gizmo {
     /// Length of a handle in meters: the same size on the screen at each distance.
     pub length: f32,
     pub tool: Tool,
+    /// False: the item has no pose (a doorway), and the gizmo has no handles of the
+    /// tool.
+    pub posed: bool,
+    pub extra: Extra,
 }
 
 impl Gizmo {
     /// The gizmo of the last selected item. `None`: nothing is selected that has a
-    /// place (the room, a doorway, a door). `local`: the axes of the item, not those
-    /// of the room; a scale is always along the axes of the item.
+    /// place or a handle of its own (the room, a door). `local`: the axes of the
+    /// item, not those of the room; a scale is always along the axes of the item.
     pub fn of(
         document: &Document,
         item: &Item,
@@ -73,7 +146,17 @@ impl Gizmo {
         tool: Tool,
         view: &View,
     ) -> Option<Self> {
-        let (origin, rotation) = document.pose_of(item, second)?;
+        let extra = Extra::of(document, item);
+        let pose = document.pose_of(item, second);
+        let (origin, rotation) = match (pose, extra) {
+            (Some(pose), _) => pose,
+            // No pose: the gizmo is the corners.
+            (None, Extra::Corners(corners, count)) => {
+                let sum: Vec3 = corners[..count].iter().sum();
+                (sum / count as f32, Quat::IDENTITY)
+            }
+            (None, _) => return None,
+        };
         let rotation = if local || tool == Tool::Scale {
             rotation
         } else {
@@ -84,7 +167,21 @@ impl Gizmo {
             axes: [Vec3::X, Vec3::Y, Vec3::Z].map(|axis| rotation * axis),
             length: LENGTH * view.meters_per_pixel(origin),
             tool,
+            posed: pose.is_some(),
+            extra,
         })
+    }
+
+    /// The handles of the item itself, each with its place.
+    pub fn points(&self) -> Vec<(Handle, Vec3)> {
+        match self.extra {
+            Extra::None => Vec::new(),
+            Extra::Aim(point) => vec![(Handle::Aim, point)],
+            Extra::Corners(corners, count) => {
+                let corner = |index: usize| (Handle::Corner(index), corners[index]);
+                (0..count).map(corner).collect()
+            }
+        }
     }
 
     /// The two ends of the handle of an axis.
@@ -105,6 +202,18 @@ impl Gizmo {
 
     /// The handle under a pixel.
     pub fn handle_at(&self, view: &View, pixel: [f32; 2]) -> Option<Handle> {
+        // First: a handle of the item is a small square, also at the place of a
+        // handle of the tool.
+        let on_point = |(_, point): &(Handle, Vec3)| {
+            let at = view.project(*point);
+            at.is_some_and(|at| (0..2).all(|side| (pixel[side] - at[side]).abs() <= REACH))
+        };
+        if let Some((handle, _)) = self.points().into_iter().find(on_point) {
+            return Some(handle);
+        }
+        if !self.posed {
+            return None;
+        }
         let origin = view.project(self.origin)?;
         if self.tool == Tool::Move
             && (0..2).all(|side| (pixel[side] - origin[side]).abs() <= SQUARE)
@@ -179,6 +288,7 @@ impl Drag {
     ) -> Self {
         let ray = view.ray(pixel);
         let grab = match (gizmo.tool, handle) {
+            (_, Handle::Aim | Handle::Corner(_)) => 0.0,
             (Tool::Rotate, _) => view
                 .project(gizmo.origin)
                 .map_or(0.0, |center| screen_angle(center, pixel)),
@@ -220,8 +330,71 @@ impl Drag {
         document.room.clone_from(&self.start.0);
         document.events.clone_from(&self.start.1);
         document.dirty = true;
+        // Tenths of a millimeter: no 2.4999998 in a room file.
+        let round = |value: f32| (value * 1e4).round() / 1e4;
 
         match (tool, self.handle) {
+            // The handles of the item itself: of the item that has the gizmo.
+            (_, Handle::Aim) => {
+                let Some(Item::Light(index)) = selection.last() else {
+                    return;
+                };
+                let (light, floor) = (document.room.lights.get_mut(*index), ray.height(0.0));
+                let (Some(light), Some((floor, _))) = (light, floor) else {
+                    return;
+                };
+                let target = Vec3::new(snap(floor.x, grid), 0.0, snap(floor.z, grid));
+                let to = (target - Vec3::from(light.position)).try_normalize();
+                if let Some(to) = to {
+                    // Thousandths: the direction is made to length 1 when it is read.
+                    light.direction = Some(to.to_array().map(|part| (part * 1e3).round() / 1e3));
+                }
+            }
+            (_, Handle::Corner(corner)) => match selection.last() {
+                Some(Item::Event(index)) => {
+                    let area = document.events.get_mut(*index);
+                    let area = area.and_then(|event| event.area.as_mut());
+                    let (Some(area), Some((floor, _))) = (area, ray.height(0.0)) else {
+                        return;
+                    };
+                    let to = [snap(floor.x, grid), snap(floor.z, grid)];
+                    let across = AREA_CORNERS[(corner + 2) % 4];
+                    for axis in 0..2 {
+                        // The corner across stays where it is.
+                        let fixed = area.center[axis] + across[axis] * area.size[axis] / 2.0;
+                        area.center[axis] = round((fixed + to[axis]) / 2.0);
+                        area.size[axis] = round((to[axis] - fixed).abs().max(SMALLEST));
+                    }
+                }
+                Some(Item::Doorway(index)) => {
+                    let room = &mut document.room;
+                    let (width, depth, height) = (room.width, room.depth, room.height);
+                    let Some(doorway) = room.doorways.get_mut(*index) else {
+                        return;
+                    };
+                    let (start, along, length, inward) = doorway.wall.frame(width, depth);
+                    // Where the ray meets the plane of the wall.
+                    let toward = ray.direction.dot(inward);
+                    let t = (start - ray.origin).dot(inward) / toward;
+                    if toward.abs() < 1e-4 || t <= 0.0 {
+                        return;
+                    }
+                    let hit = ray.at(t);
+                    // The place along the wall, on the grid of the room.
+                    let at = snap(hit.dot(along), grid) - start.dot(along);
+                    let (from, to) = doorway.span(length);
+                    // The other side of the opening stays where it is.
+                    let (from, to) = if corner == 0 {
+                        (at.clamp(0.0, to - SMALLEST), to)
+                    } else {
+                        (from, at.clamp(from + SMALLEST, length))
+                    };
+                    doorway.width = round(to - from);
+                    doorway.offset = round((from + to) / 2.0 - length / 2.0);
+                    doorway.height = round(snap(hit.y, grid).clamp(SMALLEST, height));
+                }
+                _ => {}
+            },
             (Tool::Move, handle) => {
                 let offset = match handle {
                     Handle::Axis(axis) => {
@@ -240,13 +413,19 @@ impl Drag {
                         let to = origin + floor_point(&ray, origin) - self.grab_point;
                         Vec3::new(snap(to.x, grid), origin.y, snap(to.z, grid)) - origin
                     }
+                    Handle::Aim | Handle::Corner(_) => return,
                 };
-                // Tenths of a millimeter: no 2.4999998 in a room file.
-                let moved = |from: f32, by: f32| ((from + by) * 1e4).round() / 1e4;
+                let moved = |from: f32, by: f32| round(from + by);
                 let moved_point = |point: &mut [f32; 3]| {
                     *point = [0, 1, 2].map(|axis| moved(point[axis], offset[axis]));
                 };
                 for item in selection {
+                    // A mover moves as a whole: its second pose goes with the first.
+                    if let (Item::Mover(index), false) = (item, second)
+                        && let Some(mover) = document.room.movers.get_mut(*index)
+                    {
+                        moved_point(&mut mover.b.position);
+                    }
                     match document.place(item, second) {
                         Some(Place::Pose(pose)) => moved_point(&mut pose.position),
                         Some(Place::Point(point)) => moved_point(point),
@@ -272,12 +451,33 @@ impl Drag {
                 let angle = if to_viewer { -turned } else { turned };
                 let angle = snap(angle.to_degrees(), angle_step).to_radians();
                 let turn = Quat::from_axis_angle(axes[axis], angle);
+                // The items turn as a group, around the gizmo: each place goes
+                // around it. The item that has the gizmo stays at its place.
+                let around = |point: &mut [f32; 3]| {
+                    let from_origin = Vec3::from(*point) - origin;
+                    if from_origin.length() > 1e-5 {
+                        *point = (origin + turn * from_origin).to_array().map(round);
+                    }
+                };
+                let turned = |pose: &mut PoseDef| {
+                    let (y, x, z) = (turn * pose.transform().rotation).to_euler(EulerRot::YXZ);
+                    // Hundredths of a degree: no 29.999998 in a room file.
+                    pose.rotation =
+                        [x, y, z].map(|angle| (angle.to_degrees() * 100.0).round() / 100.0 + 0.0);
+                    around(&mut pose.position);
+                };
                 for item in selection {
-                    if let Some(Place::Pose(pose)) = document.place(item, second) {
-                        let (y, x, z) = (turn * pose.transform().rotation).to_euler(EulerRot::YXZ);
-                        // Hundredths of a degree: no 29.999998 in a room file.
-                        pose.rotation = [x, y, z]
-                            .map(|angle| (angle.to_degrees() * 100.0).round() / 100.0 + 0.0);
+                    // A mover turns as a whole, as it moves.
+                    if let (Item::Mover(index), false) = (item, second)
+                        && let Some(mover) = document.room.movers.get_mut(*index)
+                    {
+                        turned(&mut mover.b);
+                    }
+                    match document.place(item, second) {
+                        Some(Place::Pose(pose)) => turned(pose),
+                        Some(Place::Point(point)) => around(point),
+                        // An area has no turn: its sides are along X and Z.
+                        Some(Place::Area(_)) | None => {}
                     }
                 }
             }
@@ -338,7 +538,7 @@ mod tests {
         let from = match handle {
             Handle::Axis(axis) if tool == Tool::Rotate => gizmo.ring(axis)[0],
             Handle::Axis(axis) => gizmo.handle(axis)[1],
-            Handle::Floor => gizmo.origin,
+            _ => gizmo.origin,
         };
         let from = view.project(from).unwrap();
         assert_eq!(gizmo.handle_at(&view, from), Some(handle));
@@ -389,6 +589,175 @@ mod tests {
         // +Z goes to +X: a quarter turn around Y, in the positive direction.
         assert_eq!(turned.rotation, [0.0, 90.0, 0.0]);
         assert_eq!(turned.position, [1.1, 0.5, 0.0]);
+    }
+
+    /// A drag of a handle of the item itself, to the point of the room that `to`
+    /// gives. Returns the document.
+    fn drag_point(mut document: Document, item: Item, handle: Handle, to: Vec3) -> Document {
+        let (view, ..) = scene();
+        let selection = [item];
+        let gizmo = Gizmo::of(&document, &selection[0], false, false, Tool::Move, &view).unwrap();
+        let (_, from) = gizmo
+            .points()
+            .into_iter()
+            .find(|point| point.0 == handle)
+            .unwrap();
+        let from = view.project(from).unwrap();
+        assert_eq!(gizmo.handle_at(&view, from), Some(handle));
+        let drag = Drag::start(gizmo, handle, false, &view, from, &document);
+        let to = view.project(to).unwrap();
+        let steps = Some((0.25, 15.0));
+        drag.apply(&view, to, steps, &mut document, &selection, false);
+        document
+    }
+
+    #[test]
+    fn a_drag_of_the_aim_handle_points_a_cone_light_at_the_floor() {
+        let (_, mut document, _) = scene();
+        // The lamp of a new room, at (0, 2.4, 0), as a cone that points down.
+        document.room.lights[0].cone = Some(30.0);
+        let lamp = Item::Light(0);
+        let (view, ..) = scene();
+        let gizmo = Gizmo::of(&document, &lamp, false, false, Tool::Move, &view).unwrap();
+        assert_eq!(gizmo.points(), [(Handle::Aim, Vec3::ZERO)]);
+
+        // To a point of the floor, 2.4 m to the right: on the grid, that is 2.5 m.
+        let aimed = drag_point(
+            document.clone(),
+            lamp.clone(),
+            Handle::Aim,
+            Vec3::new(2.4, 0.0, 0.0),
+        );
+        assert_eq!(aimed.room.lights[0].direction, Some([0.721, -0.693, 0.0]));
+        // The handle is where the light points now.
+        let gizmo = Gizmo::of(&aimed, &lamp, false, false, Tool::Move, &view).unwrap();
+        assert!(gizmo.points()[0].1.distance(Vec3::new(2.5, 0.0, 0.0)) < 0.01);
+        // A light with no cone has no such handle.
+        document.room.lights[0].cone = None;
+        let gizmo = Gizmo::of(&document, &lamp, false, false, Tool::Move, &view).unwrap();
+        assert!(gizmo.points().is_empty());
+    }
+
+    #[test]
+    fn a_drag_of_a_corner_sizes_an_event_area_and_a_doorway() {
+        use maki_assets::{Doorway, Wall};
+        use maki_events::{Area, EventDef};
+
+        let (view, mut document, _) = scene();
+        document.events.push(EventDef {
+            name: "area".to_owned(),
+            area: Some(Area {
+                center: [1.0, 1.0],
+                size: [2.0, 1.0],
+            }),
+            pages: Vec::new(),
+        });
+        // Corner 2 is at (2, 1.5). To (3.1, 2.6): on the grid that is (3, 2.5).
+        let item = Item::Event(0);
+        let to = Vec3::new(3.1, 0.0, 2.6);
+        let sized = drag_point(document.clone(), item.clone(), Handle::Corner(2), to);
+        // The corner across, at (0, 0.5), did not move.
+        let area = sized.events[0].area.unwrap();
+        assert_eq!((area.center, area.size), ([1.5, 1.5], [3.0, 2.0]));
+        // Past the corner across: the area does not turn inside out or go away.
+        let to = Vec3::new(0.0, 0.0, 0.5);
+        let small = drag_point(document.clone(), item, Handle::Corner(2), to);
+        assert_eq!(small.events[0].area.unwrap().size, [0.1, 0.1]);
+
+        // A doorway of 1 x 2 m in the middle of the back wall of the room of 8 m:
+        // from 3.5 to 4.5 m along the wall, which is from x = -0.5 to 0.5.
+        document.room.doorways.push(Doorway {
+            wall: Wall::NegZ,
+            offset: 0.0,
+            width: 1.0,
+            height: 2.0,
+            depth: 1.0,
+        });
+        let item = Item::Doorway(0);
+        let gizmo = Gizmo::of(&document, &item, false, false, Tool::Move, &view).unwrap();
+        assert!(!gizmo.posed && gizmo.points().len() == 2);
+        assert_eq!(gizmo.points()[1].1, Vec3::new(0.5, 2.0, -4.0));
+        // The right top corner goes to x = 1.5 and up to 2.5 m.
+        let to = Vec3::new(1.5, 2.5, -4.0);
+        let wide = drag_point(document.clone(), item.clone(), Handle::Corner(1), to);
+        let doorway = wide.room.doorways[0];
+        assert_eq!(
+            (doorway.width, doorway.offset, doorway.height),
+            (2.0, 0.5, 2.5)
+        );
+        // Past the end of the wall and above the room: the end, and the height of
+        // the room.
+        let to = Vec3::new(-6.0, 3.6, -4.0);
+        let end = drag_point(document, item, Handle::Corner(0), to);
+        let doorway = end.room.doorways[0];
+        assert_eq!(
+            (doorway.width, doorway.offset, doorway.height),
+            (4.5, -1.75, 3.0)
+        );
+    }
+
+    #[test]
+    fn a_turn_of_two_items_turns_the_group_and_a_move_takes_the_two_poses_of_a_mover() {
+        use maki_scene::{MeshDef, MoverDef};
+
+        let (view, mut document, _) = scene();
+        // The cube of the scene is at (1.1, 0.5, 0). A mover, 1 m beside it.
+        let at = |x: f32| PoseDef {
+            position: [x, 0.5, 0.0],
+            ..PoseDef::default()
+        };
+        document.room.movers.push(MoverDef {
+            name: None,
+            mesh: MeshDef::Cube(0.5),
+            look: Default::default(),
+            a: at(2.1),
+            b: PoseDef {
+                position: [2.1, 1.5, 0.0],
+                ..PoseDef::default()
+            },
+            seconds: 1.0,
+        });
+        // The gizmo is at the last item: the cube.
+        let selection = [Item::Mover(0), Item::Prop(0)];
+        let drag = |tool: Tool, handle: Handle, to: &dyn Fn(&Gizmo) -> Vec3| {
+            let mut document = document.clone();
+            let gizmo = Gizmo::of(&document, &selection[1], false, false, tool, &view).unwrap();
+            let from = match (tool, handle) {
+                (Tool::Rotate, Handle::Axis(axis)) => gizmo.ring(axis)[0],
+                _ => gizmo.origin,
+            };
+            let from = view.project(from).unwrap();
+            let drag = Drag::start(gizmo, handle, false, &view, from, &document);
+            let to = view.project(to(&gizmo)).unwrap();
+            let steps = Some((0.25, 15.0));
+            drag.apply(&view, to, steps, &mut document, &selection, false);
+            document.room
+        };
+        // A quarter turn around Y (+Z goes to +X): the mover goes around the cube,
+        // from 1 m at its +X side to 1 m at its -Z side, with its two poses.
+        let turned = drag(Tool::Rotate, Handle::Axis(1), &|gizmo| {
+            gizmo.origin + Vec3::X * gizmo.length
+        });
+        assert_eq!(turned.props[0].pose.position, [1.1, 0.5, 0.0]);
+        assert_eq!(turned.props[0].pose.rotation, [0.0, 90.0, 0.0]);
+        let mover = &turned.movers[0];
+        assert_eq!(
+            (mover.a.position, mover.b.position),
+            ([1.1, 0.5, -1.0], [1.1, 1.5, -1.0])
+        );
+        assert_eq!(
+            (mover.a.rotation, mover.b.rotation),
+            ([0.0, 90.0, 0.0], [0.0, 90.0, 0.0])
+        );
+
+        // A move on the floor, 1 m to +Z: the cube, and the two poses of the mover.
+        let moved = drag(Tool::Move, Handle::Floor, &|gizmo| gizmo.origin + Vec3::Z);
+        assert_eq!(moved.props[0].pose.position, [1.0, 0.5, 1.0]);
+        let mover = &moved.movers[0];
+        assert_eq!(
+            (mover.a.position, mover.b.position),
+            ([2.0, 0.5, 1.0], [2.0, 1.5, 1.0])
+        );
     }
 
     #[test]
