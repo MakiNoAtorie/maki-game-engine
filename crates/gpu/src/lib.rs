@@ -113,6 +113,8 @@ pub struct Gpu {
     /// The GPU needs the address of a scratch buffer to be a multiple of this.
     scratch_alignment: u64,
     blases: SlotMap<BlasHandle, Blas>,
+    /// The BLAS that are made and not built: `build_tlas` records their builds.
+    blas_builds: Vec<accel::BlasBuild>,
     tlases: SlotMap<TlasHandle, Tlas>,
     frames: [FrameSlot; FRAMES_IN_FLIGHT],
     /// Index in `frames` of the current frame, or of the last one between frames.
@@ -211,6 +213,7 @@ impl Gpu {
             )
             .max(1),
             blases: SlotMap::with_key(),
+            blas_builds: Vec::new(),
             tlases: SlotMap::with_key(),
             frames: frames
                 .try_into()
@@ -237,13 +240,18 @@ impl Gpu {
         } else {
             MemoryLocation::GpuOnly
         };
-        self.create_buffer_in(desc, location)
+        self.create_buffer_in(desc, location, false)
     }
 
-    fn create_buffer_in(
+    /// `own_memory`: the buffer gets an allocation of its own, not a part of a block
+    /// that it shares with other resources. For a large buffer that lives for some
+    /// frames (the work memory and the triangles of a BLAS build): in a shared
+    /// block it takes the place of what is made after it, and leaves a hole.
+    pub(crate) fn create_buffer_in(
         &mut self,
         desc: &BufferDesc,
         location: MemoryLocation,
+        own_memory: bool,
     ) -> Result<BufferHandle> {
         ensure!(desc.size > 0, "buffer `{}` has size 0", desc.name);
         let mut buffer = Buffer {
@@ -255,7 +263,7 @@ impl Gpu {
         };
         // On an error, `destroy_now` frees the parts that exist. Vulkan and the
         // allocator ignore the parts that are still null.
-        if let Err(error) = self.init_buffer(&mut buffer, desc, location) {
+        if let Err(error) = self.init_buffer(&mut buffer, desc, location, own_memory) {
             self.destroy_now(Garbage::Buffer(buffer));
             return Err(error);
         }
@@ -269,6 +277,7 @@ impl Gpu {
         buffer: &mut Buffer,
         desc: &BufferDesc,
         location: MemoryLocation,
+        own_memory: bool,
     ) -> Result<()> {
         let device = &self.ctx.device;
         let info = vk::BufferCreateInfo::default().size(desc.size).usage(
@@ -285,7 +294,11 @@ impl Gpu {
             requirements: unsafe { device.get_buffer_memory_requirements(buffer.raw) },
             location,
             linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            allocation_scheme: if own_memory {
+                AllocationScheme::DedicatedBuffer(buffer.raw)
+            } else {
+                AllocationScheme::GpuAllocatorManaged
+            },
         })?;
         let allocation = &buffer.allocation;
         unsafe { device.bind_buffer_memory(buffer.raw, allocation.memory(), allocation.offset()) }?;
@@ -1087,7 +1100,7 @@ impl Gpu {
             size,
             cpu_writable: true,
         };
-        let staging = self.create_buffer_in(&desc, MemoryLocation::GpuToCpu)?;
+        let staging = self.create_buffer_in(&desc, MemoryLocation::GpuToCpu, false)?;
         let buffer = self.buffers[staging].raw;
 
         let (layout, stage, access) = state.to_vk();

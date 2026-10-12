@@ -8,12 +8,14 @@
 //!   number that the shader gets back on a hit, together with the number of the
 //!   geometry in the BLAS. Shaders trace against the TLAS (bindless binding 4).
 //!
-//! A BLAS is built one time ([`Gpu::create_blas`]). The TLAS is built again
-//! ([`Gpu::build_tlas`]) when the caller has a new instance list, so it follows objects
-//! that move, appear, or go away.
+//! A BLAS is built one time. [`Gpu::create_blas`] makes it and waits for nothing: the
+//! build is recorded into the next frame that builds the TLAS, before that build
+//! ([`Gpu::build_tlas`]). The TLAS is built again when the caller has a new instance
+//! list, so it follows objects that move, appear, or go away.
 
 use anyhow::{Context, Result, ensure};
 use ash::vk;
+use gpu_allocator::MemoryLocation;
 
 use crate::resources::Garbage;
 use crate::{BlasHandle, BufferDesc, BufferHandle, FRAMES_IN_FLIGHT, Gpu, TlasHandle};
@@ -63,6 +65,30 @@ pub(crate) struct Blas {
     address: u64,
 }
 
+/// A BLAS that is made and not built: what its build needs.
+pub(crate) struct BlasBuild {
+    raw: vk::AccelerationStructureKHR,
+    /// They hold addresses in `vertices` and `indices`, and no pointer.
+    geometries: Vec<vk::AccelerationStructureGeometryKHR<'static>>,
+    ranges: Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
+    /// The work memory and the triangles: only the build reads them.
+    scratch: BufferHandle,
+    vertices: BufferHandle,
+    indices: BufferHandle,
+}
+
+/// The size query and the build of a BLAS must use the same type and flags.
+fn blas_build_info<'a>(
+    geometries: &'a [vk::AccelerationStructureGeometryKHR<'a>],
+) -> vk::AccelerationStructureBuildGeometryInfoKHR<'a> {
+    vk::AccelerationStructureBuildGeometryInfoKHR::default()
+        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+        // Built one time and traced in every frame.
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+        .geometries(geometries)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Tlas {
     pub raw: vk::AccelerationStructureKHR,
@@ -98,8 +124,9 @@ fn tlas_build_info<'a>(
 }
 
 impl Gpu {
-    /// Builds a BLAS. The build is complete when the function returns: the BLAS has
-    /// its own copy of the triangles.
+    /// Makes a BLAS and copies the triangles to the GPU. Does not wait for the GPU:
+    /// the build runs in the next frame that calls [`Gpu::build_tlas`], before the
+    /// TLAS is built. A TLAS instance can name the BLAS at once.
     pub fn create_blas(&mut self, desc: &BlasDesc) -> Result<BlasHandle> {
         ensure!(
             !desc.geometries.is_empty(),
@@ -124,7 +151,7 @@ impl Gpu {
             );
         }
         // All geometries in one vertex buffer and one index buffer, each at its own
-        // address. The two buffers live only for the build.
+        // address. The two buffers live until the build has run.
         let positions: Vec<[f32; 3]> = desc
             .geometries
             .iter()
@@ -144,7 +171,8 @@ impl Gpu {
 
         let mut vertex_address = self.buffers[vertices].address;
         let mut index_address = self.buffers[indices].address;
-        let mut geometries = Vec::with_capacity(desc.geometries.len());
+        let mut geometries: Vec<vk::AccelerationStructureGeometryKHR<'static>> =
+            Vec::with_capacity(desc.geometries.len());
         let mut ranges = Vec::with_capacity(desc.geometries.len());
         for geometry in desc.geometries {
             let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -177,33 +205,23 @@ impl Gpu {
             vertex_address += size_of_val(geometry.positions) as u64;
             index_address += size_of_val(geometry.indices) as u64;
         }
-        let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            // Built one time and traced in every frame.
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-            .geometries(&geometries);
-
         let counts: Vec<u32> = ranges.iter().map(|range| range.primitive_count).collect();
-        let built =
+        let made = {
+            let mut info = blas_build_info(&geometries);
             self.create_accel(desc.name, &mut info, &counts)
-                .and_then(|(raw, storage, scratch)| {
-                    let built = self.run_now(|cmd| unsafe {
-                        self.accel
-                            .cmd_build_acceleration_structures(cmd, &[info], &[&ranges]);
-                    });
-                    // Only the build uses the scratch buffer.
-                    self.destroy_unused_buffer(scratch);
-                    if let Err(error) = built {
-                        self.defer(Garbage::Accel(raw));
-                        self.destroy_buffer(storage);
-                        return Err(error);
-                    }
-                    Ok((raw, storage))
-                });
-        self.destroy_unused_buffer(vertices);
-        self.destroy_unused_buffer(indices);
-        let (raw, storage) = built?;
+        };
+        let (raw, storage, scratch) = made.inspect_err(|_| {
+            self.destroy_unused_buffer(vertices);
+            self.destroy_unused_buffer(indices);
+        })?;
+        self.blas_builds.push(BlasBuild {
+            raw,
+            geometries,
+            ranges,
+            scratch,
+            vertices,
+            indices,
+        });
 
         let address_info =
             vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(raw);
@@ -220,19 +238,50 @@ impl Gpu {
 
     /// A buffer with `data` as its content, for the input of a BLAS build.
     fn create_build_input(&mut self, name: &str, data: &[u8]) -> Result<BufferHandle> {
-        let buffer = self.create_buffer(&BufferDesc {
+        let desc = BufferDesc {
             name,
             size: data.len() as u64,
             cpu_writable: true,
-        })?;
+        };
+        // Memory of its own: see `create_buffer_in`.
+        let buffer = self.create_buffer_in(&desc, MemoryLocation::CpuToGpu, true)?;
         self.write_buffer(buffer, 0, data)
             .inspect_err(|_| self.destroy_unused_buffer(buffer))?;
         Ok(buffer)
     }
 
-    /// Frees a buffer at once. Only for a buffer that no frame has used and whose last
-    /// GPU work is complete (`run_now` waits for it). Not deferred, so a load of many
-    /// meshes does not hold all its work buffers until the next frame.
+    /// Records the builds of the BLAS that were made since the last call. The
+    /// buffers of a build go away when the GPU has finished the frame.
+    fn record_blas_builds(&mut self, cmd: vk::CommandBuffer) {
+        let builds = std::mem::take(&mut self.blas_builds);
+        if builds.is_empty() {
+            return;
+        }
+        let infos: Vec<_> = builds
+            .iter()
+            .map(|build| {
+                blas_build_info(&build.geometries)
+                    .dst_acceleration_structure(build.raw)
+                    .scratch_data(vk::DeviceOrHostAddressKHR {
+                        device_address: self.scratch_address(build.scratch),
+                    })
+            })
+            .collect();
+        let ranges: Vec<&[vk::AccelerationStructureBuildRangeInfoKHR]> =
+            builds.iter().map(|build| build.ranges.as_slice()).collect();
+        // Each build has its own structure, work memory, and triangles: one call.
+        unsafe {
+            self.accel
+                .cmd_build_acceleration_structures(cmd, &infos, &ranges);
+        }
+        for build in &builds {
+            for buffer in [build.scratch, build.vertices, build.indices] {
+                self.destroy_buffer(buffer);
+            }
+        }
+    }
+
+    /// Frees a buffer at once. Only for a buffer that no frame has used.
     fn destroy_unused_buffer(&mut self, buffer: BufferHandle) {
         if let Some(buffer) = self.buffers.remove(buffer) {
             self.destroy_now(Garbage::Buffer(buffer));
@@ -242,6 +291,13 @@ impl Gpu {
     /// Deferred, as [`Gpu::destroy_buffer`]. The next [`Gpu::build_tlas`] must not name the BLAS.
     pub fn destroy_blas(&mut self, blas: BlasHandle) {
         if let Some(blas) = self.blases.remove(blas) {
+            // Made and never built: its build goes away with it.
+            if let Some(index) = self.blas_builds.iter().position(|b| b.raw == blas.raw) {
+                let build = self.blas_builds.swap_remove(index);
+                for buffer in [build.scratch, build.vertices, build.indices] {
+                    self.destroy_unused_buffer(buffer);
+                }
+            }
             // The structure goes before the buffer that stores it.
             self.defer(Garbage::Accel(blas.raw));
             self.destroy_buffer(blas.storage);
@@ -351,11 +407,16 @@ impl Gpu {
         let range =
             vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(raw.len() as u32);
 
+        // The new BLAS first: the TLAS build reads them. The barrier below is between
+        // the two builds.
+        self.record_blas_builds(self.frames[self.slot].cmd);
+
         use vk::AccessFlags2 as A;
         use vk::PipelineStageFlags2 as S;
         let accel_access = A::ACCELERATION_STRUCTURE_READ_KHR | A::ACCELERATION_STRUCTURE_WRITE_KHR;
         // The build waits for the ray queries and the build of the frame before: they
-        // use the same TLAS and scratch buffer.
+        // use the same TLAS and scratch buffer. It also waits for the BLAS builds
+        // of this frame.
         let before = [vk::MemoryBarrier2::default()
             .src_stage_mask(S::COMPUTE_SHADER | S::ACCELERATION_STRUCTURE_BUILD_KHR)
             .src_access_mask(accel_access)
@@ -405,13 +466,15 @@ impl Gpu {
             size: sizes.acceleration_structure_size,
             cpu_writable: false,
         })?;
+        let scratch_desc = BufferDesc {
+            name,
+            // Room to move the start to the next multiple of the alignment.
+            size: sizes.build_scratch_size + self.scratch_alignment,
+            cpu_writable: false,
+        };
+        // Memory of its own: see `create_buffer_in`.
         let scratch = self
-            .create_buffer(&BufferDesc {
-                name,
-                // Room to move the start to the next multiple of the alignment.
-                size: sizes.build_scratch_size + self.scratch_alignment,
-                cpu_writable: false,
-            })
+            .create_buffer_in(&scratch_desc, MemoryLocation::GpuOnly, true)
             .inspect_err(|_| self.destroy_buffer(storage))?;
         let create_info = vk::AccelerationStructureCreateInfoKHR::default()
             .buffer(self.buffers[storage].raw)

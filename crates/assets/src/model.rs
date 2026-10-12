@@ -1,13 +1,18 @@
 //! The model asset and its glTF loader.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Context, Result, bail, ensure};
+use bevy_ecs::resource::Resource;
+use bevy_ecs::system::ResMut;
 use glam::{Mat3, Mat4, Vec3};
 use gltf::material::AlphaMode;
 use gltf::mesh::Mode;
 use gltf::texture::MagFilter;
 
+use crate::texture::{Source, decode_file};
 use crate::{Assets, Handle, Material, Mesh, Texture, TextureRef, Textures};
 
 /// The content of one model file: a mesh for each primitive of each mesh node, and
@@ -28,12 +33,9 @@ pub struct ModelLight {
     pub intensity: f32,
 }
 
-/// Starts to load a glTF file (`.gltf` or `.glb`) and returns its handle at once.
-/// The model is not always ready on return: see [`Assets::state`]. A failure is logged.
-// ponytail: the file is read on the calling thread before this function returns.
-// For async loading, move `read_gltf` to a worker thread and call `finish` from a
-// system when the worker is done. For a cooked format, replace `read_gltf`.
-// The signature and the callers stay the same in both cases.
+/// Loads a glTF file (`.gltf` or `.glb`) on the calling thread: the model is ready,
+/// or failed, on return. A failure is logged. For a tool and a test; a game loads
+/// with [`ModelLoads::load`].
 pub fn load_gltf(
     path: &Path,
     models: &mut Assets<Model>,
@@ -41,31 +43,176 @@ pub fn load_gltf(
     textures: &mut Textures,
 ) -> Handle<Model> {
     let handle = models.reserve();
-    let model = match read_gltf(path, textures) {
-        Ok((loaded, lights)) => Some(Model {
-            meshes: loaded.into_iter().map(|mesh| meshes.add(mesh)).collect(),
-            lights,
-        }),
+    finish(handle, path, read_gltf(path), models, meshes, textures);
+    handle
+}
+
+/// Gives a model that was read to the stores: its images, its meshes, the model.
+fn finish(
+    handle: Handle<Model>,
+    path: &Path,
+    read: Result<ReadModel>,
+    models: &mut Assets<Model>,
+    meshes: &mut Assets<Mesh>,
+    textures: &mut Textures,
+) {
+    // The model was removed while it was read: nothing of it is stored.
+    if models.state(handle).is_none() {
+        return;
+    }
+    let model = match read {
+        Ok(read) => {
+            // The images first: a mesh names its textures by their handles. An
+            // image that the store has from another model is not stored again.
+            let images = read.images.into_iter();
+            let images: Vec<Handle<Texture>> = images
+                .map(|(source, image)| textures.load_with(source, || image))
+                .collect();
+            let texture = |(image, nearest): (usize, bool)| TextureRef {
+                texture: images[image],
+                nearest,
+            };
+            let store = |read: ReadMesh| {
+                let mut mesh = read.mesh;
+                if let Some(base_color) = read.base_color {
+                    mesh = mesh.with_base_color_texture(texture(base_color));
+                }
+                if let Some(emissive) = read.emissive {
+                    mesh = mesh.with_emissive_texture(texture(emissive));
+                }
+                meshes.add(mesh)
+            };
+            Some(Model {
+                meshes: read.meshes.into_iter().map(store).collect(),
+                lights: read.lights,
+            })
+        }
         Err(error) => {
             tracing::error!("cannot load model {}: {error:#}", path.display());
             None
         }
     };
     models.finish(handle, model);
-    handle
+}
+
+/// The model files that are read on other threads. A handle of [`ModelLoads::load`]
+/// is not ready on return: `finish_model_loads` makes it ready in a later frame.
+#[derive(Resource)]
+pub struct ModelLoads {
+    /// False: a file is read on the calling thread, and its model is ready on
+    /// return. For a run that must do the same work in each frame (a benchmark, a
+    /// test), and where no system finishes the loads (no `AssetsModule`).
+    pub background: bool,
+    done: Sender<Done>,
+    // In a lock: a resource is shared between threads, and a receiver is not.
+    arrived: Mutex<Receiver<Done>>,
+    /// The files that are read now.
+    reading: usize,
+}
+
+/// A file that a thread has read.
+type Done = (Handle<Model>, PathBuf, Result<ReadModel>);
+
+/// On the calling thread: see `background`.
+impl Default for ModelLoads {
+    fn default() -> Self {
+        let (done, arrived) = channel();
+        Self {
+            background: false,
+            done,
+            arrived: Mutex::new(arrived),
+            reading: 0,
+        }
+    }
+}
+
+impl ModelLoads {
+    /// Starts to load a glTF file and returns its handle at once. Ask
+    /// [`Assets::state`] if the model is ready. A failure is logged.
+    // ponytail: one thread for each file. A pool if a room names hundreds of files.
+    pub fn load(
+        &mut self,
+        path: &Path,
+        models: &mut Assets<Model>,
+        meshes: &mut Assets<Mesh>,
+        textures: &mut Textures,
+    ) -> Handle<Model> {
+        if !self.background {
+            return load_gltf(path, models, meshes, textures);
+        }
+        let handle = models.reserve();
+        let (done, path) = (self.done.clone(), path.to_owned());
+        self.reading += 1;
+        std::thread::spawn(move || {
+            let read = read_gltf(&path);
+            // No receiver: the game has ended.
+            let _ = done.send((handle, path, read));
+        });
+        handle
+    }
+
+    /// The number of files that are read now.
+    pub fn reading(&self) -> usize {
+        self.reading
+    }
+}
+
+/// Runs in `Update`: stores the models that the threads have read.
+pub(crate) fn finish_model_loads(
+    mut loads: ResMut<ModelLoads>,
+    mut models: ResMut<Assets<Model>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut textures: ResMut<Textures>,
+) {
+    use bevy_ecs::change_detection::DetectChangesMut;
+
+    // No change of a resource in a frame with nothing to do.
+    if loads.bypass_change_detection().reading == 0 {
+        return;
+    }
+    let arrived: Vec<Done> = {
+        let receiver = loads.arrived.lock().expect("no holder panics");
+        receiver.try_iter().collect()
+    };
+    for (handle, path, read) in arrived {
+        loads.reading -= 1;
+        let start = std::time::Instant::now();
+        finish(handle, &path, read, &mut models, &mut meshes, &mut textures);
+        tracing::debug!(path = %path.display(), time = ?start.elapsed(), "model stored");
+    }
+}
+
+/// A model file as it is read, with no asset store: on any thread.
+struct ReadModel {
+    meshes: Vec<ReadMesh>,
+    lights: Vec<ModelLight>,
+    /// The images that the meshes use, decoded, each with where it came from.
+    images: Vec<(Source, Result<Texture>)>,
+}
+
+struct ReadMesh {
+    mesh: Mesh,
+    /// The index in `ReadModel::images`, and the filter (`TextureRef::nearest`).
+    base_color: Option<(usize, bool)>,
+    emissive: Option<(usize, bool)>,
 }
 
 /// What `read_primitive` needs to find the textures of a material.
 struct Images<'a> {
     path: &'a Path,
     buffers: &'a [gltf::buffer::Data],
-    textures: &'a mut Textures,
+    /// The images that a material named before.
+    read: Vec<(Source, Result<Texture>)>,
 }
 
 impl Images<'_> {
-    /// The texture of a material slot. `None`, with a warning, if the mesh cannot
-    /// show it.
-    fn texture(&mut self, info: Option<gltf::texture::Info>, has_uvs: bool) -> Option<TextureRef> {
+    /// The texture of a material slot: its image (an index in `read`) and its
+    /// filter. `None`, with a warning, if the mesh cannot show it.
+    fn texture(
+        &mut self,
+        info: Option<gltf::texture::Info>,
+        has_uvs: bool,
+    ) -> Option<(usize, bool)> {
         let info = info?;
         if info.tex_coord() != 0 || !has_uvs {
             // ponytail: only the first set of texture coordinates is read.
@@ -78,27 +225,31 @@ impl Images<'_> {
         let texture = info.texture();
         let image = texture.source();
         let base = self.path.parent();
-        let handle = match image.source() {
+        let (path, buffers) = (self.path, self.buffers);
+        // An image is decoded one time, also for two materials that name it.
+        let mut once = |source: Source, decode: &dyn Fn() -> Result<Texture>| {
+            let known = self.read.iter().position(|(read, _)| *read == source);
+            known.unwrap_or_else(|| {
+                self.read.push((source, decode()));
+                self.read.len() - 1
+            })
+        };
+        let index = match image.source() {
             // An image file of its own: a second model that names it gets the same texture.
             gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
-                self.textures.load(&base.unwrap_or(Path::new("")).join(uri))
+                let file = base.unwrap_or(Path::new("")).join(uri);
+                once((file.clone(), None), &|| decode_file(&file))
             }
             // In the model file.
-            source => {
-                let (path, buffers) = (self.path, self.buffers);
-                self.textures
-                    .load_with((path.to_owned(), Some(image.index())), || {
-                        let data = gltf::image::Data::from_source(source, base, buffers)?;
-                        let name = format!("{}#{}", path.display(), image.index());
-                        Texture::new(name, data.width, data.height, rgba8(&data)?)
-                    })
-            }
+            source => once((path.to_owned(), Some(image.index())), &|| {
+                let data = gltf::image::Data::from_source(source.clone(), base, buffers)?;
+                let name = format!("{}#{}", path.display(), image.index());
+                Texture::new(name, data.width, data.height, rgba8(&data)?)
+            }),
         };
-        Some(TextureRef {
-            texture: handle,
-            // The sampler of the file: its filter for a texture that shows large.
-            nearest: texture.sampler().mag_filter() == Some(MagFilter::Nearest),
-        })
+        // The sampler of the file: its filter for a texture that shows large.
+        let nearest = texture.sampler().mag_filter() == Some(MagFilter::Nearest);
+        Some((index, nearest))
     }
 }
 
@@ -125,11 +276,12 @@ fn rgba8(image: &gltf::image::Data) -> Result<Vec<u8>> {
     })
 }
 
-/// Reads all triangle primitives and all point lights of the default scene.
-fn read_gltf(path: &Path, textures: &mut Textures) -> Result<(Vec<Mesh>, Vec<ModelLight>)> {
+/// Reads all triangle primitives and all point lights of the default scene, and the
+/// images that their materials use.
+fn read_gltf(path: &Path) -> Result<ReadModel> {
     let gltf::Gltf { document, blob } = gltf::Gltf::open(path)?;
     // Not `gltf::import`: that decodes all images of the file. `Images` decodes those
-    // that a material uses and that the texture store does not have.
+    // that a material uses.
     let buffers = gltf::import_buffers(&document, path.parent(), blob)?;
     if document
         .extensions_used()
@@ -145,7 +297,7 @@ fn read_gltf(path: &Path, textures: &mut Textures) -> Result<(Vec<Mesh>, Vec<Mod
     let mut images = Images {
         path,
         buffers: &buffers,
-        textures,
+        read: Vec::new(),
     };
     let scene = document
         .default_scene()
@@ -192,7 +344,11 @@ fn read_gltf(path: &Path, textures: &mut Textures) -> Result<(Vec<Mesh>, Vec<Mod
         stack.extend(node.children().map(|child| (child, to_model)));
     }
     ensure!(!meshes.is_empty(), "the file has no triangle mesh");
-    Ok((meshes, lights))
+    Ok(ReadModel {
+        meshes,
+        lights,
+        images: images.read,
+    })
 }
 
 /// Makes one mesh, with the node transform applied to its vertices.
@@ -203,7 +359,7 @@ fn read_primitive(
     images: &mut Images,
     to_model: Mat4,
     name: String,
-) -> Result<Mesh> {
+) -> Result<ReadMesh> {
     let buffers = images.buffers;
     let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|data| &data.0[..]));
     let positions: Vec<Vec3> = reader
@@ -241,12 +397,8 @@ fn read_primitive(
     if let Some(uvs) = uvs {
         mesh = mesh.with_uvs(uvs)?;
     }
-    if let Some(texture) = images.texture(pbr.base_color_texture(), has_uvs) {
-        mesh = mesh.with_base_color_texture(texture);
-    }
-    if let Some(texture) = images.texture(material.emissive_texture(), has_uvs) {
-        mesh = mesh.with_emissive_texture(texture);
-    }
+    let base_color = images.texture(pbr.base_color_texture(), has_uvs);
+    let emissive = images.texture(material.emissive_texture(), has_uvs);
     // ponytail: `BLEND` (a surface that is partly clear) shows as `MASK` with the
     // cutoff 0.5: each point is there or not. Enough for leaves and fences. Glass
     // has its own material kind.
@@ -255,7 +407,11 @@ fn read_primitive(
         AlphaMode::Mask => mesh = mesh.with_alpha_cutoff(material.alpha_cutoff().unwrap_or(0.5)),
         AlphaMode::Blend => mesh = mesh.with_alpha_cutoff(0.5),
     }
-    Ok(mesh)
+    Ok(ReadMesh {
+        mesh,
+        base_color,
+        emissive,
+    })
 }
 
 /// A roughness factor from this value on is a diffuse surface.
@@ -440,6 +596,76 @@ mod tests {
             for (loaded, original) in mesh.normals().iter().zip(source.normals()) {
                 assert!(loaded.distance(*original) < 1e-6);
             }
+        }
+    }
+
+    #[test]
+    fn a_model_that_a_thread_reads_is_ready_some_frames_later() {
+        use std::time::{Duration, Instant};
+
+        use maki_core::{App, ConfigFile, Startup};
+
+        #[derive(Resource)]
+        struct Asked(Handle<Model>, Handle<Model>, Handle<Model>);
+
+        let source = Mesh::sphere(1.0, 32, 16);
+        let files =
+            ["thread", "removed"].map(|name| write_gltf(name, &source, true, Vec3::ZERO, ("", "")));
+        // The module with its default settings: files are read on other threads.
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(crate::AssetsModule);
+        let paths = files.clone();
+        app.add_systems(
+            Startup,
+            move |mut loads: ResMut<ModelLoads>,
+                  mut models: ResMut<Assets<Model>>,
+                  mut meshes: ResMut<Assets<Mesh>>,
+                  mut textures: ResMut<Textures>,
+                  mut commands: bevy_ecs::system::Commands| {
+                let mut load =
+                    |path: &Path| loads.load(path, &mut models, &mut meshes, &mut textures);
+                let (kept, removed) = (load(&paths[0]), load(&paths[1]));
+                let missing = load(Path::new("no such file.gltf"));
+                // The second model goes away while its file is read.
+                models.remove(removed);
+                commands.insert_resource(Asked(kept, removed, missing));
+            },
+        );
+        app.run(|mut app| {
+            let Asked(kept, removed, missing) = *app.world().resource::<Asked>();
+            let state = |app: &App| app.world().resource::<Assets<Model>>().state(kept);
+            let reading = |app: &App| app.world().resource::<ModelLoads>().reading();
+            // The handle is there at once, the model is not: no frame has stored it.
+            assert_eq!(state(&app), Some(LoadState::Loading));
+            assert_eq!(reading(&app), 3);
+            let start = Instant::now();
+            while reading(&app) > 0 {
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "the file is not read"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+                app.advance(Duration::from_millis(16));
+            }
+            assert_eq!(state(&app), Some(LoadState::Ready));
+            let (models, meshes) = (
+                app.world().resource::<Assets<Model>>(),
+                app.world().resource::<Assets<Mesh>>(),
+            );
+            let model = models.get(kept).unwrap();
+            assert_eq!(
+                meshes.get(model.meshes[0]).unwrap().indices(),
+                source.indices()
+            );
+            // A file that is not there: the model failed, with a line in the log.
+            assert_eq!(models.state(missing), Some(LoadState::Failed));
+            // Nothing of the model that was removed is in a store.
+            assert_eq!(models.state(removed), None);
+            assert_eq!(meshes.iter().count(), 1);
+        });
+        for path in files {
+            fs::remove_file(&path).unwrap();
+            fs::remove_file(path.with_extension("bin")).unwrap();
         }
     }
 

@@ -14,11 +14,12 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
 use bevy_ecs::resource::Resource;
-use maki_core::{App, Module};
+use maki_core::{App, Module, Settings, Update};
+use serde::{Deserialize, Serialize};
 use slotmap::{DefaultKey, SlotMap};
 
 pub use mesh::{Doorway, Material, Mesh, Wall};
-pub use model::{Model, ModelLight, load_gltf};
+pub use model::{Model, ModelLight, ModelLoads, load_gltf};
 pub use texture::{Texture, TextureRef, Textures};
 
 /// A generational reference to an asset of type `T`. A handle of a removed asset never
@@ -149,11 +150,39 @@ impl<T: Send + Sync + 'static> Assets<T> {
     }
 }
 
-/// Adds the asset stores to the app.
+/// The `[assets]` table of the config file.
+#[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AssetsSettings {
+    /// True: a model file is read on another thread, and shows some frames after it
+    /// was asked for. False: on the thread of the game, in the frame that asks for
+    /// it: each run then does the same work in each frame (a benchmark).
+    pub background: bool,
+}
+
+impl Default for AssetsSettings {
+    fn default() -> Self {
+        Self { background: true }
+    }
+}
+
+impl Settings for AssetsSettings {
+    const TABLE: &'static str = "assets";
+}
+
+/// Adds the asset stores to the app, and the system that stores the models that
+/// were read on other threads.
 pub struct AssetsModule;
 
 impl Module for AssetsModule {
     fn build(&self, app: &mut App) {
+        app.add_settings::<AssetsSettings>();
+        let background = app.world().resource::<AssetsSettings>().background;
+        // The scene module makes the same resource: the order of the two is free.
+        app.init_resource::<ModelLoads>();
+        app.resource_mut::<ModelLoads>().background = background;
+        app.add_systems(Update, model::finish_model_loads)
+            .allow_ambiguous_resource::<ModelLoads>();
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Model>>()
             .init_resource::<Textures>()

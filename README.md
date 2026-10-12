@@ -204,6 +204,12 @@ The config file is TOML, with one table for each module. A module declares its t
 | `start` | not set | The room file that the game starts in. Not set: the room of the game, `game/assets/rooms/room_a.ron`. A path that is not absolute starts at the working directory |
 | `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the game, `start` |
 
+`[assets]` (`crates/assets`, `AssetsModule`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `background` | true | A model file is read, and its images are decoded, on another thread: the model shows some frames after the room. False: on the thread of the game, in the frame that asks for the file; each run then does the same work in each frame (the benchmark sets it) |
+
 `[audio]` (`crates/audio`, `AudioModule`):
 
 | Key | Default | Meaning |
@@ -303,7 +309,8 @@ A room is a RON file in `game/assets/rooms`: the size of the room, its doorways,
 
 - A bad room file: the error names the file, the line, and the column. A bad start room stops the game at start; a transfer into a bad room does not happen.
 - The room box, a cube, a cuboid, and a sphere can have a texture: see "Textures" above.
-- A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A glTF file (`File("path")`, from the directory of the room file) goes away with its room too, if the next room does not name it.
+- A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A room that is loaded again (F5, each change in the editor) keeps each mesh that is made from the same numbers, and makes only the others: a new color of one prop is one new mesh.
+- A new mesh does not make the game wait for the GPU: its acceleration structure is built in the next frame. A glTF file (`File("path")`, from the directory of the room file) goes away with its room too, if the next room does not name it.
 - A light can have a sound (`sound: (file: "sounds/hum.wav", volume: 0.5, reach: 12.0, on: true)`): the file plays as a loop at the place of the light, louder near the player, silent beyond `reach` meters, from the side where the picture shows the light. It starts and stops with a fade of half a second. `SoundOn` and `SoundOff` find it by the name of the light.
 - A sound file is WAV or Ogg Vorbis, from the directory of the room file. The two files of the game (`game/assets/rooms/sounds`) are placeholders that `python tools/gen_sounds.py` makes.
 - The player, the camera, the game state (flags and variables), and the music are not part of a room: they stay when the room changes.

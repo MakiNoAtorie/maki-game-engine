@@ -12,7 +12,9 @@
 //! Assets: a mesh that the room makes from numbers (its walls, a cube) belongs to the
 //! room and is removed with it. A model file that the new room does not name is
 //! removed too, with its meshes: a room change leaves nothing of the old room. A
-//! model that the new room names again (a reload) stays loaded.
+//! model that the new room names again (a reload) stays loaded, and so does a
+//! generated mesh that the new room makes from the same numbers: a tool that loads
+//! the room again for each step of a change (an editor) makes one new mesh, not all.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -27,7 +29,7 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::{Mut, World};
 use glam::{EulerRot, Quat, Vec3};
 use maki_assets::{
-    Assets, Doorway, Handle, LoadState, Material, Mesh, Model, TextureRef, Textures, load_gltf,
+    Assets, Doorway, Handle, LoadState, Material, Mesh, Model, ModelLoads, TextureRef, Textures,
 };
 use maki_core::{Interpolated, Transform};
 use serde::de::IgnoredAny;
@@ -567,8 +569,10 @@ pub struct CurrentRoom {
     /// The time that the loader took for this room: the file, the generated meshes,
     /// the model files that were not loaded before. Without the upload to the GPU.
     pub load_time: std::time::Duration,
-    /// The generated meshes of the room. Removed with the room.
-    meshes: Vec<Handle<Mesh>>,
+    /// The generated meshes of the room, each with its key: the numbers that it was
+    /// made from, as a text. Removed with the room, but for those that the next
+    /// room makes from the same numbers.
+    meshes: Vec<(String, Handle<Mesh>)>,
 }
 
 /// The models of the current room, by path. `load_requested_room` removes those that
@@ -600,6 +604,7 @@ pub fn load_requested_room(
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
     mut cache: ResMut<RoomModels>,
+    mut loads: ResMut<ModelLoads>,
     room_entities: Query<Entity, With<RoomEntity>>,
     mut players: Query<&mut Interpolated, With<Player>>,
 ) {
@@ -639,9 +644,6 @@ pub fn load_requested_room(
     for entity in &room_entities {
         commands.entity(entity).despawn();
     }
-    for mesh in current.meshes.drain(..) {
-        meshes.remove(mesh);
-    }
     let directory = target.path.parent().unwrap_or(Path::new(""));
     // The models that only the old room used. Without this, each room that was shown
     // keeps its meshes on the GPU, and the mesh table of the renderer gets full.
@@ -672,11 +674,19 @@ pub fn load_requested_room(
         models: &mut models,
         textures: &mut textures,
         cache: &mut cache,
+        loads: &mut loads,
         directory,
+        old: std::mem::take(&mut current.meshes),
         owned: Vec::new(),
+        made: 0,
     };
     spawner.room(&def);
-    let owned = spawner.owned;
+    let (owned, unused) = (spawner.owned, spawner.old);
+    let reused = owned.len() - spawner.made;
+    // The meshes of the old room that the new one did not take.
+    for (_, mesh) in unused {
+        meshes.remove(mesh);
+    }
     // The textures of the old room that no mesh uses now. The models of the new
     // room are loaded: their meshes are in the store.
     let removed = textures.remove_unused(&meshes);
@@ -687,6 +697,8 @@ pub fn load_requested_room(
         path = %target.path.display(),
         props = def.props.len(),
         lights = def.lights.len(),
+        meshes_kept = reused,
+        time = ?start.elapsed(),
         "room loaded"
     );
     *current = CurrentRoom {
@@ -714,40 +726,63 @@ struct Spawner<'a, 'w, 's> {
     models: &'a mut Assets<Model>,
     textures: &'a mut Textures,
     cache: &'a mut RoomModels,
+    loads: &'a mut ModelLoads,
     /// Of the room file.
     directory: &'a Path,
-    /// The meshes that this room made.
-    owned: Vec<Handle<Mesh>>,
+    /// The generated meshes of the room before, with their keys: this room takes
+    /// those that it would make again.
+    old: Vec<(String, Handle<Mesh>)>,
+    /// The generated meshes of this room, with their keys.
+    owned: Vec<(String, Handle<Mesh>)>,
+    /// How many of `owned` were made, not taken from `old`.
+    made: usize,
 }
 
 impl Spawner<'_, '_, '_> {
-    fn add(&mut self, mesh: Mesh) -> Handle<Mesh> {
-        let handle = self.meshes.add(mesh);
-        self.owned.push(handle);
+    /// The mesh of a key: that of the room before if it had one with the key, else
+    /// the one that `make` gives. Two things of a room with the same key have a mesh
+    /// each, as before: one mesh of the old room goes to one thing.
+    ///
+    /// The key must have each number that the mesh is made from. The directory of
+    /// the room file is a part of each key: a texture path starts there.
+    fn mesh(&mut self, key: String, make: impl FnOnce(&mut Self) -> Mesh) -> Handle<Mesh> {
+        let key = format!("{}|{key}", self.directory.display());
+        let kept = self.old.iter().position(|(old, _)| *old == key);
+        let handle = match kept {
+            Some(index) => self.old.swap_remove(index).1,
+            None => {
+                self.made += 1;
+                let mesh = make(self);
+                self.meshes.add(mesh)
+            }
+        };
+        self.owned.push((key, handle));
         handle
     }
 
     fn room(&mut self, def: &RoomDef) {
         let (width, depth, height) = (def.width, def.depth, def.height);
+        let size = format!("room {width} {depth} {height} {:?}", def.doorways);
         let shell = if def.floor.is_none() && def.walls.is_none() {
-            vec![Mesh::room_with_doorways(
-                width,
-                depth,
-                height,
-                &def.doorways,
-            )]
+            vec![self.mesh(size, |_| {
+                Mesh::room_with_doorways(width, depth, height, &def.doorways)
+            })]
         } else {
             // A mesh has one material: the floor and the walls are two meshes.
-            let (floor, walls) = Mesh::room_parts(width, depth, height, &def.doorways);
-            let parts = [(floor, &def.floor), (walls, &def.walls)];
-            let textured = parts.map(|(mesh, texture)| match texture {
-                Some(texture) => texture.apply(mesh, self.directory, self.textures),
-                None => mesh,
-            });
-            textured.into()
+            let parts = [(0, "floor", &def.floor), (1, "walls", &def.walls)];
+            let part = |(index, name, texture): (usize, &str, &Option<TextureDef>)| {
+                self.mesh(format!("{size} {name} {texture:?}"), |spawner| {
+                    let parts = Mesh::room_parts(width, depth, height, &def.doorways);
+                    let mesh = if index == 0 { parts.0 } else { parts.1 };
+                    match texture {
+                        Some(texture) => texture.apply(mesh, spawner.directory, spawner.textures),
+                        None => mesh,
+                    }
+                })
+            };
+            parts.map(part).into()
         };
         for mesh in shell {
-            let mesh = self.add(mesh);
             self.commands
                 .spawn((RoomEntity, Transform::IDENTITY, MeshInstance(mesh)));
         }
@@ -787,12 +822,12 @@ impl Spawner<'_, '_, '_> {
             MeshDef::File(path) => {
                 let path = self.directory.join(path);
                 let (models, meshes) = (&mut *self.models, &mut *self.meshes);
-                let textures = &mut *self.textures;
+                let (textures, loads) = (&mut *self.textures, &mut *self.loads);
                 let model = *self
                     .cache
                     .0
                     .entry(path.clone())
-                    .or_insert_with(|| load_gltf(&path, models, meshes, textures));
+                    .or_insert_with(|| loads.load(&path, models, meshes, textures));
                 self.commands.spawn((
                     RoomEntity,
                     transform,
@@ -805,10 +840,12 @@ impl Spawner<'_, '_, '_> {
                 ))
             }
             generated => {
-                let mesh = generated.generate().expect("not a file");
-                let mesh = prop.look.apply(mesh, self.directory, self.textures);
-                let collider = prop.collider.then(|| collider_around(&mesh, &transform));
-                let handle = self.add(mesh);
+                let handle = self.mesh(format!("{generated:?} {:?}", prop.look), |spawner| {
+                    let mesh = generated.generate().expect("not a file");
+                    prop.look.apply(mesh, spawner.directory, spawner.textures)
+                });
+                let mesh = self.meshes.get(handle).expect("a generated mesh is ready");
+                let collider = prop.collider.then(|| collider_around(mesh, &transform));
                 let mut entity =
                     self.commands
                         .spawn((RoomEntity, item, transform, MeshInstance(handle)));
@@ -824,12 +861,14 @@ impl Spawner<'_, '_, '_> {
     }
 
     fn mover(&mut self, mover: &MoverDef, item: RoomItem) {
-        let Some(mesh) = mover.mesh.generate() else {
+        if matches!(mover.mesh, MeshDef::File(_)) {
             tracing::error!(name = ?mover.name, "a mover cannot have a file as its mesh: left out");
             return;
-        };
-        let mesh = mover.look.apply(mesh, self.directory, self.textures);
-        let handle = self.add(mesh);
+        }
+        let handle = self.mesh(format!("{:?} {:?}", mover.mesh, mover.look), |spawner| {
+            let mesh = mover.mesh.generate().expect("not a file");
+            mover.look.apply(mesh, spawner.directory, spawner.textures)
+        });
         let (a, b) = (mover.a.transform(), mover.b.transform());
         let mut entity = self.commands.spawn((
             RoomEntity,
@@ -856,11 +895,14 @@ impl Spawner<'_, '_, '_> {
         // poses of the door then differ only in the rotation, and the blend between
         // them is a turn around the hinge.
         let [r, g, b] = door.color;
-        let leaf = Mesh::cuboid(
-            Vec3::new(0.0, 0.0, -THICKNESS / 2.0),
-            Vec3::new(doorway.width, doorway.height, THICKNESS / 2.0),
-        )
-        .with_base_color([r, g, b, 1.0]);
+        let key = format!("door {} {} {:?}", doorway.width, doorway.height, door.color);
+        let handle = self.mesh(key, |_| {
+            Mesh::cuboid(
+                Vec3::new(0.0, 0.0, -THICKNESS / 2.0),
+                Vec3::new(doorway.width, doorway.height, THICKNESS / 2.0),
+            )
+            .with_base_color([r, g, b, 1.0])
+        });
         let hinge = start + along * from;
         // A turn around Y by an angle moves +X to (cos, 0, -sin).
         let facing = |degrees: f32| {
@@ -889,7 +931,6 @@ impl Spawner<'_, '_, '_> {
         if door.open {
             mover.state = MoverState::AtB;
         }
-        let handle = self.add(leaf);
         let mut entity = self.commands.spawn((
             RoomEntity,
             item,
@@ -1220,6 +1261,7 @@ mod tests {
             let mut world = bevy_ecs::world::World::new();
             let (mut meshes, mut models) = (Assets::<Mesh>::default(), Assets::<Model>::default());
             let mut cache = RoomModels::default();
+            let mut loads = ModelLoads::default();
             let mut textures = Textures::default();
             let mut commands = world.commands();
             let mut spawner = Spawner {
@@ -1228,8 +1270,11 @@ mod tests {
                 models: &mut models,
                 textures: &mut textures,
                 cache: &mut cache,
+                loads: &mut loads,
                 directory: Path::new(""),
+                old: Vec::new(),
                 owned: Vec::new(),
+                made: 0,
             };
             let item = RoomItem::Door(0);
             spawner.door(
@@ -1328,6 +1373,52 @@ mod tests {
             assert_eq!(load(&mut app, &room_a, Some("nowhere")), (5, 1, player));
             assert_eq!(app.world().resource::<CurrentRoom>().path, room_b);
         });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_reload_keeps_each_mesh_that_is_made_from_the_same_numbers() {
+        use std::collections::HashSet;
+
+        let directory = std::env::temp_dir().join(format!("maki-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("room.ron");
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        // Loads the room and gives the handles of all meshes.
+        let mut load = |room: &RoomDef| -> HashSet<Handle<Mesh>> {
+            std::fs::write(&path, ron_options().to_string(room).unwrap()).unwrap();
+            app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+                path: path.clone(),
+                spawn: None,
+                text: None,
+            });
+            app.advance(Duration::from_millis(16));
+            let meshes = app.world().resource::<Assets<Mesh>>();
+            meshes.iter().map(|(handle, _)| handle).collect()
+        };
+        // The shell, the door leaf, the ball, the mover, and a second ball that
+        // is made from the same numbers as the first one.
+        let mut room = sample();
+        room.props[0].look.texture = None;
+        room.props.push(room.props[0].clone());
+        let first = load(&room);
+        assert_eq!(first.len(), 5);
+        // The same room again: the same meshes.
+        assert_eq!(load(&room), first);
+        // Another color for one ball: one new mesh, and its old one is gone.
+        room.props[1].look.color = Some([0.0, 1.0, 0.0]);
+        let colored = load(&room);
+        assert_eq!(colored.len(), 5);
+        assert_eq!(colored.intersection(&first).count(), 4);
+        // A wider room: the shell is new, the things in it are not.
+        room.width += 1.0;
+        let wide = load(&room);
+        assert_eq!(wide.intersection(&colored).count(), 4);
+        // The collider of a mesh that was kept is at the place of its prop.
+        room.props[0].pose.position = [2.0, 0.5, 1.0];
+        assert_eq!(load(&room), wide);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

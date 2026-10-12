@@ -32,6 +32,9 @@ impl Module for SceneModule {
         app.init_resource::<maki_assets::Assets<Mesh>>()
             .init_resource::<maki_assets::Assets<maki_assets::Model>>()
             .init_resource::<maki_assets::Textures>()
+            // Without `AssetsModule`, a model file is read in the frame that asks
+            // for it.
+            .init_resource::<maki_assets::ModelLoads>()
             .init_resource::<CurrentRoom>()
             .init_resource::<RoomRequest>()
             .init_resource::<RoomModels>()

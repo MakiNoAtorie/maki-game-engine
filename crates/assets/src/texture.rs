@@ -53,7 +53,14 @@ pub struct TextureRef {
 }
 
 /// Where a texture came from: an image file, or image number `1` of a model file.
-type Source = (PathBuf, Option<usize>);
+pub(crate) type Source = (PathBuf, Option<usize>);
+
+/// Reads and decodes an image file (PNG or JPEG). It uses no store: for any thread.
+pub(crate) fn decode_file(path: &Path) -> Result<Texture> {
+    let image = image::open(path)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Texture::new(path.display().to_string(), width, height, image.into_raw())
+}
 
 /// All textures. A source that is asked for two times gives the same handle: an
 /// image that two materials or two models use is in memory one time.
@@ -66,13 +73,12 @@ pub struct Textures {
 impl Textures {
     /// The texture of an image file (PNG or JPEG). A failure is logged, and the
     /// texture never becomes ready: the material then shows its color alone.
-    // ponytail: the file is read and decoded on the calling thread, as `load_gltf` does.
+    // ponytail: the file is read and decoded on the calling thread. The images of a
+    // model file are decoded with the model, on its thread (`ModelLoads`). For this
+    // one, the renderer must write the table entry of a mesh again when its texture
+    // arrives (`GpuMeshes::sync`).
     pub fn load(&mut self, path: &Path) -> Handle<Texture> {
-        self.load_with((path.to_owned(), None), || {
-            let image = image::open(path)?.into_rgba8();
-            let (width, height) = image.dimensions();
-            Texture::new(path.display().to_string(), width, height, image.into_raw())
-        })
+        self.load_with((path.to_owned(), None), || decode_file(path))
     }
 
     /// The texture of `source`, made with `decode` if the store does not have it.
