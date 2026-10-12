@@ -33,6 +33,7 @@ mod graph;
 mod light;
 mod meshes;
 mod motion;
+mod noise;
 mod passes;
 mod taa;
 
@@ -145,6 +146,8 @@ pub struct ExtractedFrame {
     /// `history_clamp` of the config: the history test of the direct light, in
     /// standard deviations of the noise. 0: no such test.
     pub history_clamp: f32,
+    /// `blue_noise` of the config: the trace pass uses the blue-noise pattern.
+    pub blue_noise: bool,
     /// The offset of all camera rays of this frame from the pixel centers, in pixels:
     /// see the `taa` module. Zero with anti-aliasing off.
     pub jitter: [f32; 2],
@@ -263,6 +266,7 @@ impl Module for RenderModule {
         camera::build(app);
         light::build(app);
         motion::build(app);
+        noise::build(app);
     }
 }
 
@@ -324,6 +328,7 @@ pub(crate) fn extract_frame(
         denoise_reach: config.denoise_reach,
         indirect_clamp: config.indirect_clamp,
         history_clamp: config.history_clamp,
+        blue_noise: config.blue_noise,
         jitter: if config.taa {
             taa::jitter(time.frame)
         } else {

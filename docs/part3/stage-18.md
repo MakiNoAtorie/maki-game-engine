@@ -13,6 +13,8 @@ State: done. Plan: `README.md`, section 5.
 
 ## 2. Numbers
 
+Correction (stage 20): the trace pass read its jitter from the wrong bytes of the push constants (a `vec2` at an offset that is not a multiple of 8), so its jitter did not agree with that of the pass `taa`. The numbers below are those with this defect. The correct ones are in `stage-20.md`, section 2; the largest change is the sharpness in `walk_720p`: 0.88, not 0.65.
+
 1 sample for each pixel and frame. The reference now has smooth edges (the mean of all jitter points), so the numbers do not compare with stage 17.
 
 | Run | `relmse` / sharpness / noise |

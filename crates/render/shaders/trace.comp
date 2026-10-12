@@ -99,9 +99,12 @@ layout(push_constant) uniform Push {
     float indirect_clamp;
     uint indirect;        // index in `images_rgba16f`
     uint specular;        // index in `images_rgba16f`
+    uint noise;           // index in `noise_buffers`. See src/noise.rs.
     // The offset of all camera rays of this frame from the pixel centers, in pixels,
     // each from -0.5 to 0.5. See src/taa.rs.
+    // A vec2 has an alignment of 8: it must start at a multiple of 8 bytes (here 112).
     vec2 jitter;
+    uint blue_noise;      // 1: use the blue noise. 0: white noise only
 } push;
 
 // A sphere light. 32 bytes. Must agree with `light_bytes` in src/light.rs.
@@ -160,6 +163,16 @@ const float SURFACE_GAP = 0.001;
 
 uint rng_state;
 
+// The blue-noise pattern: 64 x 64 values from 0 to 1. See src/noise.rs.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer NoiseBuffer {
+    float values[];
+} noise_buffers[];
+
+// The pixel of this invocation, and true while the path is at the place where blue
+// noise is used: the first path of the frame, at the surface that the pixel shows.
+ivec2 noise_pixel;
+bool noise_blue = false;
+
 // The PCG hash (Jarzynski and Olano, "Hash Functions for GPU Rendering", 2020).
 uint hash(uint value) {
     uint state = value * 747796405u + 2891336453u;
@@ -172,6 +185,25 @@ float random() {
     rng_state = hash(rng_state);
     // The top 24 bits: a float holds 24 bits without rounding.
     return float(rng_state >> 8u) / 16777216.0;
+}
+
+// Random number `dimension` (0 to 3) of this pixel for the two decisions that make
+// most of the noise of a frame: the point on the light (0, 1) and the bounce
+// direction (2, 3). Blue noise over the pixels (see src/noise.rs), or the next white
+// number if blue noise is off or the path is at another place.
+// Each frame and each dimension reads the pattern at another random offset (the
+// pattern wraps at its edges). So the four numbers of a pixel do not depend on each
+// other, and the numbers of a pixel over frames are white noise: the mean over
+// frames converges as before, and each single frame is blue.
+// A fixed step for each frame in place of the random offset (a golden-ratio
+// sequence for each pixel) was worse than white noise from 16 frames on.
+float blue(uint dimension) {
+    if (!noise_blue) {
+        return random();
+    }
+    uint shift = hash(push.frame * 4u + dimension);
+    ivec2 at = (noise_pixel + ivec2(shift & 63u, (shift >> 6u) & 63u)) & 63;
+    return noise_buffers[nonuniformEXT(push.noise)].values[at.y * 64 + at.x];
 }
 
 // ---- Directions ----
@@ -374,8 +406,8 @@ vec3 light_sample(vec3 position, vec3 normal, out vec3 direction, out float to_l
     float one_minus_cos_max = sin2_max / (1.0 + cos_max);
 
     // A direction in the cone, with the same chance for each direction.
-    float cos_theta = 1.0 - random() * one_minus_cos_max;
-    direction = direction_around(to_center / center_distance, cos_theta, TAU * random());
+    float cos_theta = 1.0 - blue(0u) * one_minus_cos_max;
+    direction = direction_around(to_center / center_distance, cos_theta, TAU * blue(1u));
 
     // Light that comes in at a flat angle is spread over more surface (Lambert's law).
     float cos_surface = dot(normal, direction);
@@ -665,6 +697,8 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     }
                     vec3 light_direction;
                     float to_light;
+                    // The surface that the pixel shows, on the first path of the frame.
+                    noise_blue = push.blue_noise != 0u && first && to_surface;
                     shadow_light = throughput
                         * light_sample(surface.position, surface.normal, light_direction, to_light);
                     shadow_bounced = bounced;
@@ -679,10 +713,11 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                         // and none from the side (Lambert's law again). The random direction has
                         // the same weight: more rays near the normal. Then each ray counts the
                         // same, and the light that it brings is only multiplied by the albedo.
-                        bounce_direction = direction_around(surface.normal, sqrt(random()), TAU * random());
+                        bounce_direction = direction_around(surface.normal, sqrt(blue(2u)), TAU * blue(3u));
                         bounced = true;
                         sees_light = false;
                     }
+                    noise_blue = false;
                     if (shadow_light != vec3(0.0)) {
                         // Only "something or nothing" matters for a shadow ray, so the search
                         // stops at the first triangle.
@@ -726,6 +761,7 @@ void main() {
         return;
     }
     rng_state = hash(uint(pixel.x) + hash(uint(pixel.y) + hash(push.frame)));
+    noise_pixel = pixel;
 
     // The random chain of the pixel continues from one sample to the next.
     for (uint s = 0; s < push.frame_samples; s++) {

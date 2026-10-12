@@ -23,6 +23,7 @@ use crate::graph::{
 };
 use crate::light::{LightBuffers, light_bytes};
 use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
+use crate::noise::NoiseBuffer;
 use crate::{
     Accumulation, DebugView, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights,
     GpuMeshes, MAX_LIGHTS, bloom, denoise, ray_basis, shader_spirv, taa,
@@ -351,9 +352,13 @@ impl Pass for Trace {
             frame.indirect_clamp.to_bits(),
             ctx.bindless_index(self.images.indirect),
             ctx.bindless_index(self.images.specular),
+            buffer_index(ctx.gpu, ctx.world.resource::<NoiseBuffer>().0),
             frame.jitter[0].to_bits(),
             frame.jitter[1].to_bits(),
+            u32::from(frame.blue_noise),
         ]);
+        // The shader has a vec2 at `jitter`: it starts at a multiple of 8 bytes.
+        debug_assert_eq!(fields.len() - 3, 112 / 4);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,

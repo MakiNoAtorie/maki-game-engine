@@ -80,6 +80,13 @@ pub struct Config {
     /// 0: a change of the lighting starts the indirect light again.
     /// The direct light (the shadows) has a test for each pixel: `history_clamp`.
     pub light_history_samples: u32,
+    /// Blue noise: the random numbers for the point on the light and for the bounce
+    /// direction are spread evenly over the pixels, so the noise of one frame has no
+    /// clumps, and the denoiser has less to do. False: white noise for all.
+    /// Off: measured 6 to 10 % less error for a picture of up to 64 frames and 1 % in
+    /// motion, below the gate of stage 20 (`docs/part3/stage-20.md`). The switch is
+    /// for a look at the noise in motion.
+    pub blue_noise: bool,
     /// The largest number of rays in one light path. Mirrors that face each other and
     /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
     /// time, and deep reflections lose detail.
@@ -172,6 +179,7 @@ impl Default for Config {
             samples_per_frame: 0,
             trace_budget_ms: 6.0,
             light_history_samples: 16,
+            blue_noise: false,
             max_path_rays: 8,
             denoise_passes: 4,
             denoise_direct_passes: 1,

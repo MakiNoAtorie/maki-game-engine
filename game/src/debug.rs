@@ -91,6 +91,7 @@ impl Module for DebugPanelModule {
                 ui.add(
                     egui::Slider::new(&mut config.max_path_rays, 2..=32).text("rays in one path"),
                 );
+                ui.checkbox(&mut config.blue_noise, "blue noise");
             });
             ui.collapsing("Denoiser", |ui| {
                 ui.add(
