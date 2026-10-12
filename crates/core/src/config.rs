@@ -83,9 +83,8 @@ pub struct Config {
     /// Blue noise: the random numbers for the point on the light and for the bounce
     /// direction are spread evenly over the pixels, so the noise of one frame has no
     /// clumps, and the denoiser has less to do. False: white noise for all.
-    /// Off: measured 6 to 10 % less error for a picture of up to 64 frames and 1 % in
-    /// motion, below the gate of stage 20 (`docs/part3/stage-20.md`). The switch is
-    /// for a look at the noise in motion.
+    /// Measured: 6 to 10 % less error for a picture of up to 64 frames, 1 % in motion,
+    /// for 1 % more GPU time (`docs/part3/stage-20.md`).
     pub blue_noise: bool,
     /// The largest number of rays in one light path. Mirrors that face each other and
     /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
@@ -182,7 +181,7 @@ impl Default for Config {
             samples_per_frame: 0,
             trace_budget_ms: 6.0,
             light_history_samples: 16,
-            blue_noise: false,
+            blue_noise: true,
             max_path_rays: 8,
             denoise_passes: 4,
             denoise_direct_passes: 1,

@@ -1,12 +1,12 @@
 # Stage 20: samples for the filter (blue noise)
 
-State: built, gate not met, off by default. Also: a defect of stage 18 found and corrected. Plan: `README.md`, section 5.
+State: built. The gate (-15 %) is not met; on by default by the owner's decision of 2026-10-11 (each measured gain is kept). Also: a defect of stage 18 found and corrected. Plan: `README.md`, section 5.
 
 ## 1. What was built
 
 - `crates/render/build.rs` makes one blue-noise pattern, 64 x 64 values (void and cluster, Ulichney 1993), at build time. `crates/render/src/noise.rs` puts it in a buffer.
 - The trace pass uses it for four random numbers of the first path of a pixel in a frame, at the surface that the pixel shows: the point on the light and the bounce direction (`blue()` in `trace.comp`). Each frame and each number reads the pattern at another random offset. All other numbers stay white noise.
-- Config `blue_noise` (false), with a checkbox in the Debug panel.
+- Config `blue_noise` (true), with a checkbox in the Debug panel.
 
 ## 2. Numbers
 
