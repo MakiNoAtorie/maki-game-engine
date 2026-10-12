@@ -121,7 +121,11 @@ fn main() -> anyhow::Result<()> {
     if !resave.is_empty() {
         return maki_editor::resave(&app, &resave);
     }
-    maki_gameplay::check_start_room(&app)?;
+    // Not with the editor: it opens a room with a wrong name in an event, so that
+    // the name can be set right, and shows a room file that does not read.
+    if !editor {
+        maki_gameplay::check_start_room(&app)?;
+    }
     tracing::info!(path = %config_path.display(), "config loaded");
 
     maki_platform::run(app)
@@ -152,12 +156,11 @@ mod tests {
             .add_module(maki_gameplay::CameraModule)
             .add_module(shake::ShakeModule);
         let registry = app.world().resource::<maki_events::CommandRegistry>();
-        let checks = app.world().resource::<maki_scene::RoomValidators>();
         let mut events = 0;
         for name in ["room_a.ron", "room_b.ron", "room_c.ron"] {
             // A test runs in the directory of its package.
             let path = PathBuf::from("assets/rooms").join(name);
-            let document = maki_editor::Document::read(&path, registry, checks).unwrap();
+            let document = maki_editor::Document::read(&path, registry).unwrap();
             let text = document.text();
             assert_eq!(maki_scene::parse_room(&text).unwrap(), document.room);
             assert_eq!(registry.parse_events(&text).unwrap(), document.events);

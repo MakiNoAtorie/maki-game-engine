@@ -81,21 +81,19 @@ impl Document {
         }
     }
 
-    /// Reads a room file, with the checks that the game does when it loads the room.
-    pub fn read(path: &Path, registry: &CommandRegistry, checks: &RoomValidators) -> Result<Self> {
+    /// Reads a room file.
+    pub fn read(path: &Path, registry: &CommandRegistry) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read room file {}", path.display()))?;
-        Self::parse(path, &text, registry, checks)
+        Self::parse(path, &text, registry)
     }
 
     /// The document of the text of a room file. `path` is the file that a save writes.
-    pub fn parse(
-        path: &Path,
-        text: &str,
-        registry: &CommandRegistry,
-        checks: &RoomValidators,
-    ) -> Result<Self> {
-        let room = check_room(path, text, checks)?;
+    // Without the checks of the other crates (`RoomValidators`): a room with a wrong
+    // name in an event must open, so that the name can be set right. The editor
+    // shows what those checks find (`problems`).
+    pub fn parse(path: &Path, text: &str, registry: &CommandRegistry) -> Result<Self> {
+        let room = check_room(path, text, &RoomValidators::default())?;
         let events = registry
             .parse_events(text)
             .map_err(|error| anyhow!("{}:{error}", path.display()))?;
@@ -153,10 +151,10 @@ impl Document {
                 .get_mut(*index)
                 .map(|light| Place::Point(&mut light.position)),
             Item::Spawn(name) => room.spawns.get_mut(name).map(Place::Point),
-            Item::Event(index) => self
-                .events
-                .get_mut(*index)
-                .map(|event| Place::Area(&mut event.area)),
+            Item::Event(index) => {
+                let event = self.events.get_mut(*index)?;
+                event.area.as_mut().map(Place::Area)
+            }
             Item::Room | Item::Doorway(_) | Item::Door(_) => None,
         }
     }
@@ -179,9 +177,8 @@ impl Document {
                 .map(|light| of_point(&light.position)),
             Item::Spawn(name) => room.spawns.get(name).map(of_point),
             Item::Event(index) => {
-                let area = self.events.get(*index)?.area;
-                let [x, z] = area.center;
-                (area.size != [0.0; 2]).then_some((Vec3::new(x, 0.0, z), Quat::IDENTITY))
+                let [x, z] = self.events.get(*index)?.area?.center;
+                Some((Vec3::new(x, 0.0, z), Quat::IDENTITY))
             }
             Item::Room | Item::Doorway(_) | Item::Door(_) => None,
         }

@@ -8,7 +8,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
 use maki_core::{App, Module, Time, Update};
-use maki_events::CommandRegistry;
+use maki_events::{CommandRegistry, Finding};
 use maki_gameplay::{FollowCamera, follow_player};
 use maki_scene::Camera;
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,13 @@ impl Module for ShakeModule {
                 strength,
             };
             true
+        });
+        // The proof that a module checks its own commands: the room loader runs
+        // this for each room file, and the editor shows it on the row.
+        registry.add_check(|command: &GameCommand, _room| {
+            let GameCommand::ShakeCamera(seconds, strength) = *command;
+            let nothing = seconds <= 0.0 || strength <= 0.0;
+            nothing.then(|| Finding::warning("the shake does nothing: a number is 0".to_owned()))
         });
     }
 }

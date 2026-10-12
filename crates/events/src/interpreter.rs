@@ -219,7 +219,9 @@ impl EventRunner {
 
         let state = world.resource::<GameState>();
         for (index, event) in self.events.iter().enumerate() {
-            let inside = player.is_some_and(|(at, _)| event.area.distance(at.x, at.z) == 0.0);
+            let inside =
+                |area: crate::Area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0);
+            let inside = event.area.is_some_and(inside);
             let entered = inside && !self.inside[index] && !self.new_room;
             self.inside[index] = inside;
 
@@ -261,7 +263,10 @@ impl EventRunner {
 
 /// True if the player is at the area of the event and looks toward it.
 fn faces((position, facing): (Vec3, Vec3), event: &EventDef) -> bool {
-    let [x, z] = event.area.nearest(position.x, position.z);
+    let Some(area) = event.area else {
+        return false;
+    };
+    let [x, z] = area.nearest(position.x, position.z);
     let to_event = Vec3::new(x - position.x, 0.0, z - position.z);
     let distance = to_event.length();
     // In the area: each direction faces it.

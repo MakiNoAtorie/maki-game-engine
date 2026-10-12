@@ -79,7 +79,8 @@ The event panel ("Properties" of a selected event; select it in the outliner or 
 - Conditions as rows: a kind (flag is set, flag is not set, variable is at least, variable is), a name, a value. The trigger is a choice of the four.
 - Commands as rows, one line each; the two lists of an `If` are under it, with `Else` and `End`. "Add" has each command of the game (the built-in ones and those of the modules, here `ShakeCamera`); the new command goes after the selected row (after `If`: into its first list; after `Else`: into the second). Drag a row to another row to move it. "Copy" and "Paste" use a buffer of the editor, which stays when another event or another room file is opened.
 - The arguments of the selected command: a light, a door, or a mover is picked from those of the room; a flag or a variable from each name that an event of any room file beside the open one uses, or typed as a new one; a `Transfer` picks a room file, then one of its spawn points. A command of a module that gives no widgets (`maki_editor::add_argument_editor`) is a text field with the command as a room file has it (`ShakeCamera(0.6, 0.06)`), checked with each key.
-- Checks, in red on the row and with `(!)` at the event in the outliner: a light, a door, or a mover that the room does not have; a `Transfer` to a room file or a spawn point that does not exist; two events with one name. The room loader of the game does not make these checks. A room with such a problem can be saved; the status line gives the count.
+- Checks, on the row and with `(!)` at the event in the outliner. Red, an error: a light, a door, or a mover that the room does not have; two events with one name. Yellow, a warning: a `Transfer` to a room file or a spawn point that does not exist. The room loader of the game makes the same checks with the same code (see "Rooms and events"): it does not load a room file with an error. A room with such a problem opens in the editor and can be saved; the status line gives the count.
+- A flag or a variable that an event reads and no event of any room file writes has the yellow mark "no event sets it", in the pick lists and in "Where used": a name with a wrong letter, or a flag that only a test sets.
 - "Test this page" plays the room and starts the page, whatever its trigger and conditions are, in step mode: each event waits before each command, "Step" (at the left) runs the next one, and the line under the file name shows the command that waits. "Run" ends the step mode.
 
 The panel "Where used" lists each flag and each variable of the game with each place that reads or writes it: room file, event, page, and the condition or command.
@@ -277,7 +278,12 @@ A room is a RON file in `game/assets/rooms`: the size of the room, its doorways,
 - A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A glTF file (`File("path")`, from the directory of the room file) goes away with its room too, if the next room does not name it.
 - The player, the camera, and the game state (flags and variables) are not part of a room: they stay when the room changes.
 
-An event has pages. A page has conditions (flags, variables), a trigger, and commands. The active page is the last one whose conditions hold.
+An event has pages. A page has conditions, a trigger, and commands. The active page is the last one whose conditions all hold. An event with no `area` has no place: for `Autorun` and `Parallel`.
+
+| Condition | Holds when |
+|---|---|
+| `Flag("name")`, `NotFlag("name")` | the flag is set, is not set |
+| `Variable("name", AtLeast, 3)` | the variable compares so with the number: `Equals`, `NotEquals`, `Less`, `AtLeast` |
 
 | Trigger | The commands start when |
 |---|---|
@@ -290,7 +296,7 @@ An event has pages. A page has conditions (flags, variables), a trigger, and com
 |---|---|
 | `SetFlag("name", true)`, `SetVariable("name", 3)`, `AddVariable("name", 1)` | Change the game state |
 | `Wait(0.5)` | Seconds |
-| `If("flag", [...], [...])` | The first list if the flag is set, else the second one |
+| `If([Flag("name"), Variable("count", Equals, 3)], [...], [...])` | The first list if all conditions hold, else the second one |
 | `OpenDoor("name")`, `CloseDoor("name")` | Send a door or a mover to its other pose, and wait until it is there |
 | `LightOn("name")`, `LightOff("name")`, `LightIntensity("name", 4.0)` | Change a light of the room |
 | `Message("text")` | Show the text until the player presses interact |
@@ -301,6 +307,10 @@ An event has pages. A page has conditions (flags, variables), a trigger, and com
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.
 
 The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/src/shake.rs` is the example.
+
+The loader checks the events of a room file (`crates/events/src/check.rs`). An error has the file and the line of the command, and the room does not load: a light, a door, or a mover that the room does not have, and two events with one name. A warning is logged, and the room loads: a `Transfer` to a room file or a spawn point that does not exist. The commands of a page after a `Transfer` run in the other room and are not checked. A module adds the check of its own commands with `CommandRegistry::add_check`.
+
+`python tools/convert_rooms.py FILES` converts a room file of before stage 29 (`If("flag", ..)`, `VariableAtLeast`, `VariableEquals`, an area of size 0). Comments stay.
 
 ## Crates
 

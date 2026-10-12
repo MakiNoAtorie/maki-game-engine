@@ -34,6 +34,7 @@ use serde::de::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::check::{CheckContext, Finding};
 use crate::model::{EventDef, RoomFile};
 
 /// An enum of commands. Each type with these traits is one: derive them.
@@ -75,6 +76,10 @@ type Handler = Arc<dyn Fn(&dyn Any, &mut Step, &mut World) -> bool + Send + Sync
 pub struct Command {
     value: Arc<dyn AnyCommand>,
     run: Handler,
+    /// The number of the command in the text that it was read from: 1 for the
+    /// first one, in the order of the text. 0: code made the command. A check finds
+    /// the line of a command with it (`CommandRegistry::line`).
+    pub(crate) order: u32,
 }
 
 impl Command {
@@ -85,6 +90,10 @@ impl Command {
 
     pub(crate) fn run(&self, step: &mut Step, world: &mut World) -> bool {
         (self.run)(self.value.as_any(), step, world)
+    }
+
+    pub(crate) fn as_any(&self) -> &dyn Any {
+        self.value.as_any()
     }
 }
 
@@ -145,7 +154,12 @@ struct Set {
     /// Reads a value of the enum.
     read: fn(&mut dyn erased_serde::Deserializer) -> ReadResult,
     run: Handler,
+    /// The check of the module for a command of the enum (`add_check`).
+    check: Option<Checker>,
 }
+
+/// Looks at one command with the room that it is in. `Some`: what is wrong.
+type Checker = Arc<dyn Fn(&dyn Any, &CheckContext) -> Option<Finding> + Send + Sync>;
 
 type ReadResult = Result<Arc<dyn AnyCommand>, erased_serde::Error>;
 
@@ -189,7 +203,38 @@ impl CommandRegistry {
                 let command = command.downcast_ref().expect("a value of this enum");
                 handler(command, step, world)
             }),
+            check: None,
         });
+    }
+
+    /// Adds a check for the commands of the enum `T`: a room file is checked with it
+    /// when the game loads the room, and a tool shows what it finds. It gets one
+    /// command and what the room has (`CheckContext`). An error stops the load of
+    /// the room; a warning is logged. Call after `add::<T>`.
+    ///
+    /// Panics if the enum `T` was not added.
+    pub fn add_check<T: CommandSet>(
+        &self,
+        check: impl Fn(&T, &CheckContext) -> Option<Finding> + Send + Sync + 'static,
+    ) {
+        let mut sets = self.0.write().expect("no writer panics");
+        let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
+        let set = set.expect("add the commands before their check");
+        set.check = Some(Arc::new(move |command, context| {
+            let command = command.downcast_ref().expect("a value of this enum");
+            check(command, context)
+        }));
+    }
+
+    /// What the check of its module finds in a command.
+    pub(crate) fn check(&self, command: &Command, context: &CheckContext) -> Option<Finding> {
+        let value = command.as_any();
+        let sets = self.0.read().expect("no writer panics");
+        let set = sets.iter().find(|set| set.type_id == value.type_id())?;
+        // The lock is free while the check runs.
+        let check = set.check.clone()?;
+        drop(sets);
+        check(value, context)
     }
 
     /// A command from a value of its enum: for a tool that makes or changes events
@@ -200,6 +245,7 @@ impl CommandRegistry {
         Some(Command {
             value: Arc::new(value),
             run: set.run.clone(),
+            order: 0,
         })
     }
 
@@ -217,34 +263,82 @@ impl CommandRegistry {
     /// The events in the text of a room file. The error has the line and the column,
     /// also for a command that no module added and for a bad argument.
     pub fn parse_events(&self, text: &str) -> Result<Vec<EventDef>, ron::error::SpannedError> {
-        let before = PARSING.replace(Some(self.clone()));
-        let file = maki_scene::ron_options().from_str::<RoomFile>(text);
+        Ok(self.parse::<RoomFile>(text, None)?.events)
+    }
+
+    fn parse<T: DeserializeOwned>(
+        &self,
+        text: &str,
+        stop: Option<Stop>,
+    ) -> Result<T, ron::error::SpannedError> {
+        let before = PARSING.replace(Some(Parsing {
+            registry: self.clone(),
+            commands: 0,
+            events: 0,
+            stop,
+        }));
+        let value = maki_scene::ron_options().from_str::<T>(text);
         PARSING.set(before);
-        Ok(file?.events)
+        value
+    }
+
+    /// The line of a command or an event in the text of a room file that reads with
+    /// no error.
+    // A value that serde made has no place in the text. So the text is read a second
+    // time, and the read stops with an error at the command or the event: the
+    // parser gives the place of an error.
+    pub(crate) fn line(&self, text: &str, stop: Stop) -> Option<usize> {
+        let error = self.parse::<RoomFile>(text, Some(stop)).err()?;
+        Some(error.span.end.line)
     }
 
     /// One command from its text in the form of a room file: `Wait(0.5)`. For a
     /// tool that lets the user type a command of a module that it does not know.
     pub fn parse_command(&self, text: &str) -> Result<Command, ron::error::SpannedError> {
-        let before = PARSING.replace(Some(self.clone()));
-        let command = maki_scene::ron_options().from_str::<Command>(text);
-        PARSING.set(before);
-        command
-    }
-
-    /// A check for `maki_scene::RoomValidators`: a room with a bad event is not loaded.
-    pub fn validate_events(&self, text: &str) -> Result<(), String> {
-        self.parse_events(text)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        self.parse(text, None)
     }
 }
 
+/// Where the read of a text stops (`CommandRegistry::line`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// At the command with this `Command::order`.
+    Command(u32),
+    /// At the name of the event with this number, from 1.
+    Event(u32),
+}
+
+/// The read of a text that runs on this thread.
+struct Parsing {
+    registry: CommandRegistry,
+    /// The commands and the events that were read.
+    commands: u32,
+    events: u32,
+    stop: Option<Stop>,
+}
+
+const STOPPED: &str = "the read stops here";
+
+/// Reads the name of an event (`EventDef::name`), and counts the event.
+pub(crate) fn event_name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    let stop = PARSING.with_borrow_mut(|parsing| {
+        parsing.as_mut().is_some_and(|parsing| {
+            parsing.events += 1;
+            parsing.stop == Some(Stop::Event(parsing.events))
+        })
+    });
+    if stop {
+        return Err(D::Error::custom(STOPPED));
+    }
+    Ok(name)
+}
+
 thread_local! {
-    /// The registry of the `parse_events` call that runs on this thread. serde gives
-    /// no way to hand a value down to the `Deserialize` code of a nested type (the
-    /// commands in the lists of an `If`), so `Command` finds the registry here.
-    static PARSING: RefCell<Option<CommandRegistry>> = const { RefCell::new(None) };
+    /// The `parse_events` call that runs on this thread. serde gives no way to hand
+    /// a value down to the `Deserialize` code of a nested type (the commands in the
+    /// lists of an `If`), so `Command` finds the registry here.
+    static PARSING: RefCell<Option<Parsing>> = const { RefCell::new(None) };
 }
 
 impl<'de> Deserialize<'de> for Command {
@@ -265,9 +359,20 @@ impl<'de> Visitor<'de> for CommandVisitor {
 
     fn visit_enum<A: EnumAccess<'de>>(self, access: A) -> Result<Command, A::Error> {
         let (name, variant) = access.variant_seed(VariantName)?;
-        let registry = PARSING.with_borrow(Clone::clone).ok_or_else(|| {
+        // Counted here, before the arguments: a command in a list of an `If` has a
+        // number after that of its `If`, as in the text.
+        let parsing = PARSING.with_borrow_mut(|parsing| {
+            let parsing = parsing.as_mut()?;
+            parsing.commands += 1;
+            let stop = parsing.stop == Some(Stop::Command(parsing.commands));
+            Some((parsing.registry.clone(), parsing.commands, stop))
+        });
+        let (registry, order, stop) = parsing.ok_or_else(|| {
             A::Error::custom("commands are read with `CommandRegistry::parse_events`")
         })?;
+        if stop {
+            return Err(A::Error::custom(STOPPED));
+        }
         let Some(set) = registry.find(&name) else {
             let known = registry.names().join(", ");
             return Err(A::Error::custom(format!(
@@ -285,6 +390,7 @@ impl<'de> Visitor<'de> for CommandVisitor {
         Ok(Command {
             value,
             run: set.run,
+            order,
         })
     }
 }

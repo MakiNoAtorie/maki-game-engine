@@ -13,7 +13,9 @@ use maki_scene::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::check::{CheckContext, Finding};
 use crate::command::{Command, Step};
+use crate::model::{Condition, all_hold};
 use crate::{GameState, INTERACT, MessageBox};
 
 /// Text arguments are names: of a flag, a variable, or an entity of the room file
@@ -25,8 +27,8 @@ pub enum Builtin {
     AddVariable(String, i32),
     /// Seconds.
     Wait(f32),
-    /// The first list if the flag is set, else the second one.
-    If(String, Vec<Command>, Vec<Command>),
+    /// The first list if all conditions hold, else the second one.
+    If(Vec<Condition>, Vec<Command>, Vec<Command>),
     /// Sends a door or a mover to its pose B (a door: open) and waits until it is there.
     OpenDoor(String),
     /// To pose A (a door: closed).
@@ -68,8 +70,8 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             // The small number: the sum of 60 steps of 1/60 s is not exactly 1 s.
             return *left <= 1e-5;
         }
-        Builtin::If(flag, then, otherwise) => {
-            let branch = if world.resource::<GameState>().flag(flag) {
+        Builtin::If(conditions, then, otherwise) => {
+            let branch = if all_hold(conditions, world.resource::<GameState>()) {
                 then
             } else {
                 otherwise
@@ -136,6 +138,33 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
         }
     }
     true
+}
+
+/// The check of the built-in commands (`CommandRegistry::add_check`): each name of a
+/// command is a name that the room has.
+pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding> {
+    let room = context.room;
+    let named = |name: &Option<String>, wanted: &str| name.as_deref() == Some(wanted);
+    match command {
+        Builtin::LightOn(name) | Builtin::LightOff(name) | Builtin::LightIntensity(name, _) => {
+            let found = room.lights.iter().any(|light| named(&light.name, name));
+            (!found).then(|| Finding::error(format!("the room has no light `{name}`")))
+        }
+        Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {
+            let found = room.doors.iter().any(|door| named(&door.name, name))
+                || room.movers.iter().any(|mover| named(&mover.name, name));
+            (!found).then(|| Finding::error(format!("the room has no door or mover `{name}`")))
+        }
+        // A warning: a room is made before the room that it leads to.
+        Builtin::Transfer(file, spawn) => match context.has_spawn(file, spawn) {
+            Some(true) => None,
+            Some(false) => Some(Finding::warning(format!(
+                "`{file}` has no spawn point `{spawn}`"
+            ))),
+            None => Some(Finding::warning(format!("no room file `{file}`"))),
+        },
+        _ => None,
+    }
 }
 
 /// Sends each mover of this name to pose B or A (only `start`), and tells if all of

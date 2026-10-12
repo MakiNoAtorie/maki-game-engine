@@ -412,23 +412,52 @@ pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Resul
             ));
         }
     }
-    for validate in &validators.0 {
-        validate(text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
+    let check = RoomCheck {
+        path,
+        room: &room,
+        text,
+    };
+    let mut errors = Vec::new();
+    for problem in validators.0.iter().flat_map(|validate| validate(&check)) {
+        let line = format!("{}:{}", path.display(), problem.text);
+        if problem.warning {
+            tracing::warn!("{line}");
+        } else {
+            errors.push(line);
+        }
+    }
+    if !errors.is_empty() {
+        return Err(anyhow!("{}", errors.join("\n")));
     }
     Ok(room)
 }
 
-/// Checks of other crates for a room file: each gets the text of the file and returns
-/// the reason if the file is bad. A room that fails a check is not loaded. The events
-/// crate checks the events with this, so a transfer into a room with a bad event does
-/// not happen.
+/// Checks of other crates for a room file. A room with an error of a check is not
+/// loaded; a warning is logged. The events crate checks the events with this, so a
+/// transfer into a room with a bad event does not happen.
 #[derive(Resource, Default)]
 pub struct RoomValidators(pub Vec<RoomValidator>);
 
-/// Gets the text of a room file. `Err`: the reason why the file is bad, with the
-/// line and the column first (`3:7: ...`) if it has them.
+/// Returns what is wrong in a room file.
 // A closure, not a plain function: the check of the events holds the command registry.
-pub type RoomValidator = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+pub type RoomValidator = Box<dyn Fn(&RoomCheck) -> Vec<RoomProblem> + Send + Sync>;
+
+/// What a [`RoomValidator`] gets: a room file that reads as a room.
+pub struct RoomCheck<'a> {
+    /// The file. Its directory is where the files that the room names are.
+    pub path: &'a Path,
+    pub room: &'a RoomDef,
+    pub text: &'a str,
+}
+
+/// One thing that a [`RoomValidator`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomProblem {
+    /// False: an error, and the room is not loaded.
+    pub warning: bool,
+    /// The reason, with the line first (`3: ...` or `3:7: ...`) if it has one.
+    pub text: String,
+}
 
 /// Marks an entity that belongs to the current room. Unload removes it.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -457,7 +486,8 @@ pub struct RoomTarget {
     pub spawn: Option<String>,
     /// `Some`: the text of the room, in place of the text of the file (a tool shows a
     /// room that is not saved). `path` then is the name of the room, and its
-    /// directory is where the files that the room names are.
+    /// directory is where the files that the room names are. The validators do not
+    /// run for it: the tool shows what is wrong in its room, and shows the room.
     pub text: Option<String>,
 }
 
@@ -517,7 +547,9 @@ pub fn load_requested_room(
     let mut target = request.0.take().expect("tested above");
     let start = std::time::Instant::now();
     let read = match target.text.take() {
-        Some(text) => check_room(&target.path, &text, &validators).map(|def| (def, text)),
+        Some(text) => {
+            check_room(&target.path, &text, &RoomValidators::default()).map(|def| (def, text))
+        }
         None => read_room(&target.path, &validators),
     };
     let loaded = read.and_then(|(def, source)| {
@@ -1083,7 +1115,19 @@ mod tests {
         // A check of another crate.
         std::fs::write(&path, "(width: 4, depth: 4, height: 3)").unwrap();
         assert!(read_room(&path, &RoomValidators::default()).is_ok());
-        let no = RoomValidators(vec![Box::new(|_| Err("2:1: bad event".to_owned()))]);
+        let problem = |warning| {
+            let text = "2:1: bad event".to_owned();
+            let validator: RoomValidator = Box::new(move |_| {
+                vec![RoomProblem {
+                    warning,
+                    text: text.clone(),
+                }]
+            });
+            RoomValidators(vec![validator])
+        };
+        // A warning: the room loads.
+        assert!(read_room(&path, &problem(true)).is_ok());
+        let no = problem(false);
         let text = format!("{:#}", read_room(&path, &no).unwrap_err());
         assert!(text.contains("2:1: bad event"), "{text}");
 

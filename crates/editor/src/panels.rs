@@ -16,7 +16,7 @@ use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
 use maki_ui::{Panels, add_left_panel, add_overlay, add_panel, add_window};
 
-use crate::event_panel::event_panel;
+use crate::event_panel::{HINT, NEVER_WRITTEN, event_panel};
 use crate::widgets::{choice, color, drag, look, mesh, name, number, pose, texture, vector};
 use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool, spawn_users};
 
@@ -402,6 +402,12 @@ fn where_used(ui: &mut Ui, editor: &mut Editor) {
         for (name, uses) in names {
             let writes = uses.iter().filter(|place| place.writes).count();
             let title = format!("{name}: {} reads, {writes} writes", uses.len() - writes);
+            // A name that no event writes: a wrong letter, or a flag for a test.
+            let title = if writes == 0 {
+                egui::RichText::new(format!("{title}: {NEVER_WRITTEN}")).color(HINT)
+            } else {
+                egui::RichText::new(title)
+            };
             // The name is the identity: the header stays unfolded when a count changes.
             egui::CollapsingHeader::new(title)
                 .id_salt((kind, name))

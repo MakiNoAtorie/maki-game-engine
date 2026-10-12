@@ -119,14 +119,15 @@ fn a_branch_takes_the_side_of_its_flag_and_a_later_page_takes_over() {
     let directory = directory("branch");
     let events = r#"
         (name: "first", pages: [(trigger: Autorun, commands: [
-            If("seen", [SetVariable("side", 1)], [SetVariable("side", 2)]),
+            If([Flag("seen")], [SetVariable("side", 1)], [SetVariable("side", 2)]),
             AddVariable("side", 10),
             SetFlag("seen", true)])]),
         (name: "second", pages: [(conditions: [Flag("seen")], trigger: Autorun, commands: [
-            If("seen", [SetVariable("again", 1)], [SetVariable("again", 2)])])]),
+            If([Flag("seen"), Variable("side", Equals, 12)],
+                [SetVariable("again", 1)], [SetVariable("again", 2)])])]),
         (name: "loop", pages: [
             (trigger: Parallel, commands: [AddVariable("count", 1), Wait(0.04)]),
-            (conditions: [VariableAtLeast("count", 3)], trigger: Parallel, commands: [])])"#;
+            (conditions: [Variable("count", AtLeast, 3)], trigger: Parallel, commands: [])])"#;
     std::fs::write(directory.join("a.ron"), room(events)).unwrap();
     let app = game(&directory);
     app.run(|mut app| {
@@ -310,7 +311,7 @@ fn a_module_adds_commands_that_wait_and_that_hold_command_lists() {
     let directory = directory("module");
     let events = r#"(name: "bell", pages: [(trigger: Autorun, commands: [
         Steps(3),
-        Twice([AddVariable("count", 1), If("no", [], [Ring(bell: "small")])]),
+        Twice([AddVariable("count", 1), If([Flag("no")], [], [Ring(bell: "small")])]),
         SetFlag("ended", true)])])"#;
     std::fs::write(directory.join("a.ron"), room(events)).unwrap();
     let app = game(&directory);
@@ -399,14 +400,110 @@ fn a_command_is_read_from_its_text() {
     let registry = CommandRegistry::default();
     registry.add(crate::builtin::run);
     let command = registry
-        .parse_command(r#"If("seen", [Wait(0.5)], [])"#)
+        .parse_command(r#"If([Flag("seen")], [Wait(0.5)], [])"#)
         .unwrap();
-    let Some(Builtin::If(flag, yes, no)) = command.get::<Builtin>() else {
+    let Some(Builtin::If(conditions, yes, no)) = command.get::<Builtin>() else {
         panic!("an If: {command:?}");
     };
-    assert_eq!((flag.as_str(), yes.len(), no.len()), ("seen", 1, 0));
+    assert_eq!(conditions, &[Condition::Flag("seen".to_owned())]);
+    assert_eq!((yes.len(), no.len()), (1, 0));
     assert_eq!(Some(&yes[0]), registry.command(Builtin::Wait(0.5)).as_ref());
     for bad in ["Wait(", "Wait(\"long\")", "Explode", ""] {
         assert!(registry.parse_command(bad).is_err(), "{bad}");
     }
+}
+
+/// The checks that the room loader makes for the events of a file, with the line of
+/// each command, and the same texts from `check_events` for a tool.
+#[test]
+fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warning() {
+    let directory = directory("checks");
+    let path = directory.join("a.ron");
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    // A check of a module, added after the validator was made.
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+    enum Sound {
+        Ring(i32),
+    }
+    registry.add(|_: &Sound, _: &mut Step, _: &mut World| true);
+    registry.add_check(|Sound::Ring(times): &Sound, _: &CheckContext| {
+        (*times < 1).then(|| Finding::error("a bell rings one time or more".to_owned()))
+    });
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let check = |events: &str| maki_scene::check_room(&path, &room(events), validators);
+
+    // `room` has its events in line 7. Two equal commands: each has its own line.
+    let bad = r#"
+        (name: "a", pages: [(trigger: Interact, commands: [
+            OpenDoor("door"),
+            If([Flag("x")], [
+                OpenDoor("dor")], [
+                OpenDoor("dor")]),
+            Ring(0),
+            LightOn("lamp")])]),
+        (name: "b", pages: []),
+        (name:
+            "a", pages: [(trigger: Touch, commands: [LightOff("lamb")])])"#;
+    let error = check(bad).unwrap_err().to_string();
+    let lines: Vec<&str> = error.lines().collect();
+    let file = path.display().to_string();
+    let expected = [
+        "11: event `a`: the room has no door or mover `dor`",
+        "12: event `a`: the room has no door or mover `dor`",
+        "13: event `a`: a bell rings one time or more",
+        "17: event `a`: another event has the name `a`",
+        "17: event `a`: the room has no light `lamb`",
+    ];
+    assert_eq!(lines, expected.map(|line| format!("{file}:{line}")));
+
+    // The text of a problem is that of `check_events`, which a tool calls.
+    let text = room(bad);
+    let def = maki_scene::parse_room(&text).unwrap();
+    let context = CheckContext {
+        room: &def,
+        file: "a.ron",
+        spawn: &|_, _| None,
+    };
+    let problems = registry.check_events(&registry.parse_events(&text).unwrap(), &context);
+    let found: Vec<_> = problems
+        .iter()
+        .map(|problem| (problem.event, problem.warning, problem.text.as_str()))
+        .collect();
+    assert_eq!(found[0], (0, false, "the room has no door or mover `dor`"));
+    assert_eq!(found.len(), 5);
+    let wrong = registry.command(Builtin::OpenDoor("dor".to_owned()));
+    assert_eq!(problems[0].command, wrong.map(|command| (0, command)));
+
+    // A `Transfer` to a file or a spawn point that is not there: the room loads.
+    // The command after a `Transfer` runs in the other room: no check of its name.
+    let transfer = r#"(name: "a", pages: [
+        (trigger: Touch, commands: [Transfer("b.ron", "west"), LightOn("of b")]),
+        (trigger: Touch, commands: [Transfer("a.ron", "east")]),
+        (trigger: Touch, commands: [Transfer("a.ron", "north")])])"#;
+    assert!(check(transfer).is_ok());
+    let def = maki_scene::parse_room(&room(transfer)).unwrap();
+    let texts = |spawn: &dyn Fn(&str, &str) -> Option<bool>| -> Vec<String> {
+        let context = CheckContext {
+            room: &def,
+            file: "a.ron",
+            spawn,
+        };
+        let events = registry.parse_events(&room(transfer)).unwrap();
+        let problems = registry.check_events(&events, &context);
+        assert!(problems.iter().all(|problem| problem.warning));
+        problems.into_iter().map(|problem| problem.text).collect()
+    };
+    assert_eq!(
+        texts(&|_, _| None),
+        ["no room file `b.ron`", "`a.ron` has no spawn point `north`"]
+    );
+    assert_eq!(
+        texts(&|_, spawn| Some(spawn == "west")),
+        ["`a.ron` has no spawn point `north`"]
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
 }

@@ -147,10 +147,9 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
     }
 
     for (index, event) in events.iter().enumerate() {
-        let (area, item) = (event.area, Item::Event(index));
-        if area.size == [0.0; 2] {
+        let (Some(area), item) = (event.area, Item::Event(index)) else {
             continue;
-        }
+        };
         let corner = |x: f32, z: f32| {
             let [center_x, center_z] = area.center;
             Vec3::new(

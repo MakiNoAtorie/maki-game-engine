@@ -12,18 +12,23 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_core::App;
 use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, Condition, GameState, Page, Trigger, active_page,
+    Area, Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, GameState, Page,
+    Problem, Trigger, active_page,
 };
 use maki_scene::ron_options;
 use maki_ui::egui::{self, Color32, Ui};
 
 use crate::events::{
-    ListPath, Problem, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
+    ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, same_kind, text};
+use crate::widgets::{choice, drag, number, optional, same_kind, text};
 use crate::{Command as EditorCommand, Editor};
 
 const ERROR: Color32 = Color32::from_rgb(255, 110, 90);
+/// A warning of a check, and the mark of a name that no event writes.
+pub(crate) const HINT: Color32 = Color32::from_rgb(235, 190, 80);
+/// The mark of a flag or a variable that an event reads and no event writes.
+pub(crate) const NEVER_WRITTEN: &str = "no event sets it";
 
 /// What the event panel keeps between frames.
 #[derive(Default)]
@@ -81,6 +86,9 @@ pub fn add_argument_editor<T: CommandSet>(
 struct Lists {
     flags: Vec<String>,
     variables: Vec<String>,
+    /// The flags and the variables that an event reads and no event writes.
+    unset_flags: Vec<String>,
+    unset_variables: Vec<String>,
     lights: Vec<String>,
     /// Doors and movers: `OpenDoor` finds the two.
     movers: Vec<String>,
@@ -90,6 +98,17 @@ struct Lists {
 
 /// A name of a list, by a click. A name that the list does not have shows in red.
 fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
+    pick_marked(ui, salt, value, known, &[])
+}
+
+/// As [`pick`]. A name of `marked` has the mark [`NEVER_WRITTEN`] in the list.
+fn pick_marked(
+    ui: &mut Ui,
+    salt: &str,
+    value: &mut String,
+    known: &[String],
+    marked: &[String],
+) -> bool {
     let mut changed = false;
     let shown = egui::RichText::new(value.as_str());
     let shown = if known.contains(value) {
@@ -101,7 +120,12 @@ fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
         .selected_text(shown)
         .show_ui(ui, |ui| {
             for name in known {
-                if ui.selectable_label(name == value, name.as_str()).clicked() && name != value {
+                let label = if marked.contains(name) {
+                    egui::RichText::new(format!("{name}  ({NEVER_WRITTEN})")).color(HINT)
+                } else {
+                    egui::RichText::new(name)
+                };
+                if ui.selectable_label(name == value, label).clicked() && name != value {
                     value.clone_from(name);
                     changed = true;
                 }
@@ -111,14 +135,34 @@ fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
 }
 
 /// The name of a flag or a variable: one that an event of the game uses, by a click,
-/// or a new one, typed.
-fn pick_or_new(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
-    ui.horizontal(|ui| {
-        let picked = pick(ui, salt, value, known);
+/// or a new one, typed. `unset`: the names that no event writes. Such a name has a
+/// mark: it can be a name with a wrong letter.
+fn pick_or_new(
+    ui: &mut Ui,
+    salt: &str,
+    value: &mut String,
+    known: &[String],
+    unset: &[String],
+) -> bool {
+    let changed = ui.horizontal(|ui| {
+        let picked = pick_marked(ui, salt, value, known, unset);
         let typed = ui.push_id(salt, |ui| text(ui, "new:", value)).inner;
         picked | typed
-    })
-    .inner
+    });
+    // On its own line: the text field takes the rest of the line.
+    if unset.contains(value) {
+        ui.colored_label(HINT, format!("`{value}`: {NEVER_WRITTEN}"));
+    }
+    changed.inner
+}
+
+fn pick_flag(ui: &mut Ui, value: &mut String, lists: &Lists) -> bool {
+    pick_or_new(ui, "flag", value, &lists.flags, &lists.unset_flags)
+}
+
+fn pick_variable(ui: &mut Ui, value: &mut String, lists: &Lists) -> bool {
+    let (known, unset) = (&lists.variables, &lists.unset_variables);
+    pick_or_new(ui, "variable", value, known, unset)
 }
 
 fn seconds(ui: &mut Ui, value: &mut f32) -> bool {
@@ -136,13 +180,17 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
     };
     match command {
         Builtin::SetFlag(name, value) => {
-            pick_or_new(ui, "flag", name, &lists.flags) | ui.checkbox(value, "set").changed()
+            pick_flag(ui, name, lists) | ui.checkbox(value, "set").changed()
         }
         Builtin::SetVariable(name, value) | Builtin::AddVariable(name, value) => {
-            pick_or_new(ui, "variable", name, &lists.variables) | whole(ui, value)
+            pick_variable(ui, name, lists) | whole(ui, value)
         }
         Builtin::Wait(time) | Builtin::FadeOut(time) | Builtin::FadeIn(time) => seconds(ui, time),
-        Builtin::If(name, ..) => pick_or_new(ui, "flag", name, &lists.flags),
+        // The widget of the conditions of a page.
+        Builtin::If(list, ..) => {
+            ui.label("Conditions (all must hold)");
+            conditions(ui, list, lists)
+        }
         Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {
             ui.label("door or mover");
             pick(ui, "mover", name, &lists.movers)
@@ -186,7 +234,10 @@ fn new_command(name: &str, lists: &Lists, registry: &CommandRegistry) -> Option<
         "SetVariable" => Builtin::SetVariable(first(&lists.variables, "variable"), 0),
         "AddVariable" => Builtin::AddVariable(first(&lists.variables, "variable"), 1),
         "Wait" => Builtin::Wait(1.0),
-        "If" => Builtin::If(first(&lists.flags, "flag"), Vec::new(), Vec::new()),
+        "If" => {
+            let flag = Condition::Flag(first(&lists.flags, "flag"));
+            Builtin::If(vec![flag], Vec::new(), Vec::new())
+        }
         "OpenDoor" => Builtin::OpenDoor(first(&lists.movers, "")),
         "CloseDoor" => Builtin::CloseDoor(first(&lists.movers, "")),
         "LightOn" => Builtin::LightOn(first(&lists.lights, "")),
@@ -202,38 +253,14 @@ fn new_command(name: &str, lists: &Lists, registry: &CommandRegistry) -> Option<
     registry.command(builtin)
 }
 
-/// The condition rows of a page.
+/// The condition rows of a page or of an `If`.
 fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bool {
     let mut changed = false;
     let mut removed = None;
     for (index, condition) in conditions.iter_mut().enumerate() {
         ui.push_id(("condition", index), |ui| {
+            // One line for each part: the column is narrow.
             ui.horizontal(|ui| {
-                let (name, value) = match condition {
-                    Condition::Flag(name) | Condition::NotFlag(name) => (name.clone(), 1),
-                    Condition::VariableAtLeast(name, value)
-                    | Condition::VariableEquals(name, value) => (name.clone(), *value),
-                };
-                let kinds = [
-                    ("flag is set", Condition::Flag(name.clone())),
-                    ("flag is not set", Condition::NotFlag(name.clone())),
-                    (
-                        "variable is at least",
-                        Condition::VariableAtLeast(name.clone(), value),
-                    ),
-                    ("variable is", Condition::VariableEquals(name, value)),
-                ];
-                changed |= choice(ui, "", condition, &kinds, same_kind);
-                changed |= match condition {
-                    Condition::Flag(name) | Condition::NotFlag(name) => {
-                        pick_or_new(ui, "flag", name, &lists.flags)
-                    }
-                    Condition::VariableAtLeast(name, value)
-                    | Condition::VariableEquals(name, value) => {
-                        pick_or_new(ui, "variable", name, &lists.variables)
-                            | ui.add(drag(value)).changed()
-                    }
-                };
                 if ui
                     .small_button("x")
                     .on_hover_text("Remove the condition")
@@ -241,7 +268,48 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
                 {
                     removed = Some(index);
                 }
+                // Another kind keeps the name if it is of the same list (flags or
+                // variables), else it takes the first name of the other list.
+                let name = |variable: bool| {
+                    let names = if variable {
+                        &lists.variables
+                    } else {
+                        &lists.flags
+                    };
+                    let first = || names.first().map_or("name", String::as_str).to_owned();
+                    if condition.is_variable() == variable {
+                        condition.name().to_owned()
+                    } else {
+                        first()
+                    }
+                };
+                let kinds = [
+                    ("flag is set", Condition::Flag(name(false))),
+                    ("flag is not set", Condition::NotFlag(name(false))),
+                    (
+                        "variable",
+                        Condition::Variable(name(true), Compare::AtLeast, 1),
+                    ),
+                ];
+                changed |= choice(ui, "", condition, &kinds, same_kind);
             });
+            changed |= match condition {
+                Condition::Flag(name) | Condition::NotFlag(name) => pick_flag(ui, name, lists),
+                Condition::Variable(name, compare, value) => {
+                    let compares = [
+                        ("equal to", Compare::Equals),
+                        ("not equal to", Compare::NotEquals),
+                        ("less than", Compare::Less),
+                        ("at least", Compare::AtLeast),
+                    ];
+                    let picked = pick_variable(ui, name, lists);
+                    let compared = ui.horizontal(|ui| {
+                        choice(ui, "is", compare, &compares, PartialEq::eq)
+                            | ui.add(drag(value)).changed()
+                    });
+                    picked | compared.inner
+                }
+            };
         });
     }
     if let Some(index) = removed {
@@ -272,7 +340,7 @@ pub(crate) fn event_panel(
     let registry = editor.registry.clone();
     let others = editor.others().to_vec();
     let used = names(&editor.document, &others);
-    let problems: Vec<Problem> = problems(&editor.document, &others);
+    let problems: Vec<Problem> = problems(&editor.document, &others, &registry);
     let problems: Vec<&Problem> = problems
         .iter()
         .filter(|problem| problem.event == index)
@@ -292,6 +360,8 @@ pub(crate) fn event_panel(
     let lists = Lists {
         flags: used.flags.keys().cloned().collect(),
         variables: used.variables.keys().cloned().collect(),
+        unset_flags: Names::never_written(&used.flags),
+        unset_variables: Names::never_written(&used.variables),
         lights: named(room.lights.iter().map(|light| &light.name).collect()),
         movers: named(
             doors
@@ -321,16 +391,13 @@ pub(crate) fn event_panel(
         changed = true;
     }
     // An event with no area is one that no player walks to: Autorun, Parallel.
-    let mut has_area = event.area.size != [0.0; 2];
-    if ui
-        .checkbox(&mut has_area, "has an area on the floor")
-        .changed()
-    {
-        event.area.size = if has_area { [1.0; 2] } else { [0.0; 2] };
-        changed = true;
-    }
-    if has_area {
-        let area = &mut event.area;
+    let new_area = || Area {
+        center: [0.0; 2],
+        size: [1.0; 2],
+    };
+    let label = "has an area on the floor";
+    changed |= optional(ui, label, &mut event.area, new_area, |ui, area| {
+        let mut changed = false;
         for (label, value, least) in [
             ("center (X, Z)", &mut area.center, -100.0),
             ("size (X, Z)", &mut area.size, 0.05),
@@ -344,9 +411,10 @@ pub(crate) fn event_panel(
                 }
             });
         }
-    }
-    for problem in problems.iter().filter(|problem| problem.row.is_none()) {
-        ui.colored_label(ERROR, problem.text.as_str());
+        changed
+    });
+    for problem in problems.iter().filter(|problem| problem.command.is_none()) {
+        ui.colored_label(color(problem), problem.text.as_str());
     }
     ui.separator();
 
@@ -462,6 +530,11 @@ pub(crate) fn event_panel(
     Some(changed)
 }
 
+/// Red for an error of a check (the game does not load the room), else yellow.
+fn color(problem: &Problem) -> Color32 {
+    if problem.warning { HINT } else { ERROR }
+}
+
 fn empty_page() -> Page {
     Page {
         conditions: Vec::new(),
@@ -553,14 +626,19 @@ fn commands(
     for (row, depth, text) in &all {
         ui.horizontal(|ui| {
             ui.add_space(*depth as f32 * 18.0);
-            let bad = problems
-                .iter()
-                .find(|problem| problem.row == Some((page_index, text.clone())));
+            // The problem has the command, not the row: two equal commands of a
+            // page have the same problem.
+            let command = Some(row)
+                .filter(|row| row.kind == RowKind::Command)
+                .and_then(|row| row.command(list));
+            let bad = problems.iter().find(|problem| {
+                let of_problem = problem.command.as_ref();
+                command.is_some_and(|command| of_problem == Some(&(page_index, command.clone())))
+            });
             let label = egui::RichText::new(text).monospace();
-            let label = if bad.is_some() {
-                label.color(ERROR)
-            } else {
-                label
+            let label = match bad {
+                Some(problem) => label.color(color(problem)),
+                None => label,
             };
             let response = ui.selectable_label(selected.as_ref() == Some(row), label);
             let response = response.interact(egui::Sense::drag());
@@ -580,7 +658,7 @@ fn commands(
                 }
             }
             if let Some(problem) = bad {
-                ui.colored_label(ERROR, problem.text.as_str());
+                ui.colored_label(color(problem), problem.text.as_str());
             }
         });
     }

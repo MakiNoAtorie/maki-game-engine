@@ -16,15 +16,17 @@ use crate::command::Command;
 #[serde(deny_unknown_fields)]
 pub struct EventDef {
     /// For the debug panel and the log.
+    #[serde(deserialize_with = "crate::command::event_name")]
     pub name: String,
-    /// Where the event is, for the triggers `Interact` and `Touch`.
-    #[serde(default, skip_serializing_if = "Area::is_empty")]
-    pub area: Area,
+    /// Where the event is, for the triggers `Interact` and `Touch`. `None`: the event
+    /// has no place, and no player starts it (`Autorun`, `Parallel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<Area>,
     pub pages: Vec<Page>,
 }
 
 /// A rectangle on the floor, with sides along X and Z.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Area {
     /// X and Z of the center, in meters.
@@ -34,12 +36,6 @@ pub struct Area {
 }
 
 impl Area {
-    /// True for the default: an event with no place. Such an area is not written to
-    /// a room file.
-    fn is_empty(&self) -> bool {
-        *self == Area::default()
-    }
-
     /// The distance on the floor from a point to the rectangle. 0.0 in it.
     pub fn distance(&self, x: f32, z: f32) -> f32 {
         let beside = |at: f32, axis: usize| {
@@ -75,9 +71,17 @@ pub enum Condition {
     Flag(String),
     /// The flag is not set.
     NotFlag(String),
-    /// The variable has this value or a larger one.
-    VariableAtLeast(String, i32),
-    VariableEquals(String, i32),
+    /// The variable, compared with a number: `Variable("count", AtLeast, 3)`.
+    Variable(String, Compare, i32),
+}
+
+/// How a variable is compared with a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Compare {
+    Equals,
+    NotEquals,
+    Less,
+    AtLeast,
 }
 
 impl Condition {
@@ -85,10 +89,36 @@ impl Condition {
         match self {
             Condition::Flag(name) => state.flag(name),
             Condition::NotFlag(name) => !state.flag(name),
-            Condition::VariableAtLeast(name, value) => state.variable(name) >= *value,
-            Condition::VariableEquals(name, value) => state.variable(name) == *value,
+            Condition::Variable(name, compare, value) => {
+                let variable = state.variable(name);
+                match compare {
+                    Compare::Equals => variable == *value,
+                    Compare::NotEquals => variable != *value,
+                    Compare::Less => variable < *value,
+                    Compare::AtLeast => variable >= *value,
+                }
+            }
         }
     }
+
+    /// The name of the flag or the variable that the condition reads.
+    pub fn name(&self) -> &str {
+        match self {
+            Condition::Flag(name) | Condition::NotFlag(name) | Condition::Variable(name, ..) => {
+                name
+            }
+        }
+    }
+
+    /// True: the name is of a variable. False: of a flag.
+    pub fn is_variable(&self) -> bool {
+        matches!(self, Condition::Variable(..))
+    }
+}
+
+/// True if each condition of the list holds. A list with no condition holds.
+pub fn all_hold(conditions: &[Condition], state: &GameState) -> bool {
+    conditions.iter().all(|condition| condition.holds(state))
 }
 
 /// What starts the commands of a page.
@@ -107,11 +137,7 @@ pub enum Trigger {
 
 /// The index of the active page: the last one whose conditions hold.
 pub fn active_page(event: &EventDef, state: &GameState) -> Option<usize> {
-    let holds = |page: &Page| {
-        page.conditions
-            .iter()
-            .all(|condition| condition.holds(state))
-    };
+    let holds = |page: &Page| all_hold(&page.conditions, state);
     event.pages.iter().rposition(holds)
 }
 
@@ -139,7 +165,7 @@ mod tests {
     fn event(pages: Vec<Page>) -> EventDef {
         EventDef {
             name: "test".to_owned(),
-            area: Area::default(),
+            area: None,
             pages,
         }
     }
@@ -152,7 +178,7 @@ mod tests {
             page(&[flag("key")]),
             page(&[
                 flag("key"),
-                Condition::VariableAtLeast("turns".to_owned(), 2),
+                Condition::Variable("turns".to_owned(), Compare::AtLeast, 2),
             ]),
         ]);
         let mut state = GameState::default();
@@ -175,11 +201,13 @@ mod tests {
         assert_eq!(active_page(&hidden, &state), None);
         assert_eq!(active_page(&event(Vec::new()), &state), None);
         // A variable that was never set is 0.
-        let zero = event(vec![page(&[Condition::VariableEquals(
-            "new".to_owned(),
-            0,
-        )])]);
-        assert_eq!(active_page(&zero, &state), Some(0));
+        let variable = |compare, value| {
+            let condition = Condition::Variable("new".to_owned(), compare, value);
+            active_page(&event(vec![page(&[condition])]), &state).is_some()
+        };
+        assert!(variable(Compare::Equals, 0) && !variable(Compare::NotEquals, 0));
+        assert!(variable(Compare::Less, 1) && !variable(Compare::Less, 0));
+        assert!(variable(Compare::AtLeast, 0) && !variable(Compare::AtLeast, 1));
     }
 
     #[test]
@@ -197,7 +225,7 @@ mod tests {
                             conditions: [Flag("power")],
                             trigger: Interact,
                             commands: [
-                                If("seen", [Wait(0.5)], [SetFlag("seen", true)]),
+                                If([Flag("seen"), Variable("turns", Less, 3)], [Wait(0.5)], [SetFlag("seen", true)]),
                                 OpenDoor("door"),
                                 Transfer("room_b.ron", "west"),
                             ],
@@ -210,7 +238,7 @@ mod tests {
         registry.add(crate::builtin::run);
         let events = registry.parse_events(text).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].area.size, [1.0, 0.8]);
+        assert_eq!(events[0].area.unwrap().size, [1.0, 0.8]);
         assert_eq!(events[0].pages[1].commands.len(), 3);
         assert_eq!(
             events[0].pages[0].commands[0].get(),
@@ -223,7 +251,7 @@ mod tests {
         assert_eq!(none.unwrap(), []);
         // A command that does not exist: the error has the line.
         let bad = "(\n events: [(name: \"x\", pages: [(trigger: Touch,\n commands: [Explode])])])";
-        let error = registry.validate_events(bad).unwrap_err();
+        let error = registry.parse_events(bad).unwrap_err().to_string();
         assert!(
             error.starts_with("3:") && error.contains("Explode"),
             "{error}"
@@ -231,7 +259,7 @@ mod tests {
         // A bad argument of a command that exists.
         let bad =
             "(\n events: [(name: \"x\", pages: [(trigger: Touch,\n commands: [Wait(\"long\")])])])";
-        let error = registry.validate_events(bad).unwrap_err();
+        let error = registry.parse_events(bad).unwrap_err().to_string();
         assert!(error.starts_with("3:"), "{error}");
 
         // A command that code makes is the command that the file gives.

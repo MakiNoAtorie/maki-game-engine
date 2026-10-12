@@ -215,7 +215,9 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
         // A little above the floor: the rectangle is in front of the floor.
         let on_floor = ray.height(0.02);
         let inside = |(at, _): &(Vec3, f32)| {
-            event.area.size != [0.0; 2] && event.area.distance(at.x, at.z) == 0.0
+            event
+                .area
+                .is_some_and(|area| area.distance(at.x, at.z) == 0.0)
         };
         if let Some((_, t)) = on_floor.filter(inside) {
             hit(t, Some(Item::Event(index)));

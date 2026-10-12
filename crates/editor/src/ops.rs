@@ -217,12 +217,12 @@ impl Document {
                 };
                 let new = match builtin {
                     // The two lists of an `If` hold commands too.
-                    Builtin::If(flag, yes, no) => {
+                    Builtin::If(conditions, yes, no) => {
                         let (mut yes, mut no) = (yes.clone(), no.clone());
                         let inner =
                             walk(&mut yes, registry, change) + walk(&mut no, registry, change);
                         count += inner;
-                        (inner > 0).then(|| Builtin::If(flag.clone(), yes, no))
+                        (inner > 0).then(|| Builtin::If(conditions.clone(), yes, no))
                     }
                     other => change(other).inspect(|_| count += 1),
                 };
@@ -346,10 +346,10 @@ impl Document {
                 let item = Item::Event(self.events.len());
                 self.events.push(EventDef {
                     name: String::new(),
-                    area: Area {
+                    area: Some(Area {
                         center: [at.x, at.z],
                         size: [1.0, 1.0],
-                    },
+                    }),
                     pages: vec![Page {
                         conditions: Vec::new(),
                         trigger: Trigger::Interact,
@@ -473,8 +473,10 @@ impl Document {
                 }
                 Item::Event(index) => {
                     let mut event = self.events[*index].clone();
-                    event.area.center[0] += DUPLICATE_OFFSET;
-                    event.area.center[1] += DUPLICATE_OFFSET;
+                    if let Some(area) = &mut event.area {
+                        area.center[0] += DUPLICATE_OFFSET;
+                        area.center[1] += DUPLICATE_OFFSET;
+                    }
                     let copy = Item::Event(self.events.len());
                     event.name = String::new();
                     self.events.push(event);
@@ -666,11 +668,10 @@ mod tests {
             spawns: {"start": (0.0, 0.0, 0.0)},
             events: [(name: "switch", pages: [(trigger: Interact, commands: [
                 LightOff("lamp"),
-                If("open", [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
+                If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
             ])])],
         )"#;
-        let checks = maki_scene::RoomValidators::default();
-        Document::parse(Path::new("room.ron"), text, registry, &checks).unwrap()
+        Document::parse(Path::new("room.ron"), text, registry).unwrap()
     }
 
     #[test]
@@ -795,7 +796,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             directory.join("c.ron"),
-            room(r#"If("x", [], [Transfer("b.ron", "west")])"#),
+            room(r#"If([Flag("x")], [], [Transfer("b.ron", "west")])"#),
         )
         .unwrap();
         std::fs::write(

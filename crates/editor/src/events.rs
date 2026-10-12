@@ -1,5 +1,6 @@
 //! Events as the event panel works with them: the commands of a page as rows, the
-//! names that the events of all rooms use, and the checks of the editor.
+//! names that the events of all rooms use, and what the checks of the events crate
+//! find in them.
 //!
 //! A command is a value with a hidden type (`maki_events::Command`), and the two
 //! lists of an `If` are in that value. So a change in a list of an `If` makes the
@@ -9,7 +10,7 @@
 //!
 //! ```text
 //! SetFlag("seen", true)
-//! If "open"
+//! If Flag("open")
 //!     OpenDoor("door")
 //! Else
 //!     Message("Locked.")
@@ -19,7 +20,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use maki_events::{Builtin, Command, CommandRegistry, Condition, EventDef};
+use maki_events::{
+    Builtin, CheckContext, Command, CommandRegistry, Condition, EventDef, Problem, each_command,
+};
 
 use crate::Document;
 
@@ -96,18 +99,27 @@ pub fn edit_list<R>(
     let Some(((index, second), rest)) = path.split_first() else {
         return Some(change(commands));
     };
-    let Builtin::If(flag, yes, no) = commands.get(*index)?.get::<Builtin>()? else {
+    let Builtin::If(conditions, yes, no) = commands.get(*index)?.get::<Builtin>()? else {
         return None;
     };
-    let (flag, mut yes, mut no) = (flag.clone(), yes.clone(), no.clone());
+    let (conditions, mut yes, mut no) = (conditions.clone(), yes.clone(), no.clone());
     let result = edit_list(
         if *second { &mut no } else { &mut yes },
         rest,
         registry,
         change,
     )?;
-    commands[*index] = registry.command(Builtin::If(flag, yes, no))?;
+    commands[*index] = registry.command(Builtin::If(conditions, yes, no))?;
     Some(result)
+}
+
+/// The first line of an `If`: `If Flag("open") and Variable("count", Equals, 3)`.
+pub fn if_text(conditions: &[Condition]) -> String {
+    let texts: Vec<String> = conditions.iter().map(|c| format!("{c:?}")).collect();
+    if texts.is_empty() {
+        return "If (no condition: always)".to_owned();
+    }
+    format!("If {}", texts.join(" and "))
 }
 
 /// The rows of a command list, with the depth of each (the number of `If` around it)
@@ -120,11 +132,11 @@ pub fn rows(commands: &[Command]) -> Vec<(Row, usize, String)> {
                 index,
                 kind,
             };
-            let Some(Builtin::If(flag, yes, no)) = command.get::<Builtin>() else {
+            let Some(Builtin::If(conditions, yes, no)) = command.get::<Builtin>() else {
                 out.push((row(RowKind::Command), path.len(), format!("{command:?}")));
                 continue;
             };
-            out.push((row(RowKind::Command), path.len(), format!("If {flag:?}")));
+            out.push((row(RowKind::Command), path.len(), if_text(conditions)));
             for (second, branch) in [(false, yes), (true, no)] {
                 if second {
                     out.push((row(RowKind::Else), path.len(), "Else".to_owned()));
@@ -199,6 +211,14 @@ pub struct Names {
 }
 
 impl Names {
+    /// The names that an event reads and no event of the game writes: a name with a
+    /// wrong letter, or a flag that only a test sets. A hint, not an error.
+    pub fn never_written(names: &BTreeMap<String, Vec<Use>>) -> Vec<String> {
+        let read_only = |uses: &Vec<Use>| uses.iter().all(|place| !place.writes);
+        let names = names.iter().filter(|(_, uses)| read_only(uses));
+        names.map(|(name, _)| name.clone()).collect()
+    }
+
     fn add(&mut self, room: &str, events: &[EventDef]) {
         for event in events {
             for (page_index, page) in event.pages.iter().enumerate() {
@@ -218,39 +238,24 @@ impl Names {
                 };
                 for condition in &page.conditions {
                     let text = format!("if {condition:?}");
-                    match condition {
-                        Condition::Flag(name) | Condition::NotFlag(name) => {
-                            place(false, name, text, false)
-                        }
-                        Condition::VariableAtLeast(name, _)
-                        | Condition::VariableEquals(name, _) => {
-                            place(true, name, text, false);
+                    place(condition.is_variable(), condition.name(), text, false);
+                }
+                each_command(&page.commands, &mut |command| match command.get() {
+                    Some(Builtin::If(conditions, ..)) => {
+                        for condition in conditions {
+                            let variable = condition.is_variable();
+                            place(variable, condition.name(), if_text(conditions), false);
                         }
                     }
-                }
-                walk(&page.commands, &mut |command| match command {
-                    Builtin::SetFlag(name, _) => place(false, name, format!("{command:?}"), true),
-                    Builtin::If(name, ..) => place(false, name, format!("If {name:?}"), false),
-                    Builtin::SetVariable(name, _) | Builtin::AddVariable(name, _) => {
+                    Some(Builtin::SetFlag(name, _)) => {
+                        place(false, name, format!("{command:?}"), true);
+                    }
+                    Some(Builtin::SetVariable(name, _) | Builtin::AddVariable(name, _)) => {
                         place(true, name, format!("{command:?}"), true);
                     }
                     _ => {}
                 });
             }
-        }
-    }
-}
-
-/// Calls `visit` for each built-in command of a list, also in the lists of an `If`.
-fn walk(commands: &[Command], visit: &mut dyn FnMut(&Builtin)) {
-    for command in commands {
-        let Some(builtin) = command.get::<Builtin>() else {
-            continue;
-        };
-        visit(builtin);
-        if let Builtin::If(_, yes, no) = builtin {
-            walk(yes, visit);
-            walk(no, visit);
         }
     }
 }
@@ -315,97 +320,28 @@ pub fn names(document: &Document, others: &[OtherRoom]) -> Names {
     names
 }
 
-/// Something wrong in the events of the open room, that the room loader does not
-/// find: the room loads, and the event does nothing or gives an error when it runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Problem {
-    /// The index of the event.
-    pub event: usize,
-    /// `Some`: the page, and the text of the command row. `None`: the event itself.
-    pub row: Option<(usize, String)>,
-    pub text: String,
-}
-
-/// The checks of the editor: two events with one name, the name of a light, a door,
-/// or a mover that the room does not have, and a `Transfer` to a room file or a
-/// spawn point that does not exist.
-pub fn problems(document: &Document, others: &[OtherRoom]) -> Vec<Problem> {
-    let room = &document.room;
-    let named = |names: Vec<&Option<String>>, name: &str| {
-        names
-            .into_iter()
-            .any(|other| other.as_deref() == Some(name))
+/// What the checks of the room loader find in the events of the open room
+/// (`CommandRegistry::check_events`): the same code and the same texts. The loader
+/// reads the other room files from the disk; the editor gives what it knows of them.
+pub fn problems(
+    document: &Document,
+    others: &[OtherRoom],
+    registry: &CommandRegistry,
+) -> Vec<Problem> {
+    let spawn = |file: &str, spawn: &str| {
+        let room = others.iter().find(|room| room.file == file)?;
+        Some(room.spawns.contains(spawn))
     };
-    let light = |name: &str| named(room.lights.iter().map(|light| &light.name).collect(), name);
-    let mover = |name: &str| {
-        let doors = room.doors.iter().map(|door| &door.name);
-        named(
-            doors
-                .chain(room.movers.iter().map(|mover| &mover.name))
-                .collect(),
-            name,
-        )
+    let context = CheckContext {
+        room: &document.room,
+        file: &file_name(document),
+        spawn: &spawn,
     };
-    let own = file_name(document);
-    let mut problems = Vec::new();
-    for (index, event) in document.events.iter().enumerate() {
-        let twice = document.events[..index]
-            .iter()
-            .any(|other| other.name == event.name);
-        if twice {
-            let text = format!("another event has the name `{}`", event.name);
-            problems.push(Problem {
-                event: index,
-                row: None,
-                text,
-            });
-        }
-        for (page_index, page) in event.pages.iter().enumerate() {
-            walk(&page.commands, &mut |command| {
-                let text = match command {
-                    Builtin::LightOn(name)
-                    | Builtin::LightOff(name)
-                    | Builtin::LightIntensity(name, _)
-                        if !light(name) =>
-                    {
-                        format!("the room has no light `{name}`")
-                    }
-                    Builtin::OpenDoor(name) | Builtin::CloseDoor(name) if !mover(name) => {
-                        format!("the room has no door or mover `{name}`")
-                    }
-                    Builtin::Transfer(file, spawn) => {
-                        let spawns = match others.iter().find(|room| room.file == *file) {
-                            Some(room) => Some(room.spawns.contains(spawn)),
-                            None if *file == own => Some(room.spawns.contains_key(spawn)),
-                            None => None,
-                        };
-                        match spawns {
-                            Some(true) => return,
-                            Some(false) => format!("`{file}` has no spawn point `{spawn}`"),
-                            None => format!("no room file `{file}`"),
-                        }
-                    }
-                    _ => return,
-                };
-                let row = match command {
-                    Builtin::If(name, ..) => format!("If {name:?}"),
-                    command => format!("{command:?}"),
-                };
-                problems.push(Problem {
-                    event: index,
-                    row: Some((page_index, row)),
-                    text,
-                });
-            });
-        }
-    }
-    problems
+    registry.check_events(&document.events, &context)
 }
 
 #[cfg(test)]
 mod tests {
-    use maki_scene::RoomValidators;
-
     use super::*;
 
     fn registry() -> CommandRegistry {
@@ -425,7 +361,7 @@ mod tests {
                 spawns: {{"start": (0.0, 0.0, 0.0)}},
                 events: [{events}])"#
         );
-        Document::parse(Path::new(name), &text, registry, &RoomValidators::default()).unwrap()
+        Document::parse(Path::new(name), &text, registry).unwrap()
     }
 
     fn texts(commands: &[Command]) -> Vec<String> {
@@ -440,7 +376,7 @@ mod tests {
         let registry = registry();
         let event = r#"(name: "door", pages: [(trigger: Interact, commands: [
             SetFlag("seen", true),
-            If("open", [OpenDoor("door"), If("late", [], [Wait(1.0)])], [Message("Locked.")]),
+            If([Flag("open")], [OpenDoor("door"), If([Flag("late"), Variable("turns", Less, 3)], [], [Wait(1.0)])], [Message("Locked.")]),
             FadeIn(0.5),
         ])])"#;
         let mut document = document(&registry, "a.ron", event);
@@ -449,9 +385,9 @@ mod tests {
             texts(commands),
             [
                 r#"SetFlag("seen", true)"#,
-                r#"If "open""#,
+                r#"If Flag("open")"#,
                 r#"  OpenDoor("door")"#,
-                r#"  If "late""#,
+                r#"  If Flag("late") and Variable("turns", Less, 3)"#,
                 "  Else",
                 "    Wait(1.0)",
                 "  End",
@@ -474,7 +410,7 @@ mod tests {
         edit_list(commands, &list, &registry, |list| list.insert(index, light)).unwrap();
         assert_eq!(texts(commands)[6], r#"    LightOff("lamp")"#);
         // The first line of an `If`: into its first list. `Else`: into the second.
-        let inner = row(r#"If "late""#);
+        let inner = row(r#"If Flag("late") and Variable("turns", Less, 3)"#);
         assert_eq!(
             inner.insert_place(commands),
             (vec![(1, false), (1, false)], 0)
@@ -495,7 +431,7 @@ mod tests {
         ));
         assert_eq!(
             texts(commands)[..2],
-            [r#"If "open""#, r#"  SetFlag("seen", true)"#]
+            [r#"If Flag("open")"#, r#"  SetFlag("seen", true)"#]
         );
         // An `If` does not go into itself.
         let outer = Row {
@@ -528,14 +464,15 @@ mod tests {
         std::fs::write(directory.join("notes.ron"), "not a room").unwrap();
         let events = r#"
             (name: "door", pages: [
-                (trigger: Interact, commands: [If("power_off", [OpenDoor("door")], [LightOff("lamp")])]),
-                (conditions: [Flag("power_off"), VariableAtLeast("presses", 2)], trigger: Autorun,
+                (trigger: Interact, commands: [If([Flag("power_off"), Variable("tries", Less, 3)], [OpenDoor("door")], [LightOff("lamp")])]),
+                (conditions: [Flag("power_off"), Variable("presses", AtLeast, 2)], trigger: Autorun,
                     commands: [Transfer("b.ron", "west")]),
             ]),
-            (name: "door", pages: [(trigger: Touch, commands: [
-                LightOn("lamb"), If("x", [CloseDoor("gate")], []),
-                Transfer("b.ron", "east"), Transfer("c.ron", "west"), Transfer("a.ron", "start"),
-            ])]),"#;
+            (name: "door", pages: [
+                (trigger: Touch, commands: [LightOn("lamb"), If([Flag("x")], [CloseDoor("gate")], []), Transfer("b.ron", "east")]),
+                (trigger: Touch, commands: [Transfer("c.ron", "west")]),
+                (trigger: Touch, commands: [Transfer("a.ron", "start")]),
+            ]),"#;
         let mut document = document(&registry, "a.ron", events);
         document.path = directory.join("a.ron");
         let others = other_rooms(&document.path, &registry);
@@ -558,20 +495,24 @@ mod tests {
             [("a.ron", 1, false), ("a.ron", 2, false), ("b.ron", 1, true)]
         );
         assert_eq!(names.variables["presses"].len(), 2);
+        // A name that an event reads and no event writes.
+        assert_eq!(Names::never_written(&names.flags), ["x"]);
+        assert_eq!(Names::never_written(&names.variables), ["tries"]);
 
-        let problems = problems(&document, &others);
+        // The checks are those of the room loader: the editor gives the other rooms.
+        let problems = problems(&document, &others, &registry);
         let found: Vec<_> = problems
             .iter()
-            .map(|problem| (problem.event, problem.text.as_str()))
+            .map(|problem| (problem.event, problem.warning, problem.text.as_str()))
             .collect();
         assert_eq!(
             found,
             [
-                (1, "another event has the name `door`"),
-                (1, "the room has no light `lamb`"),
-                (1, "the room has no door or mover `gate`"),
-                (1, "`b.ron` has no spawn point `east`"),
-                (1, "no room file `c.ron`"),
+                (1, false, "another event has the name `door`"),
+                (1, false, "the room has no light `lamb`"),
+                (1, false, "the room has no door or mover `gate`"),
+                (1, true, "`b.ron` has no spawn point `east`"),
+                (1, true, "no room file `c.ron`"),
             ]
         );
         std::fs::remove_dir_all(&directory).unwrap();

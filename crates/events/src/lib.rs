@@ -14,6 +14,7 @@
 //! `maki_scene::ScreenFade`.
 
 mod builtin;
+mod check;
 mod command;
 mod interpreter;
 mod model;
@@ -27,9 +28,10 @@ use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
 
 pub use builtin::Builtin;
+pub use check::{CheckContext, Finding, Problem, each_command};
 pub use command::{Command, CommandRegistry, CommandSet, Step};
 pub use interpreter::{EventRunner, MessageBox, RunningEvent, run_events};
-pub use model::{Area, Condition, EventDef, Page, Trigger, active_page};
+pub use model::{Area, Compare, Condition, EventDef, Page, Trigger, active_page, all_hold};
 
 /// Starts the event that the player faces, and closes a message.
 pub const INTERACT: Action = Action("interact");
@@ -70,6 +72,7 @@ impl Module for EventsModule {
     fn build(&self, app: &mut App) {
         let registry = CommandRegistry::default();
         registry.add(builtin::run);
+        registry.add_check(builtin::check);
         add_bindings(
             app,
             &[
@@ -82,11 +85,9 @@ impl Module for EventsModule {
             .init_resource::<MessageBox>()
             .init_resource::<RoomValidators>();
         // A room with a bad event is not loaded. The check has the registry, with
-        // the commands that other modules add later.
-        let check = registry.clone();
-        app.resource_mut::<RoomValidators>()
-            .0
-            .push(Box::new(move |text| check.validate_events(text)));
+        // the commands and the checks that other modules add later.
+        let check = registry.validator();
+        app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)
             // Before the movers: a door starts to turn in the step of its command.
             .add_systems(FixedUpdate, run_events.before(move_movers))

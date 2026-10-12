@@ -52,7 +52,7 @@ use bevy_ecs::system::ResMut;
 use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
 use maki_core::{App, Input, Interpolated, Module, Settings, Startup, Time, Update};
-use maki_events::{CommandRegistry, EventRunner, GameState, MessageBox};
+use maki_events::{CommandRegistry, EventRunner, GameState, MessageBox, Problem};
 use maki_gameplay::{MoveCapture, StartRoom};
 use maki_platform::{
     Action, ActionState, InputMode, Key, Pointer, QuitHold, QuitRequested, WindowMargin,
@@ -60,7 +60,7 @@ use maki_platform::{
 };
 use maki_scene::{
     ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomRequest, RoomTarget,
-    RoomValidators, ScreenFade, load_requested_room, patch_room,
+    ScreenFade, load_requested_room, patch_room,
 };
 use maki_ui::{Panels, TOGGLE_HELP};
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ use serde::{Deserialize, Serialize};
 pub use camera::{EditorCamera, ORBIT, PAN, VIEW_GAME, VIEW_TOP, ZOOM_IN, ZOOM_OUT};
 pub use document::{Document, Item, Place};
 pub use event_panel::{ArgumentEditors, EventUi, add_argument_editor};
-pub use events::{Names, OtherRoom, Problem, Row, RowKind, Use, names, other_rooms, problems};
+pub use events::{Names, OtherRoom, Row, RowKind, Use, names, other_rooms, problems};
 pub use gizmo::{Drag, Gizmo, Handle, Tool};
 pub use ops::{History, Kind, spawn_users};
 pub use ron_text::{Notes, pretty, read_notes};
@@ -306,7 +306,7 @@ impl Editor {
     /// What the checks of the editor find in the events of the room.
     pub fn problems(&mut self) -> Vec<Problem> {
         let others = self.others().to_vec();
-        problems(&self.document, &others)
+        problems(&self.document, &others, &self.registry)
     }
 
     /// The pointer in the picture: a click takes a handle of the gizmo or selects
@@ -390,8 +390,7 @@ impl Editor {
             }
             Command::Open(path) => {
                 let registry = world.resource::<CommandRegistry>();
-                let checks = world.resource::<RoomValidators>();
-                match Document::read(&path, registry, checks) {
+                match Document::read(&path, registry) {
                     Ok(document) => {
                         self.open(document);
                         self.status = "Opened".to_owned();
@@ -801,9 +800,8 @@ pub fn parse_args(
 pub fn resave(app: &App, paths: &[PathBuf]) -> anyhow::Result<()> {
     let world = app.world();
     let registry = world.resource::<CommandRegistry>();
-    let checks = world.resource::<RoomValidators>();
     for path in paths {
-        Document::read(path, registry, checks)?.save()?;
+        Document::read(path, registry)?.save()?;
         tracing::info!(path = %path.display(), "room file written");
     }
     Ok(())
