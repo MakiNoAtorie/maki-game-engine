@@ -17,9 +17,9 @@ pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use room::{
     CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PropDef,
-    RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomProblem, RoomRequest, RoomTarget,
-    RoomValidator, RoomValidators, TextureDef, check_room, load_requested_room, parse_room,
-    patch_room, read_room, ron_options,
+    RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest,
+    RoomTarget, RoomValidator, RoomValidators, TextureDef, check_room, load_requested_room,
+    parse_room, patch_room, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
@@ -36,6 +36,7 @@ impl Module for SceneModule {
             .init_resource::<RoomRequest>()
             .init_resource::<RoomModels>()
             .init_resource::<RoomValidators>()
+            .init_resource::<room::RoomOverride>()
             .init_resource::<ScreenFade>()
             // Each writer asks for a room; the loader takes the last request.
             .allow_ambiguous_resource::<RoomRequest>()

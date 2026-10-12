@@ -80,6 +80,9 @@ enum Place {
     Corner,
     /// Shapes on top of the picture, under each window. Gets no input.
     Overlay,
+    /// A question in the middle of the window. Nothing else gets input while it
+    /// is open.
+    Modal,
     /// The places of a tool layout: see [`ToolPlace`].
     Top,
     Right,
@@ -299,6 +302,18 @@ pub fn add_window(
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
     register(app, name, open, Place::Window, Box::new(draw));
+}
+
+/// Adds a question in the middle of the window, on top of all: while it is open, no
+/// panel and no action of the game gets the pointer. The parameters are those of
+/// [`add_panel`].
+pub fn add_modal(
+    app: &mut App,
+    name: &'static str,
+    open: bool,
+    draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
+) {
+    register(app, name, open, Place::Modal, Box::new(draw));
 }
 
 fn register(app: &mut App, name: &'static str, open: bool, place: Place, draw: PanelFn) {
@@ -557,6 +572,12 @@ fn run_ui(world: &mut World) {
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                                 (panel.draw)(ui, world)
                             });
+                    }
+                    if shown(panel, Place::Modal) {
+                        egui::Modal::new(egui::Id::new(panel.name)).show(root.ctx(), |ui| {
+                            ui.strong(panel.name);
+                            (panel.draw)(ui, world)
+                        });
                     }
                     if shown(panel, Place::Window) {
                         egui::Window::new(panel.name)

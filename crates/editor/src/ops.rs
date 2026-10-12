@@ -102,6 +102,11 @@ impl Document {
         let doors = room.doors.iter().enumerate();
         let movers = room.movers.iter().enumerate();
         Some(match item {
+            Item::Prop(_) => {
+                let props = room.props.iter().enumerate();
+                let props = props.map(|(i, prop)| (Item::Prop(i), &prop.name));
+                named(props.collect(), item)
+            }
             Item::Light(_) => {
                 let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
                 named(lights.collect(), item)
@@ -120,7 +125,7 @@ impl Document {
                 let names = room.spawns.keys().map(String::as_str);
                 names.filter(|other| other != name).collect()
             }
-            Item::Room | Item::Doorway(_) | Item::Prop(_) => return None,
+            Item::Room | Item::Doorway(_) => return None,
         })
     }
 
@@ -272,7 +277,21 @@ impl Document {
                     Kind::Model(path) => prop(MeshDef::File(path), on_floor(0.0)),
                     _ => unreachable!("the outer arm has the four kinds of a prop"),
                 });
-                Item::Prop(room.props.len() - 1)
+                // A name of its own: the outliner lists the prop by it, and a
+                // label by the index would change with each delete before it.
+                let item = Item::Prop(room.props.len() - 1);
+                let kind = match &self.room.props.last().expect("pushed above").mesh {
+                    MeshDef::Cube(_) => "cube".to_owned(),
+                    MeshDef::Cuboid(..) => "cuboid".to_owned(),
+                    MeshDef::Sphere { .. } => "sphere".to_owned(),
+                    MeshDef::File(path) => {
+                        let stem = path.file_stem().unwrap_or_default();
+                        stem.to_string_lossy().into_owned()
+                    }
+                };
+                let name = self.unique_name(&item, &kind);
+                self.room.props.last_mut().expect("pushed above").name = Some(name);
+                item
             }
             Kind::Light => {
                 let item = Item::Light(room.lights.len());
@@ -521,15 +540,17 @@ fn item_index(item: &Item) -> usize {
 }
 
 type Content = (RoomDef, Vec<EventDef>, Notes);
+/// A state of the document, and the items that were selected in it.
+type Step = (Content, Vec<Item>);
 
 /// The steps of undo and redo. A step is a copy of the content of the document: a
 /// room file is small, and a copy cannot forget a field that a change touched.
 #[derive(Default)]
 pub struct History {
     /// The document after the last step.
-    base: Option<Content>,
-    undo: Vec<Content>,
-    redo: Vec<Content>,
+    base: Option<Step>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
 }
 
 /// Older steps are dropped.
@@ -539,7 +560,7 @@ impl History {
     /// A document was opened: no step.
     pub fn reset(&mut self, document: &Document) {
         *self = Self {
-            base: Some(document.content()),
+            base: Some((document.content(), Vec::new())),
             ..Self::default()
         };
     }
@@ -547,14 +568,24 @@ impl History {
     /// Call in each frame. A document that differs from the last step is a new step.
     /// `busy`: a change goes on (a drag, a text that is typed): no step now, so all
     /// of the change is one step.
-    pub fn track(&mut self, document: &Document, busy: bool) {
+    /// `selection`: the selected items. Undo and redo put back those of the state
+    /// that they go to (undo of a delete selects the item again).
+    pub fn track(&mut self, document: &Document, selection: &[Item], busy: bool) {
         let Some(base) = &mut self.base else {
             return self.reset(document);
         };
-        if busy || document.is(base) {
+        if busy {
             return;
         }
-        self.undo.push(std::mem::replace(base, document.content()));
+        if document.is(&base.0) {
+            // The same state: its selection is the last one that it had.
+            if base.1 != selection {
+                base.1 = selection.to_vec();
+            }
+            return;
+        }
+        let new = (document.content(), selection.to_vec());
+        self.undo.push(std::mem::replace(base, new));
         if self.undo.len() > MAX_STEPS {
             self.undo.remove(0);
         }
@@ -562,27 +593,41 @@ impl History {
     }
 
     /// The document goes one step back. False: no step to undo.
-    pub fn undo(&mut self, document: &mut Document) -> bool {
-        self.track(document, false);
-        Self::step(&mut self.base, &mut self.undo, &mut self.redo, document)
+    pub fn undo(&mut self, document: &mut Document, selection: &mut Vec<Item>) -> bool {
+        self.track(document, selection, false);
+        Self::step(
+            &mut self.base,
+            &mut self.undo,
+            &mut self.redo,
+            document,
+            selection,
+        )
     }
 
-    pub fn redo(&mut self, document: &mut Document) -> bool {
-        self.track(document, false);
-        Self::step(&mut self.base, &mut self.redo, &mut self.undo, document)
+    pub fn redo(&mut self, document: &mut Document, selection: &mut Vec<Item>) -> bool {
+        self.track(document, selection, false);
+        Self::step(
+            &mut self.base,
+            &mut self.redo,
+            &mut self.undo,
+            document,
+            selection,
+        )
     }
 
     fn step(
-        base: &mut Option<Content>,
-        from: &mut Vec<Content>,
-        to: &mut Vec<Content>,
+        base: &mut Option<Step>,
+        from: &mut Vec<Step>,
+        to: &mut Vec<Step>,
         document: &mut Document,
+        selection: &mut Vec<Item>,
     ) -> bool {
-        let Some(content) = from.pop() else {
+        let Some(step) = from.pop() else {
             return false;
         };
-        to.extend(base.replace(content.clone()));
-        document.set_content(content);
+        to.extend(base.replace(step.clone()));
+        document.set_content(step.0);
+        *selection = step.1;
         true
     }
 
@@ -747,35 +792,42 @@ mod tests {
         let mut history = History::default();
         history.reset(&document);
         let start = document.text();
+        // The selection of each state comes back with the state.
+        let mut selection = vec![Item::Light(0)];
 
         // A drag: many frames with a change, then the button goes up.
         for step in 1..=10 {
             document.room.lights[0].position[0] = step as f32 * 0.1;
-            history.track(&document, true);
+            history.track(&document, &selection, true);
         }
-        history.track(&document, false);
+        history.track(&document, &selection, false);
         let dragged = document.text();
-        document.add(Kind::Cube, Vec3::ZERO).unwrap();
-        history.track(&document, false);
+        selection = vec![document.add(Kind::Cube, Vec3::ZERO).unwrap()];
+        history.track(&document, &selection, false);
         // No change: no step.
-        history.track(&document, false);
+        history.track(&document, &selection, false);
         assert_eq!(history.steps(), (2, 0));
 
-        assert!(history.undo(&mut document));
+        assert!(history.undo(&mut document, &mut selection));
         assert_eq!(document.text(), dragged);
-        assert!(history.undo(&mut document));
+        assert_eq!(selection, [Item::Light(0)]);
+        assert!(history.undo(&mut document, &mut selection));
         assert_eq!(document.text(), start);
-        assert!(!history.undo(&mut document));
-        assert!(history.redo(&mut document) && history.redo(&mut document));
+        assert!(!history.undo(&mut document, &mut selection));
+        assert!(
+            history.redo(&mut document, &mut selection)
+                && history.redo(&mut document, &mut selection)
+        );
         assert_eq!(document.room.props.len(), 1);
+        assert_eq!(selection, [Item::Prop(0)]);
         // A change after an undo drops the steps that were undone.
-        history.undo(&mut document);
+        history.undo(&mut document, &mut selection);
         document.delete(&[Item::Light(0)]);
-        history.track(&document, false);
+        history.track(&document, &selection, false);
         assert_eq!(history.steps(), (2, 0));
         // A change that was not tracked yet is a step of its own before the undo.
         document.room.width = 9.0;
-        history.undo(&mut document);
+        history.undo(&mut document, &mut selection);
         assert_eq!((document.room.width, document.room.lights.len()), (8.0, 0));
     }
 

@@ -156,6 +156,18 @@ struct Set {
     run: Handler,
     /// The check of the module for a command of the enum (`add_check`).
     check: Option<Checker>,
+    /// The texts of the module for a tool (`add_texts`).
+    texts: Option<Texts>,
+}
+
+/// A command of the enum as a line for a reader. `None`: the module gives none.
+type RowText = Arc<dyn Fn(&dyn Any) -> Option<String> + Send + Sync>;
+
+/// The text of a command for a reader, and one line of help for a command name.
+#[derive(Clone)]
+struct Texts {
+    row: RowText,
+    help: fn(&str) -> Option<&'static str>,
 }
 
 /// Looks at one command with the room that it is in. `Some`: what is wrong.
@@ -204,7 +216,44 @@ impl CommandRegistry {
                 handler(command, step, world)
             }),
             check: None,
+            texts: None,
         });
+    }
+
+    /// Gives a tool (an editor) the texts of the commands of the enum `T`. `row`:
+    /// one command as a line for a reader (`Message: The door is locked.`); `None`:
+    /// the tool shows the command as a room file has it. `help`: one line that
+    /// tells what the command of a name does. Call after `add::<T>`.
+    ///
+    /// Panics if the enum `T` was not added.
+    pub fn add_texts<T: CommandSet>(
+        &self,
+        row: impl Fn(&T) -> Option<String> + Send + Sync + 'static,
+        help: fn(&str) -> Option<&'static str>,
+    ) {
+        let mut sets = self.0.write().expect("no writer panics");
+        let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
+        let set = set.expect("add the commands before their texts");
+        let row = Arc::new(move |command: &dyn Any| {
+            row(command.downcast_ref().expect("a value of this enum"))
+        });
+        set.texts = Some(Texts { row, help });
+    }
+
+    /// A command as a line for a reader, if its module gave one (`add_texts`).
+    pub fn row_text(&self, command: &Command) -> Option<String> {
+        let value = command.as_any();
+        let sets = self.0.read().expect("no writer panics");
+        let set = sets.iter().find(|set| set.type_id == value.type_id())?;
+        let texts = set.texts.clone()?;
+        drop(sets);
+        (texts.row)(value)
+    }
+
+    /// One line of help for the command of a name, if its module gave one.
+    pub fn help(&self, name: &str) -> Option<&'static str> {
+        let texts = self.find(name)?.texts?;
+        (texts.help)(name)
     }
 
     /// Adds a check for the commands of the enum `T`: a room file is checked with it

@@ -491,6 +491,13 @@ pub struct RoomTarget {
     pub text: Option<String>,
 }
 
+/// A text that the loader takes in place of the file of a path. A tool sets it while
+/// it plays a room that is not saved: a `Transfer` away and back shows the room of
+/// the tool, not the file on the disk. As for `RoomTarget::text`, the validators do
+/// not run for it.
+#[derive(Resource, Debug, Default, Clone, PartialEq)]
+pub struct RoomOverride(pub Option<(PathBuf, String)>);
+
 /// The room that is loaded. Change detection tells a system that the room changed.
 #[derive(Resource, Debug, Default)]
 pub struct CurrentRoom {
@@ -533,6 +540,7 @@ pub fn load_requested_room(
     mut request: ResMut<RoomRequest>,
     mut current: ResMut<CurrentRoom>,
     validators: Res<RoomValidators>,
+    room_override: Res<RoomOverride>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
@@ -546,7 +554,10 @@ pub fn load_requested_room(
     }
     let mut target = request.0.take().expect("tested above");
     let start = std::time::Instant::now();
-    let read = match target.text.take() {
+    let of_tool = room_override.0.as_ref();
+    let of_tool = of_tool.filter(|(path, _)| *path == target.path);
+    let text = target.text.take().or(of_tool.map(|(_, text)| text.clone()));
+    let read = match text {
         Some(text) => {
             check_room(&target.path, &text, &RoomValidators::default()).map(|def| (def, text))
         }

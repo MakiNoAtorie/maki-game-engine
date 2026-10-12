@@ -21,12 +21,7 @@ const GRID: Color32 = Color32::from_rgba_premultiplied(70, 70, 70, 70);
 const MARK: Color32 = Color32::from_rgb(120, 200, 255);
 const AREA: Color32 = Color32::from_rgb(255, 170, 60);
 const SELECTED: Color32 = Color32::from_rgb(255, 235, 60);
-/// X, Y, Z.
-const AXES: [Color32; 3] = [
-    Color32::from_rgb(235, 80, 80),
-    Color32::from_rgb(90, 210, 90),
-    Color32::from_rgb(90, 140, 255),
-];
+use crate::widgets::AXES;
 /// Points of a circle.
 const CIRCLE_POINTS: usize = 32;
 
@@ -152,9 +147,13 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
     game_frame(world, &pen, picture, thin(GRID));
     let selected = |item: &Item| editor.selection.contains(item);
     // The stroke of a mark: that of the selection if its item is selected.
+    let hovered = |item: &Item| editor.hover == Some(crate::Hover::Item(item.clone()));
     let stroke = |item: &Item, color| {
         if selected(item) {
             Stroke::new(2.0, SELECTED)
+        } else if hovered(item) {
+            // A click takes this item.
+            Stroke::new(1.5, Color32::WHITE)
         } else {
             thin(color)
         }
@@ -237,6 +236,27 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         }
     }
 
+    // The item under the pointer: a thin box around its mesh.
+    if let Some(crate::Hover::Item(item)) = &editor.hover
+        && !selected(item)
+    {
+        let of_mesh = match item {
+            Item::Prop(index) => Some(RoomItem::Prop(*index)),
+            Item::Door(index) => Some(RoomItem::Door(*index)),
+            Item::Mover(index) => Some(RoomItem::Mover(*index)),
+            _ => None,
+        };
+        for (matrix, low, high) in of_mesh.map_or(Vec::new(), |item| mesh_boxes(world, item)) {
+            pen.cuboid(matrix, low, high, Stroke::new(1.0, Color32::WHITE));
+        }
+        if let Item::Light(index) = item
+            && let Some(light) = room.lights.get(*index)
+        {
+            let (at, white) = (Vec3::from(light.position), Stroke::new(1.0, Color32::WHITE));
+            pen.circle(at, Vec3::X, Vec3::Y, light.radius.max(0.1), white);
+        }
+    }
+
     let mark = Stroke::new(2.0, SELECTED);
     for item in &editor.selection {
         let of_mesh = match item {
@@ -289,13 +309,18 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         return;
     };
     let active = editor.dragged();
+    // The handle under the pointer is brighter and thicker: a click takes it.
+    let over = |handle: Handle| editor.hover == Some(crate::Hover::Handle(handle));
     let color = |axis: usize| {
-        let color = if active == Some(Handle::Axis(axis)) {
+        let handle = Handle::Axis(axis);
+        let color = if active == Some(handle) {
             SELECTED
+        } else if over(handle) {
+            AXES[axis].lerp_to_gamma(Color32::WHITE, 0.6)
         } else {
             AXES[axis]
         };
-        Stroke::new(3.0, color)
+        Stroke::new(if over(handle) { 5.0 } else { 3.0 }, color)
     };
     for axis in 0..3 {
         match gizmo.tool {
@@ -326,10 +351,11 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         } else {
             Color32::WHITE
         };
+        let width = if over(Handle::Floor) { 4.0 } else { 2.0 };
         pen.painter.rect_stroke(
             square,
             0.0,
-            Stroke::new(2.0, color),
+            Stroke::new(width, color),
             egui::StrokeKind::Middle,
         );
     }

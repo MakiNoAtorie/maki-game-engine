@@ -55,6 +55,14 @@ impl Module for ShakeModule {
             };
             true
         });
+        // The row and the help of the command in the event panel of the editor.
+        registry.add_texts(
+            |command: &GameCommand| {
+                let GameCommand::ShakeCamera(seconds, strength) = *command;
+                Some(format!("Shake the camera: {seconds} s, {strength} m"))
+            },
+            |_| Some("Shakes the camera for some seconds. The event does not wait for the end."),
+        );
         // The proof that a module checks its own commands: the room loader runs
         // this for each room file, and the editor shows it on the row.
         registry.add_check(|command: &GameCommand, _room| {

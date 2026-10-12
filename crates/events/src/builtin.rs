@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::check::{CheckContext, Finding};
 use crate::command::{Command, Step};
-use crate::model::{Condition, all_hold};
+use crate::model::{Compare, Condition, all_hold};
 use crate::{GameState, INTERACT, MessageBox};
 
 /// Text arguments are names: of a flag, a variable, or an entity of the room file
@@ -138,6 +138,65 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
         }
     }
     true
+}
+
+/// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
+pub(crate) fn row_text(command: &Builtin) -> Option<String> {
+    let condition = |condition: &Condition| match condition {
+        Condition::Flag(name) => name.clone(),
+        Condition::NotFlag(name) => format!("not {name}"),
+        Condition::Variable(name, compare, value) => {
+            let sign = match compare {
+                Compare::Equals => "=",
+                Compare::NotEquals => "!=",
+                Compare::Less => "<",
+                Compare::AtLeast => ">=",
+            };
+            format!("{name} {sign} {value}")
+        }
+    };
+    Some(match command {
+        Builtin::SetFlag(name, true) => format!("Flag {name}: set"),
+        Builtin::SetFlag(name, false) => format!("Flag {name}: not set"),
+        Builtin::SetVariable(name, value) => format!("Variable {name} = {value}"),
+        Builtin::AddVariable(name, value) => format!("Variable {name}: add {value}"),
+        Builtin::Wait(seconds) => format!("Wait {seconds} s"),
+        Builtin::If(conditions, ..) if conditions.is_empty() => "If (no condition)".to_owned(),
+        Builtin::If(conditions, ..) => {
+            let texts: Vec<String> = conditions.iter().map(condition).collect();
+            format!("If {}", texts.join(" and "))
+        }
+        Builtin::OpenDoor(name) => format!("Open {name}"),
+        Builtin::CloseDoor(name) => format!("Close {name}"),
+        Builtin::LightOn(name) => format!("Light {name}: on"),
+        Builtin::LightOff(name) => format!("Light {name}: off"),
+        Builtin::LightIntensity(name, value) => format!("Light {name}: intensity {value}"),
+        Builtin::Message(text) => format!("Message: {text}"),
+        Builtin::FadeOut(seconds) => format!("Fade to black, {seconds} s"),
+        Builtin::FadeIn(seconds) => format!("Fade to the picture, {seconds} s"),
+        Builtin::Transfer(room, spawn) => format!("Go to {room}, at {spawn}"),
+    })
+}
+
+/// One line of help for the name of a built-in command.
+pub(crate) fn help(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "SetFlag" => "Sets a flag, or sets it back.",
+        "SetVariable" => "Gives a variable a value.",
+        "AddVariable" => "Adds a number to a variable.",
+        "Wait" => "The event waits for some seconds.",
+        "If" => "The first list if all conditions hold, else the second one.",
+        "OpenDoor" => "Sends a door or a mover to its second pose, and waits for it.",
+        "CloseDoor" => "Sends a door or a mover to its first pose, and waits for it.",
+        "LightOn" => "Turns a light of the room on.",
+        "LightOff" => "Turns a light of the room off.",
+        "LightIntensity" => "Sets how bright a light of the room is.",
+        "Message" => "Shows a text until the player presses interact.",
+        "FadeOut" => "The picture goes to black.",
+        "FadeIn" => "The picture comes back from black.",
+        "Transfer" => "Goes to a spawn point of a room. The event goes on there.",
+        _ => return None,
+    })
 }
 
 /// The check of the built-in commands (`CommandRegistry::add_check`): each name of a

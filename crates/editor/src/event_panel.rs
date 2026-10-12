@@ -35,8 +35,14 @@ pub(crate) const NEVER_WRITTEN: &str = "no event sets it";
 pub struct EventUi {
     /// The page that the panel shows.
     pub page: usize,
-    /// The selected row of the command list.
+    /// The row of the command list that had the last click.
     pub row: Option<Row>,
+    /// With Shift and a click: `row` as it was then, and the index of the other end
+    /// of the range of selected rows, in the same list.
+    anchor: Option<(Row, usize)>,
+    /// True: a command row had the last click, not an item of the room. Delete,
+    /// duplicate, copy, and paste go to the rows then.
+    pub focused: bool,
     /// The copied commands. They stay when another event or another room is opened.
     pub clipboard: Vec<Command>,
     /// A command as a text that the user types.
@@ -46,6 +52,124 @@ pub struct EventUi {
     /// The event and the page that the panel showed in the frame before: the row
     /// and the typed command are of that page.
     shown: (usize, usize),
+}
+
+impl EventUi {
+    /// The selected command rows: their list, and their indexes in it.
+    pub(crate) fn selected(&self) -> Option<(ListPath, std::ops::RangeInclusive<usize>)> {
+        let row = self.row.as_ref()?;
+        if row.kind != RowKind::Command {
+            return None;
+        }
+        // The other end, if the row did not change after the Shift click.
+        let anchor = self.anchor.as_ref().filter(|anchor| anchor.0 == *row);
+        let other = anchor.map_or(row.index, |anchor| anchor.1);
+        Some((
+            row.list.clone(),
+            row.index.min(other)..=row.index.max(other),
+        ))
+    }
+}
+
+impl EventUi {
+    /// Shows a page of an event, with one of its command rows selected: for a
+    /// link to that place (a problem, a use of a name).
+    pub(crate) fn go_to(&mut self, event: usize, page: usize, row: Option<Row>) {
+        (self.page, self.shown) = (page, (event, page));
+        (self.row, self.anchor, self.draft) = (row, None, None);
+        self.focused = true;
+    }
+
+    /// Selects command rows: `row` had the click. `other`: with Shift, the index of
+    /// the other end of the range, in the same list.
+    pub(crate) fn select_rows(&mut self, row: Row, other: Option<usize>) {
+        self.anchor = other.map(|other| (row.clone(), other));
+        self.row = Some(row);
+        self.draft = None;
+        self.focused = true;
+    }
+}
+
+/// What the user does with the selected command rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowCommand {
+    Delete,
+    /// Into the buffer.
+    Copy,
+    /// The buffer, after the selected rows.
+    Paste,
+    /// A copy of the rows, after them.
+    Duplicate,
+}
+
+/// Does a command of the user on the selected rows of a page. True: the list of
+/// the page was changed.
+pub(crate) fn row_command(
+    commands: &mut Vec<Command>,
+    ui: &mut EventUi,
+    registry: &CommandRegistry,
+    command: RowCommand,
+) -> bool {
+    let selected = ui.selected();
+    let copies = |range: &std::ops::RangeInclusive<usize>, path: &ListPath| -> Vec<Command> {
+        let list = crate::events::list(commands, path).unwrap_or_default();
+        let rows = list.iter().skip(*range.start());
+        rows.take(range.end() - range.start() + 1)
+            .cloned()
+            .collect()
+    };
+    // New commands: after the last selected row, or where a new command goes for
+    // an `Else` or an `End`, or at the end of the page.
+    let place = |ui: &EventUi, commands: &[Command]| match (&selected, &ui.row) {
+        (Some((path, range)), _) => (path.clone(), range.end() + 1),
+        (None, Some(row)) => row.insert_place(commands),
+        (None, None) => (Vec::new(), commands.len()),
+    };
+    let new = match command {
+        RowCommand::Copy => {
+            if let Some((path, range)) = &selected {
+                ui.clipboard = copies(range, path);
+            }
+            return false;
+        }
+        RowCommand::Delete => {
+            let Some((path, range)) = selected else {
+                return false;
+            };
+            let done = edit_list(commands, &path, registry, |list| {
+                let end = (range.end() + 1).min(list.len());
+                list.drain((*range.start()).min(end)..end);
+            });
+            ui.row = None;
+            return done.is_some();
+        }
+        RowCommand::Paste => ui.clipboard.clone(),
+        RowCommand::Duplicate => match &selected {
+            Some((path, range)) => copies(range, path),
+            None => Vec::new(),
+        },
+    };
+    if new.is_empty() {
+        return false;
+    }
+    let (path, index) = place(ui, commands);
+    let count = new.len();
+    let done = edit_list(commands, &path, registry, |list| {
+        let index = index.min(list.len());
+        list.splice(index..index, new);
+    });
+    if done.is_none() {
+        return false;
+    }
+    // The new commands are the selected rows.
+    let last = Row {
+        list: path,
+        index: index + count - 1,
+        kind: RowKind::Command,
+    };
+    ui.anchor = Some((last.clone(), index));
+    ui.row = Some(last);
+    true
 }
 
 struct Draft {
@@ -94,6 +218,8 @@ struct Lists {
     movers: Vec<String>,
     /// Each room file with its spawn points, the open room too.
     rooms: Vec<(String, Vec<String>)>,
+    /// The keys of delete, duplicate, copy, and paste, for the hover texts.
+    row_keys: [String; 4],
 }
 
 /// What a click in a list of names took.
@@ -112,6 +238,19 @@ fn name_list(
     names: &[String],
     marked: &[String],
     new: bool,
+) -> Option<Picked> {
+    described_list(ui, id, button, names, marked, new, &|_| None)
+}
+
+/// As [`name_list`]. `help`: the hover text of a name.
+fn described_list(
+    ui: &mut Ui,
+    id: egui::Id,
+    button: egui::WidgetText,
+    names: &[String],
+    marked: &[String],
+    new: bool,
+    help: &dyn Fn(&str) -> Option<&'static str>,
 ) -> Option<Picked> {
     let mut picked = None;
     egui::ComboBox::from_id_salt(id)
@@ -149,7 +288,11 @@ fn name_list(
                 } else {
                     egui::RichText::new(name)
                 };
-                if ui.selectable_label(false, label).clicked() {
+                let mut entry = ui.selectable_label(false, label);
+                if let Some(help) = help(name) {
+                    entry = entry.on_hover_text(help);
+                }
+                if entry.clicked() {
                     picked = Some(Picked::Name(name.clone()));
                 }
             }
@@ -165,7 +308,7 @@ fn name_list(
 /// A name of a list, by a click, with a search field. A name that the list does not
 /// have shows in red. `new`: the list has the entry "New..." for a name that it does
 /// not have; the name is typed then, and Enter takes it.
-fn picker(
+pub(crate) fn picker(
     ui: &mut Ui,
     salt: &str,
     value: &mut String,
@@ -440,6 +583,7 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
                 .collect(),
         ),
         rooms: std::iter::once(own).chain(other_rooms).collect(),
+        row_keys: Default::default(),
     };
     (lists, problems)
 }
@@ -502,7 +646,9 @@ pub(crate) fn event_panel(
     index: usize,
 ) -> Option<bool> {
     let registry = editor.registry.clone();
-    let (lists, problems) = lists_and_problems(editor, index);
+    let (mut lists, problems) = lists_and_problems(editor, index);
+    let actions = [crate::DELETE, crate::DUPLICATE, crate::COPY, crate::PASTE];
+    lists.row_keys = actions.map(|action| crate::key_of(world, action));
     let problems: Vec<&Problem> = problems.iter().collect();
     let state = world.resource::<GameState>().clone();
     let editors = world
@@ -599,7 +745,7 @@ fn pages(
             event_ui.page = at + 1;
         }
         if ui
-            .button("Copy")
+            .button("Duplicate")
             .on_hover_text("A copy of the page, after it")
             .clicked()
         {
@@ -712,12 +858,16 @@ fn command_rows(
         .map_or((Vec::new(), list.len()), |row| row.insert_place(list));
     let mut changed = false;
     let mut insert: Vec<Command> = Vec::new();
+    let mut row_command = None;
 
     ui.horizontal(|ui| {
         ui.label("Commands");
         let names: Vec<String> = registry.names().into_iter().map(str::to_owned).collect();
         let add = ui.make_persistent_id("add command");
-        if let Some(Picked::Name(name)) = name_list(ui, add, "Add".into(), &names, &[], false) {
+        // The hover text of a name: the line of help of its module.
+        let help = |name: &str| registry.help(name);
+        let picked = described_list(ui, add, "Add".into(), &names, &[], false, &help);
+        if let Some(Picked::Name(name)) = picked {
             match new_command(&name, lists, registry) {
                 Some(command) => insert.push(command),
                 // A command with arguments that the editor does not know: the
@@ -735,25 +885,25 @@ fn command_rows(
             }
         }
         let some = selected_command.is_some();
-        if ui.add_enabled(some, egui::Button::new("Delete")).clicked()
-            && let Some(row) = selected_command
-        {
-            edit_list(list, &row.list, registry, |list| list.remove(row.index));
-            event_ui.row = None;
-            changed = true;
-        }
-        if ui.add_enabled(some, egui::Button::new("Copy")).clicked()
-            && let Some(command) = selected_command.and_then(|row| row.command(list))
-        {
-            event_ui.clipboard = vec![command.clone()];
-        }
-        if ui
-            .add_enabled(!event_ui.clipboard.is_empty(), egui::Button::new("Paste"))
-            .clicked()
-        {
-            insert.clone_from(&event_ui.clipboard);
+        let buffer = !event_ui.clipboard.is_empty();
+        let [delete, duplicate, copy, paste] = &lists.row_keys;
+        for (text, enabled, command, key) in [
+            ("Delete", some, RowCommand::Delete, delete),
+            ("Duplicate", some, RowCommand::Duplicate, duplicate),
+            ("Copy", some, RowCommand::Copy, copy),
+            ("Paste", buffer, RowCommand::Paste, paste),
+        ] {
+            let button = ui.add_enabled(enabled, egui::Button::new(text));
+            if button.on_hover_text(key.as_str()).clicked() {
+                row_command = Some(command);
+            }
         }
     });
+    if let Some(command) = row_command {
+        event_ui.focused = true;
+        return crate::event_panel::row_command(list, event_ui, registry, command);
+    }
+    let range = event_ui.selected();
 
     // The rows. A click selects one; a drag moves a command to the row where the
     // button goes up.
@@ -771,16 +921,38 @@ fn command_rows(
                 let of_problem = problem.command.as_ref();
                 command.is_some_and(|command| of_problem == Some(&(page_index, command.clone())))
             });
-            let label = egui::RichText::new(text).monospace();
+            // A line for a reader, if the module of the command gives one. The text
+            // of the room file is the hover text.
+            let shown = command.and_then(|command| registry.row_text(command));
+            let label = egui::RichText::new(shown.as_deref().unwrap_or(text));
             let label = match bad {
                 Some(problem) => label.color(color(problem)),
                 None => label,
             };
-            let response = ui.selectable_label(selected.as_ref() == Some(row), label);
+            // Selected: the row of the last click, and the rows of a Shift click.
+            let in_range = range.as_ref().is_some_and(|(list, range)| {
+                row.kind == RowKind::Command && *list == row.list && range.contains(&row.index)
+            });
+            let is_selected = selected.as_ref() == Some(row) || in_range;
+            let response = ui.selectable_label(is_selected, label);
             let response = response.interact(egui::Sense::drag());
             if response.clicked() {
-                event_ui.row = Some(row.clone());
-                event_ui.draft = None;
+                // Shift: the rows from the row of the click before to this one, in
+                // the same list.
+                let shift = ui.input(|input| input.modifiers.shift);
+                let old = event_ui
+                    .selected()
+                    .filter(|(list, _)| shift && row.kind == RowKind::Command && *list == row.list);
+                let other = old.map(|(_, range)| {
+                    let was = event_ui.row.as_ref().map_or(row.index, |row| row.index);
+                    // The end that the click before did not set.
+                    if *range.start() == was {
+                        *range.end()
+                    } else {
+                        *range.start()
+                    }
+                });
+                event_ui.select_rows(row.clone(), other);
             }
             if response.drag_started() && row.kind == RowKind::Command {
                 event_ui.dragged = Some(row.clone());
@@ -788,7 +960,12 @@ fn command_rows(
             let over = response.contains_pointer()
                 && event_ui.dragged.as_ref().is_some_and(|from| from != row);
             if over {
-                ui.weak("< here");
+                // Where the dragged command goes: a line above this row, at the
+                // indent of its list.
+                let edge = response.rect;
+                let stroke = egui::Stroke::new(2.0, HINT);
+                ui.painter()
+                    .hline(edge.left()..=edge.left() + 260.0, edge.top() - 1.0, stroke);
                 if released {
                     drop = Some(row.clone());
                 }

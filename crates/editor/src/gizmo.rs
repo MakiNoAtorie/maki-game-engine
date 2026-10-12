@@ -195,6 +195,11 @@ impl Drag {
         }
     }
 
+    /// Ends the drag with no change: the document gets the values of its start.
+    pub fn cancel(self, document: &mut Document) {
+        (document.room, document.events) = self.start;
+    }
+
     /// Makes the document from the start of the drag and the place of the pointer
     /// now. `steps`: the grid step and the angle step (degrees) to snap to; `None`:
     /// no snap. `second`: the gizmo is at the second pose of a mover.

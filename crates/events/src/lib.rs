@@ -73,6 +73,7 @@ impl Module for EventsModule {
         let registry = CommandRegistry::default();
         registry.add(builtin::run);
         registry.add_check(builtin::check);
+        registry.add_texts(builtin::row_text, builtin::help);
         add_bindings(
             app,
             &[

@@ -408,6 +408,13 @@ fn a_command_is_read_from_its_text() {
     assert_eq!(conditions, &[Condition::Flag("seen".to_owned())]);
     assert_eq!((yes.len(), no.len()), (1, 0));
     assert_eq!(Some(&yes[0]), registry.command(Builtin::Wait(0.5)).as_ref());
+    // The texts of a command set for a tool: a line for a reader, and one line of
+    // help for a name. A set with no texts gives none.
+    assert_eq!(registry.row_text(&command), None);
+    registry.add_texts(crate::builtin::row_text, crate::builtin::help);
+    assert_eq!(registry.row_text(&command).as_deref(), Some("If seen"));
+    assert_eq!(registry.row_text(&yes[0]).as_deref(), Some("Wait 0.5 s"));
+    assert!(registry.help("Wait").is_some() && registry.help("Explode").is_none());
     for bad in ["Wait(", "Wait(\"long\")", "Explode", ""] {
         assert!(registry.parse_command(bad).is_err(), "{bad}");
     }

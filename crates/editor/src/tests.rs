@@ -561,3 +561,142 @@ fn a_module_gives_the_widgets_for_the_arguments_of_its_command() {
     output.textures_delta.clear();
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// The traps of the UX pass: which list a command goes to, a file that "Save as"
+/// would write over, play with changes, a drag that is cancelled, and the selection
+/// of an undo.
+#[test]
+fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_question() {
+    use maki_platform::{Key, RawInput};
+
+    use crate::{Row, RowKind};
+
+    let (app, directory) = editor_app("traps");
+    app.run(|mut app| {
+        frames(&mut app, 3);
+        fn editor(app: &App) -> &Editor {
+            app.world().resource::<Editor>()
+        }
+        let cube = |app: &App| editor(app).document.room.props[0].pose.position;
+        let commands = |app: &App| editor(app).document.events[0].pages[0].commands.len();
+        let row = |index| Row {
+            list: Vec::new(),
+            index,
+            kind: RowKind::Command,
+        };
+
+        // Esc in a drag: the values of its start, and no step of the history.
+        click(&mut app, Vec3::new(1.0, 1.0, 0.0));
+        assert_eq!(editor(&app).selection, [Item::Prop(0)]);
+        let steps = editor(&app).history_steps();
+        let (from, to) = (Vec3::new(1.0, 0.5, 0.0), Vec3::new(-1.0, 0.5, 1.0));
+        app.write_message(RawInput::PointerMoved(window_pixel(&app, from)));
+        frames(&mut app, 1);
+        app.write_message(RawInput::KeyDown(Key::MouseLeft));
+        frames(&mut app, 1);
+        app.write_message(RawInput::PointerMoved(window_pixel(&app, to)));
+        frames(&mut app, 2);
+        assert_ne!(cube(&app), [1.0, 0.5, 0.0]);
+        request(&mut app, Command::Cancel);
+        assert_eq!(cube(&app), [1.0, 0.5, 0.0]);
+        assert!(editor(&app).dragged().is_none());
+        app.write_message(RawInput::KeyUp(Key::MouseLeft));
+        frames(&mut app, 2);
+        assert_eq!(editor(&app).history_steps(), steps);
+        assert_eq!(cube(&app), [1.0, 0.5, 0.0]);
+        // Esc with no drag: nothing is selected.
+        request(&mut app, Command::Cancel);
+        assert_eq!(editor(&app).selection, []);
+
+        // An event, and a click on its second command row: Delete removes the row,
+        // not the event.
+        {
+            let mut editor = app.resource_mut::<Editor>();
+            editor.select(Item::Event(0), false);
+            editor.event_ui.select_rows(row(1), None);
+        }
+        request(&mut app, Command::Delete);
+        assert_eq!((editor(&app).document.events.len(), commands(&app)), (1, 2));
+        // A range of two rows (Shift and a click): copy, paste after them, and a
+        // copy of the pasted rows.
+        app.resource_mut::<Editor>()
+            .event_ui
+            .select_rows(row(1), Some(0));
+        request(&mut app, Command::Copy);
+        request(&mut app, Command::Paste);
+        assert_eq!(commands(&app), 4);
+        assert_eq!(editor(&app).event_ui.selected(), Some((Vec::new(), 2..=3)));
+        request(&mut app, Command::Duplicate);
+        assert_eq!(commands(&app), 6);
+        request(&mut app, Command::Delete);
+        assert_eq!(commands(&app), 4);
+        let list = &editor(&app).document.events[0].pages[0].commands;
+        assert_eq!((&list[0], &list[1]), (&list[2], &list[3]));
+        // Undo is of the document: the rows that were deleted are back.
+        request(&mut app, Command::Undo);
+        assert_eq!(commands(&app), 6);
+
+        // A click on an item: the same key deletes the item, and the rows stay. The
+        // undo of it selects the item again.
+        app.resource_mut::<Editor>().select(Item::Prop(0), false);
+        // The key comes in a later frame than the click.
+        frames(&mut app, 1);
+        request(&mut app, Command::Delete);
+        assert_eq!(editor(&app).document.room.props.len(), 0);
+        assert_eq!((commands(&app), editor(&app).selection.len()), (6, 0));
+        request(&mut app, Command::Undo);
+        assert_eq!(editor(&app).selection, [Item::Prop(0)]);
+        assert_eq!(editor(&app).document.room.props.len(), 1);
+
+        // Play with changes: no question. The game goes to room B (the event of
+        // room A), and a load of room A gets the room of the editor, not the file.
+        app.resource_mut::<Editor>().document.room.width = 7.0;
+        assert!(editor(&app).document.dirty);
+        request(&mut app, Command::Play);
+        assert!(editor(&app).playing() && editor(&app).pending().is_none());
+        frames(&mut app, 20);
+        assert_eq!(
+            app.world().resource::<CurrentRoom>().path,
+            directory.join("b.ron")
+        );
+        app.resource_mut::<maki_scene::RoomRequest>().0 = Some(maki_scene::RoomTarget {
+            path: directory.join("a.ron"),
+            spawn: Some("start".to_owned()),
+            text: None,
+        });
+        frames(&mut app, 1);
+        let room = app.world().resource::<CurrentRoom>();
+        assert_eq!(
+            (room.path.clone(), room.def.width),
+            (directory.join("a.ron"), 7.0)
+        );
+        request(&mut app, Command::Stop);
+        assert!(editor(&app).document.dirty);
+        assert_eq!(editor(&app).document.room.width, 7.0);
+        // After the stop, the file is the file again.
+        assert_eq!(app.world().resource::<maki_scene::RoomOverride>().0, None);
+
+        // "Save as" with the name of room B: a question, and the file stays until
+        // the answer is "Replace".
+        let room_b = directory.join("b.ron");
+        request(&mut app, Command::SaveAs(room_b.clone()));
+        assert_eq!(
+            editor(&app).pending(),
+            Some(&Command::SaveAs(room_b.clone()))
+        );
+        assert_eq!(std::fs::read_to_string(&room_b).unwrap(), ROOM_B);
+        request(&mut app, Command::Answer(Answer::Cancel));
+        assert_eq!(editor(&app).document.path, directory.join("a.ron"));
+        assert_eq!(std::fs::read_to_string(&room_b).unwrap(), ROOM_B);
+        request(&mut app, Command::SaveAs(room_b.clone()));
+        request(&mut app, Command::Answer(Answer::Replace));
+        assert_eq!(editor(&app).document.path, room_b);
+        assert!(
+            std::fs::read_to_string(&room_b)
+                .unwrap()
+                .contains("width: 7.0")
+        );
+        assert!(!editor(&app).document.dirty);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}

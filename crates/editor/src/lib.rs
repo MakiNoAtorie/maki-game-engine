@@ -59,15 +59,16 @@ use maki_platform::{
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
-    ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomRequest, RoomTarget,
-    load_requested_room, patch_room,
+    ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomOverride, RoomRequest,
+    RoomTarget, load_requested_room, patch_room,
 };
 use maki_ui::{PanelSizes, Panels, TOGGLE_HELP};
 use serde::{Deserialize, Serialize};
 
 pub use camera::{EditorCamera, ORBIT, PAN, VIEW_GAME, VIEW_TOP, ZOOM_IN, ZOOM_OUT};
 pub use document::{Document, Item, Place};
-pub use event_panel::{ArgumentEditors, EventUi, add_argument_editor};
+use event_panel::row_command;
+pub use event_panel::{ArgumentEditors, EventUi, RowCommand, add_argument_editor};
 pub use events::{Names, OtherRoom, Row, RowKind, Use, names, other_rooms, problems};
 pub use gizmo::{Drag, Gizmo, Handle, Tool};
 pub use ops::{History, Kind, spawn_users};
@@ -94,8 +95,14 @@ pub const UNDO: Action = Action("editor_undo");
 pub const REDO: Action = Action("editor_redo");
 pub const DUPLICATE: Action = Action("editor_duplicate");
 pub const SAVE: Action = Action("editor_save");
+pub const COPY: Action = Action("editor_copy");
+pub const PASTE: Action = Action("editor_paste");
+/// Puts the selection in the middle of the view.
+pub const FRAME: Action = Action("editor_frame");
+/// Ends a drag with no change. With no drag: selects nothing.
+pub const CANCEL: Action = Action("editor_cancel");
 
-const BINDINGS: [(Key, Action, &str); 9] = [
+const BINDINGS: [(Key, Action, &str); 11] = [
     (Key::F5, PLAY, "Play the room"),
     (Key::MouseLeft, SELECT, "Select, or drag a handle"),
     (
@@ -109,12 +116,16 @@ const BINDINGS: [(Key, Action, &str); 9] = [
     (Key::R, TOOL_SCALE, "Tool: scale"),
     (Key::Q, TOGGLE_LOCAL, "Handles of the item / of the room"),
     (Key::Delete, DELETE, "Delete the selection"),
+    (Key::F, FRAME, "Frame the selection in the view"),
+    (Key::Escape, CANCEL, "Cancel a drag, or select nothing"),
 ];
 
-const CHORDS: [(Chord, Action, &str); 4] = [
+const CHORDS: [(Chord, Action, &str); 6] = [
     (Chord::ctrl(Key::Z), UNDO, "Undo"),
     (Chord::ctrl(Key::Y), REDO, "Redo"),
     (Chord::ctrl(Key::D), DUPLICATE, "Duplicate"),
+    (Chord::ctrl(Key::C), COPY, "Copy the selected command rows"),
+    (Chord::ctrl(Key::V), PASTE, "Paste command rows"),
     (Chord::ctrl(Key::S), SAVE, "Save"),
 ];
 
@@ -187,10 +198,19 @@ pub enum Command {
     Test(String, usize),
     /// A new item, on the floor at the point that the view looks at.
     Add(Kind),
-    /// Removes the selected items.
+    /// Removes the selected items, or the selected command rows: what had the last
+    /// click (`EventUi::focused`). The same for `Duplicate`, `Copy`, and `Paste`.
     Delete,
     /// A copy of each selected item. The copies are the selection then.
     Duplicate,
+    /// The selected command rows go into the buffer.
+    Copy,
+    /// The command rows of the buffer, after the selected row.
+    Paste,
+    /// The view looks at the last selected item.
+    Frame,
+    /// Ends a drag of a handle with no change. With no drag: selects nothing.
+    Cancel,
     Undo,
     Redo,
     /// Ends the app.
@@ -206,9 +226,10 @@ pub enum Command {
 pub enum Answer {
     /// Save, then do it.
     Save,
-    /// Do it. The changes are lost, but for `Play`: the game plays the room as it is
-    /// in the editor.
+    /// Do it. The changes are lost.
     DoNotSave,
+    /// "Save as" writes over the file that exists.
+    Replace,
     /// Do not do it.
     Cancel,
 }
@@ -246,6 +267,11 @@ pub struct Editor {
     pub status: String,
     /// Why a command did not do its work. It shows until the user closes it.
     pub error: Option<String>,
+    /// True until the cancel key is up: its press was for the game.
+    ignore_cancel: bool,
+    /// What a click would take now, and the pixel that it was found for.
+    pub hover: Option<Hover>,
+    hover_pixel: Option<[f32; 2]>,
     /// The directory of the room files of the game.
     rooms: PathBuf,
     queue: Vec<Command>,
@@ -284,6 +310,7 @@ impl Editor {
     /// Selects an item. `add`: the other items stay selected, and an item that is
     /// selected is not selected then.
     pub fn select(&mut self, item: Item, add: bool) {
+        self.event_ui.focused = false;
         let was_selected = self.selection.contains(&item);
         if !add {
             self.selection.clear();
@@ -370,6 +397,20 @@ impl Editor {
         }
         let in_picture =
             |[x, y]: &[f32; 2]| (0.0..view.size[0]).contains(x) && (0.0..view.size[1]).contains(y);
+        // What a click would take. Only for a new place of the pointer: the pick
+        // reads each triangle of the room.
+        let over = pixel.filter(in_picture);
+        if over != self.hover_pixel || clicked {
+            self.hover_pixel = over;
+            self.hover = over.and_then(|pixel| {
+                let handle = self
+                    .gizmo(&view)
+                    .and_then(|gizmo| gizmo.handle_at(&view, pixel));
+                handle
+                    .map(Hover::Handle)
+                    .or_else(|| pick(world, &self.document, &view.ray(pixel)).map(Hover::Item))
+            });
+        }
         let Some(pixel) = press.filter(|pixel| clicked && in_picture(pixel)) else {
             return;
         };
@@ -392,22 +433,64 @@ impl Editor {
         tracing::debug!(?picked, ?pixel, "click in the picture");
         match picked {
             Some(item) => self.select(item, add),
-            None if !add => self.selection.clear(),
+            None if !add => {
+                self.selection.clear();
+                self.event_ui.focused = false;
+            }
             None => {}
         }
+    }
+
+    /// A command for the selected command rows of the event panel.
+    fn rows(&mut self, command: RowCommand) {
+        let Item::Event(index) = self.primary() else {
+            return;
+        };
+        let page = self.event_ui.page;
+        let pages = self
+            .document
+            .events
+            .get_mut(index)
+            .map(|event| &mut event.pages);
+        let Some(page) = pages.and_then(|pages| pages.get_mut(page)) else {
+            return;
+        };
+        if row_command(
+            &mut page.commands,
+            &mut self.event_ui,
+            &self.registry,
+            command,
+        ) {
+            self.document.dirty = true;
+        }
+        self.status = format!("{command:?}: command rows");
     }
 
     fn run(&mut self, world: &mut World, command: Command, confirmed: bool) {
         if self.playing() && command != Command::Stop {
             return;
         }
-        let asks = matches!(
-            command,
-            Command::New | Command::Open(_) | Command::Play | Command::Test(..) | Command::Quit
-        );
-        if asks && self.document.dirty && !confirmed {
+        // Not `Play` and `Test`: the game plays the room of the editor, not the file.
+        let loses_changes = matches!(command, Command::New | Command::Open(_) | Command::Quit);
+        // "Save as" with the name of another room file.
+        let replaces = matches!(&command, Command::SaveAs(path)
+            if *path != self.document.path && path.exists());
+        if (loses_changes && self.document.dirty || replaces) && !confirmed {
             self.pending = Some(command);
             return;
+        }
+        // The list that had the last click gets the command: the command rows of
+        // the event panel, or the items.
+        let on_rows = self.event_ui.focused && matches!(self.primary(), Item::Event(_));
+        let row = match command {
+            Command::Delete => Some(RowCommand::Delete),
+            Command::Duplicate => Some(RowCommand::Duplicate),
+            Command::Copy => Some(RowCommand::Copy),
+            Command::Paste => Some(RowCommand::Paste),
+            _ => None,
+        };
+        if let (true, Some(row)) = (on_rows, row) {
+            return self.rows(row);
         }
         match command {
             Command::New => {
@@ -473,8 +556,8 @@ impl Editor {
             }
             Command::Undo | Command::Redo => {
                 let done = match command {
-                    Command::Undo => self.history.undo(&mut self.document),
-                    _ => self.history.redo(&mut self.document),
+                    Command::Undo => self.history.undo(&mut self.document, &mut self.selection),
+                    _ => self.history.redo(&mut self.document, &mut self.selection),
                 };
                 let (undo, redo) = self.history.steps();
                 let name = if command == Command::Undo {
@@ -487,6 +570,33 @@ impl Editor {
                     false => format!("{name}: no step"),
                 };
             }
+            Command::Copy | Command::Paste => {
+                self.status = "Copy and paste: click a command row of an event first".to_owned();
+            }
+            Command::Frame => {
+                let at = self.document.pose_of(&self.primary(), self.second_pose);
+                let room = &self.document.room;
+                // An item: near it. The room, or an item with no place: all of it.
+                let (target, distance) = match at {
+                    Some((at, _)) => (at, FRAME_DISTANCE),
+                    None => (Vec3::ZERO, room.width.max(room.depth) * 1.5),
+                };
+                let mut cameras = world.query::<&mut EditorCamera>();
+                for mut camera in cameras.iter_mut(world) {
+                    (camera.target, camera.distance) = (target, distance);
+                }
+            }
+            Command::Cancel => match self.drag.take() {
+                // No step of the history: the document is as before the drag.
+                Some(drag) => {
+                    drag.cancel(&mut self.document);
+                    self.status = "The drag was cancelled".to_owned();
+                }
+                None => {
+                    self.selection.clear();
+                    self.event_ui.focused = false;
+                }
+            },
             Command::Quit => {
                 world.resource_mut::<QuitHold>().0 = false;
                 world.resource_mut::<QuitRequested>().0 = true;
@@ -504,7 +614,8 @@ impl Editor {
                     self.save();
                 }
                 // A save that failed: the changes are still there, so not done.
-                let go = answer == Answer::DoNotSave || !self.document.dirty;
+                let go =
+                    matches!(answer, Answer::DoNotSave | Answer::Replace) || !self.document.dirty;
                 if answer != Answer::Cancel && go {
                     self.run(world, pending, true);
                 }
@@ -583,10 +694,13 @@ impl Editor {
             }
         }
         // From the text of the document, not from the file: the room as it is here.
+        // Also when the game comes back to this room by a `Transfer`.
+        let (path, text) = (self.document.path.clone(), self.document.text());
+        world.resource_mut::<RoomOverride>().0 = Some((path.clone(), text.clone()));
         world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
-            path: self.document.path.clone(),
+            path,
             spawn,
-            text: Some(self.document.text()),
+            text: Some(text),
         });
         self.status = "Playing".to_owned();
     }
@@ -597,6 +711,10 @@ impl Editor {
         };
         *world.resource_mut::<GameState>() = state;
         reset_play_state(world);
+        world.resource_mut::<RoomOverride>().0 = None;
+        // The quit key of the game is also the cancel key of the editor: the press
+        // that stopped the game does not clear the selection.
+        self.ignore_cancel = true;
         // The world shows what the game made of the room, or another room.
         self.shown = None;
         self.test = None;
@@ -687,9 +805,23 @@ impl Editor {
     /// The keys of the editor that are commands or switches.
     fn keys(&mut self, actions: &ActionState) {
         let pressed = |action| actions.just_pressed(action);
+        // The play key stops a game. Its action is the same in the two input modes,
+        // so a key that is held over the change of the mode is one press.
+        if pressed(PLAY) && self.playing() {
+            self.request(Command::Stop);
+        }
+        if !actions.pressed(CANCEL) {
+            self.ignore_cancel = false;
+        }
+        if pressed(CANCEL) && !self.ignore_cancel {
+            self.request(Command::Cancel);
+        }
         let commands = [
             (PLAY, Command::Play),
             (DELETE, Command::Delete),
+            (COPY, Command::Copy),
+            (PASTE, Command::Paste),
+            (FRAME, Command::Frame),
             (UNDO, Command::Undo),
             (REDO, Command::Redo),
             (DUPLICATE, Command::Duplicate),
@@ -714,6 +846,30 @@ impl Editor {
         }
     }
 }
+
+/// The key of an action of the editor, as the binding table has it: for the hover
+/// text of a button. Empty: the action has no key.
+pub(crate) fn key_of(world: &World, action: Action) -> String {
+    let bindings = &world.resource::<maki_platform::Bindings>().0;
+    let of_action =
+        |binding: &&maki_platform::Binding| binding.mode == MODE && binding.action == action;
+    let keys: Vec<String> = bindings
+        .iter()
+        .filter(of_action)
+        .map(|b| b.chord.label())
+        .collect();
+    keys.join(" or ")
+}
+
+/// What is under the pointer in the picture: a click takes it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hover {
+    Handle(Handle),
+    Item(Item),
+}
+
+/// The distance of the view from an item that `Command::Frame` puts in its middle.
+const FRAME_DISTANCE: f32 = 4.0;
 
 /// The view of the editor camera. `None`: the app has no editor camera.
 pub(crate) fn editor_view(world: &mut World) -> Option<View> {
@@ -757,6 +913,8 @@ impl Module for EditorModule {
         add_mode_bindings(app, MODE, &camera::BINDINGS);
         add_mode_bindings(app, MODE, &BINDINGS);
         add_mode_bindings(app, MODE, &CHORDS);
+        // In a game: the same key and the same action stop it.
+        maki_platform::add_bindings(app, &[(Key::F5, PLAY, "Stop the game (editor)")]);
         add_mode_bindings(app, MODE, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
         // A quit request is a command of the editor: it asks for changes that are
         // not saved, and in a game it is a stop.
@@ -779,6 +937,9 @@ impl Module for EditorModule {
             play_from: Some(start.spawn),
             status: String::new(),
             error: None,
+            ignore_cancel: false,
+            hover: None,
+            hover_pixel: None,
             rooms: self.rooms.clone(),
             // In the first frame: all modules have added their event commands then.
             queue: vec![Command::Open(start.path)],
@@ -866,7 +1027,10 @@ fn take_quit_request(mut quit: ResMut<QuitRequested>, mut editor: ResMut<Editor>
 /// Runs in `Update`: the commands of the queue, then the world follows the document.
 fn run_commands(world: &mut World) {
     world.resource_scope(|world, mut editor: Mut<Editor>| {
-        editor.keys(world.resource::<ActionState>());
+        // A question waits: the keys of the editor do nothing.
+        if editor.pending.is_none() {
+            editor.keys(world.resource::<ActionState>());
+        }
         for command in std::mem::take(&mut editor.queue) {
             editor.run(world, command, false);
         }
@@ -881,9 +1045,12 @@ fn run_commands(world: &mut World) {
         if !editor.playing() {
             let busy = editor.busy || editor.drag.is_some();
             let Editor {
-                history, document, ..
+                history,
+                document,
+                selection,
+                ..
             } = &mut *editor;
-            history.track(document, busy);
+            history.track(document, selection, busy);
         }
         editor.sync(world);
         editor.apply_mode(world);
