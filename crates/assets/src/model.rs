@@ -182,6 +182,16 @@ pub(crate) fn finish_model_loads(
     }
 }
 
+/// The check of a model file for the watch (`AssetWatch`): it reads, with its
+/// images.
+pub fn check_model(path: &Path) -> Result<()> {
+    let read = read_gltf(path)?;
+    for (_, image) in read.images {
+        image?;
+    }
+    Ok(())
+}
+
 /// A model file as it is read, with no asset store: on any thread.
 struct ReadModel {
     meshes: Vec<ReadMesh>,

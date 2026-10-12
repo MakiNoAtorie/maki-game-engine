@@ -88,6 +88,7 @@ pub(crate) fn build(app: &mut App) {
     let add =
         |ui: &mut Ui, world: &mut World| with_editor(world, |_, editor| add_files(ui, editor));
     add_menu(app, "Add", Some(Box::new(add)));
+    add_menu(app, "Assets", None);
     add_menu(app, "View", None);
 
     add_tool_panel(

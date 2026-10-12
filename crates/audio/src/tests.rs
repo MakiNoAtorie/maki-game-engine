@@ -216,3 +216,45 @@ fn the_right_side_of_the_picture_is_the_right_ear() {
     };
     assert!((facing(&behind) * Vec3::X).distance(Vec3::NEG_X) < 1e-5);
 }
+
+#[test]
+fn a_sound_file_that_changed_is_read_again_and_what_plays_it_starts_again() {
+    let events = r#"(name: "start", pages: [(trigger: Autorun, commands: [
+        PlayMusic("music.wav", 0.5)])])"#;
+    let (directory, room) = room_directory("changed", events);
+    // The length of the sound that the store has for a file.
+    let seconds = |app: &mut App, file: &str| {
+        let mut audio = app.resource_mut::<Audio>();
+        let handle = audio.load(&directory.join(file));
+        audio.sound(handle).map(Sound::seconds)
+    };
+    app(&room).run(|mut app| {
+        frames(&mut app, 10);
+        let none = Vec::<String>::new;
+        let music = Some("music.wav".to_owned());
+        let hum = vec!["hum.wav".to_owned()];
+        assert_eq!(plays(&app), (none(), music.clone(), hum.clone()));
+        assert_eq!(seconds(&mut app, "hum.wav"), Some(0.5));
+        // The files that the watch looks at: the hum, and the music.
+        let mut files = app.world().resource::<Audio>().files();
+        files.sort();
+        assert_eq!(
+            files,
+            [directory.join("hum.wav"), directory.join("music.wav")]
+        );
+
+        // Another program writes the hum again, with another length.
+        write_wav(&directory.join("hum.wav"), 0.25);
+        app.write_message(AssetChanged(directory.join("hum.wav")));
+        frames(&mut app, 2);
+        // The lamp hums the new file; the music goes on.
+        assert_eq!(seconds(&mut app, "hum.wav"), Some(0.25));
+        assert_eq!(plays(&app), (none(), music.clone(), hum.clone()));
+
+        // The music file: the music starts again.
+        app.write_message(AssetChanged(directory.join("music.wav")));
+        frames(&mut app, 2);
+        assert_eq!(plays(&app), (none(), music, hum));
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}

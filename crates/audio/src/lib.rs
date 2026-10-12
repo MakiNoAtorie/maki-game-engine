@@ -15,13 +15,18 @@
 mod commands;
 mod output;
 
+use std::path::{Path, PathBuf};
+
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::message::MessageReader;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Query, Res, ResMut};
+use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::system::{Local, Query, Res, ResMut};
 use glam::{Mat3, Quat, Vec3};
-use maki_core::{App, Extract, Module, ResetPlay, Settings, Time, Transform};
+use maki_assets::{AssetChanged, AssetWatch};
+use maki_core::{App, Extract, Module, ResetPlay, Settings, Time, Transform, Update};
 use maki_events::CommandRegistry;
 use maki_scene::{ActiveCamera, Camera, Player, SoundSource};
 use serde::{Deserialize, Serialize};
@@ -73,10 +78,51 @@ impl Module for AudioModule {
             // frame shows, as its picture is.
             .add_systems(Extract, play_frame)
             // A game that starts, or that a tool stops, is silent.
-            .add_systems(ResetPlay, |mut audio: ResMut<Audio>| audio.stop_all());
+            .add_systems(ResetPlay, |mut audio: ResMut<Audio>| audio.stop_all())
+            // The watch of the asset files, if `AssetsModule` is there. In `Update`:
+            // `play_frame` of the same frame starts a sound with the new file.
+            .add_message::<AssetChanged>()
+            // Each store tells the watch its own files.
+            .allow_ambiguous_resource::<AssetWatch>()
+            .add_systems(Update, (forget_changed, watch_sounds).chain());
         if let Some(registry) = app.world().get_resource::<CommandRegistry>() {
             commands::add(registry);
         }
+    }
+}
+
+/// The check of a sound file for the watch: it decodes.
+fn check_sound(path: &Path) -> anyhow::Result<()> {
+    kira::sound::static_sound::StaticSoundData::from_file(path)?;
+    Ok(())
+}
+
+/// Runs in `Update`: the audio module forgets each sound file that changed on the
+/// disk.
+fn forget_changed(mut changed: MessageReader<AssetChanged>, mut audio: ResMut<Audio>) {
+    for AssetChanged(path) in changed.read() {
+        audio.forget(path);
+    }
+}
+
+/// Runs in `Update`: tells the watch the sound files, when they are other ones.
+fn watch_sounds(
+    audio: Res<Audio>,
+    watch: Option<ResMut<AssetWatch>>,
+    mut told: Local<Vec<PathBuf>>,
+) {
+    let Some(mut watch) = watch.filter(|watch| watch.on) else {
+        return;
+    };
+    let mut files = audio.files();
+    files.sort();
+    if *told != files {
+        let check: maki_assets::Check = check_sound;
+        watch.set(
+            "sounds",
+            files.iter().map(|path| (path.clone(), check)).collect(),
+        );
+        *told = files;
     }
 }
 

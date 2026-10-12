@@ -23,13 +23,15 @@ use anyhow::{Context, Result, anyhow};
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::message::MessageReader;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::{Mut, World};
 use glam::{EulerRot, Quat, Vec3};
 use maki_assets::{
-    Assets, Doorway, Handle, LoadState, Material, Mesh, Model, ModelLoads, TextureRef, Textures,
+    AssetChanged, AssetWatch, Assets, Doorway, Handle, LoadState, Material, Mesh, Model,
+    ModelLoads, TextureRef, Textures,
 };
 use maki_core::{Interpolated, Transform};
 use serde::de::IgnoredAny;
@@ -666,7 +668,100 @@ pub struct CurrentRoom {
 /// The models of the current room, by path. `load_requested_room` removes those that
 /// the next room does not name.
 #[derive(Resource, Default)]
-pub struct RoomModels(HashMap<PathBuf, Handle<Model>>);
+pub struct RoomModels {
+    by_path: HashMap<PathBuf, Handle<Model>>,
+    /// What a file that changed on the disk made old (`reload_changed`): the models
+    /// of the file, and the generated meshes with its texture. The room that is
+    /// loaded next does not take them, and removes them.
+    old_models: Vec<Handle<Model>>,
+    old_meshes: Vec<Handle<Mesh>>,
+}
+
+/// Removes a model and its meshes from the stores.
+fn remove_model(model: Handle<Model>, models: &mut Assets<Model>, meshes: &mut Assets<Mesh>) {
+    // `None` for a model that failed to load: it has no meshes.
+    let removed = models.remove(model);
+    for mesh in removed.map_or(Vec::new(), |model| model.meshes) {
+        meshes.remove(mesh);
+    }
+}
+
+/// Runs in `Update`, after the stores forgot the files that changed on the disk
+/// (`maki_assets::AssetChanged`) and before the room loader: what the room has of
+/// such a file is marked as old, and the room is asked for again, as it shows now
+/// and with the player in place. The loader then reads the file again.
+pub(crate) fn reload_changed(
+    mut changed: MessageReader<AssetChanged>,
+    textures: Res<Textures>,
+    meshes: Res<Assets<Mesh>>,
+    models: Res<Assets<Model>>,
+    current: Res<CurrentRoom>,
+    mut cache: ResMut<RoomModels>,
+    mut request: ResMut<RoomRequest>,
+) {
+    if changed.is_empty() {
+        return;
+    }
+    let files: Vec<&Path> = changed
+        .read()
+        .map(|AssetChanged(path)| path.as_path())
+        .collect();
+    // A texture of an image file has the name of the file. A texture that did not
+    // load (the file was not there, or broken) is tried again too.
+    let of_file = |texture: Option<TextureRef>| {
+        texture.is_some_and(|texture| match textures.get(texture.texture) {
+            Some(texture) => files.contains(&Path::new(&texture.name)),
+            None => true,
+        })
+    };
+    let uses = |mesh: &Handle<Mesh>| {
+        let mesh = meshes.get(*mesh);
+        mesh.is_some_and(|mesh| {
+            of_file(mesh.base_color_texture()) || of_file(mesh.emissive_texture())
+        })
+    };
+    let old_meshes = current.meshes.iter().map(|(_, mesh)| *mesh);
+    let old_meshes: Vec<Handle<Mesh>> = old_meshes.filter(uses).collect();
+    // The model of a file that changed, and a model with an image file that changed.
+    let old = |path: &PathBuf, model: &Handle<Model>| {
+        let model = models.get(*model);
+        files.contains(&path.as_path()) || model.is_some_and(|model| model.meshes.iter().any(uses))
+    };
+    let models_of = cache
+        .by_path
+        .iter()
+        .filter(|(path, model)| old(path, model));
+    let old_models: Vec<PathBuf> = models_of.map(|(path, _)| path.clone()).collect();
+    if old_meshes.is_empty() && old_models.is_empty() {
+        return;
+    }
+    for path in old_models {
+        let model = cache.by_path.remove(&path).expect("found above");
+        cache.old_models.push(model);
+    }
+    cache.old_meshes.extend(old_meshes);
+    // A request that waits (a room change) loads the files again in any case.
+    if request.0.is_none() && current.loads > 0 {
+        request.0 = Some(RoomTarget {
+            path: current.path.clone(),
+            spawn: None,
+            // The room as it shows, not as its file is: a tool shows a document.
+            text: Some(current.source.clone()),
+        });
+    }
+}
+
+/// Runs in `Update`, after the room loader: tells the watch the model files of the
+/// room.
+pub(crate) fn watch_models(cache: Res<RoomModels>, watch: Option<ResMut<AssetWatch>>) {
+    use bevy_ecs::change_detection::DetectChanges;
+
+    if let Some(mut watch) = watch.filter(|watch| watch.on && cache.is_changed()) {
+        let check: maki_assets::Check = maki_assets::check_model;
+        let files = cache.by_path.keys().map(|path| (path.clone(), check));
+        watch.set("models", files.collect());
+    }
+}
 
 /// A model of a prop while it loads. `spawn_loaded_models` replaces the entity with
 /// one entity for each mesh and each light of the model.
@@ -745,28 +840,35 @@ pub fn load_requested_room(
             _ => None,
         })
         .collect();
-    cache.0.retain(|path, model| {
+    let cache = &mut *cache;
+    cache.by_path.retain(|path, model| {
         let keep = named.contains(path);
         if !keep {
-            // `None` for a model that failed to load: it has no meshes.
-            for mesh in models
-                .remove(*model)
-                .map_or(Vec::new(), |model| model.meshes)
-            {
-                meshes.remove(mesh);
-            }
+            remove_model(*model, &mut models, &mut meshes);
         }
         keep
     });
+    // The models of files that changed on the disk: this room reads the files again.
+    for model in cache.old_models.drain(..) {
+        remove_model(model, &mut models, &mut meshes);
+    }
+    // A generated mesh with a texture of such a file is not taken: no key is empty.
+    let mut old = std::mem::take(&mut current.meshes);
+    for (key, mesh) in &mut old {
+        if cache.old_meshes.contains(mesh) {
+            key.clear();
+        }
+    }
+    cache.old_meshes.clear();
     let mut spawner = Spawner {
         commands: &mut commands,
         meshes: &mut meshes,
         models: &mut models,
         textures: &mut textures,
-        cache: &mut cache,
+        cache,
         loads: &mut loads,
         directory,
-        old: std::mem::take(&mut current.meshes),
+        old,
         owned: Vec::new(),
         made: 0,
     };
@@ -956,7 +1058,7 @@ impl Spawner<'_, '_, '_> {
                 let (textures, loads) = (&mut *self.textures, &mut *self.loads);
                 let model = *self
                     .cache
-                    .0
+                    .by_path
                     .entry(path.clone())
                     .or_insert_with(|| loads.load(&path, models, meshes, textures));
                 self.commands.spawn((
@@ -1641,6 +1743,123 @@ mod tests {
 "buffers":[{"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA","byteLength":36}],
 "bufferViews":[{"buffer":0,"byteLength":36}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]}"#;
+
+    /// The watch of the asset files, with real files and the clock of the wall: a
+    /// file that code writes again, as another program does.
+    #[test]
+    fn a_file_that_is_written_again_shows_with_no_new_room_and_a_broken_file_changes_nothing() {
+        use maki_assets::Textures;
+
+        let directory = std::env::temp_dir().join(format!("maki-watch-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("models")).unwrap();
+        let paint = |color: [u8; 3]| {
+            let [r, g, b] = color;
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([r, g, b, 255]))
+                .save(directory.join("floor.png"))
+                .unwrap();
+        };
+        paint([200, 0, 0]);
+        let model = directory.join("models/triangle.gltf");
+        std::fs::write(&model, TRIANGLE).unwrap();
+        let room = r#"(width: 4, depth: 4, height: 3, floor: (path: "floor.png"),
+            spawns: {"start": (1.0, 0.0, 1.0)},
+            props: [(mesh: Cube(1.0)), (mesh: File("models/triangle.gltf"))])"#;
+        std::fs::write(directory.join("room.ron"), room).unwrap();
+
+        // On the thread of the test: a model is there in the frame of its load.
+        let config = ConfigFile::from_text(
+            "[assets]
+background = false
+watch = true",
+        );
+        let mut app = App::new(config).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+            path: directory.join("room.ron"),
+            spawn: Some("start".to_owned()),
+            text: None,
+        });
+        // The color of the floor texture, the mesh of the cube, the model, and the
+        // count of the room loads.
+        let state = |app: &App| {
+            let world = app.world();
+            let (meshes, textures) = (
+                world.resource::<Assets<Mesh>>(),
+                world.resource::<Textures>(),
+            );
+            let named = |name: &str| meshes.iter().find(|(_, mesh)| mesh.name() == name);
+            let floor = named("room floor").and_then(|(_, mesh)| mesh.base_color_texture());
+            let color =
+                floor.and_then(|floor| Some(textures.get(floor.texture)?.pixels[..3].to_vec()));
+            let cube = named("cube").map(|(handle, _)| handle);
+            let model = world
+                .resource::<RoomModels>()
+                .by_path
+                .values()
+                .next()
+                .copied();
+            let loads = world.resource::<CurrentRoom>().loads;
+            (color, cube, model, loads, textures.iter().count())
+        };
+        // Frames of 20 ms of real time, until `done` or for this many frames.
+        let frames = |app: &mut App, count: u32, done: &dyn Fn(&App) -> bool| {
+            for _ in 0..count {
+                std::thread::sleep(Duration::from_millis(20));
+                app.advance(Duration::from_millis(20));
+                if done(app) {
+                    return true;
+                }
+            }
+            false
+        };
+        // The watch takes its first look at each file.
+        frames(&mut app, 25, &|_| false);
+        let first = state(&app);
+        assert_eq!(
+            (first.0.as_deref(), first.3, first.4),
+            (Some(&[200, 0, 0][..]), 1, 1)
+        );
+
+        // The texture in another color: the floor has it in less than 1 s, with one
+        // room load. The cube is the mesh of before; the old texture is gone.
+        let start = std::time::Instant::now();
+        paint([0, 0, 200]);
+        let blue = |app: &App| state(app).0.as_deref() == Some(&[0, 0, 200][..]);
+        assert!(frames(&mut app, 100, &blue), "the floor did not change");
+        let time = start.elapsed();
+        assert!(time < Duration::from_secs(1), "{time:?}");
+        let second = state(&app);
+        assert_eq!(
+            (second.1, second.2, second.3, second.4),
+            (first.1, first.2, 2, 1)
+        );
+
+        // A file that does not decode (half of a file): nothing changes.
+        std::fs::write(directory.join("floor.png"), "not a picture").unwrap();
+        assert!(!frames(&mut app, 50, &|app| state(app) != second));
+
+        // The model file, written again: a new model, with one more room load. The
+        // texture file is whole again: the floor is loaded with it.
+        paint([0, 200, 0]);
+        std::fs::write(
+            &model,
+            TRIANGLE.replace("AAAAAAAAAAAAAAAAAACAPw", "AAAAAAAAAAAAAAAAAAAAQA"),
+        )
+        .unwrap();
+        let new_model = |app: &App| {
+            let now = state(app);
+            now.2 != second.2 && now.0.as_deref() == Some(&[0, 200, 0][..])
+        };
+        assert!(
+            frames(&mut app, 100, &new_model),
+            "the model did not change"
+        );
+        let third = state(&app);
+        assert_eq!((third.1, third.4), (first.1, 1));
+        // The player is where the spawn point put it: a load again moves no player.
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn two_rooms_that_name_one_model_file_load_it_one_time() {

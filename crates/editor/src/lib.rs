@@ -46,12 +46,14 @@ use std::sync::Arc;
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::message::MessageReader;
 use bevy_ecs::query::{Has, With};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::ResMut;
 use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
+use maki_assets::{AssetChanged, AssetFailed, AssetWatch};
 use maki_core::{
     App, ConfigFile, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update,
 };
@@ -989,6 +991,11 @@ fn selected(world: &World) -> bool {
 /// tool buttons, the keys, and the command search are made from it.
 fn add_commands(app: &mut App) {
     type CanRun = fn(&World) -> bool;
+    let again = ToolCommand {
+        menu: "Assets",
+        ..ToolCommand::new("assets.load_again", "Load all again", load_assets_again)
+    };
+    maki_ui::add_command(app, again);
     let mut add = |id, name, menu, action: Option<Action>, can_run: CanRun, command: Command| {
         let run = move |world: &mut World| world.resource_mut::<Editor>().request(command.clone());
         maki_ui::add_command(
@@ -1361,6 +1368,12 @@ impl Module for EditorModule {
         })
         .add_systems(Startup, camera::spawn)
         .add_systems(Input, take_quit_request)
+        // A file of an asset that another program writes again shows at once, while
+        // a room is edited and while a game runs.
+        .init_resource::<AssetWatch>()
+        .add_message::<AssetChanged>()
+        .add_message::<AssetFailed>()
+        .add_systems(Update, tell_asset_changes.before(run_commands))
         .add_systems(
             Update,
             (
@@ -1376,6 +1389,7 @@ impl Module for EditorModule {
                 camera::move_camera,
             ),
         );
+        app.resource_mut::<AssetWatch>().on = true;
         add_commands(app);
         panels::build(app);
     }
@@ -1393,6 +1407,51 @@ pub fn resave(app: &App, paths: &[PathBuf]) -> anyhow::Result<()> {
         tracing::info!(path = %path.display(), "room file written");
     }
     Ok(())
+}
+
+/// Runs in `Update`: one line in the status row for each asset file that changed on
+/// the disk, and for each one that changed and does not read (the old content
+/// stays then).
+fn tell_asset_changes(
+    mut changed: MessageReader<AssetChanged>,
+    mut failed: MessageReader<AssetFailed>,
+    mut editor: ResMut<Editor>,
+) {
+    let name = |path: &Path| {
+        path.file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    };
+    let files: Vec<&AssetChanged> = changed.read().collect();
+    match files[..] {
+        [] => {}
+        [AssetChanged(path)] => editor.status = format!("{}: loaded again", name(path)),
+        _ => editor.status = format!("{} asset files: loaded again", files.len()),
+    }
+    for AssetFailed { path, error } in failed.read() {
+        let file = name(path);
+        editor.status =
+            format!("{file} changed, but it does not read: {error}. The old content stays");
+    }
+}
+
+/// The command "Assets > Load all again": each store forgets each file that it
+/// loaded, and the room is loaded again. For a program whose save does not change
+/// the time of the file.
+fn load_assets_again(world: &mut World) {
+    let watch = world.resource::<AssetWatch>();
+    let files: Vec<PathBuf> = watch.files().map(Path::to_owned).collect();
+    let count = files.len();
+    for file in files {
+        world.write_message(AssetChanged(file));
+    }
+    // Also a room with no such file: its prefab files are read again.
+    let mut editor = world.resource_mut::<Editor>();
+    if !editor.playing() {
+        editor.shown = None;
+    }
+    editor.status = format!("{count} asset files are loaded again");
 }
 
 /// Runs in `Input`: a quit request of the frame before (the close button of the

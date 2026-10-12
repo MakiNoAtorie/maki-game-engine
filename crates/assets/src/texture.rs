@@ -62,6 +62,11 @@ pub(crate) fn decode_file(path: &Path) -> Result<Texture> {
     Texture::new(path.display().to_string(), width, height, image.into_raw())
 }
 
+/// The check of an image file for the watch (`AssetWatch`): it decodes.
+pub fn check_image(path: &Path) -> Result<()> {
+    decode_file(path).map(|_| ())
+}
+
 /// All textures. A source that is asked for two times gives the same handle: an
 /// image that two materials or two models use is in memory one time.
 #[derive(Resource, Default)]
@@ -101,6 +106,28 @@ impl Textures {
         self.store.finish(handle, texture);
         self.sources.insert(source, handle);
         handle
+    }
+
+    /// The files that the store loaded, for the watch, each with its check: an
+    /// image file, and a model file for an image in it.
+    pub fn files(&self) -> Vec<(PathBuf, crate::Check)> {
+        let check = |image: &Option<usize>| -> crate::Check {
+            match image {
+                None => check_image,
+                Some(_) => crate::check_model,
+            }
+        };
+        let sources = self.sources.keys();
+        sources
+            .map(|(path, image)| (path.clone(), check(image)))
+            .collect()
+    }
+
+    /// Forgets a file that changed on the disk: the next load of it reads it again
+    /// and gives a new handle. The texture of the old handle stays until no mesh
+    /// uses it (`remove_unused`).
+    pub fn forget(&mut self, path: &Path) {
+        self.sources.retain(|(file, _), _| file != path);
     }
 
     /// Stores a texture that code made.

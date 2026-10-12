@@ -8,19 +8,22 @@
 mod mesh;
 mod model;
 mod texture;
+mod watch;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
 use bevy_ecs::resource::Resource;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use maki_core::{App, Module, Settings, Update};
 use serde::{Deserialize, Serialize};
 use slotmap::{DefaultKey, SlotMap};
 
 pub use mesh::{Doorway, Material, Mesh, Wall};
-pub use model::{Model, ModelLight, ModelLoads, load_gltf};
-pub use texture::{Texture, TextureRef, Textures};
+pub use model::{Model, ModelLight, ModelLoads, check_model, load_gltf};
+pub use texture::{Texture, TextureRef, Textures, check_image};
+pub use watch::{AssetChanged, AssetFailed, AssetWatch, Check, forget_changed};
 
 /// A generational reference to an asset of type `T`. A handle of a removed asset never
 /// matches a new asset.
@@ -158,11 +161,18 @@ pub struct AssetsSettings {
     /// was asked for. False: on the thread of the game, in the frame that asks for
     /// it: each run then does the same work in each frame (a benchmark).
     pub background: bool,
+    /// True: a file of an asset that another program writes again is loaded again
+    /// (`AssetWatch`). False: no file is looked at after its load: a game that
+    /// ships, a benchmark. The editor watches with each value.
+    pub watch: bool,
 }
 
 impl Default for AssetsSettings {
     fn default() -> Self {
-        Self { background: true }
+        Self {
+            background: true,
+            watch: false,
+        }
     }
 }
 
@@ -177,7 +187,17 @@ pub struct AssetsModule;
 impl Module for AssetsModule {
     fn build(&self, app: &mut App) {
         app.add_settings::<AssetsSettings>();
-        let background = app.world().resource::<AssetsSettings>().background;
+        let AssetsSettings { background, watch } = *app.world().resource::<AssetsSettings>();
+        app.init_resource::<AssetWatch>()
+            // Each store tells its own files.
+            .allow_ambiguous_resource::<AssetWatch>()
+            .add_message::<AssetChanged>()
+            .add_message::<AssetFailed>()
+            .add_systems(
+                Update,
+                (watch::watch_files, forget_changed, watch::watch_textures).chain(),
+            );
+        app.resource_mut::<AssetWatch>().on |= watch;
         // The scene module makes the same resource: the order of the two is free.
         app.init_resource::<ModelLoads>();
         app.resource_mut::<ModelLoads>().background = background;

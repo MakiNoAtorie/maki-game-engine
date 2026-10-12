@@ -44,6 +44,10 @@ impl Module for SceneModule {
             .init_resource::<ScreenFade>()
             // Each writer asks for a room; the loader takes the last request.
             .allow_ambiguous_resource::<RoomRequest>()
+            // The watch of the asset files, if `AssetsModule` is there.
+            .add_message::<maki_assets::AssetChanged>()
+            // Each store tells the watch its own files.
+            .allow_ambiguous_resource::<maki_assets::AssetWatch>()
             // A game starts with the picture, not in the black of a fade.
             .add_systems(
                 ResetPlay,
@@ -63,6 +67,11 @@ impl Module for SceneModule {
                     // spawn point shows there in this frame.
                     room::load_requested_room.before(interpolate_transforms),
                     room::spawn_loaded_models.after(interpolate_transforms),
+                    // After the stores forgot a changed file: the loader reads it.
+                    room::reload_changed
+                        .after(maki_assets::forget_changed)
+                        .before(room::load_requested_room),
+                    room::watch_models.after(room::load_requested_room),
                 ),
             );
     }

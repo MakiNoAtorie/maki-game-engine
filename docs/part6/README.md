@@ -250,7 +250,7 @@ Docks: the crate `egui_dock`. Not in the shell stage: a tab with no content, a p
 | 42 | The shell of the editor: docks, registries of panels and commands, widgets, theme (`stage-42-editor-shell.md`) | Done (`stage-42.md`) |
 | 43 | The editor program, and the game as a project (`stage-43-editor-program-and-project.md`) | Done (`stage-43.md`) |
 | 44 | The editor loads a new build of the script DLL while it runs: build after a save, the build errors in a panel, "Open in editor" (2.4) (`stage-44-script-reload.md`) | Done (`stage-44.md`) |
-| 45 | A changed asset file shows at once (`stage-45-asset-reload.md`) | Planned, not approved |
+| 45 | A changed asset file shows at once (`stage-45-asset-reload.md`) | Done (`stage-45.md`) |
 | 46 | Source files of other programs: `.blend`, `.obj`, `.psd` (`stage-46-source-files.md`) | Planned, not approved |
 | 47 and later | The object model of 2.1, with items 1 to 5 of section 3.2, the events as components and the three general commands (2.8), "New script" with its templates (2.7), and the log panel (2.4) | In discussion |
 | After the object model | What the events lack (2.8), in one stage | Not planned |

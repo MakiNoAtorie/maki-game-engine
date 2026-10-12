@@ -103,6 +103,8 @@ pub struct Audio {
     /// The sounds of `play` that have not ended.
     effects: Vec<(PathBuf, StaticSoundHandle)>,
     music: Option<(PathBuf, StreamingSoundHandle<FromFileError>)>,
+    /// The volume that the music was started with: for a start of it again.
+    music_volume: f32,
     sources: HashMap<Entity, Voice>,
     /// Sounds and music that fade out. Kept so that `stop_all` can end them at once.
     ending: Vec<StaticSoundHandle>,
@@ -144,6 +146,7 @@ impl Audio {
             files: HashMap::new(),
             effects: Vec::new(),
             music: None,
+            music_volume: 1.0,
             sources: HashMap::new(),
             ending: Vec::new(),
             ending_music: Vec::new(),
@@ -185,6 +188,35 @@ impl Audio {
         handle
     }
 
+    /// The files that were loaded, and the file of the music: for the watch of the
+    /// asset files.
+    pub fn files(&self) -> Vec<PathBuf> {
+        let music = self.music.iter().map(|(path, _)| path);
+        self.files.keys().chain(music).cloned().collect()
+    }
+
+    /// Forgets a file that changed on the disk: the next load of it reads it again.
+    /// A sound at a place that plays the file stops, and `set_sources` starts it
+    /// with the new file. Music of the file starts again from its start. A sound
+    /// of `play` goes on to its end.
+    pub fn forget(&mut self, path: &Path) {
+        if let Some(handle) = self.files.remove(path) {
+            self.sounds.remove(handle);
+        }
+        let of_file = |voice: &Voice| voice.source.path == path;
+        let voices = self.sources.iter().filter(|(_, voice)| of_file(voice));
+        let playing: Vec<Entity> = voices.map(|(entity, _)| *entity).collect();
+        for entity in playing {
+            let mut voice = self.sources.remove(&entity).expect("found above");
+            voice.sound.stop(fade(SOURCE_FADE));
+            self.ending.push(voice.sound);
+        }
+        if self.music().is_some_and(|music| music == path) {
+            self.stop_music();
+            self.play_music(path, self.music_volume);
+        }
+    }
+
     /// `None` after a failed load, and after the play signal: it forgets all sounds.
     pub fn sound(&self, handle: Handle<Sound>) -> Option<&Sound> {
         self.sounds.get(handle)
@@ -218,7 +250,10 @@ impl Audio {
             }
         };
         match with_manager!(self.manager, manager => manager.play(data)) {
-            Ok(handle) => self.music = Some((path.to_owned(), handle)),
+            Ok(handle) => {
+                self.music = Some((path.to_owned(), handle));
+                self.music_volume = volume;
+            }
             Err(error) => tracing::warn!("music {} not played: {error}", path.display()),
         }
     }
