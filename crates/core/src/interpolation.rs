@@ -69,16 +69,12 @@ mod tests {
     use glam::Vec3;
 
     use super::*;
-    use crate::{App, Config, FixedUpdate, Startup};
+    use crate::{App, ConfigFile, FixedUpdate, Startup};
 
     #[test]
     fn the_transform_moves_in_each_frame_between_two_fixed_steps() {
         // 50 Hz: one fixed step per 20 ms. The entity moves 1 m in each step.
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            ..Default::default()
-        })
-        .unwrap();
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.add_systems(Startup, |mut commands: Commands| {
             commands.spawn(Interpolated::at(Transform::IDENTITY));
         })
@@ -111,7 +107,7 @@ mod tests {
         use bevy_ecs::system::ResMut;
         use bevy_ecs::world::Ref;
 
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = App::new(ConfigFile::default()).unwrap();
         app.init_resource::<Written>()
             .add_systems(Startup, |mut commands: Commands| {
                 commands.spawn(Interpolated::at(Transform::from_translation(Vec3::new(

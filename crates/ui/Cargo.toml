@@ -9,6 +9,7 @@ build = "../render/build.rs"
 maki-core.workspace = true
 maki-platform.workspace = true
 maki-scene.workspace = true
+maki-events.workspace = true
 maki-gpu.workspace = true
 maki-render.workspace = true
 bevy_ecs.workspace = true

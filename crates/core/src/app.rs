@@ -2,7 +2,7 @@ use std::any::{TypeId, type_name};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use bevy_ecs::component::Component;
 use bevy_ecs::message::{Message, MessageRegistry, Messages, message_update_system};
 use bevy_ecs::resource::Resource;
@@ -12,7 +12,7 @@ use bevy_ecs::schedule::{
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::{FromWorld, World};
 
-use crate::{Config, Time};
+use crate::{ConfigFile, Settings, Time, TimeSettings};
 
 /// Runs one time, before the first frame.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
@@ -72,88 +72,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config) -> Result<Self> {
-        // The config file is user input. A bad rate would make the step length infinite or zero.
-        ensure!(
-            config.fixed_hz.is_finite() && config.fixed_hz > 0.0,
-            "fixed_hz must be a positive number, got {}",
-            config.fixed_hz
-        );
-        ensure!(
-            config.max_fixed_steps > 0,
-            "max_fixed_steps must be 1 or more"
-        );
-        ensure!(
-            (0.1..=1.0).contains(&config.render_scale),
-            "render_scale must be from 0.1 to 1.0"
-        );
-        // With no sample the picture would never get content.
-        ensure!(config.max_samples > 0, "max_samples must be 1 or more");
-        ensure!(
-            config.samples_per_frame <= 64,
-            "samples_per_frame must be from 0 (automatic) to 64"
-        );
-        ensure!(
-            config.trace_budget_ms.is_finite() && config.trace_budget_ms > 0.0,
-            "trace_budget_ms must be a positive number"
-        );
-        ensure!(
-            (1..=16).contains(&config.max_bounces),
-            "max_bounces must be from 1 to 16"
-        );
-        // Two rays: a camera ray and one bounce.
-        ensure!(
-            (2..=32).contains(&config.max_path_rays),
-            "max_path_rays must be from 2 to 32"
-        );
-        // `MAX_DENOISE_PASSES` of the render crate.
-        ensure!(
-            config.denoise_passes <= 6
-                && config.denoise_direct_passes <= 6
-                && config.denoise_specular_passes <= 6,
-            "denoise_passes, denoise_direct_passes, and denoise_specular_passes must be from 0 to 6"
-        );
-        ensure!(
-            [
-                config.denoise_reach,
-                config.indirect_clamp,
-                config.history_clamp
-            ]
-            .iter()
-            .all(|value| value.is_finite() && *value >= 0.0),
-            "denoise_reach, indirect_clamp, and history_clamp must be zero or positive numbers"
-        );
-        ensure!(
-            (0.0..=1.0).contains(&config.taa_blend),
-            "taa_blend must be from 0 to 1"
-        );
-        ensure!(
-            (0.0..=1.0).contains(&config.bloom) && (0.0..=1.0).contains(&config.vignette),
-            "bloom and vignette must be from 0 to 1"
-        );
-        ensure!(
-            config.grade_gamma.iter().all(|value| *value > 0.0)
-                && [config.grade_lift, config.grade_gamma, config.grade_gain]
-                    .iter()
-                    .flatten()
-                    .all(|value| value.is_finite()),
-            "grade_lift, grade_gamma, and grade_gain must be numbers, and grade_gamma above 0"
-        );
-        ensure!(
-            config.exposure.is_finite() && config.exposure > 0.0,
-            "exposure must be a positive number"
-        );
-
-        ensure!(
-            [config.player_walk_speed, config.player_run_speed]
-                .iter()
-                .all(|speed| speed.is_finite() && *speed >= 0.0),
-            "player_walk_speed and player_run_speed must be zero or positive numbers"
-        );
-        ensure!(
-            config.camera_follow_time.is_finite() && config.camera_follow_time >= 0.0,
-            "camera_follow_time must be zero or a positive number"
-        );
+    /// `config`: the config file. Each module reads its own table of it
+    /// (`add_settings`); this reads the table of the fixed steps.
+    pub fn new(mut config: ConfigFile) -> Result<Self> {
+        let time: TimeSettings = config.read();
+        // Now, not with the errors of the other tables: the step length must be valid.
+        config.finish_errors()?;
 
         let mut world = World::new();
         // All schedules exist from the start, so running an empty one is not an error.
@@ -168,10 +92,11 @@ impl App {
         add_schedule(&mut world, Present);
 
         world.insert_resource(Time {
-            fixed_delta: Duration::from_secs_f64(1.0 / config.fixed_hz),
+            fixed_delta: Duration::from_secs_f64(1.0 / time.fixed_hz),
             ..Default::default()
         });
-        let max_fixed_steps = config.max_fixed_steps;
+        let max_fixed_steps = time.max_fixed_steps;
+        world.insert_resource(time);
         world.insert_resource(config);
 
         let mut app = Self {
@@ -218,6 +143,21 @@ impl App {
         self
     }
 
+    /// Adds the settings of a module as a resource, with the values of its table of
+    /// the config file. A bad table gives the defaults, and `check_config` returns
+    /// the error.
+    pub fn add_settings<S: Settings>(&mut self) -> &mut Self {
+        let settings: S = self.world.resource_mut::<ConfigFile>().read();
+        self.insert_resource(settings)
+    }
+
+    /// Call after the last module was added. Returns the errors of the config tables
+    /// of all modules, with the file, the table, and the key. Writes the config file
+    /// with the defaults of all modules if there was none.
+    pub fn check_config(&self) -> Result<()> {
+        self.world.resource::<ConfigFile>().finish()
+    }
+
     /// Panics if the resource already exists: a second module would silently
     /// replace the value of the first.
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
@@ -228,6 +168,15 @@ impl App {
         );
         self.world.insert_resource(resource);
         self
+    }
+
+    /// Changes a resource while the app is built. For a table that many modules add
+    /// their entries to (key bindings, room checks). Panics if the resource does not
+    /// exist: add the module that owns it first.
+    pub fn resource_mut<R: Resource<Mutability = bevy_ecs::component::Mutable>>(
+        &mut self,
+    ) -> bevy_ecs::world::Mut<'_, R> {
+        self.world.resource_mut::<R>()
     }
 
     /// Adds a resource with its default value. Keeps the value if the resource already exists.
@@ -393,11 +342,11 @@ mod tests {
 
     #[test]
     fn schedules_run_in_order_and_fixed_steps_follow_the_rate() {
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            max_fixed_steps: 4,
-            ..Default::default()
-        })
+        let mut app = App::new(ConfigFile::from_text(
+            "[time]
+fixed_hz = 50.0
+max_fixed_steps = 4",
+        ))
         .unwrap();
         app.init_resource::<Order>()
             .add_systems(Startup, push("startup"))
@@ -452,11 +401,7 @@ mod tests {
     fn fixed_update_reads_a_message_sent_frames_before() {
         use bevy_ecs::message::{MessageReader, MessageWriter};
 
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            ..Default::default()
-        })
-        .unwrap();
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.add_message::<Ping>()
             .init_resource::<Received>()
             .add_systems(Update, |mut pings: MessageWriter<Ping>, time: Res<Time>| {
@@ -486,11 +431,7 @@ mod tests {
     fn a_message_type_registered_by_two_modules_keeps_its_lifetime() {
         use bevy_ecs::message::{MessageReader, MessageWriter};
 
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            ..Default::default()
-        })
-        .unwrap();
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.add_message::<Ping>()
             .add_message::<Ping>()
             .init_resource::<Received>()
@@ -520,14 +461,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "already exists")]
     fn duplicate_resource_is_rejected() {
-        let mut app = App::new(Config::default()).unwrap();
-        app.insert_resource(Config::default());
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.insert_resource(TimeSettings::default());
     }
 
     #[test]
     #[should_panic(expected = "added two times")]
     fn duplicate_module_is_rejected() {
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(Empty).add_module(Empty);
     }
 
@@ -535,7 +476,7 @@ mod tests {
     fn conflicting_systems_need_a_declared_order() {
         // `IntoScheduleConfigs` is in scope from `super`, for `.chain()`.
         let frame = |systems_are_ordered: bool| {
-            let mut app = App::new(Config::default()).unwrap();
+            let mut app = App::new(ConfigFile::default()).unwrap();
             app.init_resource::<Order>();
             if systems_are_ordered {
                 app.add_systems(Update, (push("a"), push("b")).chain());
@@ -550,47 +491,17 @@ mod tests {
 
     #[test]
     fn bad_config_values_are_rejected() {
-        assert!(
-            App::new(Config {
-                fixed_hz: 0.0,
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            App::new(Config {
-                max_fixed_steps: 0,
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            App::new(Config {
-                exposure: f32::NAN,
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            App::new(Config {
-                max_samples: 0,
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            App::new(Config {
-                samples_per_frame: 65,
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            App::new(Config {
-                max_path_rays: 1,
-                ..Default::default()
-            })
-            .is_err()
-        );
+        for text in [
+            "[time]
+fixed_hz = 0.0",
+            "[time]
+max_fixed_steps = 0",
+            "[time]
+fixed_hz = nan",
+            "[time]
+fixed = 60.0",
+        ] {
+            assert!(App::new(ConfigFile::from_text(text)).is_err(), "{text}");
+        }
     }
 }

@@ -6,11 +6,15 @@
 //!   The room file holds the events of a room.
 //! - `interpreter`: starts the events and runs their commands, one step for each
 //!   fixed step of the game.
+//! - `command`: the commands are an open set. A module adds its own to the
+//!   [`CommandRegistry`]; `builtin` has those of this crate.
 //!
 //! This crate must not depend on `gpu`, `render`, or `ui`. A command reaches the
 //! picture only through data: a `Light`, a `Mover`, [`MessageBox`],
 //! `maki_scene::ScreenFade`.
 
+mod builtin;
+mod command;
 mod interpreter;
 mod model;
 
@@ -18,14 +22,17 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::ResMut;
-use maki_core::{App, FixedUpdate, Module, Startup, Update};
+use maki_core::{App, FixedUpdate, Module, Update};
+use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
 
+pub use builtin::Builtin;
+pub use command::{Command, CommandRegistry, CommandSet, Step};
 pub use interpreter::{EventRunner, MessageBox, RunningEvent, run_events};
-pub use model::{
-    Area, Command, Condition, EventDef, Page, Trigger, active_page, parse_events, validate_events,
-};
+pub use model::{Area, Condition, EventDef, Page, Trigger, active_page};
+
+/// Starts the event that the player faces, and closes a message.
+pub const INTERACT: Action = Action("interact");
 
 /// What the player has done, as flags (yes or no) and variables (whole numbers), each
 /// with a name. Events set them and have them as conditions. A name that was never
@@ -61,14 +68,26 @@ pub struct EventsModule;
 
 impl Module for EventsModule {
     fn build(&self, app: &mut App) {
+        let registry = CommandRegistry::default();
+        registry.add(builtin::run);
+        add_bindings(
+            app,
+            &[
+                (Key::Z, INTERACT, "Interact"),
+                (Key::Enter, INTERACT, "Interact"),
+            ],
+        );
         app.init_resource::<GameState>()
             .init_resource::<EventRunner>()
             .init_resource::<MessageBox>()
-            .init_resource::<RoomValidators>()
-            // A room with a bad event is not loaded.
-            .add_systems(Startup, |mut validators: ResMut<RoomValidators>| {
-                validators.0.push(validate_events);
-            })
+            .init_resource::<RoomValidators>();
+        // A room with a bad event is not loaded. The check has the registry, with
+        // the commands that other modules add later.
+        let check = registry.clone();
+        app.resource_mut::<RoomValidators>()
+            .0
+            .push(Box::new(move |text| check.validate_events(text)));
+        app.insert_resource(registry)
             // Before the movers: a door starts to turn in the step of its command.
             .add_systems(FixedUpdate, run_events.before(move_movers))
             .add_systems(

@@ -5,38 +5,16 @@ use std::collections::HashSet;
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Local, Res, ResMut};
+use maki_core::App;
 
-/// A thing that the player can ask for.
-// One central enum: the ui and render crates must read some actions (ToggleHelp,
-// ResetAccumulation), and they cannot see a type that the game crate defines.
-// ponytail: a new action is an edit of this enum. If modules need private actions,
-// change to action ids that modules register.
+/// A thing that the player can ask for: `Action("interact")`. The text is the
+/// identity: two actions with the same text are the same action.
+///
+/// The set of actions is open. The module that reads an action defines it as a
+/// constant and gives it its default keys with [`add_bindings`]; this crate knows no
+/// action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Action {
-    /// The four move actions move the player, or the light: the game decides.
-    MoveForward,
-    MoveBack,
-    MoveLeft,
-    MoveRight,
-    Run,
-    Interact,
-    /// The move actions go to the light, or back to the player.
-    ToggleLightControl,
-    /// Debug: opens or closes all doors and movers.
-    ToggleMovers,
-    /// Debug: reads the file of the current room again.
-    ReloadRoom,
-    /// Debug: goes to the next or the previous room file of the stage list.
-    NextStage,
-    PreviousStage,
-    LightUp,
-    LightDown,
-    LightIntensityUp,
-    LightIntensityDown,
-    ResetAccumulation,
-    ToggleHelp,
-    Quit,
-}
+pub struct Action(pub &'static str);
 
 /// A physical input that a binding can use: a key, or one direction of the mouse wheel.
 /// Letter keys are positions on a US keyboard, so W/A/S/D keep their shape on other layouts.
@@ -113,53 +91,22 @@ pub struct Binding {
 }
 
 /// The single source of truth for controls: the input system and the help panel both read it.
-/// Many keys can have the same action.
-#[derive(Resource, Debug, Clone)]
+/// Many keys can have the same action. In the order in which the modules were added.
+#[derive(Resource, Debug, Clone, Default)]
 pub struct Bindings(pub Vec<Binding>);
 
-impl Default for Bindings {
-    fn default() -> Self {
-        use Action::*;
-        let table = [
-            (Key::W, MoveForward, "Move forward"),
-            (Key::ArrowUp, MoveForward, "Move forward"),
-            (Key::S, MoveBack, "Move back"),
-            (Key::ArrowDown, MoveBack, "Move back"),
-            (Key::A, MoveLeft, "Move left"),
-            (Key::ArrowLeft, MoveLeft, "Move left"),
-            (Key::D, MoveRight, "Move right"),
-            (Key::ArrowRight, MoveRight, "Move right"),
-            (Key::Shift, Run, "Run"),
-            (Key::Z, Interact, "Interact"),
-            (Key::Enter, Interact, "Interact"),
-            (Key::L, ToggleLightControl, "Move the light / the player"),
-            (Key::O, ToggleMovers, "Open or close all doors (debug)"),
-            (Key::Q, LightDown, "Move light down"),
-            (Key::E, LightUp, "Move light up"),
-            (Key::WheelUp, LightIntensityUp, "Increase light intensity"),
-            (
-                Key::WheelDown,
-                LightIntensityDown,
-                "Decrease light intensity",
-            ),
-            (Key::R, ResetAccumulation, "Reset accumulation"),
-            (Key::F5, ReloadRoom, "Reload the room file (debug)"),
-            (Key::PageDown, NextStage, "Next stage (debug)"),
-            (Key::PageUp, PreviousStage, "Previous stage (debug)"),
-            (Key::F1, ToggleHelp, "Toggle help panel"),
-            (Key::Escape, Quit, "Quit"),
-        ];
-        Self(
-            table
-                .into_iter()
-                .map(|(key, action, description)| Binding {
-                    key,
-                    action,
-                    description,
-                })
-                .collect(),
-        )
-    }
+/// Adds the default keys of the actions of a module: key, action, text for the help
+/// panel. Call from `Module::build`.
+pub fn add_bindings(app: &mut App, table: &[(Key, Action, &'static str)]) {
+    // The table normally comes from `PlatformModule`. This keeps a module
+    // independent of the order in which the modules are added.
+    app.init_resource::<Bindings>();
+    let bindings = table.iter().map(|&(key, action, description)| Binding {
+        key,
+        action,
+        description,
+    });
+    app.resource_mut::<Bindings>().0.extend(bindings);
 }
 
 /// State of all actions for the current frame. Updated in the `Input` schedule.

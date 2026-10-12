@@ -142,7 +142,7 @@ mod tests {
     use std::time::Duration;
 
     use glam::Vec3;
-    use maki_core::{App, Config, Startup};
+    use maki_core::{App, ConfigFile, Startup};
 
     use super::*;
     use crate::SceneModule;
@@ -178,11 +178,7 @@ mod tests {
         use maki_core::FixedUpdate;
 
         // 50 Hz: one fixed step per 20 ms. The door takes 2 steps.
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            ..Default::default()
-        })
-        .unwrap();
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         let blocker = Collider::new(Vec3::ZERO, Vec3::ONE);
         app.add_module(SceneModule)
             .add_systems(Startup, move |mut commands: Commands| {

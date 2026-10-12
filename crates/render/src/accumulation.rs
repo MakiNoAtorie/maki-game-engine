@@ -26,10 +26,13 @@
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Res, ResMut};
-use maki_core::{App, Config, Extract};
-use maki_platform::{Action, ActionState};
+use maki_core::{App, Extract};
+use maki_platform::{Action, ActionState, Key, add_bindings};
 
-use crate::{ExtractedFrame, FrameGraph, RenderWorld, extract_frame};
+use crate::{ExtractedFrame, FrameGraph, RenderSettings, RenderWorld, extract_frame};
+
+/// Starts the picture again: the mean over frames gets no old sample.
+pub const RESET_ACCUMULATION: Action = Action("reset_accumulation");
 
 /// Progress of the picture. A resource of the render world.
 #[derive(Resource, Debug)]
@@ -176,6 +179,7 @@ fn fade_frames(history_samples: u32, samples_per_frame: u32) -> u32 {
 
 /// Adds the accumulation systems. Part of `RenderModule`.
 pub(crate) fn build(app: &mut App) {
+    add_bindings(app, &[(Key::R, RESET_ACCUMULATION, "Reset accumulation")]);
     app.add_systems(
         Extract,
         (
@@ -225,7 +229,7 @@ fn next_sample_count(current: u32, sample_ms: f32, budget_ms: f32) -> u32 {
 /// `trace` in an earlier frame, divided by the samples of that frame, is the cost of
 /// one sample. On a GPU without pass timings the count stays 1.
 fn choose_samples_per_frame(
-    config: Res<Config>,
+    config: Res<RenderSettings>,
     graph: Option<Res<FrameGraph>>,
     mut render_world: ResMut<RenderWorld>,
     mut chooser: Local<SampleChooser>,
@@ -262,7 +266,7 @@ fn choose_samples_per_frame(
 }
 
 fn reset_on_action(actions: Res<ActionState>, mut render_world: ResMut<RenderWorld>) {
-    if actions.just_pressed(Action::ResetAccumulation) {
+    if actions.just_pressed(RESET_ACCUMULATION) {
         render_world.reset_accumulation();
     }
 }

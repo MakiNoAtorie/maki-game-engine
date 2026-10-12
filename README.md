@@ -16,7 +16,7 @@ cargo run -p maki-game -- my.toml      # uses the given config file
 cargo run -p maki-game --release -- --bench-frames 300   # benchmark, see below
 ```
 
-If the config file does not exist, the game writes one with default values.
+If the config file does not exist, the game writes one with the default values of all modules.
 
 - Log level: set `MAKI_LOG` (default `info`). Example: `MAKI_LOG=debug`.
 - Tracy profiler: `cargo run -p maki-game --features profile`. Each schedule is a zone with the name of the schedule (`Input`, `FixedUpdate`, `Update`, `Extract`, `Render`, `Present`). Each frame graph pass is a zone with the name `pass`; the zone text has the pass name. The zones show CPU time. With `MAKI_LOG=trace`, the log lines show the same spans.
@@ -28,7 +28,7 @@ If the config file does not exist, the game writes one with default values.
 
 ## Controls
 
-The help panel in the game lists all controls, with the key that hides and shows the panel. Its section is folded at start. The list is made from the binding table (`Bindings::default` in `crates/platform/src/input.rs`): to change a key, change the table.
+The help panel in the game lists all controls, with the key that hides and shows the panel. Its section is folded at start. The list is made from the binding table (`maki_platform::Bindings`). Each module adds its actions and their keys to it (`maki_platform::add_bindings` in `Module::build`): to change a key, change the table of the module.
 
 The move keys walk the player; forward is away from the camera. Shift runs. Z or Enter is "interact": it starts the event that the player faces, and it closes a message. While an event runs (a message, a fade), the player does not move.
 
@@ -36,16 +36,17 @@ Debug keys: L gives the move keys to the first light of the room (and back), Q a
 
 ## Debug panels
 
-The picture has a fixed size (`window_width`, `window_height`) and is in the top left corner of the window, not scaled. The panels are the sections of a column at the right of the picture: no panel hides the picture. Click a title to unfold a section. The window is as large as the picture and the column; in a larger window the column gets the rest.
+The picture has a fixed size (`width` and `height` of `[window]`) and is in the top left corner of the window, not scaled. The panels are the sections of a column at the right of the picture: no panel hides the picture. Click a title to unfold a section. The window is as large as the picture and the column; in a larger window the column gets the rest.
 
 | Panel | Content |
 |---|---|
 | Help | Key and description of each binding |
 | Frame counter | Not a section: green text in the top left corner of the picture. The frame rate and the frame time that the game would have with no limit: the time of a frame without the wait for the display (vsync) or the GPU, and not less than the GPU time of the passes. A mean over some frames |
 | Stats | Frame time (mean) and FPS as the display shows them, sample count, internal resolution, player position, position and intensity of each light, GPU memory, GPU time of each frame graph pass |
-| Debug | The resolution (the picture size, from 640 x 360 to 2560 x 1440: the window follows). The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the config values that have an effect during a run: vsync, render scale, exposure, path tracer, denoiser, camera, player speeds. Not saved to the config file |
+| Debug | The resolution (the picture size, from 640 x 360 to 2560 x 1440: the window follows). The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the settings of `[window]` and `[render]` that have an effect during a run: vsync, render scale, exposure, look, path tracer, denoiser. Not saved to the config file |
+| Gameplay | The settings of `[camera]` and `[player]` that have an effect during a run: field of view, follow time, wall margin, view direction, speeds. Not saved to the config file |
 | Bench | Starts a benchmark run (frames, script, light, picture dump) in the game that runs. Writes `bench.csv`; the game goes on. For numbers to compare between runs, use the command line |
-| Stages | Each room file that the game can show: the files in the directory of `start_room`, and `target/bench/<scenario>/room.ron` (the generated scenes; `python tools/bench.py run` makes them). A click loads the room. The config stays: set the render size or the sample count of a scenario in the Debug panel |
+| Stages | Each room file that the game can show: the files in the directory of the start room, and `target/bench/<scenario>/room.ron` (the generated scenes; `python tools/bench.py run` makes them). A click loads the room. The config stays: set the render size or the sample count of a scenario in the Debug panel |
 | Game state | Flags and variables of the events, with a field to add one; the events that run |
 | Message | The text of a `Message` command. A window on top of the picture, at its bottom (`maki_ui::add_window`). Open only while a message waits |
 
@@ -56,7 +57,7 @@ To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, w
 ## Benchmark
 
 ```
-cargo run -p maki-game --release -- [CONFIG] --bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames M] [--bench-script walk|trip]
+cargo run -p maki-game --release -- [CONFIG] --bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames M] [--bench-script NAME]
 ```
 
 The game runs N frames (1 to 1000000), writes `bench.csv` in the working directory, and stops. In this mode:
@@ -64,10 +65,10 @@ The game runs N frames (1 to 1000000), writes `bench.csv` in the working directo
 - Each frame counts as one fixed step of game time (1/60 s), whatever the real time was: the simulation is the same in each run.
 - The first light of the room moves on a circle around the room center, one turn in 240 frames. The position depends only on the frame number, so each run does the same work. The keyboard does not move the light.
 - The light moves in each frame, so each frame is a change of the lighting: the indirect light of each pixel keeps `light_history_samples` old samples. `--bench-static` holds the light at the start of the path, so the picture gets all its samples. `--bench-light-frames M` moves the light in M frames, then holds it: the frames after that show how fast the picture follows.
-- `--bench-script NAME` holds the light and plays the game with a script of actions (`game/src/bench.rs`). `walk`: in room A the player walks and a door opens; the last motion shows in frame 180. `trip`: the full loop, 820 frames: room A, room B, the switch, back to room A, through the door that was locked.
-- `tools/bench.py` sets `samples_per_frame = 1` if the scenario does not set it: the automatic count would give each run another load.
+- `--bench-script NAME` holds the light and plays the game with a script of actions. The scripts belong to the game (`game/src/scripts.rs`); the runner is a module of the engine (`maki_devtools::BenchModule`). `walk`: in room A the player walks and a door opens; the last motion shows in frame 180. `trip`: the full loop, 820 frames: room A, room B, the switch, back to room A, through the door that was locked. `shake`: a check of the `ShakeCamera` command; it needs room B as the start room.
+- `tools/bench.py` sets `render.samples_per_frame = 1` if the scenario does not set it: the automatic count would give each run another load.
 - `--bench-dump FILE` writes the picture of frame N (the picture before the tone curve, at the output resolution) to FILE: two little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel. The picture depends only on the config, the scene, and N. `python tools/bench.py same` compares two dumps.
-- `--bench-shot` (with `--bench-dump`): the file gets the picture as the window shows it (after the tone curve), and the run hides all panels. `python tools/shot.py OUT.png [--room room_b.ron --spawn west] [--set key=value ...]` runs the game that way and writes a PNG.
+- `--bench-shot` (with `--bench-dump`): the file gets the picture as the window shows it (after the tone curve), and the run hides all panels. `python tools/shot.py OUT.png [--room room_b.ron --spawn west] [--set table.key=value ...]` runs the game that way and writes a PNG.
 - `vsync` is off, whatever the config file says.
 
 `bench.csv` has one row for each frame:
@@ -83,28 +84,32 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 
 ## Config
 
+The config file is TOML, with one table for each module. A module declares its table and its defaults as a type (`maki_core::Settings`) and reads it when it is added (`App::add_settings`): the type is a resource, for example `Res<CameraSettings>`. `crates/core` knows no key of another crate.
+
+- A key that the file does not have takes its default. A key that the table does not have, a value of the wrong type, and a value out of its limits stop the game at start: the error names the file, the table, the line, and the key.
+- A table that no module of the build reads gives a warning in the log.
+- A file of the old format (all keys in one list, before part 4) stops the game with the command that converts it: `python tools/convert_config.py config.toml`. The old file stays as `config.toml.old`.
+
+`[window]` (`crates/platform`):
+
 | Key | Default | Meaning |
 |---|---|---|
-| `window_title` | `maki` | Window title |
-| `window_width`, `window_height` | 1280, 720 | Size of the picture, in pixels. The window is wider by the panel column |
-| `render_scale` | 1.0 | Internal path-tracer resolution: the picture size multiplied by this, 0.1 to 1.0 |
-| `render_width`, `render_height` | 0, 0 | A fixed internal resolution that does not follow the picture size. 0: use `render_scale` |
+| `title` | `maki` | Window title |
+| `width`, `height` | 1280, 720 | Size of the picture, in pixels. The window is wider by the panel column |
 | `vsync` | `true` | Vertical sync |
-| `start_room` | `game/assets/rooms/room_a.ron` | The room file that the game starts in. A path that is not absolute starts at the working directory |
-| `start_spawn` | `start` | The spawn point of that room where the player starts |
-| `camera_position` | `[0.0, 9.0, 7.0]` | With `camera_target`: the view direction and the distance of the camera. The camera keeps them when it follows the player |
-| `camera_target` | `[0.0, 0.5, 0.0]` | The height of the point that the camera looks at is the Y of this point |
-| `camera_fov_degrees` | 45.0 | Vertical field of view |
-| `camera_follow_time` | 0.25 | The camera target moves most of the way to the player in this time, in seconds. 0: no delay |
-| `camera_margin` | 3.0 | The camera target stays this far from the walls of the room, in meters |
-| `player_model_path` | not set | glTF file of the player, with the feet at its origin. Not set: a capsule |
-| `player_walk_speed`, `player_run_speed` | 1.6, 3.6 | Speed of the player, in meters per second |
+
+`[render]` (`crates/render`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `scale` | 1.0 | Internal path-tracer resolution: the picture size (`[window]`) multiplied by this, 0.1 to 1.0 |
+| `width`, `height` | 0, 0 | A fixed internal resolution that does not follow the picture size. 0: use `scale` |
 | `max_samples` | 1024 | The mean of a pixel has at most this many samples. While nothing changes, the path tracer stops when each pixel has them |
 | `samples_per_frame` | 0 | Light paths for each pixel in one frame, 1 to 64. More samples cost more GPU time for each frame and give a clean picture in fewer frames. 0: automatic, the renderer fills `trace_budget_ms` |
 | `trace_budget_ms` | 6.0 | GPU time of the path tracer in each frame, in milliseconds, for the automatic sample count. Keep it well below the time of one display refresh (16.7 ms at 60 Hz) |
 | `light_history_samples` | 16 | When the lighting changes (a light, or an object that moves), the indirect light of each pixel keeps at most this many old samples for some frames, and new samples replace them. More: less noise while something moves, and the bounce light follows later. 0: a change of the lighting starts the indirect light again |
 | `history_clamp` | 2.0 | History test of the direct light, in standard deviations of the noise. The denoiser keeps a second, short mean of the direct light (4 frames). Where the short and the long means of a block of pixels differ by more than this, the lighting changed there, and the long mean starts again from the short one: a shadow follows its object in few frames. 0: no test; a change of the lighting then cuts the direct light to `light_history_samples` too |
-| `taa` | true | Temporal anti-aliasing. Each frame moves all camera rays by a part of a pixel, and the picture is the mean of some frames: smooth edges, and with `render_scale` below 1 more detail than one frame has. False: stairs at each edge |
+| `taa` | true | Temporal anti-aliasing. Each frame moves all camera rays by a part of a pixel, and the picture is the mean of some frames: smooth edges, and with `scale` below 1 more detail than one frame has. False: stairs at each edge |
 | `taa_blend` | 0.1 | The part of a new frame in the picture of the anti-aliasing, at rest. Lower: smoother edges. 0: the plain mean of all frames since the last change, for a reference picture of a scene at rest |
 | `max_path_rays` | 8 | The largest number of rays in one light path, 2 to 32. Only mirror and glass make long paths. A lower limit costs less GPU time and gives less noise; the last mirror or glass surface of a cut path shows as a diffuse surface, so deep reflections lose detail. Measured in `docs/perf-improve.md`, section 0 |
 | `max_bounces` | 2 | A light path ends after this many diffuse bounces, 1 to 16. More: nearer to the light of a real room, for one more ray and more noise for each bounce. 2 with `bounce_light` is 20 times nearer to a picture with 8 bounces than 1 alone, for 16 % more GPU time |
@@ -120,6 +125,37 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `bloom` | 0.04 | The part of a wide blur of the picture that is blended into it, 0 to 1: a soft glow around the lamp and its reflections. 0: none |
 | `vignette` | 0.25 | How dark the corners of the picture get, 0 (not at all) to 1 (black) |
 | `grade_lift`, `grade_gamma`, `grade_gain` | `[0, 0, 0]`, `[1, 1, 1]`, `[1, 1, 1]` | The color grade, each for R, G, B: lift moves black toward a color, gamma bends the middle tones, gain scales white. The defaults change nothing |
+
+`[camera]` (`crates/gameplay`, `CameraModule`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `position` | `[0.0, 9.0, 7.0]` | With `target`: the view direction and the distance of the camera. The camera keeps them when it follows the player |
+| `target` | `[0.0, 0.5, 0.0]` | The height of the point that the camera looks at is the Y of this point |
+| `fov_degrees` | 45.0 | Vertical field of view |
+| `follow_time` | 0.25 | The camera target moves most of the way to the player in this time, in seconds. 0: no delay |
+| `margin` | 3.0 | The camera target stays this far from the walls of the room, in meters |
+
+`[player]` (`crates/gameplay`, `PlayerModule`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `model_path` | not set | glTF file of the player, with the feet at its origin. Not set: a capsule |
+| `walk_speed`, `run_speed` | 1.6, 3.6 | Speed of the player, in meters per second |
+| `radius` | 0.3 | The player is a circle of this radius for collisions, in meters. Read when the player is spawned |
+| `height` | 1.7 | Height of the generated capsule, in meters |
+
+`[rooms]` (`crates/gameplay`, `RoomsModule`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `start` | not set | The room file that the game starts in. Not set: the room of the game, `game/assets/rooms/room_a.ron`. A path that is not absolute starts at the working directory |
+| `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the game, `start` |
+
+`[time]` (`crates/core`):
+
+| Key | Default | Meaning |
+|---|---|---|
 | `fixed_hz` | 60.0 | Rate of the simulation steps (`FixedUpdate`), in steps per second |
 | `max_fixed_steps` | 8 | Limit of simulation steps in one frame |
 
@@ -180,7 +216,7 @@ The camera rays do not hit the back side of a triangle, so the camera looks into
 A room is a RON file in `game/assets/rooms`: the size of the room, its doorways, props, lights, doors, movers, spawn points, and events. `RoomDef` in `crates/scene/src/room.rs` is the format of the room, `EventDef` in `crates/events/src/model.rs` that of an event. A change of a room file needs no build: start the game again, or press F5.
 
 - A bad room file: the error names the file, the line, and the column. A bad start room stops the game at start; a transfer into a bad room does not happen.
-- A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A glTF file (`File("path")`, from the directory of the room file) is loaded one time.
+- A generated mesh (the walls, a cube, a sphere) belongs to its room and goes away with it. A glTF file (`File("path")`, from the directory of the room file) goes away with its room too, if the next room does not name it.
 - The player, the camera, and the game state (flags and variables) are not part of a room: they stay when the room changes.
 
 An event has pages. A page has conditions (flags, variables), a trigger, and commands. The active page is the last one whose conditions hold.
@@ -203,7 +239,11 @@ An event has pages. A page has conditions (flags, variables), a trigger, and com
 | `FadeOut(0.4)`, `FadeIn(0.4)` | To black and back, in seconds |
 | `Transfer("room_b.ron", "west")` | To a spawn point of another room. The event goes on in the new room |
 
+| `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
+
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.
+
+The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/src/shake.rs` is the example.
 
 ## Crates
 
@@ -211,12 +251,14 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 
 | Crate | Role |
 |---|---|
-| `crates/core` | Config, app and schedules, time, transform, interpolation between fixed steps |
-| `crates/platform` | Window, input actions, input capture |
+| `crates/core` | Config file and the settings trait, app and schedules, time, transform, interpolation between fixed steps |
+| `crates/platform` | Window, input actions (an open set: a module adds its own, with their keys), input capture |
 | `crates/assets` | Asset stores and handles, mesh asset with its material, glTF loader, mesh generators |
 | `crates/scene` | The components that describe the world (mesh instance, light, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |
-| `crates/events` | Game state (flags, variables), event definitions, the event interpreter |
+| `crates/events` | Game state (flags, variables), event definitions, the event interpreter, the command registry and the built-in commands |
+| `crates/gameplay` | Gameplay that games of this kind share, each a module with its own settings: camera that follows the player, walking controller, start room and reload, move actions and quit, debug control of a light and of the movers |
 | `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
-| `crates/ui` | egui integration, panel registry, the overlay render pass, help and stats panels |
-| `game` | The binary: player, camera, controls, debug panels, benchmark. The rooms are in `game/assets/rooms` |
+| `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the message window and the game state panel of the events |
+| `crates/devtools` | Tools that a game opts into: benchmark runner with its command line options and panel, list of the room files, panel of the gameplay settings |
+| `game` | The binary: the module list, the benchmark scripts, the `ShakeCamera` command. The rooms are in `game/assets/rooms` |

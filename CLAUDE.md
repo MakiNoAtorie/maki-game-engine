@@ -18,16 +18,19 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Use current stable crate versions and verify APIs against their docs.
 
 ## Workspace
-`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/gpu`, `crates/render`, `crates/ui`, and `game/` (the only binary).
+`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, and `game/` (the only binary).
 - `scene`: the components that describe the world, the room data format, load and unload of rooms.
-- `events`: flags and variables, event definitions, the event interpreter.
+- `events`: flags and variables, event definitions, the event interpreter, the registry of event commands.
+- `gameplay`: generic gameplay modules (camera follow, walking controller, start room, debug controls), each with its own settings.
+- `devtools`: tools that a game opts into (benchmark runner, room list, gameplay panel).
+- `game/`: content, the module list, and code that is specific to this game. Generic code goes into an engine crate.
 
 ## Architecture rules (do not break)
-1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> gpu -> render -> ui -> game. A crate depends only on crates to its left. `scene` and `events` must not depend on `gpu`, `render`, or `ui`.
+1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> gameplay -> gpu -> render -> ui -> devtools -> game. A crate depends only on crates to its left. `scene`, `events`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
 2. No `ash` or Vulkan type in any public API outside the `gpu` crate.
 3. The renderer reads only data copied into it during the Extract stage, never game state directly.
 4. Gameplay code reads input actions, never raw keys.
-5. Every feature is a module that registers its own systems and resources. Adding a module must not require editing another module.
+5. Every feature is a module that registers its own systems and resources. Adding a module must not require editing another module. A module owns its config table (`Settings`), its input actions and their keys (`add_bindings`), and its event commands (`CommandRegistry`).
 6. Long-lived resources (GPU resources, assets) are referenced by generational handles.
 7. Gameplay state that must survive a room change (flags, variables, player state) lives in resources outside room entities.
 8. Game content (rooms, events) is data, not code. A new room or event must not need a recompile.

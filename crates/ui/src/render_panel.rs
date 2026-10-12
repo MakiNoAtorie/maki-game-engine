@@ -1,9 +1,11 @@
-//! The debug panel: what the window shows, and the config values that have an effect
-//! during a run.
+//! The debug panel of the renderer: what the window shows, and the settings of the
+//! window and the renderer that have an effect during a run.
 
-use maki_core::{App, Config, Module, ToneCurve};
-use maki_render::{DebugView, MAX_DENOISE_PASSES};
-use maki_ui::{add_panel, egui};
+use maki_core::{App, Module};
+use maki_platform::WindowSettings;
+use maki_render::{DebugView, MAX_DENOISE_PASSES, RenderSettings, ToneCurve};
+
+use crate::add_panel;
 
 /// The picture sizes of the selector, in pixels.
 const RESOLUTIONS: [(u32, u32); 6] = [
@@ -16,9 +18,9 @@ const RESOLUTIONS: [(u32, u32); 6] = [
 ];
 
 /// Adds the "Debug" panel. Needs `UiModule` to show it.
-pub struct DebugPanelModule;
+pub struct RenderPanelModule;
 
-impl Module for DebugPanelModule {
+impl Module for RenderPanelModule {
     fn build(&self, app: &mut App) {
         add_panel(app, "Debug", true, |ui, world| {
             let mut view = *world.resource::<DebugView>();
@@ -31,39 +33,39 @@ impl Module for DebugPanelModule {
                 *world.resource_mut::<DebugView>() = view;
             }
 
-            // The systems read the config in each frame, so a new value shows in the
-            // next frame. A config change starts the picture again.
-            // The slider ranges are in the limits of `App::new` for the config file.
+            // The systems read the settings in each frame, so a new value shows in the
+            // next frame. A change starts the picture again. Nothing is written to the
+            // config file.
+            // The slider ranges are in the limits of `RenderSettings::check`.
             ui.separator();
-            let mut config = world.resource::<Config>().clone();
+            let mut window = world.resource::<WindowSettings>().clone();
+            let mut config = world.resource::<RenderSettings>().clone();
 
             // The size of the picture. The window gets the size of the picture and
             // the panel column.
-            let picture = (config.window_width, config.window_height);
+            let picture = (window.width, window.height);
             egui::ComboBox::from_label("resolution")
                 .selected_text(format!("{} x {}", picture.0, picture.1))
                 .show_ui(ui, |ui| {
                     for size in RESOLUTIONS {
                         let name = format!("{} x {}", size.0, size.1);
                         if ui.selectable_label(size == picture, name).clicked() {
-                            (config.window_width, config.window_height) = size;
+                            (window.width, window.height) = size;
                         }
                     }
                 });
             ui.collapsing("Display", |ui| {
-                ui.checkbox(&mut config.vsync, "vsync");
-                if config.render_width > 0 && config.render_height > 0 {
+                ui.checkbox(&mut window.vsync, "vsync");
+                if config.width > 0 && config.height > 0 {
                     ui.label(format!(
                         "The config fixes the render size: {} x {}",
-                        config.render_width, config.render_height
+                        config.width, config.height
                     ));
                     if ui.button("Follow the resolution").clicked() {
-                        (config.render_width, config.render_height) = (0, 0);
+                        (config.width, config.height) = (0, 0);
                     }
                 } else {
-                    ui.add(
-                        egui::Slider::new(&mut config.render_scale, 0.1..=1.0).text("render scale"),
-                    );
+                    ui.add(egui::Slider::new(&mut config.scale, 0.1..=1.0).text("render scale"));
                 }
                 ui.checkbox(&mut config.taa, "anti-aliasing");
                 ui.add(
@@ -115,7 +117,10 @@ impl Module for DebugPanelModule {
                     egui::Slider::new(&mut config.max_path_rays, 2..=32).text("rays in one path"),
                 );
                 ui.checkbox(&mut config.blue_noise, "blue noise");
-                ui.add(egui::Slider::new(&mut config.max_bounces, 1..=16).text("max bounces (diffuse)"));
+                ui.add(
+                    egui::Slider::new(&mut config.max_bounces, 1..=16)
+                        .text("max bounces (diffuse)"),
+                );
                 ui.checkbox(&mut config.bounce_light, "bounce light of the frame before");
             });
             ui.collapsing("Denoiser", |ui| {
@@ -155,45 +160,12 @@ impl Module for DebugPanelModule {
                         .text("samples kept at rest"),
                 );
             });
-            ui.collapsing("Camera", |ui| {
-                ui.add(
-                    egui::Slider::new(&mut config.camera_fov_degrees, 10.0..=120.0)
-                        .text("field of view"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut config.camera_follow_time, 0.0..=2.0)
-                        .text("follow time, s"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut config.camera_margin, 0.0..=10.0).text("wall margin, m"),
-                );
-                // The two points give the view direction and the distance.
-                for (name, point) in [
-                    ("position", &mut config.camera_position),
-                    ("target", &mut config.camera_target),
-                ] {
-                    ui.horizontal(|ui| {
-                        for value in point {
-                            ui.add(egui::DragValue::new(value).speed(0.05));
-                        }
-                        ui.label(name);
-                    });
-                }
-            });
-            ui.collapsing("Player", |ui| {
-                ui.add(
-                    egui::Slider::new(&mut config.player_walk_speed, 0.0..=10.0)
-                        .text("walk speed, m/s"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut config.player_run_speed, 0.0..=10.0)
-                        .text("run speed, m/s"),
-                );
-            });
-
             // Only a different value is a write.
-            if config != *world.resource::<Config>() {
-                *world.resource_mut::<Config>() = config;
+            if window != *world.resource::<WindowSettings>() {
+                *world.resource_mut::<WindowSettings>() = window;
+            }
+            if config != *world.resource::<RenderSettings>() {
+                *world.resource_mut::<RenderSettings>() = config;
             }
         });
     }

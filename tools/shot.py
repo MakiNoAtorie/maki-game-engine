@@ -1,4 +1,4 @@
-# tool: PNG screenshots of the game as the window shows it, with no panel | run: python tools/shot.py OUT.png [--room room_b.ron --spawn west] [--frames 300] [--script walk] [--set key=value ...]
+# tool: PNG screenshots of the game as the window shows it, with no panel | run: python tools/shot.py OUT.png [--room room_b.ron --spawn west] [--frames 300] [--script walk] [--set table.key=value ...]
 """Runs the release build for some frames with `--bench-shot` and writes the last
 picture as a PNG. For a look at the picture: tone curve, bloom, grade."""
 import argparse
@@ -11,6 +11,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from bench import config_text
+
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "shot"
 
@@ -20,7 +22,7 @@ parser.add_argument("--room", default="room_a.ron", help="a file in game/assets/
 parser.add_argument("--spawn", default="start")
 parser.add_argument("--frames", type=int, default=300)
 parser.add_argument("--script", help="walk: the light then does not move")
-parser.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="config keys (JSON values)")
+parser.add_argument("--set", nargs="*", default=[], metavar="TABLE.KEY=VALUE", help="config keys (JSON values), for example render.exposure=2")
 args = parser.parse_args()
 
 def value(text):
@@ -30,13 +32,13 @@ def value(text):
         return text
 
 keys = {
-    "start_room": (ROOT / "game" / "assets" / "rooms" / args.room).as_posix(),
-    "start_spawn": args.spawn,
-    "samples_per_frame": 1,
+    "rooms.start": (ROOT / "game" / "assets" / "rooms" / args.room).as_posix(),
+    "rooms.start_spawn": args.spawn,
+    "render.samples_per_frame": 1,
     **{key: value(text) for key, text in (pair.split("=", 1) for pair in args.set)},
 }
 WORK.mkdir(parents=True, exist_ok=True)
-(WORK / "config.toml").write_text("".join(f"{key} = {json.dumps(v)}\n" for key, v in keys.items()))
+(WORK / "config.toml").write_text(config_text(keys))
 dump = WORK / "shot.dump"
 binary = ROOT / "target" / "release" / ("maki-game.exe" if sys.platform == "win32" else "maki-game")
 command = [binary, "config.toml", "--bench-frames", str(args.frames), "--bench-dump", dump, "--bench-shot"]

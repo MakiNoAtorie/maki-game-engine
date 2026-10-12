@@ -1,240 +1,221 @@
+//! The config file: one TOML table for each module.
+//!
+//! A module declares its settings as a type ([`Settings`]) and adds them with
+//! `App::add_settings`. The type becomes a resource with the values of its table, so
+//! a system reads `Res<CameraSettings>` and no system reads a value by a key name.
+//! This module knows no table and no key of another crate.
+//!
+//! ```toml
+//! [window]
+//! width = 1280
+//!
+//! [camera]
+//! follow_time = 0.25
+//! ```
+
+use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use bevy_ecs::resource::Resource;
-use serde::{Deserialize, Serialize};
+use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
-/// The tone curve of the display transform. In the config file: `"agx"` or `"neutral"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToneCurve {
-    /// AgX: the look of film. Soft colors and contrast; a bright colored light goes
-    /// to white with no change of its hue.
-    #[default]
-    Agx,
-    /// Khronos PBR Neutral: colors as the scene has them, up to bright ones.
-    Neutral,
+/// The settings of one module: one table of the config file.
+///
+/// Give the type `#[serde(default, deny_unknown_fields)]`: a file can omit a key, and
+/// a key with a typing error is an error, not a silent default.
+pub trait Settings: Resource + Serialize + DeserializeOwned + Default {
+    /// The name of the table: `"camera"` for `[camera]`.
+    const TABLE: &'static str;
+
+    /// The limits of the values. `Err`: the reason, with the name of the key.
+    fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
-/// Engine settings, read from a TOML file at startup.
-// `default` lets an old config file omit fields that were added later.
+/// Rate of the fixed steps. The table of this crate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Resource)]
-#[serde(default)]
-pub struct Config {
-    pub window_title: String,
-    /// Size of the picture in pixels. The window shows it not scaled, and is wider
-    /// by the panel column of the UI.
-    pub window_width: u32,
-    pub window_height: u32,
-    /// The path tracer renders at the picture size multiplied by this, 0.1 to 1.0.
-    /// 1.0: one traced pixel for each pixel of the picture. Lower: less GPU time, and
-    /// the result is scaled to the picture.
-    pub render_scale: f32,
-    /// A fixed size for the path tracer, in pixels. It does not follow the picture, and
-    /// `render_scale` has no effect: a benchmark does the same work on each display.
-    /// 0: the picture size multiplied by `render_scale`.
-    pub render_width: u32,
-    pub render_height: u32,
-    pub vsync: bool,
-    /// The room file that the game starts in. See `game/assets/rooms`.
-    pub start_room: PathBuf,
-    /// The spawn point of that room where the player starts.
-    pub start_spawn: String,
-    /// The view of the camera: where it is when it looks at `camera_target`, in
-    /// meters: X, Y (up), Z. The camera keeps this direction and distance when it
-    /// follows the player.
-    pub camera_position: [f32; 3],
-    /// The point that the camera looks at before it follows the player. Its height
-    /// stays the height of the point that the camera looks at.
-    pub camera_target: [f32; 3],
-    /// Vertical field of view of the camera, in degrees.
-    pub camera_fov_degrees: f32,
-    /// The camera follows the player: its target moves most of the way to the player in
-    /// this time, in seconds. 0: no delay. The view direction and the distance stay
-    /// those of `camera_position` and `camera_target`.
-    pub camera_follow_time: f32,
-    /// The camera target stays this far from the walls, in meters, so the view shows
-    /// less of the outside of the room.
-    pub camera_margin: f32,
-    /// glTF file of the player (`.gltf` or `.glb`), with the feet at its origin.
-    /// `None` shows a generated capsule.
-    pub player_model_path: Option<PathBuf>,
-    /// Speed of the player, in meters per second.
-    pub player_walk_speed: f32,
-    /// Speed of the player with the run action.
-    pub player_run_speed: f32,
-    /// The path tracer stops when the picture is the mean of this many samples.
-    pub max_samples: u32,
-    /// Light paths that the path tracer follows for each pixel in one frame. More
-    /// samples cost more GPU time for each frame and give a clean picture in fewer frames.
-    /// 0: the renderer chooses the count in each frame, to fill `trace_budget_ms`.
-    pub samples_per_frame: u32,
-    /// GPU time for the path tracer in each frame, in milliseconds, when
-    /// `samples_per_frame` is 0. Keep it well below the time of one display refresh.
-    pub trace_budget_ms: f32,
-    /// When the lighting changes (a light, or an object that moves), the indirect
-    /// light of each pixel keeps at most this many samples of the old lighting, and
-    /// the new samples replace them step by step. More samples: less noise while
-    /// something moves, and the bounce light follows later.
-    /// 0: a change of the lighting starts the indirect light again.
-    /// The direct light (the shadows) has a test for each pixel: `history_clamp`.
-    pub light_history_samples: u32,
-    /// A light path ends after this many diffuse bounces, 1 to 16. 1: the light of a
-    /// surface comes straight from a light or by way of one other surface. More: the
-    /// light that fills dark corners after many bounces, for more rays and more noise.
-    /// `max_path_rays` is also a limit: each bounce is a ray.
-    pub max_bounces: u32,
-    /// Light of many bounces for the cost of one. The last surface of a path counts
-    /// the light straight from the lamps, and with this also the bounce light that the
-    /// same point had in the picture of the frame before (if that picture showed
-    /// it). Dark corners get the light that they have in a real room. False: one
-    /// bounce (or `max_bounces`), and corners that no lamp sees stay too dark.
-    pub bounce_light: bool,
-    /// Blue noise: the random numbers for the point on the light and for the bounce
-    /// direction are spread evenly over the pixels, so the noise of one frame has no
-    /// clumps, and the denoiser has less to do. False: white noise for all.
-    /// Measured: 6 to 10 % less error for a picture of up to 64 frames, 1 % in motion,
-    /// for 1 % more GPU time (`docs/part3/stage-20.md`).
-    pub blue_noise: bool,
-    /// The largest number of rays in one light path. Mirrors that face each other and
-    /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
-    /// time, and deep reflections lose detail.
-    pub max_path_rays: u32,
-    /// Filter passes of the denoiser for the indirect light (bounce light), 0 to 6.
-    /// Each pass doubles the area that the filter takes its mean from. 0: no filter,
-    /// only the mean over frames.
-    pub denoise_passes: u32,
-    /// The same for the direct light. It has less noise and sharp shadow edges: fewer
-    /// passes keep them sharp. A scene with large lights (wide soft shadows) can need
-    /// more.
-    pub denoise_direct_passes: u32,
-    /// The same for the specular light: the reflection of a rough surface (metal,
-    /// plastic). The reflection of a smooth surface and of glass gets no filter.
-    pub denoise_specular_passes: u32,
-    /// The denoiser filter gets narrower as the mean of a pixel gets more samples: a
-    /// filter pass whose pattern has `s` pixels between its points runs for a pixel
-    /// while `s * s * samples` is at most this. 4096: up to 64 samples get all four
-    /// passes, and 4096 samples get none. 0: each pass runs at each pixel.
-    pub denoise_reach: f32,
-    /// The largest light that one bounce ray adds to a pixel, in units of the light at
-    /// the surface that the pixel shows (before its color). A rare path that finds the
-    /// light by way of a mirror or through glass is some thousand times brighter than
-    /// the others (a "firefly"): the limit keeps it from the denoiser. It makes such
-    /// light (caustics) darker. Direct light and what the camera sees have no limit.
-    /// 0: no limit.
-    pub indirect_clamp: f32,
-    /// History confidence of the direct light. The denoiser keeps a second, short
-    /// mean of the direct light of each pixel (4 frames). Where the short means and
-    /// the long means of a block of pixels differ by more than this many standard
-    /// deviations of the noise, the lighting changed there, and the long mean starts
-    /// again from the short one. So a shadow follows its object in few frames, and
-    /// where nothing changes the long mean stays. Lower: a small change shows
-    /// faster, and noise alone can start a mean again. 0: no such test; a change of
-    /// the lighting then cuts the direct light of each pixel to
-    /// `light_history_samples` too.
-    pub history_clamp: f32,
-    /// Temporal anti-aliasing. Each frame moves all camera rays by a part of a pixel,
-    /// and the picture is the mean of some frames: smooth edges, and with a
-    /// `render_scale` below 1 more detail than one frame has. False: the picture is
-    /// the samples of one frame, at the pixel centers (stairs at each edge).
-    pub taa: bool,
-    /// The part of a new frame in the picture of the anti-aliasing, above 0 to 1.
-    /// Lower: smoother edges, and the picture follows motion later. 0: the plain
-    /// mean of all frames since the last change, for a reference picture of a scene
-    /// at rest.
-    pub taa_blend: f32,
-    /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
-    /// Manual: an automatic exposure would take away the darkness that the game wants.
-    pub exposure: f32,
-    /// The curve that bends light (0 to far above 1) into display color (0 to 1).
-    pub tone_curve: ToneCurve,
-    /// Bloom: the part of a wide blur of the picture that is blended into it, 0 to 1.
-    /// The lamp and its reflections get a soft glow. 0: no bloom.
-    pub bloom: f32,
-    /// How dark the corners of the picture get, 0 (not at all) to 1 (black).
-    pub vignette: f32,
-    /// The color grade, each for R, G, B. Lift moves black toward a color (0: no
-    /// change), gamma bends the middle tones (1: no change, above 1: brighter), gain
-    /// scales white (1: no change). Small values: 0.02 of lift in blue gives cold
-    /// shadows.
-    pub grade_lift: [f32; 3],
-    pub grade_gamma: [f32; 3],
-    pub grade_gain: [f32; 3],
+#[serde(default, deny_unknown_fields)]
+pub struct TimeSettings {
     /// Rate of the FixedUpdate schedule, in steps per second.
     pub fixed_hz: f64,
     /// Limit of FixedUpdate steps in one frame. A longer frame counts as this many steps.
     pub max_fixed_steps: u32,
 }
 
-impl Default for Config {
+impl Default for TimeSettings {
     fn default() -> Self {
         Self {
-            window_title: "maki".to_owned(),
-            window_width: 1280,
-            window_height: 720,
-            render_scale: 1.0,
-            render_width: 0,
-            render_height: 0,
-            vsync: true,
-            start_room: PathBuf::from("game/assets/rooms/room_a.ron"),
-            start_spawn: "start".to_owned(),
-            // Above and in front of the room, looking down into it at an angle.
-            camera_position: [0.0, 9.0, 7.0],
-            camera_target: [0.0, 0.5, 0.0],
-            camera_fov_degrees: 45.0,
-            camera_follow_time: 0.25,
-            camera_margin: 3.0,
-            player_model_path: None,
-            player_walk_speed: 1.6,
-            player_run_speed: 3.6,
-            max_samples: 1024,
-            samples_per_frame: 0,
-            trace_budget_ms: 6.0,
-            light_history_samples: 16,
-            max_bounces: 2,
-            bounce_light: true,
-            blue_noise: true,
-            max_path_rays: 8,
-            denoise_passes: 4,
-            denoise_direct_passes: 1,
-            denoise_specular_passes: 2,
-            denoise_reach: 4096.0,
-            indirect_clamp: 8.0,
-            history_clamp: 2.0,
-            taa: true,
-            taa_blend: 0.1,
-            exposure: 1.0,
-            tone_curve: ToneCurve::Agx,
-            bloom: 0.04,
-            vignette: 0.25,
-            grade_lift: [0.0; 3],
-            grade_gamma: [1.0; 3],
-            grade_gain: [1.0; 3],
             fixed_hz: 60.0,
             max_fixed_steps: 8,
         }
     }
 }
 
-impl Config {
+impl Settings for TimeSettings {
+    const TABLE: &'static str = "time";
+
+    fn check(&self) -> Result<(), String> {
+        // A bad rate would make the step length infinite or zero.
+        if !(self.fixed_hz.is_finite() && self.fixed_hz > 0.0) {
+            return Err(format!(
+                "fixed_hz must be a positive number, got {}",
+                self.fixed_hz
+            ));
+        }
+        if self.max_fixed_steps == 0 {
+            return Err("max_fixed_steps must be 1 or more".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// The text of the config file, and what the modules read from it.
+#[derive(Resource, Debug, Default)]
+pub struct ConfigFile {
+    path: PathBuf,
+    text: String,
+    /// True: there was no file. `finish` writes one.
+    missing: bool,
+    /// Each table that a module added: its name and its default values as TOML.
+    tables: Vec<(&'static str, String)>,
+    /// The errors of all tables. `finish` returns them, so the user sees all of them
+    /// in one run.
+    errors: Vec<String>,
+}
+
+impl ConfigFile {
     pub const DEFAULT_PATH: &str = "config.toml";
 
-    /// Loads the config. If the file does not exist, writes the defaults there and returns them.
-    pub fn load_or_create(path: &Path) -> Result<Self> {
-        match fs::read_to_string(path) {
-            Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+    /// Reads the file. No file is not an error: each module then gets its defaults,
+    /// and `finish` writes them to the path.
+    pub fn load(path: &Path) -> Result<Self> {
+        let (text, missing) = match fs::read_to_string(path) {
+            Ok(text) => (text, false),
+            Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), true),
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot read config {}", path.display()));
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                let config = Self::default();
-                fs::write(path, toml::to_string_pretty(&config)?)
-                    .with_context(|| format!("cannot write default config {}", path.display()))?;
-                Ok(config)
-            }
-            Err(e) => Err(e).with_context(|| format!("cannot read config {}", path.display())),
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            text,
+            missing,
+            ..Self::default()
+        })
+    }
+
+    /// A config from a text, for tests and tools. Nothing is written to the disk.
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            path: PathBuf::from("<text>"),
+            text: text.to_owned(),
+            ..Self::default()
         }
+    }
+
+    /// The settings of one table. A table that the file does not have, and a table
+    /// with an error, give the defaults; the error waits for `finish`.
+    pub(crate) fn read<S: Settings>(&mut self) -> S {
+        let defaults = toml::to_string(&S::default())
+            .unwrap_or_else(|error| panic!("settings of [{}]: {error}", S::TABLE));
+        self.tables.push((S::TABLE, defaults));
+
+        // The settings are read from the text, not from a parsed table: the error
+        // of a bad value then has its line.
+        let read = toml::Deserializer::parse(&self.text)
+            .and_then(|file| file.deserialize_any(TableOf::<S>(PhantomData)));
+        let error = match read {
+            Ok(settings) => {
+                let settings = settings.unwrap_or_default();
+                match settings.check() {
+                    Ok(()) => return settings,
+                    Err(reason) => reason,
+                }
+            }
+            Err(error) => error.to_string(),
+        };
+        self.errors
+            .push(format!("{}: [{}] {error}", self.path.display(), S::TABLE));
+        S::default()
+    }
+
+    /// The errors of the tables that were read up to now.
+    pub(crate) fn finish_errors(&self) -> Result<()> {
+        if !self.errors.is_empty() {
+            bail!(
+                "{}",
+                self.errors.join(
+                    "
+"
+                )
+            );
+        }
+        Ok(())
+    }
+
+    /// Call after the last module was added. Returns the errors of all tables. Writes
+    /// the defaults of all tables if there was no file.
+    pub fn finish(&self) -> Result<()> {
+        if !self.errors.is_empty() {
+            bail!("{}", self.errors.join("\n"));
+        }
+        if self.missing {
+            let mut text = String::new();
+            for (table, defaults) in &self.tables {
+                text += &format!("[{table}]\n{defaults}\n");
+            }
+            fs::write(&self.path, text)
+                .with_context(|| format!("cannot write default config {}", self.path.display()))?;
+            return Ok(());
+        }
+        // Each table was read with success, so the text is valid TOML.
+        let file: toml::Table = toml::from_str(&self.text)?;
+        for (key, value) in &file {
+            if !value.is_table() {
+                bail!(
+                    "{}: the key `{key}` is in no table. A file of the old format \
+                     (all keys in one list): convert it with \
+                     `python tools/convert_config.py {}`",
+                    self.path.display(),
+                    self.path.display()
+                );
+            }
+            // Not an error: a build without a module (the editor) reads the same file.
+            if !self.tables.iter().any(|(table, _)| table == key) {
+                tracing::warn!(path = %self.path.display(), table = key, "no module reads this config table");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Reads one table of a TOML document as `S` and skips the others.
+struct TableOf<S>(PhantomData<S>);
+
+impl<'de, S: Settings> Visitor<'de> for TableOf<S> {
+    /// `None`: the document does not have the table.
+    type Value = Option<S>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "a TOML document")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut found = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key == S::TABLE {
+                found = Some(map.next_value::<S>()?);
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(found)
     }
 }
 
@@ -242,20 +223,101 @@ impl Config {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Resource)]
+    #[serde(default, deny_unknown_fields)]
+    struct Lamp {
+        watts: f32,
+        name: String,
+    }
+
+    impl Default for Lamp {
+        fn default() -> Self {
+            Self {
+                watts: 40.0,
+                name: "lamp".to_owned(),
+            }
+        }
+    }
+
+    impl Settings for Lamp {
+        const TABLE: &'static str = "lamp";
+
+        fn check(&self) -> Result<(), String> {
+            if self.watts < 0.0 {
+                return Err("watts must not be negative".to_owned());
+            }
+            Ok(())
+        }
+    }
+
     #[test]
-    fn missing_file_is_created_then_read_back() {
+    fn a_table_gives_its_keys_and_defaults_for_the_rest() {
+        let mut file = ConfigFile::from_text("[time]\nfixed_hz = 50.0\n\n[lamp]\nwatts = 60.0\n");
+        assert_eq!(
+            file.read::<Lamp>(),
+            Lamp {
+                watts: 60.0,
+                name: "lamp".to_owned()
+            }
+        );
+        assert_eq!(file.read::<TimeSettings>().fixed_hz, 50.0);
+        file.finish().unwrap();
+        // No table: the defaults.
+        let mut file = ConfigFile::from_text("");
+        assert_eq!(file.read::<Lamp>(), Lamp::default());
+        file.finish().unwrap();
+    }
+
+    #[test]
+    fn an_error_names_the_table_the_key_and_the_line() {
+        let error = |text: &str| {
+            let mut file = ConfigFile::from_text(text);
+            assert_eq!(file.read::<Lamp>(), Lamp::default());
+            file.finish().unwrap_err().to_string()
+        };
+        // A value of the wrong type.
+        let bad_type = error("[time]\nfixed_hz = 50.0\n[lamp]\nwatts = \"many\"\n");
+        assert!(bad_type.contains("[lamp]"), "{bad_type}");
+        assert!(bad_type.contains("line 4"), "{bad_type}");
+        assert!(bad_type.contains("watts"), "{bad_type}");
+        // A key that the table does not have.
+        let unknown = error("[lamp]\nwats = 60.0\n");
+        assert!(unknown.contains("[lamp]"), "{unknown}");
+        assert!(unknown.contains("line 2"), "{unknown}");
+        assert!(unknown.contains("wats"), "{unknown}");
+        // A value out of its limits.
+        let limit = error("[lamp]\nwatts = -1.0\n");
+        assert!(
+            limit.contains("[lamp] watts must not be negative"),
+            "{limit}"
+        );
+        // The old format: keys in no table.
+        let mut flat = ConfigFile::from_text("vsync = false\n");
+        flat.read::<Lamp>();
+        let flat = flat.finish().unwrap_err().to_string();
+        assert!(
+            flat.contains("`vsync`") && flat.contains("convert_config.py"),
+            "{flat}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_written_with_the_defaults_of_all_tables() {
         let path = std::env::temp_dir().join(format!("maki-config-{}.toml", std::process::id()));
         let _ = fs::remove_file(&path);
 
-        let created = Config::load_or_create(&path).unwrap();
-        assert_eq!(created, Config::default());
+        let mut file = ConfigFile::load(&path).unwrap();
+        assert_eq!(file.read::<TimeSettings>(), TimeSettings::default());
+        assert_eq!(file.read::<Lamp>(), Lamp::default());
+        file.finish().unwrap();
 
-        // A partial file keeps defaults for the fields it omits.
-        fs::write(&path, "vsync = false\nstart_room = \"a.ron\"\n").unwrap();
-        let loaded = Config::load_or_create(&path).unwrap();
-        assert!(!loaded.vsync);
-        assert_eq!(loaded.start_room, PathBuf::from("a.ron"));
-        assert_eq!(loaded.window_width, Config::default().window_width);
+        // The file that was written gives the same values.
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[time]") && text.contains("[lamp]"), "{text}");
+        let mut file = ConfigFile::load(&path).unwrap();
+        assert_eq!(file.read::<TimeSettings>(), TimeSettings::default());
+        assert_eq!(file.read::<Lamp>(), Lamp::default());
+        file.finish().unwrap();
 
         fs::remove_file(&path).unwrap();
     }

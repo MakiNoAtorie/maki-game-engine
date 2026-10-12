@@ -8,7 +8,7 @@ compare  Prints a CSV with the medians of two stored runs and the change in perc
          A run is named by a part of its run_id (the label); the newest match is used.
 reference Makes the reference picture of a scenario: a static light, 65536 samples for
          each pixel, and no filter, in target/bench/reference/<scenario>.dump. About one
-         minute. `--set` changes config keys, `--name` the file name.
+         minute. `--set table.key=value` changes config keys, `--name` the file name.
 quality  Runs a scenario with a static light (or `--moving`) and prints two numbers for
          the last picture against the reference: the error (relative mean squared
          error, `relmse`, without the 0.01 % of the pixels with the largest error) and
@@ -18,7 +18,7 @@ quality  Runs a scenario with a static light (or `--moving`) and prints two numb
          `relmse` alone prefers a soft picture: read the numbers together. Also writes
          <label>.png: picture, reference, difference. `--crop X,Y,W,H` measures a part.
          For `walk_720p` use `--frames 180`: the picture of the last frame with motion.
-         `--set key=value` changes config keys.
+         `--set table.key=value` changes config keys.
          Compare two settings at equal GPU time, not at equal frame count.
 same     Compares the pictures that two runs of one scenario dumped (exact labels):
          `ok`, or the number of pixels that differ, the largest difference, and the means.
@@ -54,7 +54,7 @@ WINDOW = (1280, 720)
 # name -> (internal resolution, arguments of `write_scene`, more config keys,
 # optional: more command line arguments).
 # Scene `None`: the test scene of the game (cube, sphere, glass ball, two mirrors).
-# To measure a new config key, add a scenario: "test_1080p_spp4": ((1920, 1080), None, {"samples_per_frame": 4}).
+# To measure a new config key, add a scenario: "test_1080p_spp4": ((1920, 1080), None, {"render.samples_per_frame": 4}).
 SCENARIOS = {
     "test_360p": ((640, 360), None, {}),
     "test_720p": ((1280, 720), None, {}),
@@ -71,30 +71,30 @@ SCENARIOS = {
     # One sphere in four is a mirror, one in four is glass: long paths.
     "heavy_mixed_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {}),
     # Four samples for each pixel and frame: the cost of a sample without the cost of a frame.
-    "test_1080p_spp4": ((1920, 1080), None, {"samples_per_frame": 4}),
-    "heavy_mixed_1080p_spp4": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {"samples_per_frame": 4}),
+    "test_1080p_spp4": ((1920, 1080), None, {"render.samples_per_frame": 4}),
+    "heavy_mixed_1080p_spp4": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {"render.samples_per_frame": 4}),
     # A path limit of 6 rays in place of 12.
-    "heavy_mixed_1080p_rays6": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {"max_path_rays": 6}),
+    "heavy_mixed_1080p_rays6": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {"render.max_path_rays": 6}),
     # No denoiser and no light history: only the path tracer, as before these two existed.
-    "test_1080p_raw": ((1920, 1080), None, {"denoise_passes": 0, "light_history_samples": 0}),
-    "heavy_mixed_1080p_raw": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {"denoise_passes": 0, "light_history_samples": 0, "max_path_rays": 12}),
+    "test_1080p_raw": ((1920, 1080), None, {"render.denoise_passes": 0, "render.light_history_samples": 0}),
+    "heavy_mixed_1080p_raw": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25), {"render.denoise_passes": 0, "render.light_history_samples": 0, "render.max_path_rays": 12}),
     # The light does not move: the accumulate pass reads the old mean in each frame.
     "static_1080p": ((1920, 1080), None, {}, ["--bench-static"]),
     # Complete after 8 frames: the cost of a frame that only shows the picture.
-    "idle_1080p": ((1920, 1080), None, {"max_samples": 8}, ["--bench-static"]),
+    "idle_1080p": ((1920, 1080), None, {"render.max_samples": 8}, ["--bench-static"]),
     # Eight point lights in the file, and the light of the config: nine lights.
     "heavy_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, lights=8), {}),
-    # The player walks and the door opens (the walk script of game/src/bench.rs). The
+    # The player walks and the door opens (the walk script of game/src/scripts.rs). The
     # camera has no follow delay: at the end of the script nothing moves.
-    "walk_720p": ((1280, 720), None, {"camera_follow_time": 0.0}, ["--bench-script", "walk"]),
+    "walk_720p": ((1280, 720), None, {"camera.follow_time": 0.0}, ["--bench-script", "walk"]),
     # The full loop of the game: room A, room B, the switch, and back (the trip script).
     # Two room loads, with events, messages, and fades. Use `--frames 900 --warmup 0`.
     "trip_720p": ((1280, 720), None, {}, ["--bench-script", "trip"]),
     # Room C: rough metal and plastic, a surface with a light of its own, a cone light.
-    "materials_720p": ((1280, 720), None, {"start_room": "room_c.ron"}),
+    "materials_720p": ((1280, 720), None, {"rooms.start": "room_c.ron"}),
     # Two diffuse bounces for each path.
-    "test_1080p_bounces2": ((1920, 1080), None, {"max_bounces": 2}),
-    "heavy_mixed_lights8_1080p_bounces2": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {"max_bounces": 2}),
+    "test_1080p_bounces2": ((1920, 1080), None, {"render.max_bounces": 2}),
+    "heavy_mixed_lights8_1080p_bounces2": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {"render.max_bounces": 2}),
     "heavy_mixed_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {}),
 }
 
@@ -145,25 +145,37 @@ def append(path, header, rows):
         writer.writerows(rows)
 
 
+def config_text(config):
+    """The text of a config file. A key is `table.key`, as the game has one table for
+    each module: {"render.max_bounces": 2} gives `[render]` with `max_bounces = 2`."""
+    tables = {}
+    for key, value in config.items():
+        table, dot, name = key.partition(".")
+        if not dot:
+            raise SystemExit(f"config key `{key}`: write `table.key`, for example `render.max_bounces`")
+        # A JSON number, string, or list of numbers is the same text in TOML.
+        tables.setdefault(table, []).append(f"{name} = {json.dumps(value)}")
+    return "".join(f"[{table}]\n" + "\n".join(lines) + "\n\n" for table, lines in tables.items())
+
+
 def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump=None):
     """Runs the game one time. Returns (params, {column: [values after the warmup]}).
     The picture of the last frame goes to `dump` (default: target/bench/<name>/<label>.dump).
     `overrides` are more config keys, `arguments` more command line arguments."""
     (width, height), scene, extra, *more = SCENARIOS[name]
     extra = {**extra, **(overrides or {})}
-    # A scenario can name another room of the game with the key `start_room`.
-    room_name = extra.pop("start_room", "room_a.ron")
+    # A scenario can name another room of the game with the key `rooms.start`.
+    room_name = extra.pop("rooms.start", "room_a.ron")
     # A key of `extra` takes the place of the same key below: TOML permits a key one time.
-    fixed = {"window_width": WINDOW[0], "window_height": WINDOW[1], "render_width": width, "render_height": height}
-    if "samples_per_frame" not in extra:
+    fixed = {"window.width": WINDOW[0], "window.height": WINDOW[1], "render.width": width, "render.height": height}
+    if "render.samples_per_frame" not in extra:
         # Not the automatic count: each run must do the same work.
-        fixed["samples_per_frame"] = 1
+        fixed["render.samples_per_frame"] = 1
     arguments = [*(more[0] if more else []), *arguments]
     dump = dump or WORK / name / f"{label}.dump"
     work = WORK / name
     work.mkdir(parents=True, exist_ok=True)
-    # A JSON number, string, or list of numbers is the same text in TOML.
-    config = [f"{key} = {json.dumps(value)}" for key, value in {**fixed, **extra}.items()]
+    config = {**fixed, **extra}
     params = f"render={width}x{height};window={WINDOW[0]}x{WINDOW[1]};frames={frames};warmup={warmup}"
     params += "".join(f";{key}={value}" for key, value in extra.items())
     params += "".join(f";{argument}" for argument in arguments)
@@ -180,9 +192,8 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         params += f";{scene_text};triangles={triangles}"
     else:
         room_path = ROOT / "game" / "assets" / "rooms" / room_name
-    # A JSON string is a valid TOML basic string.
-    config.insert(0, f"start_room = {json.dumps(room_path.resolve().as_posix())}")
-    (work / "config.toml").write_text("\n".join(config) + "\n")
+    config["rooms.start"] = room_path.resolve().as_posix()
+    (work / "config.toml").write_text(config_text(config))
     output = work / "bench.csv"
     output.unlink(missing_ok=True)
 
@@ -369,8 +380,8 @@ def command_reference(args):
     # anti-aliasing (`taa_blend = 0`: the plain mean of all frames at rest). It has the
     # limit of bounce light of the default config (`indirect_clamp`): the limit changes
     # what the picture converges to, and the reference is the target of the denoiser.
-    # `--set indirect_clamp=0 --name NAME` gives the picture without the limit.
-    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, "denoise_direct_passes": 0, "denoise_specular_passes": 0, "history_clamp": 0.0, "taa_blend": 0.0, **parse_overrides(args.set)}
+    # `--set render.indirect_clamp=0 --name NAME` gives the picture without the limit.
+    overrides = {"render.max_samples": REFERENCE_SAMPLES, "render.samples_per_frame": 64, "render.denoise_passes": 0, "render.denoise_direct_passes": 0, "render.denoise_specular_passes": 0, "render.history_clamp": 0.0, "render.taa_blend": 0.0, **parse_overrides(args.set)}
     frames = REFERENCE_SAMPLES // 64
     # The picture starts again when the walk script ends.
     if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:
@@ -491,14 +502,14 @@ if __name__ == "__main__":
     compare.set_defaults(function=command_compare)
     reference = commands.add_parser("reference", help="make the reference picture of a scenario")
     reference.add_argument("scenario")
-    reference.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="config keys")
+    reference.add_argument("--set", nargs="*", default=[], metavar="TABLE.KEY=VALUE", help="config keys, for example render.max_bounces=3")
     reference.add_argument("--name", help="file name of the reference (default: the scenario)")
     reference.set_defaults(function=command_reference)
     quality = commands.add_parser("quality", help="error of a picture against the reference")
     quality.add_argument("scenario")
     quality.add_argument("--label", required=True)
     quality.add_argument("--frames", type=int, default=64)
-    quality.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="config keys")
+    quality.add_argument("--set", nargs="*", default=[], metavar="TABLE.KEY=VALUE", help="config keys, for example render.max_bounces=3")
     quality.add_argument("--moving", action="store_true", help="the light moves; use a multiple of 240 frames")
     quality.add_argument("--light-frames", type=int, metavar="N", help="the light moves in N frames (a multiple of 240), then it stops")
     quality.add_argument("--reference", metavar="SCENARIO", help="use the reference of another scenario")

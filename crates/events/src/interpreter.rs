@@ -6,22 +6,21 @@
 //! turns, a message that the player has not closed). The game loop never stops for
 //! an event.
 //!
-//! Each command writes a component or a resource of the scene crate or of this
-//! crate. No command calls the renderer or the user interface: they read what the
-//! commands wrote.
+//! A command is a value of an open set (`command` module). Its handler gets the
+//! world, so `run_events` is a system with the full world.
 
-use bevy_ecs::query::With;
+use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Query, Res, ResMut, SystemParam};
+use bevy_ecs::system::{Res, ResMut};
+use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
-use maki_core::{Interpolated, Time};
-use maki_platform::{Action, FixedActionState};
-use maki_scene::{
-    CurrentRoom, Light, Mover, MoverState, Name, Player, RoomRequest, RoomTarget, ScreenFade,
-};
+use maki_core::Interpolated;
+use maki_platform::FixedActionState;
+use maki_scene::{CurrentRoom, Player};
 
-use crate::GameState;
-use crate::model::{Command, EventDef, Trigger, active_page, parse_events};
+use crate::command::{Command, CommandRegistry, Step};
+use crate::model::{EventDef, Trigger, active_page};
+use crate::{GameState, INTERACT};
 
 /// An interact event starts if its area is not farther from the player than this, in
 /// meters, and the player faces it.
@@ -39,7 +38,7 @@ const MAX_COMMANDS_PER_STEP: usize = 256;
 pub struct MessageBox(pub Option<String>);
 
 /// An event whose commands run.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct RunningEvent {
     pub name: String,
     pub trigger: Trigger,
@@ -48,86 +47,8 @@ pub struct RunningEvent {
     stack: Vec<(Vec<Command>, usize)>,
     /// True: the current command ran in a step before and waits.
     waiting: bool,
-    /// For `Wait`: the seconds that are left.
-    seconds_left: f32,
-    /// For `Transfer`: `CurrentRoom::loads` when the room was asked for.
-    loads_before: u64,
-}
-
-/// What the commands can reach.
-pub(crate) struct EventWorld<'a, 'w, 's> {
-    /// Length of the fixed step.
-    pub seconds: f32,
-    /// The player pressed interact in this step.
-    pub interact: bool,
-    pub state: &'a mut GameState,
-    pub message: &'a mut MessageBox,
-    pub fade: &'a mut ScreenFade,
-    pub request: &'a mut RoomRequest,
-    pub room: &'a CurrentRoom,
-    pub named: &'a mut NamedEntities<'w, 's>,
-}
-
-/// The entities of the room that a command finds by name.
-#[derive(SystemParam)]
-pub struct NamedEntities<'w, 's> {
-    movers: Query<'w, 's, (&'static Name, &'static mut Mover)>,
-    lights: Query<'w, 's, (&'static Name, &'static mut Light)>,
-}
-
-impl EventWorld<'_, '_, '_> {
-    /// Sends each mover of this name to pose B or A (only `start`), and tells if all
-    /// of them are there.
-    fn send_mover(&mut self, name: &str, to_b: bool, start: bool) -> bool {
-        let (mut found, mut arrived) = (false, true);
-        for (mover_name, mut mover) in self.named.movers.iter_mut() {
-            if mover_name.0 != name {
-                continue;
-            }
-            found = true;
-            let target = if to_b {
-                MoverState::AtB
-            } else {
-                MoverState::AtA
-            };
-            if mover.state == target {
-                continue;
-            }
-            // Only a mover that is not there is written: a write is a change.
-            if start {
-                if to_b {
-                    mover.go_to_b();
-                } else {
-                    mover.go_to_a();
-                }
-            }
-            arrived = false;
-        }
-        if !found && start {
-            tracing::warn!(
-                name,
-                "an event names a door or mover that the room does not have"
-            );
-        }
-        arrived
-    }
-
-    fn set_light(&mut self, name: &str, change: impl Fn(&Light) -> Light) {
-        let mut found = false;
-        for (light_name, mut light) in self.named.lights.iter_mut() {
-            if light_name.0 == name {
-                found = true;
-                let new = change(&light);
-                // A write is a change of the lighting for the renderer.
-                if *light != new {
-                    *light = new;
-                }
-            }
-        }
-        if !found {
-            tracing::warn!(name, "an event names a light that the room does not have");
-        }
-    }
+    /// What the current command keeps between its steps (`Step::memory`).
+    memory: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl RunningEvent {
@@ -137,8 +58,7 @@ impl RunningEvent {
             trigger,
             stack: vec![(commands.to_vec(), 0)],
             waiting: false,
-            seconds_left: 0.0,
-            loads_before: 0,
+            memory: None,
         }
     }
 
@@ -149,7 +69,7 @@ impl RunningEvent {
     }
 
     /// One fixed step. True: the event has ended.
-    fn step(&mut self, world: &mut EventWorld) -> bool {
+    fn step(&mut self, world: &mut World) -> bool {
         for _ in 0..MAX_COMMANDS_PER_STEP {
             // A list at its end is closed: the list around it goes on.
             while self
@@ -164,18 +84,24 @@ impl RunningEvent {
             };
             let command = list[*index].clone();
             let start = !std::mem::replace(&mut self.waiting, true);
-            if !self.run(&command, start, world) {
+            if start {
+                self.memory = None;
+            }
+            let mut opened = None;
+            let mut step = Step {
+                start,
+                event: &self.name,
+                memory: &mut self.memory,
+                opened: &mut opened,
+            };
+            if !command.run(&mut step, world) {
                 return false;
             }
             self.waiting = false;
             self.stack.last_mut().expect("tested above").1 += 1;
-            if let Command::If(flag, then, otherwise) = command {
-                let branch = if world.state.flag(&flag) {
-                    then
-                } else {
-                    otherwise
-                };
-                self.stack.push((branch, 0));
+            // The branch of an `If`.
+            if let Some(list) = opened {
+                self.stack.push((list, 0));
             }
         }
         tracing::warn!(
@@ -183,82 +109,6 @@ impl RunningEvent {
             "{MAX_COMMANDS_PER_STEP} commands with no wait: the event goes on in the next step"
         );
         false
-    }
-
-    /// Runs the current command. `start`: this is its first step. False: the command
-    /// waits, and runs again in the next step.
-    fn run(&mut self, command: &Command, start: bool, world: &mut EventWorld) -> bool {
-        match command {
-            Command::SetFlag(name, value) => world.state.set_flag(name, *value),
-            Command::SetVariable(name, value) => world.state.set_variable(name, *value),
-            Command::AddVariable(name, value) => {
-                let sum = world.state.variable(name).saturating_add(*value);
-                world.state.set_variable(name, sum);
-            }
-            Command::Wait(seconds) => {
-                if start {
-                    self.seconds_left = *seconds;
-                }
-                self.seconds_left -= world.seconds;
-                // The small number: the sum of 60 steps of 1/60 s is not exactly 1 s.
-                return self.seconds_left <= 1e-5;
-            }
-            // `step` opens the branch.
-            Command::If(..) => {}
-            Command::OpenDoor(name) => return world.send_mover(name, true, start),
-            Command::CloseDoor(name) => return world.send_mover(name, false, start),
-            Command::LightOn(name) => world.set_light(name, |light| Light { on: true, ..*light }),
-            Command::LightOff(name) => world.set_light(name, |light| Light {
-                on: false,
-                ..*light
-            }),
-            Command::LightIntensity(name, intensity) => world.set_light(name, |light| Light {
-                intensity: *intensity,
-                ..*light
-            }),
-            Command::Message(text) => {
-                if start {
-                    tracing::debug!(event = self.name, text, "message");
-                    world.message.0 = Some(text.clone());
-                    return false;
-                }
-                if !world.interact {
-                    return false;
-                }
-                world.message.0 = None;
-            }
-            Command::FadeOut(seconds) | Command::FadeIn(seconds) => {
-                let part = if *seconds > 0.0 {
-                    world.seconds / seconds
-                } else {
-                    1.0
-                };
-                let out = matches!(command, Command::FadeOut(_));
-                let fade = world.fade.0 + if out { part } else { -part };
-                world.fade.0 = fade.clamp(0.0, 1.0);
-                return world.fade.0 == if out { 1.0 } else { 0.0 };
-            }
-            Command::Transfer(room, spawn) => {
-                if start {
-                    let directory = world.room.path.parent().unwrap_or(std::path::Path::new(""));
-                    world.request.0 = Some(RoomTarget {
-                        path: directory.join(room),
-                        spawn: Some(spawn.clone()),
-                    });
-                    self.loads_before = world.room.loads;
-                    return false;
-                }
-                if world.room.loads == self.loads_before {
-                    // The loader has not run yet (two fixed steps in one frame).
-                    if world.request.0.is_some() {
-                        return false;
-                    }
-                    // The loader logged why. The event goes on in the old room.
-                    tracing::error!(event = self.name, room, "the transfer did not happen");
-                }
-            }
-        }
-        true
     }
 }
 
@@ -309,11 +159,12 @@ impl EventRunner {
 
     /// One fixed step: runs the running events, then starts those whose trigger
     /// fires. `player`: position and view direction.
-    pub(crate) fn step(&mut self, world: &mut EventWorld, player: Option<(Vec3, Vec3)>) {
+    pub(crate) fn step(&mut self, world: &mut World, player: Option<(Vec3, Vec3)>) {
         // An interact press that goes to a running event (it closes a message)
         // starts no other event in the same step.
         let mut blocked = self.blocks_player();
-        let interact = world.interact && !blocked;
+        let pressed = world.resource::<FixedActionState>().just_pressed(INTERACT);
+        let interact = pressed && !blocked;
 
         let mut index = 0;
         while index < self.running.len() {
@@ -325,12 +176,13 @@ impl EventRunner {
         }
         blocked |= self.blocks_player();
 
+        let state = world.resource::<GameState>();
         for (index, event) in self.events.iter().enumerate() {
             let inside = player.is_some_and(|(at, _)| event.area.distance(at.x, at.z) == 0.0);
             let entered = inside && !self.inside[index] && !self.new_room;
             self.inside[index] = inside;
 
-            let page_index = active_page(event, world.state);
+            let page_index = active_page(event, state);
             let page = page_index.map(|page| &event.pages[page]);
             // An autorun page starts again if another page was active in between.
             if page.is_none_or(|page| page.trigger != Trigger::Autorun) {
@@ -377,20 +229,24 @@ fn faces((position, facing): (Vec3, Vec3), event: &EventDef) -> bool {
 }
 
 /// Runs in `Update` after the room loader: reads the events of a new room.
-pub(crate) fn load_room_events(room: Res<CurrentRoom>, mut runner: ResMut<EventRunner>) {
+pub(crate) fn load_room_events(
+    room: Res<CurrentRoom>,
+    registry: Res<CommandRegistry>,
+    mut runner: ResMut<EventRunner>,
+) {
     use bevy_ecs::change_detection::DetectChanges;
 
     // The resource also counts as changed before the first room.
     if !room.is_changed() || room.loads == 0 {
         return;
     }
-    match parse_events(&room.source) {
+    match registry.parse_events(&room.source) {
         Ok(events) => {
             tracing::info!(events = events.len(), "events loaded");
             runner.set_events(events);
         }
-        // `validate_events` stops such a room before it loads. This is for a game
-        // that did not add the check.
+        // The check of the room files stops such a room before it loads. This is
+        // for a room that was loaded with no check.
         Err(error) => {
             tracing::error!("{}:{error}: the room has no events", room.path.display());
             runner.set_events(Vec::new());
@@ -398,42 +254,27 @@ pub(crate) fn load_room_events(room: Res<CurrentRoom>, mut runner: ResMut<EventR
     }
 }
 
-/// Runs in `FixedUpdate`: one step of the interpreter. A system that writes a mover
-/// or a light in `FixedUpdate` runs `.after(run_events)`.
-#[allow(clippy::too_many_arguments)]
-pub fn run_events(
-    time: Res<Time>,
-    actions: Res<FixedActionState>,
-    room: Res<CurrentRoom>,
-    mut runner: ResMut<EventRunner>,
-    mut state: ResMut<GameState>,
-    mut message: ResMut<MessageBox>,
-    mut fade: ResMut<ScreenFade>,
-    mut request: ResMut<RoomRequest>,
-    mut named: NamedEntities,
-    players: Query<&Interpolated, With<Player>>,
-) {
+/// Runs in `FixedUpdate`: one step of the interpreter.
+///
+/// It has the full world, because a command of any module can write any component
+/// or resource. So each other system of `FixedUpdate` must declare its order to it:
+/// `.before(run_events)` or `.after(run_events)`.
+pub fn run_events(world: &mut World, players: &mut QueryState<&Interpolated, With<Player>>) {
     use bevy_ecs::change_detection::DetectChangesMut;
 
     // Nothing to do: no write, so no resource is marked as changed in each step.
+    let runner = world.resource::<EventRunner>();
     if runner.events.is_empty() && runner.running.is_empty() {
         return;
     }
     // The front of the player model is its +Z.
-    let player = players.iter().next().map(|pose| {
+    let player = players.iter(world).next().map(|pose| {
         let pose = pose.current;
         (pose.translation, pose.rotation * Vec3::Z)
     });
-    // Change detection of these resources has no reader that does work on a change.
-    let mut world = EventWorld {
-        seconds: time.fixed_delta.as_secs_f32(),
-        interact: actions.just_pressed(Action::Interact),
-        state: state.bypass_change_detection(),
-        message: message.bypass_change_detection(),
-        fade: fade.bypass_change_detection(),
-        request: request.bypass_change_detection(),
-        room: &room,
-        named: &mut named,
-    };
-    runner.bypass_change_detection().step(&mut world, player);
+    // The runner is out of the world while its commands have the world.
+    world.resource_scope(|world, mut runner: Mut<EventRunner>| {
+        // Change detection of the runner has no reader.
+        runner.bypass_change_detection().step(world, player);
+    });
 }

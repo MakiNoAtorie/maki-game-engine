@@ -1,6 +1,6 @@
 //! The debug UI: egui panels in a column at the right of the picture.
 //!
-//! The picture has a fixed size (the config) and is in the top left corner of the
+//! The picture has a fixed size (the `[window]` settings) and is in the top left corner of the
 //! window. The column fills the window at the right of it: no panel hides the picture.
 //! This crate tells the platform crate the width of the column (`WindowMargin`), and
 //! the window is as large as the two.
@@ -15,11 +15,15 @@
 //!    into the window image, after the compose pass and before the copy to the window.
 //!
 //! A module adds a debug panel with [`add_panel`], and a window on top of the picture
-//! (game text) with [`add_window`]. The help panel (`help` module) and
-//! the stats panel (`stats` module) are added in the same way.
+//! (game text) with [`add_window`]. The help panel (`help` module), the stats panel
+//! (`stats` module), the panel of the renderer settings (`render_panel` module), and
+//! the message window and game state panel of the events (`events` module) are
+//! added in the same way.
 
+mod events;
 mod help;
 mod overlay;
+mod render_panel;
 mod stats;
 
 use bevy_ecs::change_detection::DetectChangesMut;
@@ -29,13 +33,16 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::common_conditions::resource_exists;
 use bevy_ecs::system::{Res, ResMut};
 use bevy_ecs::world::{Mut, World};
-use maki_core::{App, Config, Extract, Input, Module, Startup, Update};
-use maki_platform::{InputCapture, RawWindowEvent, Window, WindowMargin};
+use maki_core::{App, Extract, Input, Module, Startup, Update};
+use maki_platform::{InputCapture, RawWindowEvent, Window, WindowMargin, WindowSettings};
 use maki_render::{RenderGpu, RenderWorld, setup_renderer};
 
 /// For the `egui::Ui` parameter of a panel function: a module that adds a panel uses
 /// this, so it has the same egui version as this crate.
 pub use egui;
+pub use events::EventsUiModule;
+pub use help::TOGGLE_HELP;
+pub use render_panel::RenderPanelModule;
 pub use stats::StatsPanelModule;
 
 /// Draws the content of one panel. It gets the game world: a debug panel can show, and
@@ -137,27 +144,20 @@ pub fn add_window(
 }
 
 fn register(app: &mut App, name: &'static str, open: bool, place: Place, draw: PanelFn) {
-    // `App` gives no direct access to a resource, so a `Startup` system adds the panel.
-    // A system can run more than one time; the panel moves out in the first run.
-    let mut panel = Some(Panel {
+    app.init_resource::<Panels>()
+        // Each system opens or closes its own panel: their order has no effect.
+        .allow_ambiguous_resource::<Panels>();
+    let mut panels = app.resource_mut::<Panels>();
+    assert!(
+        panels.0.iter().all(|other| other.name != name),
+        "panel `{name}` was added two times"
+    );
+    panels.0.push(Panel {
         name,
         open,
         place,
         draw,
     });
-    app.init_resource::<Panels>()
-        // Each module adds its own panel: the order changes nothing but the list order.
-        .allow_ambiguous_resource::<Panels>()
-        .add_systems(Startup, move |mut panels: ResMut<Panels>| {
-            if let Some(panel) = panel.take() {
-                assert!(
-                    panels.0.iter().all(|other| other.name != panel.name),
-                    "panel `{}` was added two times",
-                    panel.name
-                );
-                panels.0.push(panel);
-            }
-        });
 }
 
 /// egui and the result of its last frame.
@@ -244,9 +244,8 @@ fn run_ui(world: &mut World) {
                 (Some(state), Some(window)) => state.take_egui_input(window.winit()),
                 _ => egui::RawInput::default(),
             };
-            let config = world.resource::<Config>();
-            let picture_pixels =
-                egui::vec2(config.window_width as f32, config.window_height as f32);
+            let window = world.resource::<WindowSettings>();
+            let picture_pixels = egui::vec2(window.width as f32, window.height as f32);
             let output = ui.ctx.run_ui(input, |root| {
                 // The place of the picture in the window, in egui points.
                 let picture = egui::Rect::from_min_size(
@@ -343,7 +342,7 @@ fn extract_ui(mut ui: ResMut<UiContext>, mut render_world: ResMut<RenderWorld>) 
 mod tests {
     use std::time::Duration;
 
-    use maki_core::Config;
+    use maki_core::ConfigFile;
     use maki_platform::{Bindings, Key, PlatformModule, RawInput};
 
     use super::*;
@@ -351,13 +350,14 @@ mod tests {
     /// No window and no GPU: the egui frame runs, nothing is drawn.
     #[test]
     fn the_help_action_toggles_the_help_panel() {
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(PlatformModule).add_module(UiModule);
         add_panel(&mut app, "Test", false, |_, _| {});
-        let help_key = Bindings::default()
+        let bindings = app.world().resource::<Bindings>();
+        let help_key = bindings
             .0
             .iter()
-            .find(|binding| binding.action == maki_platform::Action::ToggleHelp)
+            .find(|binding| binding.action == TOGGLE_HELP)
             .expect("the help action has a key")
             .key;
 
@@ -390,7 +390,7 @@ mod tests {
     fn the_help_panel_has_one_row_for_each_binding() {
         let bindings = Bindings(vec![maki_platform::Binding {
             key: Key::R,
-            action: maki_platform::Action::Quit,
+            action: maki_platform::Action("quit"),
             description: "Changed binding",
         }]);
         assert_eq!(help::rows(&bindings), [("R", "Changed binding")]);

@@ -9,7 +9,8 @@ use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Local, Res, ResMut};
-use maki_core::{App, Config};
+use maki_core::{App, Settings};
+use serde::{Deserialize, Serialize};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -63,15 +64,43 @@ pub struct WindowMargin {
     pub right: u32,
 }
 
-/// The size of the window for a picture size and a margin.
-fn window_size(config: &Config, margin: WindowMargin) -> PhysicalSize<u32> {
-    PhysicalSize::new(config.window_width + margin.right, config.window_height)
+/// The window and the picture in it. The `[window]` table of the config file.
+#[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowSettings {
+    pub title: String,
+    /// Size of the picture in pixels. The window shows it not scaled, and is wider
+    /// by the panel column of the UI.
+    pub width: u32,
+    pub height: u32,
+    /// True: each frame waits for the display.
+    pub vsync: bool,
 }
 
-/// Gives the window a new size when the picture size of the config or the margin
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            title: "maki".to_owned(),
+            width: 1280,
+            height: 720,
+            vsync: true,
+        }
+    }
+}
+
+impl Settings for WindowSettings {
+    const TABLE: &'static str = "window";
+}
+
+/// The size of the window for a picture size and a margin.
+fn window_size(config: &WindowSettings, margin: WindowMargin) -> PhysicalSize<u32> {
+    PhysicalSize::new(config.width + margin.right, config.height)
+}
+
+/// Gives the window a new size when the picture size of the settings or the margin
 /// changes (a resolution selector, another display scale).
 pub(crate) fn fit_window(
-    config: Res<Config>,
+    config: Res<WindowSettings>,
     margin: Res<WindowMargin>,
     window: Res<Window>,
     mut last: Local<Option<PhysicalSize<u32>>>,
@@ -153,10 +182,10 @@ impl ApplicationHandler for Runner {
         }
         let mut app = self.app.take().expect("app is present outside resumed");
 
-        let config = app.world().resource::<Config>();
+        let config = app.world().resource::<WindowSettings>();
         let margin = *app.world().resource::<WindowMargin>();
         let attributes = winit::window::Window::default_attributes()
-            .with_title(&config.window_title)
+            .with_title(&config.title)
             .with_inner_size(window_size(config, margin));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),

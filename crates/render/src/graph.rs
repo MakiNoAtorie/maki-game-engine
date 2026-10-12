@@ -33,7 +33,7 @@ pub const BACKBUFFER: ResourceId = ResourceId(0);
 pub enum SizeMode {
     /// The internal render resolution (from the config).
     Internal,
-    /// The size of the picture (`window_width` and `window_height` of the config).
+    /// The size of the picture (`width` and `height` of the `[window]` settings).
     Output,
     /// The size of the swapchain images (the window): the picture and the room for
     /// the panels.

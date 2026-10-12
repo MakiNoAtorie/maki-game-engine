@@ -12,7 +12,7 @@ pub use app::{
     App, Extract, FixedFirst, FixedLast, FixedUpdate, Input, Module, Present, Render, Startup,
     Update,
 };
-pub use config::{Config, ToneCurve};
+pub use config::{ConfigFile, Settings, TimeSettings};
 pub use interpolation::{Interpolated, interpolate_transforms};
 pub use time::Time;
 pub use transform::Transform;

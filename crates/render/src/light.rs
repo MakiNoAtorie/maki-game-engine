@@ -109,7 +109,7 @@ fn extract_lights(
         tracing::trace!("a light changed");
         render_world.soften_accumulation();
     }
-    let lights = lights
+    let mut lights: Vec<ExtractedLight> = lights
         .iter()
         // A light that is off is no light for the renderer.
         .filter(|(_, light)| light.on)
@@ -118,6 +118,16 @@ fn extract_lights(
             light: *light,
         })
         .collect();
+    // In an order that the scene alone gives: by position. The order of a query is
+    // that of the ECS tables, and those are made in an order that changes when a
+    // system is added somewhere. The shader selects a light by its index: with
+    // another order, the same scene gives another noise pattern, and two benchmark
+    // pictures do not compare.
+    // ponytail: two lights at the same position keep the query order.
+    lights.sort_by(|a, b| {
+        let (a, b) = (a.position.to_array(), b.position.to_array());
+        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+    });
     render_world.0.insert_resource(ExtractedLights(lights));
 }
 
@@ -126,7 +136,7 @@ mod tests {
     use std::time::Duration;
 
     use bevy_ecs::system::{Commands, Res};
-    use maki_core::{Config, FixedUpdate, Render, Startup, Time};
+    use maki_core::{ConfigFile, FixedUpdate, Render, Startup, Time};
 
     use super::*;
     use crate::Accumulation;
@@ -167,6 +177,34 @@ mod tests {
         assert_eq!(f32::from_ne_bytes(bytes[44..48].try_into().unwrap()), -2.0);
     }
 
+    #[derive(bevy_ecs::component::Component)]
+    struct Marker;
+
+    #[test]
+    fn lights_are_extracted_in_the_order_of_their_positions_whatever_their_table() {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.init_resource::<RenderWorld>();
+        app.add_systems(Extract, extract_lights);
+        // The lights 2 and 0 are in one ECS table, light 1 in another.
+        app.add_systems(Startup, |mut commands: Commands| {
+            let at = |x: f32| (Transform::from_translation(Vec3::X * x), Light::default());
+            commands.spawn((at(2.0), Marker));
+            commands.spawn(at(1.0));
+            commands.spawn((at(0.0), Marker));
+        });
+        app.run(|mut app| {
+            app.advance(Duration::ZERO);
+            let lights = &app
+                .world()
+                .resource::<RenderWorld>()
+                .0
+                .resource::<ExtractedLights>()
+                .0;
+            let places: Vec<f32> = lights.iter().map(|light| light.position.x).collect();
+            assert_eq!(places, [0.0, 1.0, 2.0]);
+        });
+    }
+
     /// The sample count of each frame.
     #[derive(Resource, Default)]
     struct Samples(Vec<u32>);
@@ -174,11 +212,7 @@ mod tests {
     #[test]
     fn a_written_light_resets_the_accumulation_and_a_still_light_does_not() {
         // 50 Hz: one fixed step per 20 ms.
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            ..Default::default()
-        })
-        .unwrap();
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.init_resource::<RenderWorld>()
             .init_resource::<Samples>();
         // Not `build`: `setup_lights` needs a GPU.

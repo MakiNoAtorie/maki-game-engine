@@ -54,7 +54,7 @@ layout(push_constant) uniform Push {
     float pad3;
 } push;
 
-// Must agree with `ToneCurve` in the core crate.
+// Must agree with `ToneCurve` in the render crate (`settings.rs`).
 const uint CURVE_AGX = 0u;
 const uint CURVE_NEUTRAL = 1u;
 

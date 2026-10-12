@@ -1356,10 +1356,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "maki-devtools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "glam 0.34.1",
+ "maki-core",
+ "maki-gameplay",
+ "maki-platform",
+ "maki-render",
+ "maki-scene",
+ "maki-ui",
+ "tracing",
+]
+
+[[package]]
 name = "maki-events"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
+ "erased-serde",
  "glam 0.34.1",
  "maki-core",
  "maki-platform",
@@ -1378,14 +1395,33 @@ dependencies = [
  "glam 0.34.1",
  "maki-assets",
  "maki-core",
+ "maki-devtools",
  "maki-events",
+ "maki-gameplay",
  "maki-platform",
  "maki-render",
  "maki-scene",
  "maki-ui",
+ "serde",
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",
+]
+
+[[package]]
+name = "maki-gameplay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "glam 0.34.1",
+ "maki-assets",
+ "maki-core",
+ "maki-events",
+ "maki-platform",
+ "maki-scene",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -1408,6 +1444,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "maki-core",
+ "serde",
  "tracing",
  "winit",
 ]
@@ -1424,6 +1461,7 @@ dependencies = [
  "maki-gpu",
  "maki-platform",
  "maki-scene",
+ "serde",
  "tracing",
 ]
 
@@ -1449,6 +1487,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "maki-core",
+ "maki-events",
  "maki-gpu",
  "maki-platform",
  "maki-render",

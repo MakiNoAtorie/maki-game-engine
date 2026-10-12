@@ -1,0 +1,16 @@
+[package]
+name = "maki-gameplay"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+maki-core.workspace = true
+maki-platform.workspace = true
+maki-assets.workspace = true
+maki-scene.workspace = true
+maki-events.workspace = true
+anyhow.workspace = true
+bevy_ecs.workspace = true
+glam.workspace = true
+serde.workspace = true
+tracing.workspace = true

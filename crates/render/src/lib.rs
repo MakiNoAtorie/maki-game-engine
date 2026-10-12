@@ -35,6 +35,7 @@ mod meshes;
 mod motion;
 mod noise;
 mod passes;
+mod settings;
 mod taa;
 
 use bevy_ecs::change_detection::DetectChanges;
@@ -42,12 +43,12 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Res, ResMut};
 use bevy_ecs::world::World;
-use maki_core::{App, Config, Extract, Module, Present, Render, Startup, Time, ToneCurve};
+use maki_core::{App, Extract, Module, Present, Render, Startup, Time};
 use maki_gpu::{Gpu, GpuDesc};
-use maki_platform::{Window, WindowSize};
+use maki_platform::{Window, WindowSettings, WindowSize};
 use maki_scene::{CurrentRoom, ScreenFade};
 
-pub use accumulation::Accumulation;
+pub use accumulation::{Accumulation, RESET_ACCUMULATION};
 pub use camera::{ExtractedCamera, ray_basis};
 pub use denoise::MAX_DENOISE_PASSES;
 pub use graph::{
@@ -57,6 +58,7 @@ pub use light::{ExtractedLight, ExtractedLights, MAX_LIGHTS};
 pub use maki_gpu::{Access, Format};
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
 pub use passes::MAX_INSTANCES;
+pub use settings::{RenderSettings, ToneCurve};
 
 /// The bytes of a shader that `build.rs` compiled. The argument is the file name in `shaders/`.
 macro_rules! shader_spirv {
@@ -173,8 +175,8 @@ pub struct ExtractedFrame {
     pub debug_view: DebugView,
 }
 
-/// The look of the picture: the values of the config for the passes after the
-/// anti-aliasing (`bloom` and `tonemap`). See `Config` for each one.
+/// The look of the picture: the values of the settings for the passes after the
+/// anti-aliasing (`bloom` and `tonemap`). See `RenderSettings` for each one.
 #[derive(Debug, Clone, Copy)]
 pub struct Look {
     pub tone_curve: ToneCurve,
@@ -251,7 +253,8 @@ pub struct RenderModule;
 
 impl Module for RenderModule {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RenderWorld>()
+        app.add_settings::<RenderSettings>()
+            .init_resource::<RenderWorld>()
             .init_resource::<DebugView>()
             // Extract systems of different modules write different resources of the
             // render world, so their order has no effect. The one shared write, the
@@ -286,12 +289,12 @@ pub fn setup_renderer(
     mut commands: Commands,
     window: Res<Window>,
     size: Res<WindowSize>,
-    config: Res<Config>,
+    window_settings: Res<WindowSettings>,
 ) {
     let desc = GpuDesc {
         width: size.width,
         height: size.height,
-        vsync: config.vsync,
+        vsync: window_settings.vsync,
     };
     // No GPU, no game: stop with the reason (for example the missing Vulkan features).
     let mut gpu =
@@ -303,8 +306,11 @@ pub fn setup_renderer(
 }
 
 /// The only place where the built-in renderer reads the game world.
+// A system: each argument is a system parameter.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_frame(
-    config: Res<Config>,
+    config: Res<RenderSettings>,
+    window: Res<WindowSettings>,
     size: Res<WindowSize>,
     time: Res<Time>,
     debug_view: Res<DebugView>,
@@ -314,22 +320,22 @@ pub(crate) fn extract_frame(
     mut render_world: ResMut<RenderWorld>,
 ) {
     // A new internal resolution gives new, empty images. The picture size is in the
-    // config, so a new window size changes nothing in the picture.
-    // ponytail: each config change is a reset, also one that needs none (the exposure).
+    // settings, so a new window size changes nothing in the picture.
+    // ponytail: each settings change is a reset, also one that needs none (the exposure).
     // Compare the old and the new values that the picture depends on if that shows.
     // Another room: the old samples show the old room, also where a wall of the new
     // room is at the same place.
     let new_room = room.is_some_and(|room| room.is_changed());
-    if config.is_changed() || new_room {
+    if config.is_changed() || window.is_changed() || new_room {
         render_world.reset_accumulation();
     }
     // Never zero: the passes divide by it.
-    let picture = (config.window_width.max(1), config.window_height.max(1));
+    let picture = (window.width.max(1), window.height.max(1));
     render_world.0.insert_resource(ExtractedFrame {
         internal_resolution: internal_resolution(&config, picture),
         picture_size: picture,
         window_size: (size.width, size.height),
-        vsync: config.vsync,
+        vsync: window.vsync,
         frame: time.frame,
         max_samples: config.max_samples,
         // Never 0: the passes divide by it.
@@ -366,13 +372,13 @@ pub(crate) fn extract_frame(
     });
 }
 
-/// The size of the path tracer images: the fixed size of the config, or the picture
-/// size multiplied by `render_scale`. Never zero.
-fn internal_resolution(config: &Config, picture: (u32, u32)) -> (u32, u32) {
-    if config.render_width > 0 && config.render_height > 0 {
-        return (config.render_width, config.render_height);
+/// The size of the path tracer images: the fixed size of the settings, or the picture
+/// size multiplied by `scale`. Never zero.
+fn internal_resolution(config: &RenderSettings, picture: (u32, u32)) -> (u32, u32) {
+    if config.width > 0 && config.height > 0 {
+        return (config.width, config.height);
     }
-    let scaled = |size: u32| ((size as f32 * config.render_scale).round() as u32).max(1);
+    let scaled = |size: u32| ((size as f32 * config.scale).round() as u32).max(1);
     (scaled(picture.0), scaled(picture.1))
 }
 

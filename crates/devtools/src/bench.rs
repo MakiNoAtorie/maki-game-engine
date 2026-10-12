@@ -15,8 +15,8 @@
 //!
 //! With `--bench-script NAME` the light does not move, and a script plays the game. A
 //! script holds actions down, as a player does with keys (`ScriptedActions`). The
-//! scripts are `WALK_SCRIPT` (in room A: the player walks, a door opens) and
-//! `TRIP_SCRIPT` (through room A to room B, the switch, and back to the locked door).
+//! scripts belong to the game: their frame numbers fit its room files. The game gives
+//! them to `BenchModule`.
 //!
 //! The CSV has the column `room_load_ms`: for a frame that loaded a room, the time
 //! of the load (file, meshes, GPU upload), else zero.
@@ -30,21 +30,28 @@
 //! same place.
 
 use std::f32::consts::TAU;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_core::{App, Config, Input, Interpolated, Module, Time, Update, interpolate_transforms};
-use maki_platform::{Action, QuitRequested, ScriptedActions};
-use maki_render::{Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld};
-use maki_scene::{CurrentRoom, Light, RoomDef, RoomRequest, RoomTarget, load_requested_room};
+use maki_core::{App, Input, Interpolated, Module, Startup, Time, Update, interpolate_transforms};
+use maki_gameplay::{StartRoom, clamp_to_room};
+use maki_platform::{Action, QuitRequested, ScriptedActions, WindowSettings};
+use maki_render::{Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld, setup_renderer};
+use maki_scene::{CurrentRoom, Light, RoomDef, RoomRequest, load_requested_room};
 use maki_ui::{Panels, add_panel, egui};
 
-use crate::light::clamp_to_room;
+use crate::stages::RoomDirs;
+
+/// The options of the command line that `parse_args` reads.
+pub const USAGE: &str = "[--bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames N] [--bench-script NAME]]";
+/// `tools/bench.py` writes `<scenario>/room.ron` here. Relative to the working directory.
+const BENCH_DIR: &str = "target/bench";
 
 /// The CSV file, in the working directory.
 pub const OUTPUT_PATH: &str = "bench.csv";
@@ -56,10 +63,13 @@ const FRAMES_PER_TURN: u64 = 240;
 /// game waits this many frames for them, then stops without them.
 const MAX_WAIT_FRAMES: u64 = 8;
 
-/// Adds the "Bench" panel, which starts a benchmark run.
+/// Adds the "Bench" panel, which starts a benchmark run. Needs `RoomsModule` of the
+/// gameplay crate (a script starts in the start room).
 pub struct BenchModule {
     /// `Some`: this run starts with the game, and the game stops after it.
     pub start: Option<BenchRun>,
+    /// The scripts of the game, each with its name for the command line and the panel.
+    pub scripts: Scripts,
 }
 
 /// One benchmark run.
@@ -83,68 +93,70 @@ pub struct BenchRun {
 /// that step in frame N + 2 (see `maki_core::interpolation`).
 pub type Script = &'static [(u64, &'static [Action])];
 
-/// The script of a name of the command line.
-pub fn script(name: &str) -> Option<Script> {
-    match name {
-        "walk" => Some(WALK_SCRIPT),
-        "trip" => Some(TRIP_SCRIPT),
-        _ => None,
-    }
+/// Scripts by name.
+pub type Scripts = &'static [(&'static str, Script)];
+
+fn find_script(scripts: Scripts, name: &str) -> Option<Script> {
+    let named = scripts.iter().find(|(script, _)| *script == name);
+    named.map(|(_, script)| *script)
 }
 
-/// The walk script, in room A. The player walks to the left, then to the back between
-/// the cube and the left mirror, and the door opens. The last motion shows in frame
-/// `WALK_FRAMES`: `tools/bench.py` dumps the picture of that frame (`WALK_FRAMES`
-/// there) to measure the picture quality with motion.
-const WALK_SCRIPT: Script = &[
-    (40, &[Action::MoveLeft]),
-    (95, &[Action::MoveForward]),
-    // One frame: the door starts to open. It takes 1.2 s, 72 frames.
-    (100, &[Action::MoveForward, Action::ToggleMovers]),
-    (101, &[Action::MoveForward]),
-    (WALK_FRAMES - 1, &[]),
-];
-const WALK_FRAMES: u64 = 180;
-
-/// The trip script: the full loop of the game. Each line is one leg. The frame
-/// numbers come from the speeds of the default config (walk 1.6 m/s, run 3.6 m/s) at
-/// 60 steps in a second, and from the room files `room_a.ron` and `room_b.ron`: a
-/// change there needs a change here.
-const TRIP_SCRIPT: Script = {
-    use Action::*;
-    &[
-        // Room A: to the right past the glass ball, to the back, into the east passage.
-        (30, &[MoveRight, Run]),
-        (92, &[MoveForward, Run]),
-        (155, &[MoveRight, Run]),
-        // The transfer event has the control: fade out, room B, fade in.
-        (185, &[]),
-        // Room B: along the room, to the back, and to the switch.
-        (240, &[MoveRight, Run]),
-        (298, &[MoveForward, Run]),
-        (323, &[MoveRight]),
-        (345, &[]),
-        // The switch, and its message.
-        (350, &[Interact]),
-        (351, &[]),
-        (400, &[Interact]),
-        (401, &[]),
-        // Back to the west passage.
-        (410, &[MoveBack, Run]),
-        (435, &[MoveLeft, Run]),
-        (530, &[]),
-        // Room A again: to the door that was locked.
-        (590, &[MoveForward, Run]),
-        (640, &[]),
-        (645, &[Interact]),
-        (646, &[]),
-        (700, &[Interact]),
-        (701, &[]),
-        // The door opens. Through it.
-        (780, &[MoveForward]),
-        (820, &[]),
-    ]
-};
+/// Takes the benchmark options out of a command line (without the program name).
+/// Returns the run that they ask for, and the arguments that are left for the game.
+pub fn parse_args(
+    args: impl IntoIterator<Item = OsString>,
+    scripts: Scripts,
+) -> anyhow::Result<(Option<BenchRun>, Vec<OsString>)> {
+    let mut args = args.into_iter();
+    let (mut frames, mut dump, mut shot) = (None, None, false);
+    let (mut fixed_light, mut script, mut light_frames) = (false, None, None);
+    let mut rest = Vec::new();
+    while let Some(arg) = args.next() {
+        if arg == "--bench-frames" {
+            // The limit keeps a typing error from a table of rows that fills the memory.
+            let count = args
+                .next()
+                .and_then(|value| value.to_str()?.parse::<u64>().ok())
+                .filter(|frames| (1..=1_000_000).contains(frames))
+                .context("--bench-frames needs a number from 1 to 1000000")?;
+            frames = Some(count);
+        } else if arg == "--bench-static" {
+            fixed_light = true;
+        } else if arg == "--bench-shot" {
+            shot = true;
+        } else if arg == "--bench-light-frames" {
+            let count = args.next().and_then(|frames| frames.to_str()?.parse().ok());
+            light_frames = Some(count.context("--bench-light-frames needs a number")?);
+        } else if arg == "--bench-script" {
+            let name = args.next().and_then(|name| name.into_string().ok());
+            let found = name.and_then(|name| find_script(scripts, &name));
+            let names: Vec<_> = scripts.iter().map(|(name, _)| *name).collect();
+            script = Some(found.with_context(|| {
+                format!("--bench-script needs a script name: {}", names.join(", "))
+            })?);
+        } else if arg == "--bench-dump" {
+            let path = args.next().context("--bench-dump needs a file")?;
+            dump = Some(PathBuf::from(path));
+        } else {
+            rest.push(arg);
+        }
+    }
+    let Some(frames) = frames else {
+        if dump.is_some() || fixed_light || shot || script.is_some() || light_frames.is_some() {
+            bail!("the --bench options need --bench-frames");
+        }
+        return Ok((None, rest));
+    };
+    let run = BenchRun {
+        frames,
+        dump,
+        shot,
+        // A light that does not move: one that stops before the first frame.
+        light_frames: if fixed_light { Some(0) } else { light_frames },
+        script,
+    };
+    Ok((Some(run), rest))
+}
 
 /// The actions that a script holds in a frame.
 fn script_actions(script: Script, frame: u64) -> &'static [Action] {
@@ -181,6 +193,11 @@ fn run_script(
 
 impl Module for BenchModule {
     fn build(&self, app: &mut App) {
+        // The generated scenes of `tools/bench.py` show in the room list.
+        app.init_resource::<RoomDirs>();
+        app.resource_mut::<RoomDirs>()
+            .0
+            .push((PathBuf::from(BENCH_DIR), 1));
         app.insert_resource(Bench {
             request: self.start.clone(),
             active: None,
@@ -202,7 +219,14 @@ impl Module for BenchModule {
             // for the first frame of the game.
             let step = app.world().resource::<Time>().fixed_delta;
             app.set_frame_time(Some(step));
+            // With vsync, each frame would have the length of one display refresh.
+            // Before the renderer makes the swapchain: `record_frame` is too late.
+            app.add_systems(
+                Startup,
+                (|mut window: ResMut<WindowSettings>| window.vsync = false).before(setup_renderer),
+            );
         }
+        let scripts = self.scripts;
 
         // The values of the panel for the next run.
         let (mut frames, mut script_name, mut static_light, mut dump) = (300, None, false, false);
@@ -224,8 +248,8 @@ impl Module for BenchModule {
                 ui.horizontal(|ui| {
                     ui.label("script");
                     ui.radio_value(&mut script_name, None, "none");
-                    for name in ["walk", "trip"] {
-                        ui.radio_value(&mut script_name, Some(name), name);
+                    for (name, _) in scripts {
+                        ui.radio_value(&mut script_name, Some(*name), *name);
                     }
                 });
                 // A script holds the light.
@@ -243,7 +267,7 @@ impl Module for BenchModule {
                         dump: dump.then(|| PathBuf::from(PANEL_DUMP_PATH)),
                         shot: false,
                         light_frames: static_light.then_some(0),
-                        script: script_name.and_then(script),
+                        script: script_name.and_then(|name| find_script(scripts, name)),
                     });
                 }
             });
@@ -286,7 +310,7 @@ struct Active {
     last_start: Option<(u64, Instant)>,
     /// `CurrentRoom::loads` at the start of the frame before.
     loads: u64,
-    /// The vsync value of the config before the run.
+    /// The vsync value of the settings before the run.
     vsync: bool,
 }
 
@@ -340,12 +364,13 @@ fn move_lights(
 
 /// Runs at the start of each frame (`Input` is the first schedule). Starts a run,
 /// records its frames, and stops it.
-// What it writes for other systems (`Time::frame_time`, the config, the room request)
+// What it writes for other systems (`Time::frame_time`, the settings, the room request)
 // is read in a later schedule or in the next frame.
 #[allow(clippy::too_many_arguments)]
 fn record_frame(
     mut time: ResMut<Time>,
-    mut config: ResMut<Config>,
+    mut config: ResMut<WindowSettings>,
+    start_room: Res<StartRoom>,
     mut room_request: ResMut<RoomRequest>,
     graph: Option<Res<FrameGraph>>,
     gpu: Option<ResMut<RenderGpu>>,
@@ -372,10 +397,7 @@ fn record_frame(
         }
         if run.script.is_some() {
             // The frame numbers of a script start at the spawn point of the start room.
-            room_request.0 = Some(RoomTarget {
-                path: config.start_room.clone(),
-                spawn: Some(config.start_spawn.clone()),
-            });
+            room_request.0 = Some(start_room.target());
         }
         bench.active = Some(Active {
             frames_before: time.frame - 1,
@@ -553,24 +575,66 @@ mod tests {
         assert!(half_to_f32(0x7E00).is_nan());
     }
 
+    const LEFT: Action = Action("left");
+    const UP: Action = Action("up");
+    const SCRIPT: Script = &[(40, &[LEFT]), (95, &[UP, LEFT]), (120, &[])];
+
     #[test]
     fn a_script_holds_the_actions_of_the_last_entry_that_started() {
-        let walk = |frame| script_actions(WALK_SCRIPT, frame);
-        assert_eq!(walk(1), &[]);
-        assert_eq!(walk(40), &[Action::MoveLeft]);
-        assert_eq!(walk(94), &[Action::MoveLeft]);
-        assert!(walk(100).contains(&Action::ToggleMovers));
-        assert_eq!(walk(WALK_FRAMES - 2), &[Action::MoveForward]);
-        // Nothing is held from the frame before the last one, and after the script.
-        assert_eq!(walk(WALK_FRAMES - 1), &[]);
-        assert_eq!(walk(WALK_FRAMES + 500), &[]);
-        // Each script is in frame order and ends with no action held.
-        for name in ["walk", "trip"] {
-            let script = script(name).unwrap();
-            assert!(script.is_sorted_by_key(|(first, _)| *first), "{name}");
-            assert_eq!(script.last().unwrap().1, &[], "{name}");
+        let held = |frame| script_actions(SCRIPT, frame);
+        assert_eq!(held(1), &[]);
+        assert_eq!(held(40), &[LEFT]);
+        assert_eq!(held(94), &[LEFT]);
+        assert_eq!(held(95), &[UP, LEFT]);
+        // Nothing is held from the last entry on, and after the script.
+        assert_eq!(held(120), &[]);
+        assert_eq!(held(620), &[]);
+    }
+
+    #[test]
+    fn the_command_line_gives_the_run_and_leaves_the_other_arguments() {
+        let scripts: Scripts = &[("walk", SCRIPT)];
+        let parse = |args: &[&str]| parse_args(args.iter().map(OsString::from), scripts);
+
+        let (run, rest) = parse(&["my.toml"]).unwrap();
+        assert!(run.is_none());
+        assert_eq!(rest, ["my.toml"]);
+        // In any order.
+        for args in [
+            ["my.toml", "--bench-frames", "300"],
+            ["--bench-frames", "300", "my.toml"],
+        ] {
+            let (run, rest) = parse(&args).unwrap();
+            let run = run.unwrap();
+            assert_eq!((run.frames, run.light_frames), (300, None));
+            assert!(run.dump.is_none() && run.script.is_none() && !run.shot);
+            assert_eq!(rest, ["my.toml"]);
         }
-        assert!(script("fly").is_none());
+        let run = parse(&[
+            "--bench-frames",
+            "3",
+            "--bench-dump",
+            "a.bin",
+            "--bench-static",
+        ]);
+        let run = run.unwrap().0.unwrap();
+        assert_eq!(run.dump, Some(PathBuf::from("a.bin")));
+        assert_eq!(run.light_frames, Some(0));
+        let run = parse(&["--bench-frames", "3", "--bench-script", "walk"]);
+        assert!(run.unwrap().0.unwrap().script.is_some());
+        for bad in [
+            &["--bench-frames"][..],
+            &["--bench-frames", "0"],
+            &["--bench-frames", "many"],
+            &["--bench-dump", "a.bin"],
+            &["--bench-static"],
+            &["--bench-script", "walk"],
+            &["--bench-frames", "3", "--bench-script"],
+            &["--bench-frames", "3", "--bench-script", "fly"],
+            &["--bench-frames", "3", "--bench-dump"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

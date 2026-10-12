@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::GameState;
+use crate::command::Command;
 
 /// One event of a room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,35 +99,6 @@ pub enum Trigger {
     Parallel,
 }
 
-/// One step of an event. Text arguments are names: of a flag, a variable, or an
-/// entity of the room file (`name:` of a door, a mover, a light).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Command {
-    SetFlag(String, bool),
-    SetVariable(String, i32),
-    AddVariable(String, i32),
-    /// Seconds.
-    Wait(f32),
-    /// The first list if the flag is set, else the second one.
-    If(String, Vec<Command>, Vec<Command>),
-    /// Sends a door or a mover to its pose B (a door: open) and waits until it is there.
-    OpenDoor(String),
-    /// To pose A (a door: closed).
-    CloseDoor(String),
-    LightOn(String),
-    LightOff(String),
-    LightIntensity(String, f32),
-    /// Shows the text until the player presses interact.
-    Message(String),
-    /// To black, in this many seconds.
-    FadeOut(f32),
-    /// Back to the picture.
-    FadeIn(f32),
-    /// To a spawn point of another room. The first text is the room file, from the
-    /// directory of the current room file. The event goes on in the new room.
-    Transfer(String, String),
-}
-
 /// The index of the active page: the last one whose conditions hold.
 pub fn active_page(event: &EventDef, state: &GameState) -> Option<usize> {
     let holds = |page: &Page| {
@@ -138,29 +110,17 @@ pub fn active_page(event: &EventDef, state: &GameState) -> Option<usize> {
 }
 
 /// The part of a room file that this crate reads. The fields of the scene crate are
-/// skipped.
+/// skipped. Read with `CommandRegistry::parse_events`.
 #[derive(Deserialize)]
-struct RoomFile {
+pub(crate) struct RoomFile {
     #[serde(default)]
-    events: Vec<EventDef>,
-}
-
-/// The events in the text of a room file. The error has the line and the column.
-pub fn parse_events(text: &str) -> Result<Vec<EventDef>, ron::error::SpannedError> {
-    let file: RoomFile = maki_scene::ron_options().from_str(text)?;
-    Ok(file.events)
-}
-
-/// A check for `maki_scene::RoomValidators`: a room with a bad event is not loaded.
-pub fn validate_events(text: &str) -> Result<(), String> {
-    parse_events(text)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    pub events: Vec<EventDef>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Builtin, CommandRegistry};
 
     fn page(conditions: &[Condition]) -> Page {
         Page {
@@ -240,22 +200,40 @@ mod tests {
                 ),
             ],
         )"#;
-        let events = parse_events(text).unwrap();
+        let registry = CommandRegistry::default();
+        registry.add(crate::builtin::run);
+        let events = registry.parse_events(text).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].area.size, [1.0, 0.8]);
         assert_eq!(events[0].pages[1].commands.len(), 3);
         assert_eq!(
-            events[0].pages[0].commands,
-            [Command::Message("Locked.".to_owned())]
+            events[0].pages[0].commands[0].get(),
+            Some(&Builtin::Message("Locked.".to_owned()))
         );
         // The scene crate reads the same text.
         assert!(maki_scene::parse_room(text).is_ok());
         // A room with no events.
-        assert_eq!(parse_events("(width: 4, depth: 4, height: 3)").unwrap(), []);
+        let none = registry.parse_events("(width: 4, depth: 4, height: 3)");
+        assert_eq!(none.unwrap(), []);
         // A command that does not exist: the error has the line.
         let bad = "(\n events: [(name: \"x\", pages: [(trigger: Touch,\n commands: [Explode])])])";
-        let error = validate_events(bad).unwrap_err();
+        let error = registry.validate_events(bad).unwrap_err();
+        assert!(
+            error.starts_with("3:") && error.contains("Explode"),
+            "{error}"
+        );
+        // A bad argument of a command that exists.
+        let bad =
+            "(\n events: [(name: \"x\", pages: [(trigger: Touch,\n commands: [Wait(\"long\")])])])";
+        let error = registry.validate_events(bad).unwrap_err();
         assert!(error.starts_with("3:"), "{error}");
+
+        // What is written is read as the same events: the editor saves room files.
+        let written = ron::to_string(&events).unwrap();
+        let read = registry
+            .parse_events(&format!("(events: {written})"))
+            .unwrap();
+        assert_eq!(read, events);
     }
 
     #[test]

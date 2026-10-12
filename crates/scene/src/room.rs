@@ -286,7 +286,8 @@ pub struct RoomValidators(pub Vec<RoomValidator>);
 
 /// Gets the text of a room file. `Err`: the reason why the file is bad, with the
 /// line and the column first (`3:7: ...`) if it has them.
-pub type RoomValidator = fn(&str) -> Result<(), String>;
+// A closure, not a plain function: the check of the events holds the command registry.
+pub type RoomValidator = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 /// Marks an entity that belongs to the current room. Unload removes it.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -680,7 +681,7 @@ mod tests {
     use std::time::Duration;
 
     use maki_assets::Wall;
-    use maki_core::{App, Config};
+    use maki_core::{App, ConfigFile};
 
     use super::*;
     use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -800,7 +801,7 @@ mod tests {
         // A check of another crate.
         std::fs::write(&path, "(width: 4, depth: 4, height: 3)").unwrap();
         assert!(read_room(&path, &RoomValidators::default()).is_ok());
-        let no = RoomValidators(vec![|_| Err("2:1: bad event".to_owned())]);
+        let no = RoomValidators(vec![Box::new(|_| Err("2:1: bad event".to_owned()))]);
         let text = format!("{:#}", read_room(&path, &no).unwrap_err());
         assert!(text.contains("2:1: bad event"), "{text}");
 
@@ -857,7 +858,7 @@ mod tests {
         };
         let room_b = write("b.ron", &small);
 
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(maki_assets::AssetsModule)
             .add_module(SceneModule)
             .add_message::<RequestRoom>()

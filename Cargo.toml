@@ -8,16 +8,19 @@ edition = "2024"
 
 # All versions live here; crates use `name.workspace = true`.
 [workspace.dependencies]
-# Dependency rule: core -> platform -> assets -> scene -> events -> gpu -> render -> ui -> game.
+# Dependency rule: core -> platform -> assets -> scene -> events -> gameplay -> gpu -> render
+# -> ui -> devtools -> game.
 # A crate may depend only on crates to its left.
 maki-core = { path = "crates/core" }
 maki-platform = { path = "crates/platform" }
 maki-assets = { path = "crates/assets" }
 maki-scene = { path = "crates/scene" }
 maki-events = { path = "crates/events" }
+maki-gameplay = { path = "crates/gameplay" }
 maki-gpu = { path = "crates/gpu" }
 maki-render = { path = "crates/render" }
 maki-ui = { path = "crates/ui" }
+maki-devtools = { path = "crates/devtools" }
 
 anyhow = "1.0.104"
 ash = "0.38.0"
@@ -38,6 +41,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 # The format of the room files: Rust syntax for data, with line numbers in its errors.
 ron = "0.12.2"
 toml = "1.1.8"
+# The event commands are enums of types that the events crate does not know: this
+# calls their serde code through a trait object.
+erased-serde = "0.4.10"
 # Windows on Linux need the default x11/wayland features, so defaults stay on.
 winit = "0.30.12"
 # No default fonts means no text, so that feature stays on.

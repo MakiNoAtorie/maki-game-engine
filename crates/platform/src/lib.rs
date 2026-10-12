@@ -9,10 +9,11 @@ use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
     Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, Key, RawInput,
-    ScriptedActions,
+    ScriptedActions, add_bindings,
 };
 pub use window::{
-    QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSize, run,
+    QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSettings, WindowSize,
+    run,
 };
 
 /// Adds input actions and window data to the app. `run` opens the window.
@@ -20,7 +21,8 @@ pub struct PlatformModule;
 
 impl Module for PlatformModule {
     fn build(&self, app: &mut App) {
-        app.add_message::<RawInput>()
+        app.add_settings::<WindowSettings>()
+            .add_message::<RawInput>()
             .add_message::<WindowResized>()
             .add_message::<RawWindowEvent>()
             .init_resource::<Bindings>()
@@ -37,8 +39,8 @@ impl Module for PlatformModule {
                     input::update_actions,
                     // `run` adds `WindowSize` with the window. A headless app has none.
                     window::update_window_size.run_if(resource_exists::<WindowSize>),
-                    // It reads only the picture size of the config. The order to a system that
-                    // writes the config decides only if the window follows in this frame or
+                    // It reads only the picture size of the settings. The order to a system that
+                    // writes the settings decides only if the window follows in this frame or
                     // in the next one.
                     window::fit_window
                         .run_if(resource_exists::<Window>)
@@ -52,9 +54,34 @@ impl Module for PlatformModule {
 mod tests {
     use std::time::Duration;
 
-    use maki_core::Config;
+    use maki_core::ConfigFile;
 
     use super::*;
+
+    const FORWARD: Action = Action("forward");
+    const DOWN: Action = Action("down");
+    const UP: Action = Action("up");
+    const WHEEL: Action = Action("wheel");
+    const RESET: Action = Action("reset");
+    const INTERACT: Action = Action("interact");
+
+    /// An app with the platform module and some bindings, as a game module adds them.
+    fn app(config: &str) -> App {
+        let mut app = App::new(ConfigFile::from_text(config)).unwrap();
+        app.add_module(PlatformModule);
+        add_bindings(
+            &mut app,
+            &[
+                (Key::W, FORWARD, "Forward"),
+                (Key::ArrowUp, FORWARD, "Forward"),
+                (Key::Q, DOWN, "Down"),
+                (Key::E, UP, "Up"),
+                (Key::WheelUp, WHEEL, "Wheel"),
+                (Key::R, RESET, "Reset"),
+            ],
+        );
+        app
+    }
 
     fn frame(app: &mut App, events: &[RawInput]) {
         for event in events {
@@ -65,11 +92,9 @@ mod tests {
 
     #[test]
     fn keys_become_action_states() {
-        use Action::*;
         use RawInput::*;
 
-        let mut app = App::new(Config::default()).unwrap();
-        app.add_module(PlatformModule);
+        let mut app = app("");
         let state = |app: &App, action| {
             let actions = app.world().resource::<ActionState>();
             (
@@ -80,27 +105,27 @@ mod tests {
         };
 
         frame(&mut app, &[KeyDown(Key::W)]);
-        assert_eq!(state(&app, MoveForward), (true, true, false));
+        assert_eq!(state(&app, FORWARD), (true, true, false));
         frame(&mut app, &[]);
-        assert_eq!(state(&app, MoveForward), (true, false, false));
+        assert_eq!(state(&app, FORWARD), (true, false, false));
 
         // Two keys have this action: it stays pressed until both are up.
         frame(&mut app, &[KeyDown(Key::ArrowUp), KeyUp(Key::W)]);
-        assert_eq!(state(&app, MoveForward), (true, false, false));
+        assert_eq!(state(&app, FORWARD), (true, false, false));
         frame(&mut app, &[KeyUp(Key::ArrowUp)]);
-        assert_eq!(state(&app, MoveForward), (false, false, true));
+        assert_eq!(state(&app, FORWARD), (false, false, true));
         frame(&mut app, &[]);
-        assert_eq!(state(&app, MoveForward), (false, false, false));
+        assert_eq!(state(&app, FORWARD), (false, false, false));
 
         // Down and up between two frames (a wheel step) is a press of one frame.
         frame(&mut app, &[KeyDown(Key::WheelUp), KeyUp(Key::WheelUp)]);
-        assert_eq!(state(&app, LightIntensityUp), (true, true, false));
+        assert_eq!(state(&app, WHEEL), (true, true, false));
         frame(&mut app, &[]);
-        assert_eq!(state(&app, LightIntensityUp), (false, false, true));
+        assert_eq!(state(&app, WHEEL), (false, false, true));
 
         frame(&mut app, &[KeyDown(Key::Q)]);
         frame(&mut app, &[FocusLost]);
-        assert_eq!(state(&app, LightDown), (false, false, true));
+        assert_eq!(state(&app, DOWN), (false, false, true));
     }
 
     #[derive(bevy_ecs::message::Message, Clone, Copy)]
@@ -108,29 +133,26 @@ mod tests {
 
     #[test]
     fn captured_input_starts_no_action() {
-        use Action::*;
         use RawInput::*;
         use bevy_ecs::message::MessageReader;
         use bevy_ecs::system::ResMut;
 
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = app("");
         // The system stands in for the UI, which writes the capture.
-        app.add_module(PlatformModule)
-            .add_message::<SetCapture>()
-            .add_systems(
-                Input,
-                (|mut events: MessageReader<SetCapture>, mut capture: ResMut<InputCapture>| {
-                    if let Some(event) = events.read().last() {
-                        *capture = event.0;
-                    }
-                })
-                .before(input::update_actions),
-            );
+        app.add_message::<SetCapture>().add_systems(
+            Input,
+            (|mut events: MessageReader<SetCapture>, mut capture: ResMut<InputCapture>| {
+                if let Some(event) = events.read().last() {
+                    *capture = event.0;
+                }
+            })
+            .before(input::update_actions),
+        );
         let pressed = |app: &App, action| app.world().resource::<ActionState>().pressed(action);
         let wheel = [KeyDown(Key::WheelUp), KeyUp(Key::WheelUp)];
 
         frame(&mut app, &[KeyDown(Key::W)]);
-        assert!(pressed(&app, MoveForward));
+        assert!(pressed(&app, FORWARD));
 
         // The keyboard is captured: the held key is released and a new key starts
         // nothing. The wheel is not part of the keyboard.
@@ -139,9 +161,9 @@ mod tests {
             pointer: false,
         }));
         frame(&mut app, &[KeyDown(Key::Q), wheel[0], wheel[1]]);
-        assert!(!pressed(&app, MoveForward));
-        assert!(!pressed(&app, LightDown));
-        assert!(pressed(&app, LightIntensityUp));
+        assert!(!pressed(&app, FORWARD));
+        assert!(!pressed(&app, DOWN));
+        assert!(pressed(&app, WHEEL));
 
         // The mouse is captured: the wheel starts nothing, a key does.
         app.write_message(SetCapture(InputCapture {
@@ -149,8 +171,8 @@ mod tests {
             pointer: true,
         }));
         frame(&mut app, &[KeyDown(Key::E), wheel[0], wheel[1]]);
-        assert!(pressed(&app, LightUp));
-        assert!(!pressed(&app, LightIntensityUp));
+        assert!(pressed(&app, UP));
+        assert!(!pressed(&app, WHEEL));
     }
 
     #[test]
@@ -158,15 +180,15 @@ mod tests {
         use bevy_ecs::system::{Res, ResMut};
         use maki_core::{Time, Update};
 
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = app("");
         // The script holds the action in the frames 2 and 3. It writes in `Update`,
-        // so the action state has it one frame later.
-        app.add_module(PlatformModule).add_systems(
+        // so the action state has it one frame later. A scripted action needs no key.
+        app.add_systems(
             Update,
             |time: Res<Time>, mut scripted: ResMut<ScriptedActions>| {
                 scripted.0.clear();
                 if time.frame == 2 || time.frame == 3 {
-                    scripted.0.insert(Action::Interact);
+                    scripted.0.insert(INTERACT);
                 }
             },
         );
@@ -174,10 +196,7 @@ mod tests {
         for _ in 0..5 {
             app.advance(Duration::from_millis(16));
             let actions = app.world().resource::<ActionState>();
-            states.push((
-                actions.pressed(Action::Interact),
-                actions.just_pressed(Action::Interact),
-            ));
+            states.push((actions.pressed(INTERACT), actions.just_pressed(INTERACT)));
         }
         assert_eq!(
             states,
@@ -200,21 +219,15 @@ mod tests {
         use maki_core::FixedUpdate;
 
         // 50 Hz: one fixed step per 20 ms.
-        let mut app = App::new(Config {
-            fixed_hz: 50.0,
-            ..Default::default()
-        })
-        .unwrap();
-        app.add_module(PlatformModule)
-            .init_resource::<StepsWithPress>()
-            .add_systems(
-                FixedUpdate,
-                |actions: Res<FixedActionState>, mut steps: ResMut<StepsWithPress>| {
-                    if actions.just_pressed(Action::ResetAccumulation) {
-                        steps.0 += 1;
-                    }
-                },
-            );
+        let mut app = app("[time]\nfixed_hz = 50.0");
+        app.init_resource::<StepsWithPress>().add_systems(
+            FixedUpdate,
+            |actions: Res<FixedActionState>, mut steps: ResMut<StepsWithPress>| {
+                if actions.just_pressed(RESET) {
+                    steps.0 += 1;
+                }
+            },
+        );
         let mut frame = |events: &[RawInput], ms| {
             for event in events {
                 app.write_message(*event);
@@ -234,7 +247,7 @@ mod tests {
 
     #[test]
     fn resize_message_updates_window_size() {
-        let mut app = App::new(Config::default()).unwrap();
+        let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(PlatformModule).insert_resource(WindowSize {
             width: 1,
             height: 1,

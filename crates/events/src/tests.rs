@@ -7,8 +7,9 @@ use std::time::Duration;
 use bevy_ecs::query::With;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use bevy_ecs::world::World;
 use glam::Vec3;
-use maki_core::{App, Config, FixedUpdate, Interpolated, Startup, Time, Transform};
+use maki_core::{App, ConfigFile, FixedUpdate, Interpolated, Startup, Time, Transform};
 use maki_platform::{Key, PlatformModule, RawInput};
 use maki_scene::{
     CurrentRoom, Light, Mover, MoverState, Name, Player, RoomRequest, RoomTarget, SceneModule,
@@ -45,11 +46,7 @@ fn directory(test: &str) -> PathBuf {
 /// The first step with the events of the room is that of the second frame.
 fn game(directory: &std::path::Path) -> App {
     let path = directory.join("a.ron");
-    let mut app = App::new(Config {
-        fixed_hz: 50.0,
-        ..Config::default()
-    })
-    .unwrap();
+    let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
     app.add_module(PlatformModule)
         .add_module(SceneModule)
         .add_module(EventsModule)
@@ -291,6 +288,56 @@ fn a_transfer_to_a_bad_room_does_not_happen_and_the_event_goes_on() {
         );
         assert!(flag(&app, "after"));
         assert_eq!(running(&app), 0);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// The commands of a module that is not this crate.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+enum TestCommand {
+    /// Waits this many steps.
+    Steps(u32),
+    /// Runs the list this many times.
+    Twice(Vec<Command>),
+    Ring {
+        bell: String,
+    },
+}
+
+#[test]
+fn a_module_adds_commands_that_wait_and_that_hold_command_lists() {
+    let directory = directory("module");
+    let events = r#"(name: "bell", pages: [(trigger: Autorun, commands: [
+        Steps(3),
+        Twice([AddVariable("count", 1), If("no", [], [Ring(bell: "small")])]),
+        SetFlag("ended", true)])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    let app = game(&directory);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    registry.add(
+        |command: &TestCommand, step: &mut Step, world: &mut World| {
+            match command {
+                TestCommand::Steps(steps) => {
+                    let done = step.memory::<u32>();
+                    *done += 1;
+                    return *done >= *steps;
+                }
+                TestCommand::Twice(list) => step.open([list.clone(), list.clone()].concat()),
+                TestCommand::Ring { bell } => {
+                    world.resource_mut::<GameState>().set_flag(bell, true)
+                }
+            }
+            true
+        },
+    );
+    assert!(registry.names().contains(&"Ring") && registry.names().contains(&"Wait"));
+    app.run(|mut app| {
+        // The step of frame 3 runs the first command. It waits for three steps.
+        steps(&mut app, 4);
+        assert_eq!(app.world().resource::<GameState>().variable("count"), 0);
+        steps(&mut app, 1);
+        assert_eq!(app.world().resource::<GameState>().variable("count"), 2);
+        assert!(flag(&app, "small") && flag(&app, "ended"));
     });
     std::fs::remove_dir_all(directory).unwrap();
 }

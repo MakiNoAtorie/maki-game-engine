@@ -51,6 +51,16 @@
                 (conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")]),
             ],
         ),
+        // `ShakeCamera` is a command of the game (game/src/shake.rs): seconds, meters.
+        // Not on the way of the trip script (game/src/scripts.rs): a shake in its
+        // frames would change the pictures that the benchmark compares.
+        (
+            name: "mirror ball",
+            area: (center: (-1.2, -1.4), size: (0.8, 0.8)),
+            pages: [
+                (trigger: Interact, commands: [ShakeCamera(0.6, 0.06), Message("The ball rings. Something under the floor answers.")]),
+            ],
+        ),
         (
             name: "to room a",
             area: (center: (-3.9, 0.0), size: (0.8, 1.2)),

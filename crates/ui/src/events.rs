@@ -3,8 +3,10 @@
 
 use bevy_ecs::system::{Res, ResMut};
 use maki_core::{App, Module, Update};
-use maki_events::{EventRunner, GameState, MessageBox};
-use maki_ui::{Panels, add_panel, add_window, egui};
+use maki_events::{EventRunner, GameState, INTERACT, MessageBox};
+use maki_platform::Bindings;
+
+use crate::{Panels, add_panel, add_window};
 
 const MESSAGE: &str = "Message";
 
@@ -19,7 +21,7 @@ impl Module for EventsUiModule {
         add_window(app, MESSAGE, false, |ui, world| {
             if let Some(text) = &world.resource::<MessageBox>().0 {
                 ui.label(egui::RichText::new(text).size(18.0));
-                ui.weak("Z or Enter");
+                ui.weak(interact_keys(world.resource::<Bindings>()));
             }
         });
         app.add_systems(Update, show_message);
@@ -64,6 +66,16 @@ impl Module for EventsUiModule {
             }
         });
     }
+}
+
+/// The keys of the interact action, as the binding table has them: "Z or Enter".
+fn interact_keys(bindings: &Bindings) -> String {
+    let keys = bindings
+        .0
+        .iter()
+        .filter(|binding| binding.action == INTERACT);
+    let labels: Vec<_> = keys.map(|binding| binding.key.label()).collect();
+    labels.join(" or ")
 }
 
 /// The message window is open while there is a message.

@@ -5,21 +5,25 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use bevy_ecs::world::World;
 use maki_core::{App, Update};
-use maki_platform::{Action, ActionState, Bindings};
+use maki_platform::{Action, ActionState, Bindings, Key, add_bindings};
 
 use crate::{Panels, add_panel, run_ui};
 
 pub(crate) const HELP: &str = "Help";
 
+/// Shows or hides the help panel.
+pub const TOGGLE_HELP: Action = Action("toggle_help");
+
 /// Adds the help panel and its toggle. Part of `UiModule`.
 pub(crate) fn build(app: &mut App) {
+    add_bindings(app, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
     add_panel(app, HELP, true, help_panel);
     // Before the egui frame: the panel opens or closes in the frame of the key press.
     app.add_systems(Update, toggle_help.before(run_ui));
 }
 
 fn toggle_help(actions: Res<ActionState>, mut panels: ResMut<Panels>) {
-    if actions.just_pressed(Action::ToggleHelp) {
+    if actions.just_pressed(TOGGLE_HELP) {
         panels.toggle(HELP);
     }
 }

@@ -7,5 +7,6 @@ edition.workspace = true
 maki-core.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
+serde.workspace = true
 tracing.workspace = true
 winit.workspace = true

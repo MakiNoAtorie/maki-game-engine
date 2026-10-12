@@ -13,11 +13,14 @@ maki-platform.workspace = true
 maki-assets.workspace = true
 maki-scene.workspace = true
 maki-events.workspace = true
+maki-gameplay.workspace = true
 maki-render.workspace = true
 maki-ui.workspace = true
+maki-devtools.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true
+serde.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-tracy = { workspace = true, optional = true }

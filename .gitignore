@@ -1,6 +1,8 @@
 /target
 # Generated on first run.
 /config.toml
+# Left by tools/convert_config.py.
+/config.toml.old
 # Written by `--bench-frames`.
 /bench.csv
 /bench.dump
