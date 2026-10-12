@@ -29,7 +29,7 @@ If the config file does not exist, the game writes one with the default values o
 
 ## Controls
 
-The help panel in the game lists all controls, with the key that hides and shows the panel. Its section is folded at start. The list is made from the binding table (`maki_platform::Bindings`). Each module adds its actions and their keys to it (`maki_platform::add_bindings` in `Module::build`): to change a key, change the table of the module.
+The help panel in the game lists all controls, with the key that hides and shows the panel. Its section is folded at start. The list is made from the binding table (`maki_platform::Bindings`). A binding is a key or a chord (`Chord::ctrl(Key::Z)`, shown as "Ctrl+Z"); a chord wins over the plain key of the same mode, and a key with no chord works with a modifier down. Each module adds its actions and their keys to it (`maki_platform::add_bindings` in `Module::build`): to change a key, change the table of the module.
 
 The move keys walk the player; forward is away from the camera. Shift runs. Z or Enter is "interact": it starts the event that the player faces, and it closes a message. While an event runs (a message, a fade), the player does not move.
 
@@ -121,7 +121,7 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 
 ## Config
 
-The config file is TOML, with one table for each module. A module declares its table and its defaults as a type (`maki_core::Settings`) and reads it when it is added (`App::add_settings`): the type is a resource, for example `Res<CameraSettings>`. `crates/core` knows no key of another crate.
+The config file is TOML, with one table for each module. A module declares its table and its defaults as a type (`maki_core::Settings`) and reads it when it is added (`App::add_settings`): the type is a resource, for example `Res<CameraSettings>`. `crates/core` knows no key of another crate. A module that adds its table with `App::add_saved_settings` gets it written back to the file when a system changes the resource (0.4 s after the last change): `[editor]` does. Only the lines of the changed keys change; the other tables and the comments stay. The debug panels do not write the file.
 
 - A key that the file does not have takes its default. A key that the table does not have, a value of the wrong type, and a value out of its limits stop the game at start: the error names the file, the table, the line, and the key.
 - A table that no module of the build reads gives a warning in the log.

@@ -300,6 +300,15 @@ pub(crate) fn load_room_events(
     }
 }
 
+/// Runs in `ResetPlay`: no event runs, no message shows. The flags and variables
+/// stay: see `maki_core::ResetPlay`.
+pub(crate) fn reset_play(mut runner: ResMut<EventRunner>, mut message: ResMut<MessageBox>) {
+    use bevy_ecs::change_detection::DetectChangesMut;
+
+    *runner = EventRunner::default();
+    message.set_if_neq(MessageBox(None));
+}
+
 /// Runs in `FixedUpdate`: one step of the interpreter.
 ///
 /// It has the full world, because a command of any module can write any component

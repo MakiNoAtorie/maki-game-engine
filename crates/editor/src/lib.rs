@@ -51,16 +51,16 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::ResMut;
 use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
-use maki_core::{App, Input, Interpolated, Module, Settings, Startup, Time, Update};
-use maki_events::{CommandRegistry, EventRunner, GameState, MessageBox, Problem};
-use maki_gameplay::{MoveCapture, StartRoom};
+use maki_core::{App, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update};
+use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
+use maki_gameplay::StartRoom;
 use maki_platform::{
-    Action, ActionState, InputMode, Key, Pointer, QuitHold, QuitRequested, WindowMargin,
+    Action, ActionState, Chord, InputMode, Key, Pointer, QuitHold, QuitRequested, WindowMargin,
     WindowSettings, add_mode_bindings,
 };
 use maki_scene::{
     ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomRequest, RoomTarget,
-    ScreenFade, load_requested_room, patch_room,
+    load_requested_room, patch_room,
 };
 use maki_ui::{Panels, TOGGLE_HELP};
 use serde::{Deserialize, Serialize};
@@ -82,22 +82,20 @@ pub const PLAY: Action = Action("editor_play");
 pub const SELECT: Action = Action("editor_select");
 /// Held: a click adds to the selection.
 pub const ADD_TO_SELECTION: Action = Action("editor_add_to_selection");
-/// Held: a drag does not snap (or does, with `snap = false`), and the keys of
-/// undo, redo, duplicate, and save do their work.
-pub const MODIFIER: Action = Action("editor_modifier");
+/// Held: a drag does not snap (or does, with `snap = false`).
+pub const SNAP_SWITCH: Action = Action("editor_snap_switch");
 pub const TOOL_MOVE: Action = Action("editor_tool_move");
 pub const TOOL_ROTATE: Action = Action("editor_tool_rotate");
 pub const TOOL_SCALE: Action = Action("editor_tool_scale");
 /// The handles follow the axes of the item, or those of the room.
 pub const TOGGLE_LOCAL: Action = Action("editor_toggle_local");
 pub const DELETE: Action = Action("editor_delete");
-// The four work only with `MODIFIER`: a binding is one key.
 pub const UNDO: Action = Action("editor_undo");
 pub const REDO: Action = Action("editor_redo");
 pub const DUPLICATE: Action = Action("editor_duplicate");
 pub const SAVE: Action = Action("editor_save");
 
-const BINDINGS: [(Key, Action, &str); 13] = [
+const BINDINGS: [(Key, Action, &str); 9] = [
     (Key::F5, PLAY, "Play the room"),
     (Key::MouseLeft, SELECT, "Select, or drag a handle"),
     (
@@ -105,16 +103,19 @@ const BINDINGS: [(Key, Action, &str); 13] = [
         ADD_TO_SELECTION,
         "Add to the selection (with a click)",
     ),
-    (Key::Control, MODIFIER, "No snap (in a drag)"),
+    (Key::Control, SNAP_SWITCH, "No snap (in a drag)"),
     (Key::W, TOOL_MOVE, "Tool: move"),
     (Key::E, TOOL_ROTATE, "Tool: rotate"),
     (Key::R, TOOL_SCALE, "Tool: scale"),
     (Key::Q, TOGGLE_LOCAL, "Handles of the item / of the room"),
     (Key::Delete, DELETE, "Delete the selection"),
-    (Key::Z, UNDO, "Undo (with Ctrl)"),
-    (Key::Y, REDO, "Redo (with Ctrl)"),
-    (Key::D, DUPLICATE, "Duplicate (with Ctrl)"),
-    (Key::S, SAVE, "Save (with Ctrl)"),
+];
+
+const CHORDS: [(Chord, Action, &str); 4] = [
+    (Chord::ctrl(Key::Z), UNDO, "Undo"),
+    (Chord::ctrl(Key::Y), REDO, "Redo"),
+    (Chord::ctrl(Key::D), DUPLICATE, "Duplicate"),
+    (Chord::ctrl(Key::S), SAVE, "Save"),
 ];
 
 /// The `[editor]` table of the config file.
@@ -318,16 +319,20 @@ impl Editor {
         };
         let actions = world.resource::<ActionState>();
         let (pressed, clicked) = (actions.pressed(SELECT), actions.just_pressed(SELECT));
-        let (add, modifier) = (actions.pressed(ADD_TO_SELECTION), actions.pressed(MODIFIER));
+        let (add, switch) = (
+            actions.pressed(ADD_TO_SELECTION),
+            actions.pressed(SNAP_SWITCH),
+        );
         let settings = world.resource::<EditorSettings>();
-        let steps =
-            (settings.snap != modifier).then_some((settings.grid_step, settings.angle_step));
+        let steps = (settings.snap != switch).then_some((settings.grid_step, settings.angle_step));
         // The picture starts at the right of the left panel.
         let left = world.resource::<WindowMargin>().left as f32;
-        let pixel = world
-            .resource::<Pointer>()
-            .position
-            .map(|[x, y]| [x - left, y]);
+        let pointer = *world.resource::<Pointer>();
+        let in_picture = |[x, y]: [f32; 2]| [x - left, y];
+        let pixel = pointer.position.map(in_picture);
+        // A click is where the button went down: the pointer can be at another place
+        // at the end of the frame.
+        let press = pointer.press.map(in_picture).or(pixel);
 
         if let Some(drag) = &self.drag {
             match pixel.filter(|_| pressed) {
@@ -344,7 +349,7 @@ impl Editor {
         }
         let in_picture =
             |[x, y]: &[f32; 2]| (0.0..view.size[0]).contains(x) && (0.0..view.size[1]).contains(y);
-        let Some(pixel) = pixel.filter(|pixel| clicked && in_picture(pixel)) else {
+        let Some(pixel) = press.filter(|pixel| clicked && in_picture(pixel)) else {
             return;
         };
         let gizmo = self.gizmo(&view);
@@ -641,31 +646,29 @@ impl Editor {
     /// The keys of the editor that are commands or switches.
     fn keys(&mut self, actions: &ActionState) {
         let pressed = |action| actions.just_pressed(action);
-        let with_modifier = actions.pressed(MODIFIER);
         let commands = [
-            (PLAY, false, Command::Play),
-            (DELETE, false, Command::Delete),
-            (UNDO, true, Command::Undo),
-            (REDO, true, Command::Redo),
-            (DUPLICATE, true, Command::Duplicate),
-            (SAVE, true, Command::Save),
+            (PLAY, Command::Play),
+            (DELETE, Command::Delete),
+            (UNDO, Command::Undo),
+            (REDO, Command::Redo),
+            (DUPLICATE, Command::Duplicate),
+            (SAVE, Command::Save),
         ];
-        for (action, modifier, command) in commands {
-            if pressed(action) && modifier == with_modifier {
+        for (action, command) in commands {
+            if pressed(action) {
                 self.request(command);
             }
         }
-        // W, E, R with the modifier are not tools: Ctrl+S is next to them.
         for (action, tool) in [
             (TOOL_MOVE, Tool::Move),
             (TOOL_ROTATE, Tool::Rotate),
             (TOOL_SCALE, Tool::Scale),
         ] {
-            if pressed(action) && !with_modifier {
+            if pressed(action) {
                 self.tool = tool;
             }
         }
-        if pressed(TOGGLE_LOCAL) && !with_modifier {
+        if pressed(TOGGLE_LOCAL) {
             self.local = !self.local;
         }
     }
@@ -684,19 +687,10 @@ pub(crate) fn editor_view(world: &mut World) -> Option<View> {
 #[derive(Component)]
 struct Parked(MeshInstance);
 
-/// What a game leaves behind, beside the game state and the room: an event that
-/// runs, a message, a fade, the move keys in the hands of a debug tool.
+/// What a game leaves behind, beside the game state and the room: each module sets
+/// its own play state back (`maki_core::ResetPlay`).
 fn reset_play_state(world: &mut World) {
-    *world.resource_mut::<EventRunner>() = EventRunner::default();
-    world
-        .resource_mut::<MessageBox>()
-        .set_if_neq(MessageBox(None));
-    world
-        .resource_mut::<ScreenFade>()
-        .set_if_neq(ScreenFade(0.0));
-    if let Some(mut capture) = world.get_resource_mut::<MoveCapture>() {
-        capture.set_if_neq(MoveCapture(false));
-    }
+    world.run_schedule(ResetPlay);
 }
 
 /// Adds the editor. The app then starts in the editor, with the start room of the
@@ -712,9 +706,11 @@ impl Module for EditorModule {
     fn build(&self, app: &mut App) {
         let start = app.world().resource::<StartRoom>().clone();
         let registry = app.world().resource::<CommandRegistry>().clone();
-        app.add_settings::<EditorSettings>();
+        // Written back to the config file: the grid step of the last session.
+        app.add_saved_settings::<EditorSettings>();
         add_mode_bindings(app, MODE, &camera::BINDINGS);
         add_mode_bindings(app, MODE, &BINDINGS);
+        add_mode_bindings(app, MODE, &CHORDS);
         add_mode_bindings(app, MODE, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
         // A quit request is a command of the editor: it asks for changes that are
         // not saved, and in a game it is a stop.

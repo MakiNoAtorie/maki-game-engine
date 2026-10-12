@@ -1,6 +1,6 @@
 //! Input actions. Gameplay code reads `ActionState`, never keys.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::{Message, MessageReader};
@@ -135,9 +135,78 @@ impl Key {
     }
 }
 
+/// The modifier keys that are down with the key of a chord.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+impl Modifiers {
+    pub const NONE: Modifiers = Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+    };
+
+    fn count(self) -> usize {
+        self.ctrl as usize + self.shift as usize + self.alt as usize
+    }
+
+    /// True if each modifier of `self` is in `held`.
+    fn all_in(self, held: Modifiers) -> bool {
+        (!self.ctrl || held.ctrl) && (!self.shift || held.shift) && (!self.alt || held.alt)
+    }
+}
+
+/// A key with the modifiers that must be down when the key goes down: Ctrl+Z. A
+/// table of bindings has a [`Key`] for a plain key, and `Chord::ctrl(Key::Z)` for a
+/// chord.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Chord {
+    pub modifiers: Modifiers,
+    pub key: Key,
+}
+
+impl Chord {
+    pub const fn ctrl(key: Key) -> Chord {
+        let modifiers = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        Chord { modifiers, key }
+    }
+
+    /// Text for the user: "Ctrl+Z".
+    pub fn label(self) -> String {
+        let Modifiers { ctrl, shift, alt } = self.modifiers;
+        let parts = [(ctrl, Key::Control), (shift, Key::Shift), (alt, Key::Alt)];
+        let held = parts.into_iter().filter(|part| part.0).map(|part| part.1);
+        let labels: Vec<_> = held.chain([self.key]).map(Key::label).collect();
+        labels.join("+")
+    }
+}
+
+impl From<Key> for Chord {
+    fn from(key: Key) -> Chord {
+        Chord {
+            modifiers: Modifiers::NONE,
+            key,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Binding {
-    pub key: Key,
+    /// The key, with the modifiers of a chord.
+    ///
+    /// A key starts the binding of its mode with the most modifiers among those
+    /// whose modifiers were all down when the key went down: with Ctrl+S and S in a
+    /// table, Ctrl+S does not start the action of S. A key with no chord starts its
+    /// action whatever modifiers are down (W walks with Shift down). The choice
+    /// holds until the key goes up: Ctrl up before Z does not start the action of Z.
+    pub chord: Chord,
     pub action: Action,
     /// Text for the help panel.
     pub description: &'static str,
@@ -169,17 +238,21 @@ pub struct Bindings(pub Vec<Binding>);
 
 /// Adds the default keys of the actions of a module: key, action, text for the help
 /// panel. Call from `Module::build`. The bindings are those of [`InputMode::GAME`].
-pub fn add_bindings(app: &mut App, table: &[(Key, Action, &'static str)]) {
+pub fn add_bindings(app: &mut App, table: &[(impl Into<Chord> + Copy, Action, &'static str)]) {
     add_mode_bindings(app, InputMode::GAME, table);
 }
 
 /// As [`add_bindings`], for the bindings of another mode.
-pub fn add_mode_bindings(app: &mut App, mode: InputMode, table: &[(Key, Action, &'static str)]) {
+pub fn add_mode_bindings(
+    app: &mut App,
+    mode: InputMode,
+    table: &[(impl Into<Chord> + Copy, Action, &'static str)],
+) {
     // The table normally comes from `PlatformModule`. This keeps a module
     // independent of the order in which the modules are added.
     app.init_resource::<Bindings>();
-    let bindings = table.iter().map(|&(key, action, description)| Binding {
-        key,
+    let bindings = table.iter().map(|&(chord, action, description)| Binding {
+        chord: chord.into(),
         action,
         description,
         mode,
@@ -257,6 +330,10 @@ pub struct Pointer {
     /// How far the pointer moved since the frame before, in physical pixels. Zero
     /// while another consumer has the pointer (`InputCapture`).
     pub delta: [f32; 2],
+    /// `Some` in the frame in which a mouse button went down: where the pointer was
+    /// at the press. A click is at this place, not at `position`: the pointer can
+    /// move between the press and the end of the frame.
+    pub press: Option<[f32; 2]>,
 }
 
 impl InputCapture {
@@ -295,10 +372,16 @@ pub(crate) fn update_pointer(
 ) {
     let before = pointer.position;
     let mut position = before;
+    let mut press = None;
+    // The events are in the order of the OS: the place at a press is that of the
+    // last move before it.
     for event in events.read() {
         match *event {
             RawInput::PointerMoved(at) => position = Some(at),
             RawInput::PointerLeft => position = None,
+            RawInput::KeyDown(Key::MouseLeft | Key::MouseRight | Key::MouseMiddle) => {
+                press = press.or(position);
+            }
             _ => {}
         }
     }
@@ -307,14 +390,19 @@ pub(crate) fn update_pointer(
         _ => [0.0; 2],
     };
     // Only a different value is a write.
-    pointer.set_if_neq(Pointer { position, delta });
+    pointer.set_if_neq(Pointer {
+        position,
+        delta,
+        press,
+    });
 }
 
 // A system: each argument is a system parameter.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_actions(
     mut events: MessageReader<RawInput>,
-    mut held: Local<HashSet<Key>>,
+    // Each key that is down, with the modifiers that were down when it went down.
+    mut held: Local<HashMap<Key, Modifiers>>,
     bindings: Res<Bindings>,
     mode: Res<InputMode>,
     capture: Res<InputCapture>,
@@ -325,16 +413,22 @@ pub(crate) fn update_actions(
     // Keys that count as down in this frame: held now, or pressed since the last frame.
     // A key that went down and up between two frames thus is down for one frame.
     // The mouse wheel uses this: one wheel step is a key-down then a key-up.
-    let mut down = HashSet::new();
+    let mut down = HashMap::new();
     // A key that was held when the capture started is released: its key-up can go
     // to the other consumer.
-    held.retain(|key| !capture.has(*key));
+    held.retain(|key, _| !capture.has(*key));
     for event in events.read() {
         match *event {
             RawInput::KeyDown(key) => {
-                if !capture.has(key) {
-                    held.insert(key);
-                    down.insert(key);
+                // The repeat of a held key keeps the modifiers of its press.
+                if !capture.has(key) && !held.contains_key(&key) {
+                    let modifiers = Modifiers {
+                        ctrl: held.contains_key(&Key::Control),
+                        shift: held.contains_key(&Key::Shift),
+                        alt: held.contains_key(&Key::Alt),
+                    };
+                    held.insert(key, modifiers);
+                    down.insert(key, modifiers);
                 }
             }
             RawInput::KeyUp(key) => {
@@ -345,12 +439,25 @@ pub(crate) fn update_actions(
             RawInput::PointerMoved(_) | RawInput::PointerLeft => {}
         }
     }
-    down.extend(held.iter());
+    down.extend(held.iter().map(|(key, modifiers)| (*key, *modifiers)));
 
+    let mode = *mode;
+    // The modifiers of a binding that its key can start now: the binding is of the
+    // mode, its key is down, and its modifiers were down at the press.
+    let fits = |binding: &Binding| {
+        let Chord { modifiers, key } = binding.chord;
+        let with = down.get(&key).filter(|_| binding.mode == mode)?;
+        modifiers.all_in(*with).then_some(modifiers.count())
+    };
     let pressed: HashSet<Action> = bindings
         .0
         .iter()
-        .filter(|binding| binding.mode == *mode && down.contains(&binding.key))
+        .filter(|binding| {
+            // The chord with the most modifiers wins over the plain key.
+            let same_key = |other: &&Binding| other.chord.key == binding.chord.key;
+            let most = bindings.0.iter().filter(same_key).filter_map(fits).max();
+            fits(binding).is_some_and(|count| Some(count) == most)
+        })
         .map(|binding| binding.action)
         .chain(scripted.0.iter().copied())
         .collect();

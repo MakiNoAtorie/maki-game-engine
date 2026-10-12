@@ -31,8 +31,8 @@ fn toggle_help(actions: Res<ActionState>, mut panels: ResMut<Panels>) {
 
 /// The text of the panel: key and description of each binding of a mode, in table
 /// order.
-pub(crate) fn rows(bindings: &Bindings, mode: InputMode) -> Vec<(&'static str, &'static str)> {
-    let row = |binding: &maki_platform::Binding| (binding.key.label(), binding.description);
+pub(crate) fn rows(bindings: &Bindings, mode: InputMode) -> Vec<(String, &'static str)> {
+    let row = |binding: &maki_platform::Binding| (binding.chord.label(), binding.description);
     let of_mode = bindings.0.iter().filter(|binding| binding.mode == mode);
     of_mode.map(row).collect()
 }

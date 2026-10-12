@@ -18,9 +18,12 @@ use std::fs;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::resource::Resource;
+use bevy_ecs::system::{Local, Res, ResMut};
 use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -82,6 +85,8 @@ pub struct ConfigFile {
     text: String,
     /// True: there was no file. `finish` writes one.
     missing: bool,
+    /// True: the text is of a file on the disk, and `write` writes that file.
+    on_disk: bool,
     /// Each table that a module added: its name and its default values as TOML.
     tables: Vec<(&'static str, String)>,
     /// The errors of all tables. `finish` returns them, so the user sees all of them
@@ -106,6 +111,7 @@ impl ConfigFile {
             path: path.to_owned(),
             text,
             missing,
+            on_disk: true,
             ..Self::default()
         })
     }
@@ -143,6 +149,29 @@ impl ConfigFile {
         self.errors
             .push(format!("{}: [{}] {error}", self.path.display(), S::TABLE));
         S::default()
+    }
+
+    /// Puts the values of one table into the text, and writes the file if the text
+    /// is of a file. The other tables and all comments stay. `Err`: the file was not
+    /// changed.
+    pub fn write<S: Settings>(&mut self, settings: &S) -> Result<()> {
+        let values = toml::to_string(settings)?;
+        let text = replace_table(&self.text, S::TABLE, &values)
+            .with_context(|| format!("{}: [{}] not written", self.path.display(), S::TABLE))?;
+        if text == self.text {
+            return Ok(());
+        }
+        if self.on_disk {
+            fs::write(&self.path, &text)
+                .with_context(|| format!("cannot write config {}", self.path.display()))?;
+        }
+        self.text = text;
+        Ok(())
+    }
+
+    /// The text of the file, with what `write` put into it.
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     /// The errors of the tables that were read up to now.
@@ -193,6 +222,93 @@ impl ConfigFile {
         }
         Ok(())
     }
+}
+
+/// A change of a settings resource is written this long after the last change: a
+/// drag of a value changes it in each frame.
+const SAVE_DELAY: Duration = Duration::from_millis(400);
+
+/// Runs in `Update` for a settings type of `App::add_saved_settings`.
+// The clock of the wall, not `Time`: a tool pauses the time of the game.
+pub(crate) fn save_settings<S: Settings>(
+    settings: Res<S>,
+    mut file: ResMut<ConfigFile>,
+    mut changed: Local<Option<Instant>>,
+) {
+    // The resource also counts as changed when the module adds it.
+    if settings.is_changed() && !settings.is_added() {
+        *changed = Some(Instant::now());
+    }
+    if changed.is_some_and(|at| at.elapsed() >= SAVE_DELAY) {
+        *changed = None;
+        match file.write(&*settings) {
+            Ok(()) => tracing::debug!(table = S::TABLE, "settings written to the config file"),
+            Err(error) => tracing::error!("{error:#}"),
+        }
+    }
+}
+
+/// The text of a TOML file with the values of one table replaced. `values`: the
+/// table as TOML, one `key = value` line for each key. A key that the table has gets
+/// its new value in its line; a new key goes to the end of the table; a table that
+/// the file does not have goes to the end of the file. All other lines stay.
+///
+/// `Err`: the result is not the same file with the new table (a value of the old
+/// file over more than one line, a table in the table). Such a file is not written.
+// The `toml` crate writes a file with no comments. An editing crate would be a new
+// dependency for this one function.
+fn replace_table(text: &str, table: &str, values: &str) -> Result<String> {
+    let end_of_line = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let is_header = |line: &str| line.trim_start().starts_with('[');
+    let header = format!("[{table}]");
+    let own_header = |line: &String| {
+        let line = line.split('#').next().unwrap_or_default();
+        line.trim() == header
+    };
+    let start = match lines.iter().position(own_header) {
+        Some(start) => start + 1,
+        None => {
+            if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(header.clone());
+            lines.len()
+        }
+    };
+    for value in values.lines().filter(|line| !line.trim().is_empty()) {
+        let key = value.split('=').next().unwrap_or_default().trim();
+        // The lines of the table: up to the next table.
+        let length = lines[start..].iter().position(|line| is_header(line));
+        let end = start + length.unwrap_or(lines.len() - start);
+        let has_key = |line: &String| {
+            let (name, rest) = line.split_once('=').unwrap_or_default();
+            name.trim() == key && !rest.is_empty()
+        };
+        match lines[start..end].iter().position(has_key) {
+            Some(at) => lines[start + at] = value.to_owned(),
+            None => {
+                // After the last line of the table that is not empty.
+                let used = lines[start..end]
+                    .iter()
+                    .rposition(|line| !line.trim().is_empty());
+                lines.insert(start + used.map_or(0, |used| used + 1), value.to_owned());
+            }
+        }
+    }
+    let new = lines.join(end_of_line) + end_of_line;
+
+    // The proof: the new text has the new table, and each other table as before.
+    let mut old_file: toml::Table = toml::from_str(text)?;
+    let mut new_file: toml::Table = toml::from_str(&new)?;
+    let wanted: toml::Table = toml::from_str(values)?;
+    ensure!(
+        new_file.remove(table) == Some(toml::Value::Table(wanted)),
+        "the table has a value that this writer cannot replace"
+    );
+    old_file.remove(table);
+    ensure!(old_file == new_file, "another table would change");
+    Ok(new)
 }
 
 /// Reads one table of a TOML document as `S` and skips the others.
@@ -298,6 +414,67 @@ mod tests {
         assert!(
             flat.contains("`vsync`") && flat.contains("convert_config.py"),
             "{flat}"
+        );
+    }
+
+    #[test]
+    fn a_table_is_written_back_and_the_rest_of_the_file_stays() {
+        let path = std::env::temp_dir().join(format!("maki-saved-{}.toml", std::process::id()));
+        let old = "# The game.\r\n[time]\r\nfixed_hz = 50.0 # steps\r\n\r\n\
+            [lamp]\r\n# How bright.\r\nwatts = 60.0\r\n\r\n[other]\r\nlist = [\r\n  [1, 2],\r\n]\r\n";
+        fs::write(&path, old).unwrap();
+        let mut file = ConfigFile::load(&path).unwrap();
+        let mut lamp: Lamp = file.read();
+        lamp.watts = 75.5;
+        file.write(&lamp).unwrap();
+        // One line changed, and one new line for the key that the file did not have.
+        let new = old.replace("watts = 60.0\r\n", "watts = 75.5\r\nname = \"lamp\"\r\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), new);
+        // The file reads as the new values.
+        let mut again = ConfigFile::load(&path).unwrap();
+        assert_eq!(again.read::<Lamp>(), lamp);
+        assert_eq!(again.read::<TimeSettings>().fixed_hz, 50.0);
+        // The same values: no write.
+        fs::remove_file(&path).unwrap();
+        file.write(&lamp).unwrap();
+        assert!(!path.exists());
+
+        // A table that the file does not have goes to its end.
+        let mut file = ConfigFile::from_text("[time]\nfixed_hz = 50.0");
+        file.write(&lamp).unwrap();
+        let expected = "[time]\nfixed_hz = 50.0\n\n[lamp]\nwatts = 75.5\nname = \"lamp\"\n";
+        assert_eq!(file.text(), expected);
+        // A value over more than one line is not replaced: no change.
+        let mut file = ConfigFile::from_text("[lamp]\nname = \"\"\"a\nb\"\"\"\n");
+        assert!(file.write(&lamp).is_err());
+        assert_eq!(file.text(), "[lamp]\nname = \"\"\"a\nb\"\"\"\n");
+    }
+
+    #[test]
+    fn a_saved_settings_resource_is_written_some_time_after_its_last_change() {
+        use crate::{App, Update};
+        use bevy_ecs::system::ResMut;
+
+        let mut app =
+            App::new(ConfigFile::from_text("# Keep me.\n[lamp]\nwatts = 60.0\n")).unwrap();
+        app.add_saved_settings::<Lamp>();
+        // A drag: the value changes in each of the first 3 frames.
+        app.add_systems(Update, |mut lamp: ResMut<Lamp>, mut frame: Local<u32>| {
+            *frame += 1;
+            if *frame <= 3 {
+                lamp.watts += 1.0;
+            }
+        });
+        let text = |app: &App| app.world().resource::<ConfigFile>().text().to_owned();
+        for _ in 0..5 {
+            app.advance(Duration::from_millis(16));
+        }
+        assert!(text(&app).contains("watts = 60.0"), "no write in the drag");
+        std::thread::sleep(SAVE_DELAY);
+        app.advance(Duration::from_millis(16));
+        assert_eq!(
+            text(&app),
+            "# Keep me.\n[lamp]\nwatts = 63.0\nname = \"lamp\"\n"
         );
     }
 

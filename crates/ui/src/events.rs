@@ -74,7 +74,7 @@ fn interact_keys(bindings: &Bindings) -> String {
         .0
         .iter()
         .filter(|binding| binding.action == INTERACT);
-    let labels: Vec<_> = keys.map(|binding| binding.key.label()).collect();
+    let labels: Vec<_> = keys.map(|binding| binding.chord.label()).collect();
     labels.join(" or ")
 }
 

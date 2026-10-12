@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use maki_core::{App, FixedUpdate, Module, Update};
+use maki_core::{App, FixedUpdate, Module, ResetPlay, Update};
 use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
 
@@ -91,6 +91,7 @@ impl Module for EventsModule {
         app.insert_resource(registry)
             // Before the movers: a door starts to turn in the step of its command.
             .add_systems(FixedUpdate, run_events.before(move_movers))
+            .add_systems(ResetPlay, interpreter::reset_play)
             .add_systems(
                 Update,
                 interpreter::load_room_events.after(load_requested_room),

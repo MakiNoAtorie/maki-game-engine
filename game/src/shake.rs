@@ -7,7 +7,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_core::{App, Module, Time, Update};
+use maki_core::{App, Module, ResetPlay, Time, Update};
 use maki_events::{CommandRegistry, Finding};
 use maki_gameplay::{FollowCamera, follow_player};
 use maki_scene::Camera;
@@ -38,7 +38,13 @@ impl Module for ShakeModule {
         app.init_resource::<CameraShake>()
             // After the follow: it puts the camera at its place of rest in each frame,
             // and this adds the offset of the frame.
-            .add_systems(Update, shake_camera.after(follow_player));
+            .add_systems(Update, shake_camera.after(follow_player))
+            // The play state of this module: a shake does not go on in the next game.
+            .add_systems(ResetPlay, |mut shake: ResMut<CameraShake>| {
+                if shake.left > 0.0 {
+                    *shake = CameraShake::default();
+                }
+            });
         let registry = app.world().resource::<CommandRegistry>();
         registry.add(|command: &GameCommand, _step, world| {
             let GameCommand::ShakeCamera(seconds, strength) = *command;
@@ -143,6 +149,29 @@ mod tests {
             }
             assert_eq!(frame(), rest);
         });
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_shake_that_runs_does_not_go_on_after_the_play_signal() {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(PlatformModule)
+            .add_module(SceneModule)
+            .add_module(EventsModule)
+            .add_module(maki_gameplay::CameraModule)
+            .add_module(ShakeModule);
+        app.run(|mut app| {
+            let left = |app: &App| app.world().resource::<CameraShake>().left;
+            *app.resource_mut::<CameraShake>() = CameraShake {
+                seconds: 5.0,
+                left: 5.0,
+                strength: 0.5,
+            };
+            app.advance(Duration::from_secs_f32(1.0 / 60.0));
+            assert!(left(&app) > 4.0);
+            // What a tool does on stop and on play, and the game at its start.
+            app.reset_play();
+            assert_eq!(left(&app), 0.0);
+        });
     }
 }

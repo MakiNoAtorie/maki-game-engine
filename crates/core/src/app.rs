@@ -43,6 +43,17 @@ pub struct Render;
 /// Shows the finished frame.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Present;
+/// "The play state goes back to its start": not a part of the frame. The caller runs
+/// it at once (`App::reset_play`, or `World::run_schedule` in a system with the
+/// world): at the start of the game, and a tool on play and on stop. Each module
+/// with state that a game leaves behind (an event that runs, a fade, a shake) adds a
+/// system that sets its own resources back. Write only a value that differs: a
+/// write is a change for the renderer.
+///
+/// The flags and variables of the game are not play state of this signal: a tool
+/// sets them for a test before play. Who starts a new game clears them.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResetPlay;
 
 /// Runs a schedule in a `tracing` span that has the name of the schedule. A profiler
 /// (Tracy, with the `profile` feature of the game) shows the time of each schedule.
@@ -90,6 +101,7 @@ impl App {
         add_schedule(&mut world, Extract);
         add_schedule(&mut world, Render);
         add_schedule(&mut world, Present);
+        add_schedule(&mut world, ResetPlay);
 
         world.insert_resource(Time {
             fixed_delta: Duration::from_secs_f64(1.0 / time.fixed_hz),
@@ -149,6 +161,22 @@ impl App {
     pub fn add_settings<S: Settings>(&mut self) -> &mut Self {
         let settings: S = self.world.resource_mut::<ConfigFile>().read();
         self.insert_resource(settings)
+    }
+
+    /// As [`App::add_settings`], and the table is written back to the config file
+    /// when a system changes the resource (a value that the user sets in a panel).
+    /// The other tables and the comments of the file stay as they are. Only a
+    /// module that asks is written: a value of a debug panel does not reach the file.
+    pub fn add_saved_settings<S: Settings>(&mut self) -> &mut Self {
+        // In any order with the system that changes the resource: a change is
+        // written some time after it, not in its frame.
+        let save = crate::config::save_settings::<S>.ambiguous_with_all();
+        self.add_settings::<S>().add_systems(Update, save)
+    }
+
+    /// Runs the [`ResetPlay`] schedule now.
+    pub fn reset_play(&mut self) {
+        run_schedule!(self.world, ResetPlay);
     }
 
     /// Call after the last module was added. Returns the errors of the config tables
@@ -231,6 +259,8 @@ impl App {
     /// The window event loop will be a driver; a headless loop is another.
     pub fn run<R>(mut self, driver: impl FnOnce(App) -> R) -> R {
         run_schedule!(self.world, Startup);
+        // A game starts.
+        self.reset_play();
         driver(self)
     }
 

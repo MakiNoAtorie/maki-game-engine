@@ -5,7 +5,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_core::{App, FixedUpdate, Module, Update};
+use maki_core::{App, FixedUpdate, Module, ResetPlay, Update};
 use maki_events::run_events;
 use maki_platform::{Action, ActionState, FixedActionState, Key, QuitRequested, add_bindings};
 use maki_scene::{Camera, Mover, move_movers};
@@ -46,7 +46,12 @@ impl Module for ControlsModule {
             ],
         );
         app.init_resource::<MoveCapture>()
-            .add_systems(Update, (quit_on_action, log_action_presses));
+            .add_systems(Update, (quit_on_action, log_action_presses))
+            // A game starts with the move keys at the player.
+            .add_systems(ResetPlay, |mut capture: ResMut<MoveCapture>| {
+                use bevy_ecs::change_detection::DetectChangesMut;
+                capture.set_if_neq(MoveCapture(false));
+            });
     }
 }
 

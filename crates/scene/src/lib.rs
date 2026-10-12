@@ -11,7 +11,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use glam::Vec3;
 use maki_assets::{Handle, Mesh};
-use maki_core::{App, FixedUpdate, Module, Update, interpolate_transforms};
+use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
 pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
@@ -39,6 +39,14 @@ impl Module for SceneModule {
             .init_resource::<ScreenFade>()
             // Each writer asks for a room; the loader takes the last request.
             .allow_ambiguous_resource::<RoomRequest>()
+            // A game starts with the picture, not in the black of a fade.
+            .add_systems(
+                ResetPlay,
+                |mut fade: bevy_ecs::system::ResMut<ScreenFade>| {
+                    use bevy_ecs::change_detection::DetectChangesMut;
+                    fade.set_if_neq(ScreenFade(0.0));
+                },
+            )
             .add_systems(
                 FixedUpdate,
                 (mover::move_movers, mover::block_doors).chain(),

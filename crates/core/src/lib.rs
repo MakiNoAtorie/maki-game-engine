@@ -9,8 +9,8 @@ pub mod time;
 pub mod transform;
 
 pub use app::{
-    App, Extract, FixedFirst, FixedLast, FixedUpdate, Input, Module, Present, Render, Startup,
-    Update,
+    App, Extract, FixedFirst, FixedLast, FixedUpdate, Input, Module, Present, Render, ResetPlay,
+    Startup, Update,
 };
 pub use config::{ConfigFile, Settings, TimeSettings};
 pub use interpolation::{Interpolated, interpolate_transforms};

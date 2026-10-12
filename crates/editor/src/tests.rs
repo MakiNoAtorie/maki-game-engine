@@ -353,10 +353,43 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         assert_eq!(app.world().resource::<CurrentRoom>().loads, loads);
         assert_eq!(app.world().resource::<Editor>().history_steps(), (1, 0));
 
-        request(&mut app, Command::Undo);
+        // Undo and redo are chords. Ctrl+Z is not the plain Z, Ctrl+S is not a
+        // tool key, and S alone saves nothing.
+        let chord = |app: &mut App, key| {
+            app.write_message(RawInput::KeyDown(Key::Control))
+                .write_message(RawInput::KeyDown(key));
+            frames(app, 1);
+            app.write_message(RawInput::KeyUp(Key::Control))
+                .write_message(RawInput::KeyUp(key));
+            frames(app, 2);
+        };
+        chord(&mut app, Key::Z);
         assert_eq!(cube(&app), [1.0, 0.5, 0.0]);
-        request(&mut app, Command::Redo);
+        chord(&mut app, Key::Y);
         assert_eq!(cube(&app), [-1.25, 0.5, 1.5]);
+        assert!(app.world().resource::<Editor>().document.dirty);
+        app.write_message(RawInput::KeyDown(Key::S))
+            .write_message(RawInput::KeyUp(Key::S));
+        frames(&mut app, 2);
+        assert!(app.world().resource::<Editor>().document.dirty);
+        // Ctrl+R is no chord: the tool key works with Ctrl down.
+        chord(&mut app, Key::R);
+        assert_eq!(app.world().resource::<Editor>().tool, Tool::Scale);
+        app.resource_mut::<Editor>().tool = Tool::Move;
+
+        // A press and a move in the same frame: the click is at the press place.
+        click(&mut app, Vec3::new(-2.0, 0.0, -2.0));
+        assert_eq!(selection(&app), []);
+        let (cube_pixel, floor_pixel) = (
+            window_pixel(&app, Vec3::new(-1.25, 1.0, 1.5)),
+            window_pixel(&app, Vec3::new(-2.0, 0.0, -2.0)),
+        );
+        app.write_message(RawInput::PointerMoved(cube_pixel))
+            .write_message(RawInput::KeyDown(Key::MouseLeft))
+            .write_message(RawInput::KeyUp(Key::MouseLeft))
+            .write_message(RawInput::PointerMoved(floor_pixel));
+        frames(&mut app, 2);
+        assert_eq!(selection(&app), [Item::Prop(0)]);
 
         // A copy, then the copy is removed: the selection follows.
         request(&mut app, Command::Duplicate);

@@ -8,8 +8,8 @@ use bevy_ecs::schedule::common_conditions::resource_exists;
 use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
-    Action, ActionState, Binding, Bindings, FixedActionState, InputCapture, InputMode, Key,
-    Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings,
+    Action, ActionState, Binding, Bindings, Chord, FixedActionState, InputCapture, InputMode, Key,
+    Modifiers, Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings,
 };
 pub use window::{
     QuitHold, QuitRequested, RawWindowEvent, Window, WindowMargin, WindowResized, WindowSettings,
@@ -251,6 +251,80 @@ mod tests {
 
         frame(&mut app, &[PointerLeft]);
         assert_eq!(pointer(&app).position, None);
+    }
+
+    #[test]
+    fn a_chord_wins_over_its_plain_key_and_holds_until_the_key_goes_up() {
+        use RawInput::*;
+
+        const SAVE: Action = Action("save");
+        const UNDO: Action = Action("undo");
+        const RUN: Action = Action("run");
+        let mut app = app("");
+        // Q is "down" in the table, and a chord of Q too. W has no chord.
+        add_bindings(
+            &mut app,
+            &[
+                (Chord::ctrl(Key::Q), SAVE, "Save"),
+                (Chord::ctrl(Key::Z), UNDO, "Undo"),
+            ],
+        );
+        add_bindings(&mut app, &[(Key::Control, RUN, "A held modifier")]);
+        let state = |app: &App, action| {
+            let actions = app.world().resource::<ActionState>();
+            (actions.pressed(action), actions.just_pressed(action))
+        };
+
+        // The plain key.
+        frame(&mut app, &[KeyDown(Key::Q)]);
+        assert_eq!(
+            (state(&app, DOWN), state(&app, SAVE)),
+            ((true, true), (false, false))
+        );
+        // Ctrl after the key: the key keeps its action.
+        frame(&mut app, &[KeyDown(Key::Control)]);
+        assert_eq!((state(&app, DOWN).0, state(&app, SAVE).0), (true, false));
+        frame(&mut app, &[KeyUp(Key::Q)]);
+
+        // The chord, with Ctrl held: not the action of the plain key. The modifier
+        // key has an action of its own.
+        frame(&mut app, &[KeyDown(Key::Q)]);
+        assert_eq!(
+            (state(&app, DOWN), state(&app, SAVE)),
+            ((false, false), (true, true))
+        );
+        assert!(state(&app, RUN).0);
+        // A key with no chord starts its action with Ctrl down: W walks.
+        frame(&mut app, &[KeyDown(Key::W)]);
+        assert!(state(&app, FORWARD).0);
+
+        // Ctrl goes up before the key: the chord holds, and the plain key does not
+        // start. The action ends one time, when the key goes up.
+        let mut released = 0;
+        for events in [&[KeyUp(Key::Control)][..], &[], &[KeyUp(Key::Q)], &[]] {
+            frame(&mut app, events);
+            let actions = app.world().resource::<ActionState>();
+            assert!(!actions.pressed(DOWN) && !actions.just_pressed(DOWN));
+            released += actions.just_released(SAVE) as u32;
+        }
+        assert_eq!(released, 1);
+        assert_eq!(Chord::ctrl(Key::Q).label(), "Ctrl+Q");
+        assert_eq!(Chord::from(Key::Q).label(), "Q");
+
+        // A press and a move in one frame: the press has its place.
+        let pointer = |app: &App| *app.world().resource::<Pointer>();
+        frame(
+            &mut app,
+            &[
+                PointerMoved([10.0, 20.0]),
+                KeyDown(Key::MouseLeft),
+                PointerMoved([90.0, 80.0]),
+            ],
+        );
+        assert_eq!(pointer(&app).press, Some([10.0, 20.0]));
+        assert_eq!(pointer(&app).position, Some([90.0, 80.0]));
+        frame(&mut app, &[]);
+        assert_eq!(pointer(&app).press, None);
     }
 
     #[derive(bevy_ecs::resource::Resource, Default)]

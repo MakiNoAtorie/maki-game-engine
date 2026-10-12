@@ -449,6 +449,7 @@ mod tests {
             .iter()
             .find(|binding| binding.action == TOGGLE_HELP)
             .expect("the help action has a key")
+            .chord
             .key;
 
         app.run(|mut app| {
@@ -483,14 +484,23 @@ mod tests {
 
     #[test]
     fn the_help_panel_has_one_row_for_each_binding() {
-        let bindings = Bindings(vec![maki_platform::Binding {
-            key: Key::R,
+        let binding = |chord, description| maki_platform::Binding {
+            chord,
             action: maki_platform::Action("quit"),
-            description: "Changed binding",
+            description,
             mode: maki_platform::InputMode::GAME,
-        }]);
+        };
+        let bindings = Bindings(vec![
+            binding(Key::R.into(), "Changed binding"),
+            binding(maki_platform::Chord::ctrl(Key::Z), "A chord"),
+        ]);
         let mode = maki_platform::InputMode::GAME;
-        assert_eq!(help::rows(&bindings, mode), [("R", "Changed binding")]);
+        let rows = help::rows(&bindings, mode);
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(key, text)| (key.as_str(), *text))
+            .collect();
+        assert_eq!(rows, [("R", "Changed binding"), ("Ctrl+Z", "A chord")]);
         assert!(help::rows(&bindings, maki_platform::InputMode("other")).is_empty());
     }
 }
