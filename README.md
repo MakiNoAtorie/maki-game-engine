@@ -54,7 +54,7 @@ To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, w
 ## Benchmark
 
 ```
-cargo run -p maki-game --release -- [CONFIG] --bench-frames N [--bench-dump FILE] [--bench-static] [--bench-script walk|trip]
+cargo run -p maki-game --release -- [CONFIG] --bench-frames N [--bench-dump FILE] [--bench-static | --bench-light-frames M] [--bench-script walk|trip]
 ```
 
 The game runs N frames (1 to 1000000), writes `bench.csv` in the working directory, and stops. In this mode:
@@ -64,7 +64,7 @@ The game runs N frames (1 to 1000000), writes `bench.csv` in the working directo
 - The light moves in each frame, so each frame is a change of the lighting: the indirect light of each pixel keeps `light_history_samples` old samples. `--bench-static` holds the light at the start of the path, so the picture gets all its samples. `--bench-light-frames M` moves the light in M frames, then holds it: the frames after that show how fast the picture follows.
 - `--bench-script NAME` holds the light and plays the game with a script of actions (`game/src/bench.rs`). `walk`: in room A the player walks and a door opens; the last motion shows in frame 180. `trip`: the full loop, 820 frames: room A, room B, the switch, back to room A, through the door that was locked.
 - `tools/bench.py` sets `samples_per_frame = 1` if the scenario does not set it: the automatic count would give each run another load.
-- `--bench-dump FILE` writes the picture of frame N (the picture before the tone curve) to FILE: two little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel. The picture depends only on the config, the scene, and N. `python tools/bench.py same` compares two dumps.
+- `--bench-dump FILE` writes the picture of frame N (the picture before the tone curve, at the output resolution) to FILE: two little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel. The picture depends only on the config, the scene, and N. `python tools/bench.py same` compares two dumps.
 - `vsync` is off, whatever the config file says.
 
 `bench.csv` has one row for each frame:
@@ -101,6 +101,8 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `trace_budget_ms` | 6.0 | GPU time of the path tracer in each frame, in milliseconds, for the automatic sample count. Keep it well below the time of one display refresh (16.7 ms at 60 Hz) |
 | `light_history_samples` | 16 | When the lighting changes (a light, or an object that moves), the indirect light of each pixel keeps at most this many old samples for some frames, and new samples replace them. More: less noise while something moves, and the bounce light follows later. 0: a change of the lighting starts the indirect light again |
 | `history_clamp` | 2.0 | History test of the direct light, in standard deviations of the noise. The denoiser keeps a second, short mean of the direct light (4 frames). Where the short and the long means of a block of pixels differ by more than this, the lighting changed there, and the long mean starts again from the short one: a shadow follows its object in few frames. 0: no test; a change of the lighting then cuts the direct light to `light_history_samples` too |
+| `taa` | true | Temporal anti-aliasing. Each frame moves all camera rays by a part of a pixel, and the picture is the mean of some frames: smooth edges, and with `render_scale` below 1 more detail than one frame has. False: stairs at each edge |
+| `taa_blend` | 0.1 | The part of a new frame in the picture of the anti-aliasing, at rest. Lower: smoother edges. 0: the plain mean of all frames since the last change, for a reference picture of a scene at rest |
 | `max_path_rays` | 8 | The largest number of rays in one light path, 2 to 32. Only mirror and glass make long paths. A lower limit costs less GPU time and gives less noise; the last mirror or glass surface of a cut path shows as a diffuse surface, so deep reflections lose detail. Measured in `docs/perf-improve.md`, section 0 |
 | `denoise_passes` | 4 | Filter passes of the denoiser for the indirect light (bounce light), 0 to 6. Each pass doubles the area that the filter takes its mean from. 0: no filter, only the mean over frames |
 | `denoise_direct_passes` | 1 | The same for the direct light. It has little noise and sharp shadow edges. A scene with large lights (wide soft shadows) can need more |
@@ -150,7 +152,7 @@ The steps:
 
 A change of the camera keeps the samples of each pixel. A change of the lighting (a light, an object that moves and so its shadow) is handled for each kind of light. Direct light: the denoiser tests each pixel (`history_clamp`), so only the pixels where the light changed start again, and a shadow follows its object in some frames. Indirect light: its noise is too large for such a test at one sample for each frame, so its mean is cut to `light_history_samples` in the full picture for some frames. A change of the internal resolution, the window size, the room, or the mesh store starts the picture again, and so does R. While nothing changes and each pixel has `max_samples`, only the tonemap pass and the copy to the window run.
 
-A pixel that shows the light itself or the background has no mean over time: it shows the samples of one frame.
+3. Anti-aliasing and scaling (`taa`, `crates/render/src/taa.rs`). The trace pass moves all camera rays of a frame by one part of a pixel. The pass `taa` keeps the mean of the pictures of some frames at the window resolution: an edge gets smooth, also that of the lamp and of the background, which have no mean in the denoiser. With `render_scale` below 1 it puts each sample at its true place in the window grid. A point that moves on the screen takes more of the new frame, and its history counts only if it shows the same surface. This pass is the one step between the internal resolution and the window resolution: an upscaler (FSR, XeSS, MetalFX, DLSS) takes its place with the same inputs.
 
 The camera rays do not hit the back side of a triangle, so the camera looks into the room through the near walls. For all other rays the walls are solid.
 

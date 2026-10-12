@@ -1,5 +1,5 @@
 //! The passes of the frame graph, in frame order:
-//! build_tlas -> trace -> the denoiser passes -> tonemap -> present.
+//! build_tlas -> trace -> the denoiser passes -> taa -> tonemap -> present.
 //! Other crates add passes between them: the ui crate puts `ui_overlay` before `present`.
 //!
 //! build_tlas and trace make the samples of the frame, and the denoiser passes (the
@@ -25,7 +25,7 @@ use crate::light::{LightBuffers, light_bytes};
 use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
 use crate::{
     Accumulation, DebugView, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights,
-    GpuMeshes, MAX_LIGHTS, denoise, ray_basis, shader_spirv,
+    GpuMeshes, MAX_LIGHTS, denoise, ray_basis, shader_spirv, taa,
 };
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
@@ -87,6 +87,15 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         lights_logged: false,
     });
     let denoise = denoise::add_passes(gpu, graph, trace);
+    // To the output resolution, with smooth edges.
+    let resolved = taa::add_pass(
+        gpu,
+        graph,
+        denoise.denoised,
+        motion,
+        [normal, previous_normal],
+        denoise.direct.mean,
+    );
     graph.add_pass(Tonemap {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("tonemap.comp"))
@@ -97,7 +106,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
                 repeat: false,
             })
             .expect("tonemap sampler"),
-        hdr: denoise.denoised,
+        hdr: resolved,
         trace,
         denoise,
         output,
@@ -340,6 +349,8 @@ impl Pass for Trace {
             frame.indirect_clamp.to_bits(),
             ctx.bindless_index(self.images.indirect),
             ctx.bindless_index(self.images.specular),
+            frame.jitter[0].to_bits(),
+            frame.jitter[1].to_bits(),
         ]);
         ctx.gpu
             .dispatch_compute(
@@ -351,8 +362,7 @@ impl Pass for Trace {
     }
 }
 
-/// The picture (the result of the denoiser) to display color, scaled from the internal
-/// resolution to the window size. With a debug view
+/// The picture (`resolved`, at the output resolution) to display color. With a debug view
 /// ([`DebugView`](crate::DebugView)) it shows another image of the graph in its place. Runs in each frame, also when the accumulation is complete: the window
 /// needs a picture in each frame, and this pass is cheap.
 struct Tonemap {

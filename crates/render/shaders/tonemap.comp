@@ -1,6 +1,7 @@
 #version 460
-// Pass "tonemap": reads the picture through a sampler and writes display color into the
-// output image. With a debug view it shows another image in place of the picture. The output has the window size, so the sampler does the scaling.
+// Pass "tonemap": reads the picture and writes display color into the output image.
+// The picture has the size of the output (the pass "taa" did the scaling). With a debug
+// view it shows another image in place of the picture, of any size.
 //
 // The picture holds light: values from 0 to far above 1. A display shows 0 to 1.
 // Exposure sets which amount of light is "bright", and the tone curve bends all values
@@ -45,7 +46,7 @@ const uint MODE_DEVIATION = 7u; // `a`: mean brightness and mean of its square, 
 const uint MODE_NOISE = 8u;     // `a`: light in rgb, its variance in a
 const uint MODE_COLOR = 9u;     // rgb of `a` as a surface color
 
-// The picture through the sampler, which does the scaling to the window size.
+// An image through the sampler, at a place from 0 to 1.
 vec3 sampled(uint texture_index, vec2 uv) {
     // A compute shader has no automatic mip level, so the level is explicit.
     return textureLod(sampler2D(textures[texture_index], samplers[push.hdr_sampler]), uv, 0.0).rgb;

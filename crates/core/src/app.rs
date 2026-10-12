@@ -118,6 +118,10 @@ impl App {
             "denoise_reach, indirect_clamp, and history_clamp must be zero or positive numbers"
         );
         ensure!(
+            (0.0..=1.0).contains(&config.taa_blend),
+            "taa_blend must be from 0 to 1"
+        );
+        ensure!(
             config.exposure.is_finite() && config.exposure > 0.0,
             "exposure must be a positive number"
         );

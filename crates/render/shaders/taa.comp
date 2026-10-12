@@ -1,0 +1,238 @@
+#version 460
+// Pass "taa": temporal anti-aliasing, and the scaling from the internal resolution to
+// the output resolution. See src/taa.rs.
+//
+// A pixel is a small square, and one camera ray shows one point of it: an edge that
+// crosses the square is all one color or all the other (stairs). In each frame, the
+// trace pass moves all camera rays by the same part of a pixel (the jitter). Over some
+// frames, each pixel has seen many points of its square. This pass keeps the mean of
+// those frames: the picture with smooth edges.
+//
+// For each pixel of the output:
+// 1. The nearest sample of this frame. Sample `p` of the input image is at
+//    `p + 0.5 + jitter`, in input pixels. With an input smaller than the output
+//    (`render_scale` below 1), a sample is at its true place in the output grid, so
+//    after some frames each output pixel has had a sample near its center: the
+//    picture gets more detail than one frame has.
+// 2. The history: the output of the frame before, at the place where the point was
+//    (the `motion` image). The place is between pixels. A plain blend of the four
+//    pixels around it softens the picture a little, and in motion the history is read
+//    that way again in each frame: the picture would get softer and softer. So the
+//    read uses a 4x4 pattern with a sharper curve (Catmull-Rom).
+// 3. The history is valid only if its color is possible here: it must be in the color
+//    range of the 3x3 samples around the nearest one (their mean, plus and minus some
+//    standard deviations). A color out of that range is from another surface (a ghost
+//    behind an object that moved) and is moved into the range.
+//    While the point moves on the screen, the history also must show the same surface
+//    (normal and distance, as in the denoiser): the 3x3 range is wide at an edge, so a
+//    ghost of the object stays in it. At rest there is no such test: on an edge, the
+//    jitter shows one surface in one frame and the other in the next, and the mean
+//    of the two is what this pass is for.
+// 4. The new color is the history, moved toward the sample by a small part. The part
+//    is smaller for a sample that is not in the square of the output pixel (only with
+//    an output larger than the input).
+//
+// This pass is the seam for an upscaler (FSR, XeSS, MetalFX, DLSS): they take the same
+// inputs (the picture at the internal resolution, the motion, the distance of the
+// `normal` image, the jitter) and give the same output.
+
+#include "bindless.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = BINDLESS_SET, binding = BINDLESS_SAMPLED_IMAGES) uniform texture2D textures[];
+layout(set = BINDLESS_SET, binding = BINDLESS_SAMPLERS) uniform sampler samplers[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform image2D images_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
+    uniform readonly image2D images_rg16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
+    uniform readonly image2D images_rgba32f[];
+
+// Must agree with `Taa::execute` in src/taa.rs.
+layout(push_constant) uniform Push {
+    uint src;             // index in `images_rgba16f`: the picture of this frame, internal size
+    uint motion;          // index in `images_rg16f`: screen motion, in internal pixels
+    uint history;         // index in `textures`: the output of the frame before
+    uint history_sampler; // index in `samplers`: blends between pixels
+    uint dst;             // index in `images_rgba16f`: the output
+    // The part of a sample in the new color, for a sample at the center of the output
+    // pixel. 1: no history (the first frame, a new size, anti-aliasing off).
+    float blend;
+    vec2 jitter;          // of this frame, in internal pixels, each from -0.5 to 0.5
+    // The history must be this many standard deviations near the mean of the 3x3
+    // samples. 0: no such test (the reference mode: a scene at rest).
+    float clip;
+    uint normal;          // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
+    uint previous_normal; // the same image of the frame before
+    // The part of a sample in the new color for a point that moves on the screen
+    // (`MOVING` pixels in a frame and more), and for a pixel whose light is new. Not
+    // below `blend`.
+    float motion_blend;
+    // Index in `images_rgba32f`: the mean of the direct light of the denoiser, with
+    // its sample count in a.
+    uint direct;
+    float frame_samples; // samples that one frame adds to that mean
+} push;
+
+// How fast the part of a sample falls with its distance from the square of the output
+// pixel, in output pixels: a seventh at a quarter of a pixel.
+const float SAMPLE_FALLOFF = 32.0;
+
+float brightness(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// The lamp itself is thousands of times brighter than the room. In a plain mean of a
+// lamp pixel and a room pixel, the lamp wins: the edge of the lamp would stay stairs.
+// So the mean is taken of colors in a range from 0 to 1 (Karis, "High Quality Temporal
+// Supersampling", 2014), and `expanded` turns the result back into light.
+vec3 compressed(vec3 light) {
+    return light / (1.0 + brightness(light));
+}
+
+// The largest brightness of a compressed color: that of the largest light value of a
+// 16-bit float image (see `MAX_LIGHT` in denoise.glsl).
+const float MAX_COMPRESSED = 1.0 - 1.0 / 60001.0;
+
+vec3 expanded(vec3 color) {
+    // A sum of compressed colors with a negative weight (`history_at`) can be
+    // brighter than a compressed color can be.
+    float value = brightness(color);
+    if (value > MAX_COMPRESSED) {
+        color *= MAX_COMPRESSED / value;
+        value = MAX_COMPRESSED;
+    }
+    return color / (1.0 - value);
+}
+
+// A point that moves this many output pixels in a frame, or more, counts as moving.
+const float MOVING = 1.0;
+// The light of a pixel is new while its mean in the denoiser has fewer frames than this.
+const float NEW_LIGHT_FRAMES = 16.0;
+// As in denoise_temporal.comp: the same surface has a normal within about 25 degrees
+// and a distance within this part.
+const float SAME_NORMAL = 0.9;
+const float SAME_DISTANCE = 0.05;
+
+// True if the pixel `before` of the frame before showed the surface `surface`, or
+// if the two show no surface.
+bool same_surface(vec4 surface, ivec2 before, ivec2 src_size) {
+    vec4 was = imageLoad(images_rgba16f[push.previous_normal], clamp(before, ivec2(0), src_size - 1));
+    if (surface.xyz == vec3(0.0) || was.xyz == vec3(0.0)) {
+        return surface.xyz == was.xyz;
+    }
+    return dot(surface.xyz, was.xyz) >= SAME_NORMAL
+        && abs(surface.w - was.w) <= SAME_DISTANCE * surface.w;
+}
+
+vec3 history_tap(vec2 uv) {
+    vec3 light = textureLod(sampler2D(textures[push.history], samplers[push.history_sampler]), uv, 0.0).rgb;
+    return compressed(max(light, vec3(0.0)));
+}
+
+// The output of the frame before at `uv` (0 to 1), in the compressed range.
+// A Catmull-Rom curve over 4x4 pixels. Each tap below reads through the sampler at a
+// place between two pixels, so one tap is the weighted sum of two or four pixels: 5
+// taps in place of 16 (Jimenez, "Filmic SMAA", 2016). The four corners of the pattern
+// are left out; their weights are small.
+// For a place at a pixel center, the result is that pixel: at rest nothing is blurred.
+vec3 history_at(vec2 uv, vec2 size) {
+    vec2 place = uv * size;
+    vec2 center = floor(place - 0.5) + 0.5;
+    vec2 f = place - center;
+    // The weights of the four pixels in a row.
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    // The two middle pixels as one tap between them.
+    vec2 w12 = w1 + w2;
+    vec2 uv0 = (center - 1.0) / size;
+    vec2 uv12 = (center + w2 / w12) / size;
+    vec2 uv3 = (center + 2.0) / size;
+    vec3 sum = history_tap(vec2(uv12.x, uv0.y)) * (w12.x * w0.y)
+        + history_tap(vec2(uv0.x, uv12.y)) * (w0.x * w12.y)
+        + history_tap(uv12) * (w12.x * w12.y)
+        + history_tap(vec2(uv3.x, uv12.y)) * (w3.x * w12.y)
+        + history_tap(vec2(uv12.x, uv3.y)) * (w12.x * w3.y);
+    float weights = w12.x * (w0.y + w12.y + w3.y) + w12.y * (w0.x + w3.x);
+    // The curve has negative parts: at a hard edge the sum can go below zero.
+    return max(sum / weights, vec3(0.0));
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images_rgba16f[push.dst]);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    ivec2 src_size = imageSize(images_rgba16f[push.src]);
+    // Input pixels for each output pixel.
+    vec2 scale = vec2(src_size) / vec2(size);
+    // The center of the output pixel, in input pixels.
+    vec2 center = (vec2(pixel) + 0.5) * scale;
+    ivec2 nearest = clamp(ivec2(floor(center - push.jitter)), ivec2(0), src_size - 1);
+    // From the center to that sample, in output pixels.
+    vec2 to_sample = (vec2(nearest) + 0.5 + push.jitter - center) / scale;
+
+    // The sample, and the mean and the mean of squares of the 3x3 samples around it.
+    vec3 current = vec3(0.0);
+    vec3 sum = vec3(0.0);
+    vec3 sum_of_squares = vec3(0.0);
+    vec3 lowest = vec3(1e9);
+    vec3 highest = vec3(0.0);
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            ivec2 tap = clamp(nearest + ivec2(x, y), ivec2(0), src_size - 1);
+            vec3 color = compressed(max(imageLoad(images_rgba16f[push.src], tap).rgb, vec3(0.0)));
+            sum += color;
+            sum_of_squares += color * color;
+            lowest = min(lowest, color);
+            highest = max(highest, color);
+            if (x == 0 && y == 0) {
+                current = color;
+            }
+        }
+    }
+
+    vec3 color = current;
+    // Where the point was in the output of the frame before, from 0 to 1.
+    vec2 motion = imageLoad(images_rg16f[push.motion], nearest).xy / scale;
+    vec2 was = (vec2(pixel) + 0.5 - motion) / vec2(size);
+    if (push.blend < 1.0 && all(greaterThanEqual(was, vec2(0.0))) && all(lessThan(was, vec2(1.0)))) {
+        vec3 history = history_at(was, vec2(size));
+        if (push.clip > 0.0) {
+            vec3 mean = sum / 9.0;
+            vec3 deviation = sqrt(max(sum_of_squares / 9.0 - mean * mean, vec3(0.0)));
+            // Never out of the range of the samples themselves: the sharper history
+            // read can give a color that no pixel had.
+            history = clamp(history,
+                max(lowest, mean - push.clip * deviation),
+                min(highest, mean + push.clip * deviation));
+        }
+        // 0.0 at rest, 1.0 for a point that moves.
+        float moving = clamp(length(motion) / MOVING, 0.0, 1.0);
+        // 1.0 where the denoiser started the direct light again (a shadow moved, see
+        // denoise_temporal.comp), down to 0.0 as its mean gets its frames. The history
+        // of this pass shows the old light there, and the 3x3 range does not always
+        // tell (it is wide at a shadow edge).
+        // A pixel with no surface (the background, the lamp) has no such mean.
+        vec4 surface = imageLoad(images_rgba16f[push.normal], nearest);
+        float frames = imageLoad(images_rgba32f[push.direct], nearest).a / push.frame_samples;
+        float new_light = surface.xyz == vec3(0.0)
+            ? 0.0
+            : 1.0 - clamp(frames / NEW_LIGHT_FRAMES, 0.0, 1.0);
+        float blend = max(push.blend, max(moving, new_light) * push.motion_blend);
+        // Another surface was at that place: no history, if the point moves.
+        if (moving > 0.0 && !same_surface(surface, ivec2(floor(was * vec2(src_size))), src_size)) {
+            blend = max(blend, moving);
+        }
+        // A sample in the square of the output pixel counts in full. With an input as
+        // large as the output, each sample is in its square.
+        vec2 outside = max(abs(to_sample) - 0.5, vec2(0.0));
+        float part = blend * exp(-SAMPLE_FALLOFF * dot(outside, outside));
+        color = mix(history, current, part);
+    }
+    imageStore(images_rgba16f[push.dst], pixel, vec4(expanded(color), 1.0));
+}

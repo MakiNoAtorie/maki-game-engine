@@ -46,6 +46,8 @@ pub struct Accumulation {
     frame_samples: u32,
     /// The history that a pixel can keep in this frame, in samples.
     history_limit: u32,
+    /// This frame started with a reset: no image of the frame before is valid.
+    reset_frame: bool,
     /// Frames, with this one, in which the history stays short after a soft reset.
     fade_frames: u32,
 }
@@ -60,6 +62,7 @@ impl Default for Accumulation {
             samples: 0,
             frame_samples: 0,
             history_limit: 0,
+            reset_frame: true,
             fade_frames: 0,
         }
     }
@@ -98,6 +101,12 @@ impl Accumulation {
         self.history_limit
     }
 
+    /// True in a frame that started with a reset: a pass must not read an image of the
+    /// frame before (the first frame, a new image size, another room).
+    pub fn reset_frame(&self) -> bool {
+        self.reset_frame
+    }
+
     /// False when the picture has `max_samples` samples: the passes that make a sample
     /// do no GPU work, and the picture stays as it is.
     pub fn sampling(&self) -> bool {
@@ -113,6 +122,7 @@ impl Accumulation {
         history_samples: u32,
     ) {
         let reset = std::mem::take(&mut self.reset);
+        self.reset_frame = reset;
         let wake = std::mem::take(&mut self.wake);
         if std::mem::take(&mut self.soft_reset) {
             self.fade_frames = fade_frames(history_samples, samples_per_frame);

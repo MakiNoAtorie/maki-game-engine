@@ -102,6 +102,16 @@ pub struct Config {
     /// the lighting then cuts the direct light of each pixel to
     /// `light_history_samples` too.
     pub history_clamp: f32,
+    /// Temporal anti-aliasing. Each frame moves all camera rays by a part of a pixel,
+    /// and the picture is the mean of some frames: smooth edges, and with a
+    /// `render_scale` below 1 more detail than one frame has. False: the picture is
+    /// the samples of one frame, at the pixel centers (stairs at each edge).
+    pub taa: bool,
+    /// The part of a new frame in the picture of the anti-aliasing, above 0 to 1.
+    /// Lower: smoother edges, and the picture follows motion later. 0: the plain
+    /// mean of all frames since the last change, for a reference picture of a scene
+    /// at rest.
+    pub taa_blend: f32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
     pub exposure: f32,
     /// Rate of the FixedUpdate schedule, in steps per second.
@@ -141,6 +151,8 @@ impl Default for Config {
             denoise_reach: 4096.0,
             indirect_clamp: 8.0,
             history_clamp: 2.0,
+            taa: true,
+            taa_blend: 0.1,
             exposure: 1.0,
             fixed_hz: 60.0,
             max_fixed_steps: 8,

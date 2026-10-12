@@ -41,8 +41,9 @@
 // - motion:   how far the point that the pixel shows moved on the screen since the
 //             frame before, in pixels: its position now minus its position then.
 //             Zero for no surface. See src/motion.rs.
-// Each path of a pixel goes through the center of the pixel, so normal, albedo, and
-// motion do not change from frame to frame while nothing moves.
+// Each path of a pixel in a frame goes through the same point of the pixel: its center,
+// moved by the jitter of the frame (`push.jitter`). The motion is that of the point,
+// without the jitter: it is zero while nothing moves.
 //
 // "The surface that the pixel shows" is the first diffuse surface on the path:
 // - Behind a mirror it is the surface that shows there. The albedo has the tint of
@@ -98,6 +99,9 @@ layout(push_constant) uniform Push {
     float indirect_clamp;
     uint indirect;        // index in `images_rgba16f`
     uint specular;        // index in `images_rgba16f`
+    // The offset of all camera rays of this frame from the pixel centers, in pixels,
+    // each from -0.5 to 0.5. See src/taa.rs.
+    vec2 jitter;
 } push;
 
 // A sphere light. 32 bytes. Must agree with `light_bytes` in src/light.rs.
@@ -434,12 +438,14 @@ vec3 mirrored(vec3 direction, vec3 mirror) {
 // Follows one random path through the pixel and adds its light to the sums.
 // `first`: also write the normal, albedo, and motion images.
 void trace_path(ivec2 pixel, ivec2 size, bool first) {
-    // The center of the pixel, from -1 to 1 across the image. Image y goes down, `up`
-    // goes up. Each path of the pixel takes the same point: the light then belongs to
-    // the surface that the normal and albedo images hold. With a random point for
-    // each path, a pixel on an edge would hold the light of two surfaces, divided by
-    // the color of one.
-    vec2 screen = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
+    // A point of the pixel, from -1 to 1 across the image. Image y goes down, `up`
+    // goes up. Each path of the pixel in this frame takes the same point: the light
+    // then belongs to the surface that the normal and albedo images hold. With a
+    // random point for each path, a pixel on an edge would hold the light of two
+    // surfaces, divided by the color of one. The point changes from frame to frame
+    // (the jitter), and the pass "taa" takes the mean over frames: smooth edges.
+    vec2 in_image = vec2(pixel) + 0.5 + push.jitter;
+    vec2 screen = in_image / vec2(size) * 2.0 - 1.0;
     vec3 direction = normalize(push.forward + screen.x * push.right - screen.y * push.up);
     vec3 camera_direction = direction;
 
@@ -546,7 +552,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     surface_found = true;
                     if (first) {
                         vec2 motion = glass_seen
-                            ? vec2(pixel) + 0.5 - previous_screen(
+                            ? in_image - previous_screen(
                                 push.origin + camera_direction * glass_guide.w, vec2(size))
                             : vec2(0.0);
                         imageStore(images_rgba16f[push.normal], pixel, glass_guide);
@@ -649,7 +655,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                             vec3 was = chain
                                 ? push.origin + camera_direction * path_length
                                 : previous_world(query);
-                            vec2 motion = vec2(pixel) + 0.5 - previous_screen(was, vec2(size));
+                            vec2 motion = in_image - previous_screen(was, vec2(size));
                             imageStore(images_rgba16f[push.normal], pixel,
                                 vec4(mirrored(surface.normal, mirror_normal), path_length));
                             imageStore(images_rgba16f[push.albedo], pixel, vec4(throughput, 1.0));

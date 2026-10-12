@@ -453,11 +453,11 @@ fn record_frame(
     }
 }
 
-/// Writes the picture before the tone curve (the result of the denoiser): two
+/// Writes the picture before the tone curve (the result of the anti-aliasing pass): two
 /// little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel.
 /// `tools/bench.py` reads the file.
 fn dump_picture(path: &Path, graph: &FrameGraph, gpu: &mut RenderGpu) -> anyhow::Result<()> {
-    let id = graph.resource("denoised").context("no picture image")?;
+    let id = graph.resource("resolved").context("no picture image")?;
     let format = graph.transient_desc(id).context("not an image")?.format;
     let (image, (width, height), state) = graph.image(id).context("no frame was drawn")?;
     let pixels = gpu.0.read_image(image, state)?;

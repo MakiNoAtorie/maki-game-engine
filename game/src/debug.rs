@@ -42,6 +42,11 @@ impl Module for DebugPanelModule {
                         egui::Slider::new(&mut config.render_scale, 0.1..=1.0).text("render scale"),
                     );
                 }
+                ui.checkbox(&mut config.taa, "anti-aliasing");
+                ui.add(
+                    egui::Slider::new(&mut config.taa_blend, 0.0..=1.0)
+                        .text("anti-aliasing: part of a new frame (0: reference mean)"),
+                );
                 ui.add(
                     egui::Slider::new(&mut config.exposure, 0.1..=8.0)
                         .logarithmic(true)

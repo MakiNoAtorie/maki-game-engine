@@ -10,7 +10,8 @@
 //! Meshes: see the `meshes` module. It uploads the mesh assets and keeps the mesh table.
 //! The game spawns entities with the components of the scene crate: `MeshInstance`,
 //! `Light`, and one `Camera`. The passes (`passes` module) trace one light
-//! path per pixel and frame, and keep the mean over frames (`accumulation` module).
+//! path per pixel and frame, keep the mean over frames (`accumulation` and `denoise`
+//! modules), and smooth the edges and scale to the window (`taa` module).
 //!
 //! A module adds to the renderer in two places: an `Extract` system that writes a
 //! resource into the render world, and a pass in the frame graph (from a `Startup`
@@ -32,6 +33,7 @@ mod light;
 mod meshes;
 mod motion;
 mod passes;
+mod taa;
 
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::resource::Resource;
@@ -142,6 +144,13 @@ pub struct ExtractedFrame {
     /// `history_clamp` of the config: the history test of the direct light, in
     /// standard deviations of the noise. 0: no such test.
     pub history_clamp: f32,
+    /// The offset of all camera rays of this frame from the pixel centers, in pixels:
+    /// see the `taa` module. Zero with anti-aliasing off.
+    pub jitter: [f32; 2],
+    /// `taa` of the config: anti-aliasing is on.
+    pub taa: bool,
+    /// `taa_blend` of the config: the part of a new frame in the picture.
+    pub taa_blend: f32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
     /// How dark the fade makes the picture: 0.0 is the picture, 1.0 is black.
@@ -301,6 +310,13 @@ pub(crate) fn extract_frame(
         denoise_reach: config.denoise_reach,
         indirect_clamp: config.indirect_clamp,
         history_clamp: config.history_clamp,
+        jitter: if config.taa {
+            taa::jitter(time.frame)
+        } else {
+            [0.0; 2]
+        },
+        taa: config.taa,
+        taa_blend: config.taa_blend,
         exposure: config.exposure,
         fade: fade.map_or(0.0, |fade| fade.0.clamp(0.0, 1.0)),
         debug_view: *debug_view,

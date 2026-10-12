@@ -11,7 +11,8 @@ reference Makes the reference picture of a scenario: a static light, 65536 sampl
          minute. `--set` changes config keys, `--name` the file name.
 quality  Runs a scenario with a static light (or `--moving`) and prints two numbers for
          the last picture against the reference: the error (relative mean squared
-         error, `relmse`) and the sharpness (gradient energy of the picture over that
+         error, `relmse`, without the 0.01 % of the pixels with the largest error) and
+         the sharpness (gradient energy of the picture over that
          of the reference at the edges of the reference: 1.0 is as sharp, below is
          blurred). `noise` is the same ratio at all other pixels: above 1.0 is noise.
          `relmse` alone prefers a soft picture: read the numbers together. Also writes
@@ -145,20 +146,17 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
     `overrides` are more config keys, `arguments` more command line arguments."""
     (width, height), scene, extra, *more = SCENARIOS[name]
     extra = {**extra, **(overrides or {})}
+    # A key of `extra` takes the place of the same key below: TOML permits a key one time.
+    fixed = {"window_width": WINDOW[0], "window_height": WINDOW[1], "render_width": width, "render_height": height}
+    if "samples_per_frame" not in extra:
+        # Not the automatic count: each run must do the same work.
+        fixed["samples_per_frame"] = 1
     arguments = [*(more[0] if more else []), *arguments]
     dump = dump or WORK / name / f"{label}.dump"
     work = WORK / name
     work.mkdir(parents=True, exist_ok=True)
-    config = [
-        f"window_width = {WINDOW[0]}",
-        f"window_height = {WINDOW[1]}",
-        f"render_width = {width}",
-        f"render_height = {height}",
-        # Not the automatic count: each run must do the same work.
-        *([] if "samples_per_frame" in extra else ["samples_per_frame = 1"]),
-        # A JSON number, string, or list of numbers is the same text in TOML.
-        *(f"{key} = {json.dumps(value)}" for key, value in extra.items()),
-    ]
+    # A JSON number, string, or list of numbers is the same text in TOML.
+    config = [f"{key} = {json.dumps(value)}" for key, value in {**fixed, **extra}.items()]
     params = f"render={width}x{height};window={WINDOW[0]}x{WINDOW[1]};frames={frames};warmup={warmup}"
     params += "".join(f";{key}={value}" for key, value in extra.items())
     params += "".join(f";{argument}" for argument in arguments)
@@ -265,13 +263,20 @@ def read_dump(path):
 
 
 def relmse(picture, reference):
-    """Mean over all pixels and R, G, B of (x - r)^2 / (r^2 + 0.01)."""
-    total = 0.0
+    """Mean over the pixels and R, G, B of (x - r)^2 / (r^2 + 0.01), without the one
+    pixel in 10000 with the largest error. A lamp is some hundred times brighter than
+    the room: one lamp pixel at another place (an edge, a reflection on glass) has
+    more error than the rest of the picture. The usual rule for this metric."""
+    errors = []
     for i in range(0, len(reference), 4):
+        error = 0.0
         for c in (i, i + 1, i + 2):
             r = reference[c]
-            total += (picture[c] - r) ** 2 / (r * r + 0.01)
-    return total / (len(reference) * 0.75)
+            error += (picture[c] - r) ** 2 / (r * r + 0.01)
+        errors.append(error)
+    errors.sort()
+    kept = errors[:len(errors) - len(errors) // 10000]
+    return sum(kept) / (len(kept) * 3)
 
 
 def size_of(header):
@@ -353,11 +358,12 @@ def command_reference(args):
     path = REFERENCE / f"{args.name or args.scenario}.dump"
     path.parent.mkdir(parents=True, exist_ok=True)
     # 64 samples in a frame: the largest count, so the fewest frames.
-    # No filter: the reference is the mean over time and nothing else. It has the
+    # No filter: the reference is the mean over time and nothing else, also for the
+    # anti-aliasing (`taa_blend = 0`: the plain mean of all frames at rest). It has the
     # limit of bounce light of the default config (`indirect_clamp`): the limit changes
     # what the picture converges to, and the reference is the target of the denoiser.
     # `--set indirect_clamp=0 --name NAME` gives the picture without the limit.
-    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, "denoise_direct_passes": 0, "history_clamp": 0.0, **parse_overrides(args.set)}
+    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, "denoise_direct_passes": 0, "history_clamp": 0.0, "taa_blend": 0.0, **parse_overrides(args.set)}
     frames = REFERENCE_SAMPLES // 64
     # The picture starts again when the walk script ends.
     if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:
