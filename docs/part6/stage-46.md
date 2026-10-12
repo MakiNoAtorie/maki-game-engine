@@ -69,7 +69,7 @@ Picture: [the check room: a model from a `.blend` file, a wall texture from a `.
 
 ## 7. What went wrong in the check: Photoshop
 
-To have a file of a real paint program, the session started Photoshop 2025 by automation (it was not running) and let it save a file of two layers. At its start Photoshop restored a document of the owner that it had recovered, with changes that are not saved (`202610 duuuuuud-Recovered.psd`). The quit by the script did not close Photoshop, and a close of its window by the session opened its "save changes?" dialog. The session did not answer the dialog and did not touch Photoshop again: it is open, and the answer is the owner's. The script also set the dialog mode of Photoshop for scripts to "no dialogs" and could not set it back (Photoshop was busy with the dialog).
+To have a file of a real paint program, the session started Photoshop 2025 by automation (it was not running) and let it save a file of two layers. At its start Photoshop restored a document of the owner that it had recovered, with changes that are not saved (`202610 duuuuuud-Recovered.psd`). The quit by the script did not close Photoshop, and a close of its window by the session opened its "save changes?" dialog. The session did not answer the dialog and did not touch Photoshop again: the answer is the owner's. At the end of the stage no Photoshop process ran any more; the session did not end it and does not know what was answered, so the state of the recovered document is not known. The script also set the dialog mode of Photoshop for scripts to "no dialogs" and could not set it back (Photoshop was busy with the dialog).
 
 A program with documents of the owner is not started by a later session: a note is in the memory of the assistant.
 
