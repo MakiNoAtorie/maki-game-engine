@@ -87,9 +87,6 @@ pub struct Config {
     /// motion, below the gate of stage 20 (`docs/part3/stage-20.md`). The switch is
     /// for a look at the noise in motion.
     pub blue_noise: bool,
-    /// ReSTIR GI: each pixel keeps the best bounce sample of the last frames and of
-    /// the pixels around it, in place of one new sample for each frame.
-    pub restir_gi: bool,
     /// The largest number of rays in one light path. Mirrors that face each other and
     /// the inside of glass can reflect a ray many times. A lower limit costs less GPU
     /// time, and deep reflections lose detail.
@@ -186,7 +183,6 @@ impl Default for Config {
             trace_budget_ms: 6.0,
             light_history_samples: 16,
             blue_noise: false,
-            restir_gi: false,
             max_path_rays: 8,
             denoise_passes: 4,
             denoise_direct_passes: 1,

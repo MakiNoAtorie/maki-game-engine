@@ -35,7 +35,6 @@ mod meshes;
 mod motion;
 mod noise;
 mod passes;
-mod restir;
 mod taa;
 
 use bevy_ecs::change_detection::DetectChanges;
@@ -151,8 +150,6 @@ pub struct ExtractedFrame {
     pub history_clamp: f32,
     /// `blue_noise` of the config: the trace pass uses the blue-noise pattern.
     pub blue_noise: bool,
-    /// `restir_gi` of the config: the bounce samples go through the pass `restir_gi`.
-    pub restir_gi: bool,
     /// The offset of all camera rays of this frame from the pixel centers, in pixels:
     /// see the `taa` module. Zero with anti-aliasing off.
     pub jitter: [f32; 2],
@@ -335,7 +332,6 @@ pub(crate) fn extract_frame(
         indirect_clamp: config.indirect_clamp,
         history_clamp: config.history_clamp,
         blue_noise: config.blue_noise,
-        restir_gi: config.restir_gi,
         jitter: if config.taa {
             taa::jitter(time.frame)
         } else {

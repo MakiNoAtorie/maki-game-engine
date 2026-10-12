@@ -85,8 +85,6 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform writeonly image2D images_rgba16f[];
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
     uniform writeonly image2D images_rg16f[];
-layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
-    uniform writeonly image2D images_rgba32f[];
 
 // Must agree with `Trace::execute` in src/passes.rs.
 // A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
@@ -119,16 +117,8 @@ layout(push_constant) uniform Push {
     // each from -0.5 to 0.5. See src/taa.rs.
     // A vec2 has an alignment of 8: it must start at a multiple of 8 bytes (here 112).
     vec2 jitter;
-    uint flags;           // bit 0: use the blue noise. Bit 1: bounce samples for ReSTIR GI
-    // With bit 1 of `flags`, the two images for the bounce sample of each pixel (see
-    // restir_gi.comp): the low 16 bits are the index of the point image in
-    // `images_rgba32f`, the high 16 bits that of the light image in `images_rgba16f`.
-    // Two indices in one field: the block is at its size limit of 128 bytes.
-    uint gi_images;
+    uint blue_noise;      // 1: use the blue noise. 0: white noise only
 } push;
-
-const uint FLAG_BLUE_NOISE = 1u;
-const uint FLAG_RESTIR_GI = 2u;
 
 // A sphere light. 48 bytes. Must agree with `light_bytes` in src/light.rs.
 struct LightData {
@@ -555,12 +545,6 @@ vec3 sum_indirect = vec3(0.0);
 vec3 sum_specular = vec3(0.0);
 vec3 sum_emission = vec3(0.0);
 
-// With ReSTIR GI (`FLAG_RESTIR_GI`): the bounce light of the first path of the frame
-// is not added to `sum_indirect`. It is the sample of the pixel for the pass
-// "restir_gi": the point that the bounce ray found, and the light from there.
-bool gi_path = false;    // the path is past the bounce of such a sample
-vec3 gi_sum = vec3(0.0); // its bounce light
-
 // Bounce light with the limit `push.indirect_clamp`.
 // Most bounce rays bring a little light. A rare one finds the light itself by way of
 // a mirror or through glass and brings some thousand times more (a "firefly"). The
@@ -584,11 +568,7 @@ void add_light(vec3 light, bool bounced, bool reflection) {
     if (reflection) {
         sum_specular += light;
     } else if (bounced) {
-        if (gi_path) {
-            gi_sum += light;
-        } else {
-            sum_indirect += light;
-        }
+        sum_indirect += light;
     } else {
         sum_direct += light;
     }
@@ -660,15 +640,6 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
     vec3 pending_throughput;
     uint pending_segment;
     bool reflection = false; // the path is that second path
-
-    // The bounce sample for ReSTIR GI: the first surface that the bounce ray finds.
-    bool gi_seen = false;    // the bounce ray has found a surface
-    bool gi_valid = false;   // a diffuse one: another pixel can use the sample too
-    vec3 gi_point;
-    vec3 gi_normal;
-    // The chance with which a plastic surface took the diffuse bounce. The path counts
-    // its light divided by it; the sample holds the light itself.
-    float gi_chance = 1.0;
 
     // State of the reflection ray of a rough surface: the path ray after that surface.
     // It can find a light, as the shadow ray of the surface can: the two share the
@@ -760,8 +731,6 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                 t_min = 0.0;
                 flags = gl_RayFlagsOpaqueEXT;
                 glossy_ray = false;
-                bool gi_first = gi_path && !gi_seen;
-                gi_seen = gi_seen || gi_path;
                 if (to_surface) {
                     path_length += surface.distance;
                 }
@@ -839,11 +808,6 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     // Diffuse, metal, or plastic. All rays from here start a small gap
                     // above the surface.
                     origin = surface.position + surface.normal * SURFACE_GAP;
-                    if (gi_first) {
-                        gi_valid = true;
-                        gi_point = surface.position;
-                        gi_normal = surface.normal;
-                    }
                     // The light of the surface itself, as the light of a lamp: with no
                     // noise where the pixel shows it, as bounce light after a bounce.
                     if (surface.emissive != vec3(0.0)) {
@@ -914,7 +878,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     float to_light;
                     float light_chance;
                     // The surface that the pixel shows, on the first path of the frame.
-                    noise_blue = (push.flags & FLAG_BLUE_NOISE) != 0u && first && to_surface;
+                    noise_blue = push.blue_noise != 0u && first && to_surface;
                     vec3 lambert = light_sample(surface.position, surface.normal, light_direction,
                         to_light, light_chance);
                     shadow_light = throughput * lambert;
@@ -980,11 +944,6 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                             // Plastic took the diffuse bounce, with this chance.
                             throughput /= 1.0 - glossy_pick;
                         }
-                        // A sample for ReSTIR GI: not behind a mirror or glass, where
-                        // the pass cannot compute the surface point of the pixel.
-                        gi_path = (push.flags & FLAG_RESTIR_GI) != 0u && first && to_surface
-                            && !chain;
-                        gi_chance = 1.0 - glossy_pick;
                         bounced = true;
                         sees_light = false;
                     }
@@ -1023,34 +982,6 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
             bounced = false;
         }
     }
-
-    // The bounce sample of the pixel, or "no sample".
-    if (first && (push.flags & FLAG_RESTIR_GI) != 0u) {
-        vec4 point = vec4(0.0, 0.0, 0.0, 2.0);
-        vec4 light = vec4(0.0);
-        if (gi_path && gi_valid) {
-            // The normal as two numbers (the octahedral map of scene.glsl).
-            vec3 n = gi_normal / (abs(gi_normal.x) + abs(gi_normal.y) + abs(gi_normal.z));
-            vec2 packed = n.z >= 0.0
-                ? n.xy
-                : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-            point = vec4(gi_point, packed.y);
-            light = vec4(min(gi_sum * gi_chance, vec3(MAX_LIGHT)), packed.x);
-        } else if (gi_path) {
-            // The bounce ray found a mirror, glass, or nothing: no pixel but this one
-            // can use that. The light counts as before, and the sample is a black
-            // one: the reservoir holds the light of the diffuse points only, and a
-            // ray that found none of them is a sample of that light too (zero). With
-            // no sample here, the reservoir would count only the rays that found
-            // light, and the result would be too bright.
-            sum_indirect += gi_sum;
-            point.w = 0.0;
-        }
-        imageStore(images_rgba32f[push.gi_images & 0xFFFFu], pixel, point);
-        imageStore(images_rgba16f[push.gi_images >> 16u], pixel, light);
-    }
-    gi_path = false;
-    gi_sum = vec3(0.0);
 }
 
 void main() {
