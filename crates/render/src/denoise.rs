@@ -136,6 +136,24 @@ pub(crate) struct TraceImages {
     /// `normal` of the frame before.
     pub previous_normal: ResourceId,
     pub motion: ResourceId,
+    /// The mean indirect light of the denoiser and that of the frame before
+    /// (`indirect_history`). The trace pass reads the second one.
+    pub mean_indirect: ResourceId,
+    pub previous_mean_indirect: ResourceId,
+}
+
+/// Declares the history images of the mean indirect light: `(current, previous)`.
+/// Not in `add_passes`: the trace pass reads `previous`, and it is added first.
+pub(crate) fn indirect_history(graph: &mut FrameGraph) -> (ResourceId, ResourceId) {
+    graph.add_history(
+        TransientDesc {
+            name: "denoise_indirect",
+            // 32-bit floats: see `add_passes`.
+            format: Format::Rgba32Float,
+            size: SizeMode::Internal,
+        },
+        "denoise_indirect_previous",
+    )
 }
 
 /// The images of one kind of light on its way through the filter.
@@ -200,10 +218,7 @@ pub(crate) fn add_passes(
         internal("denoise_direct", Format::Rgba32Float),
         "denoise_direct_previous",
     );
-    let (mean_indirect, previous_indirect) = graph.add_history(
-        internal("denoise_indirect", Format::Rgba32Float),
-        "denoise_indirect_previous",
-    );
+    let (mean_indirect, previous_indirect) = (trace.mean_indirect, trace.previous_mean_indirect);
     let (moments, previous_moments) = graph.add_history(
         internal("denoise_moments", Format::Rgba32Float),
         "denoise_moments_previous",

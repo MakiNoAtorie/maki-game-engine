@@ -85,6 +85,11 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
     uniform writeonly image2D images_rgba16f[];
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
     uniform writeonly image2D images_rg16f[];
+// The same binding again, to read images of the frame before.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform readonly image2D history_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
+    uniform readonly image2D history_rgba32f[];
 
 // Must agree with `Trace::execute` in src/passes.rs.
 // A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
@@ -117,8 +122,19 @@ layout(push_constant) uniform Push {
     // each from -0.5 to 0.5. See src/taa.rs.
     // A vec2 has an alignment of 8: it must start at a multiple of 8 bytes (here 112).
     vec2 jitter;
-    uint blue_noise;      // 1: use the blue noise. 0: white noise only
+    // Bit 0: use the blue noise. Bit 1: read the bounce light of the frame before
+    // (`bounce_light` below). Bits 8 to 15: a path ends after this many diffuse
+    // bounces, 1 or more.
+    uint flags;
+    // For bit 1 of `flags`, two images of the frame before: the low 16 bits are the
+    // index of the mean indirect light in `history_rgba32f`, the high 16 bits that of
+    // the `normal` image in `history_rgba16f`.
+    // Two indices in one field: the block is at its size limit of 128 bytes.
+    uint history_images;
 } push;
+
+const uint FLAG_BLUE_NOISE = 1u;
+const uint FLAG_BOUNCE_LIGHT = 2u;
 
 // A sphere light. 48 bytes. Must agree with `light_bytes` in src/light.rs.
 struct LightData {
@@ -536,6 +552,38 @@ vec3 visible_normal(vec3 normal, vec3 out_direction, float alpha, vec2 random_pa
     return facet.x * tangent + facet.y * bitangent + facet.z * normal;
 }
 
+// The bounce light that a surface point got in the frame before, without the color of
+// the surface: zero if the picture of that frame did not show the point.
+//
+// A path has one bounce: at its second surface it counts the light straight from the
+// lamps only. So the light of two and more bounces is missing, which is most of the
+// light in a corner that no lamp sees. More bounces cost a ray each. But the frame
+// before has the answer for each point that it showed: the mean indirect light of the
+// denoiser there. With it, the second surface has its bounce light too, and because
+// that mean was made the same way one frame before, the light of all later bounces
+// is in it, for the cost of two image reads.
+// A point that the picture does not show (behind the camera, hidden, on the back of
+// an object, behind a mirror or glass) gets nothing: one bounce, as before.
+// ponytail: a cache in world space (a hash grid of cells) has the points that the
+// picture does not show too. Build it if the dark side of a room is too dark.
+vec3 bounce_light(vec3 position, vec3 normal, ivec2 size) {
+    if ((push.flags & FLAG_BOUNCE_LIGHT) == 0u) {
+        return vec3(0.0);
+    }
+    ivec2 was = ivec2(floor(previous_screen(position, vec2(size))));
+    if (any(lessThan(was, ivec2(0))) || any(greaterThanEqual(was, size))) {
+        return vec3(0.0);
+    }
+    // The pixel showed this point if its surface has this normal and this distance
+    // from the camera of that frame.
+    vec4 surface = imageLoad(history_rgba16f[push.history_images >> 16u], was);
+    float from_camera = distance(position, camera_buffers[nonuniformEXT(push.previous_camera)].origin);
+    if (dot(surface.xyz, normal) < 0.9 || abs(surface.w - from_camera) > 0.02 * from_camera) {
+        return vec3(0.0);
+    }
+    return imageLoad(history_rgba32f[push.history_images & 0xFFFFu], was).rgb;
+}
+
 // ---- The path ----
 
 // The light of the paths of this pixel, summed over the samples of the frame. See the
@@ -617,6 +665,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
     // diffuse surface: its shadow ray already counted that light.
     bool sees_light = true;
     bool bounced = false; // the path has left a diffuse surface
+    uint bounces = 0u;    // how many times
     uint segment = 0;     // number of the path ray, from 0
 
     // The way from the camera to the surface that the pixel shows.
@@ -878,7 +927,7 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     float to_light;
                     float light_chance;
                     // The surface that the pixel shows, on the first path of the frame.
-                    noise_blue = push.blue_noise != 0u && first && to_surface;
+                    noise_blue = (push.flags & FLAG_BLUE_NOISE) != 0u && first && to_surface;
                     vec3 lambert = light_sample(surface.position, surface.normal, light_direction,
                         to_light, light_chance);
                     shadow_light = throughput * lambert;
@@ -910,7 +959,14 @@ void trace_path(ivec2 pixel, ivec2 size, bool first) {
                     // surface: it shows the room with direct light only. The glass
                     // reflects some percent of the light, so the missing bounce light
                     // is some percent of some percent, and the path is half as long.
-                    continues = !bounced && !last && !reflection;
+                    continues = bounces < ((push.flags >> 8u) & 0xFFu) && !last && !reflection;
+                    bounces++;
+                    // The last surface of a path that has left a diffuse surface: the
+                    // light that it gets by way of more bounces, from the frame before.
+                    if (bounced && !continues) {
+                        add_light(throughput * bounce_light(surface.position, surface.normal, size),
+                            true, reflection);
+                    }
                     if (continues && glossy && (metal || random() < glossy_pick)) {
                         // The reflection ray of the rough surface.
                         vec3 facet = visible_normal(surface.normal, out_direction, alpha,

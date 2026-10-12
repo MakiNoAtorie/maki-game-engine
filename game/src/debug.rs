@@ -92,6 +92,8 @@ impl Module for DebugPanelModule {
                     egui::Slider::new(&mut config.max_path_rays, 2..=32).text("rays in one path"),
                 );
                 ui.checkbox(&mut config.blue_noise, "blue noise");
+                ui.add(egui::Slider::new(&mut config.max_bounces, 1..=16).text("diffuse bounces"));
+                ui.checkbox(&mut config.bounce_light, "bounce light of the frame before");
             });
             ui.collapsing("Denoiser", |ui| {
                 ui.add(

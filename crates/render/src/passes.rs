@@ -71,6 +71,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         partial_logged: false,
         built: None,
     });
+    let (mean_indirect, previous_mean_indirect) = denoise::indirect_history(graph);
     let trace = denoise::TraceImages {
         direct,
         indirect,
@@ -79,6 +80,8 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         normal,
         previous_normal,
         motion,
+        mean_indirect,
+        previous_mean_indirect,
     };
     graph.add_pass(Trace {
         pipeline: gpu
@@ -257,7 +260,8 @@ impl Pass for BuildTlas {
 /// the pixel shows. See `shaders/trace.comp` for the steps.
 struct Trace {
     pipeline: ComputePipelineHandle,
-    /// The pass writes all of them but `previous_normal`.
+    /// The pass writes the images of this frame, and reads `previous_normal` and
+    /// `previous_mean_indirect`.
     images: denoise::TraceImages,
     /// True after the "too many lights" error, to log it one time.
     lights_logged: bool,
@@ -279,12 +283,19 @@ impl Pass for Trace {
             images.motion,
         ]
         .map(|image| (image, Access::StorageWrite))
-        .to_vec()
+        .into_iter()
+        .chain(
+            [images.previous_normal, images.previous_mean_indirect]
+                .map(|image| (image, Access::StorageRead)),
+        )
+        .collect()
     }
 
     fn execute(&mut self, ctx: &mut PassContext) {
         // The mean has all its samples: one more would cost GPU time and change nothing.
-        let frame_samples = ctx.world.resource::<Accumulation>().frame_samples();
+        let accumulation = ctx.world.resource::<Accumulation>();
+        let (frame_samples, reset_frame) =
+            (accumulation.frame_samples(), accumulation.reset_frame());
         if frame_samples == 0 {
             return;
         }
@@ -355,10 +366,17 @@ impl Pass for Trace {
             buffer_index(ctx.gpu, ctx.world.resource::<NoiseBuffer>().0),
             frame.jitter[0].to_bits(),
             frame.jitter[1].to_bits(),
-            u32::from(frame.blue_noise),
+            // The `flags` of the shader. No image of the frame before in a frame that
+            // starts the picture again.
+            u32::from(frame.blue_noise)
+                | u32::from(frame.bounce_light && !reset_frame) << 1
+                | frame.max_bounces << 8,
+            // Two bindless indices in one field: each is below 65536.
+            ctx.bindless_index(self.images.previous_mean_indirect)
+                | ctx.bindless_index(self.images.previous_normal) << 16,
         ]);
         // The shader has a vec2 at `jitter`: it starts at a multiple of 8 bytes.
-        debug_assert_eq!(fields.len() - 3, 112 / 4);
+        debug_assert_eq!(fields.len() - 4, 112 / 4);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,

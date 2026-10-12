@@ -92,6 +92,9 @@ SCENARIOS = {
     "trip_720p": ((1280, 720), None, {}, ["--bench-script", "trip"]),
     # Room C: rough metal and plastic, a surface with a light of its own, a cone light.
     "materials_720p": ((1280, 720), None, {"start_room": "room_c.ron"}),
+    # Two diffuse bounces for each path.
+    "test_1080p_bounces2": ((1920, 1080), None, {"max_bounces": 2}),
+    "heavy_mixed_lights8_1080p_bounces2": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {"max_bounces": 2}),
     "heavy_mixed_lights8_1080p": ((1920, 1080), dict(objects=1000, segments=64, seed=1, mirror_share=0.25, glass_share=0.25, lights=8), {}),
 }
 
@@ -367,7 +370,7 @@ def command_reference(args):
     # limit of bounce light of the default config (`indirect_clamp`): the limit changes
     # what the picture converges to, and the reference is the target of the denoiser.
     # `--set indirect_clamp=0 --name NAME` gives the picture without the limit.
-    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, "denoise_direct_passes": 0, "history_clamp": 0.0, "taa_blend": 0.0, **parse_overrides(args.set)}
+    overrides = {"max_samples": REFERENCE_SAMPLES, "samples_per_frame": 64, "denoise_passes": 0, "denoise_direct_passes": 0, "denoise_specular_passes": 0, "history_clamp": 0.0, "taa_blend": 0.0, **parse_overrides(args.set)}
     frames = REFERENCE_SAMPLES // 64
     # The picture starts again when the walk script ends.
     if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:

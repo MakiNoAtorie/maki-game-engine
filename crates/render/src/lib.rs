@@ -131,6 +131,11 @@ pub struct ExtractedFrame {
     pub samples_per_frame: u32,
     /// The largest number of rays in one light path.
     pub max_path_rays: u32,
+    /// A path ends after this many diffuse bounces, 1 or more.
+    pub max_bounces: u32,
+    /// `bounce_light` of the config: the last surface of a path reads the bounce
+    /// light of the frame before.
+    pub bounce_light: bool,
     /// Samples that the indirect light of a pixel keeps on a soft reset.
     pub light_history_samples: u32,
     /// Filter passes of the denoiser for the indirect light in this frame, 0 to
@@ -324,6 +329,8 @@ pub(crate) fn extract_frame(
         // Never 0: the passes divide by it.
         samples_per_frame: config.samples_per_frame.max(1),
         max_path_rays: config.max_path_rays,
+        max_bounces: config.max_bounces.clamp(1, 16),
+        bounce_light: config.bounce_light,
         light_history_samples: config.light_history_samples,
         denoise_passes: config.denoise_passes,
         denoise_direct_passes: config.denoise_direct_passes,

@@ -97,6 +97,10 @@ impl App {
             config.trace_budget_ms.is_finite() && config.trace_budget_ms > 0.0,
             "trace_budget_ms must be a positive number"
         );
+        ensure!(
+            (1..=16).contains(&config.max_bounces),
+            "max_bounces must be from 1 to 16"
+        );
         // Two rays: a camera ray and one bounce.
         ensure!(
             (2..=32).contains(&config.max_path_rays),

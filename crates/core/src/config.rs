@@ -80,6 +80,17 @@ pub struct Config {
     /// 0: a change of the lighting starts the indirect light again.
     /// The direct light (the shadows) has a test for each pixel: `history_clamp`.
     pub light_history_samples: u32,
+    /// A light path ends after this many diffuse bounces, 1 to 16. 1: the light of a
+    /// surface comes straight from a light or by way of one other surface. More: the
+    /// light that fills dark corners after many bounces, for more rays and more noise.
+    /// `max_path_rays` is also a limit: each bounce is a ray.
+    pub max_bounces: u32,
+    /// Light of many bounces for the cost of one. The last surface of a path counts
+    /// the light straight from the lamps, and with this also the bounce light that the
+    /// same point had in the picture of the frame before (if that picture showed
+    /// it). Dark corners get the light that they have in a real room. False: one
+    /// bounce (or `max_bounces`), and corners that no lamp sees stay too dark.
+    pub bounce_light: bool,
     /// Blue noise: the random numbers for the point on the light and for the bounce
     /// direction are spread evenly over the pixels, so the noise of one frame has no
     /// clumps, and the denoiser has less to do. False: white noise for all.
@@ -181,6 +192,8 @@ impl Default for Config {
             samples_per_frame: 0,
             trace_budget_ms: 6.0,
             light_history_samples: 16,
+            max_bounces: 1,
+            bounce_light: true,
             blue_noise: true,
             max_path_rays: 8,
             denoise_passes: 4,
