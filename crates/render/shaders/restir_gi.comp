@@ -1,0 +1,288 @@
+#version 460
+// Pass "restir_gi": reuse of bounce samples over time and over pixels (ReSTIR GI,
+// Ouyang et al., 2021). See src/restir.rs.
+//
+// The trace pass follows one bounce ray for each pixel. Its result is one sample of
+// the bounce light: the point that the ray found, and the light that this point sends
+// back. One sample is noisy. But the sample of the pixel one frame before, and those
+// of the pixels around it, are samples of almost the same light: a point that lights
+// one place of the floor also lights the place next to it.
+//
+// Each pixel keeps a reservoir: one sample, chosen at random from all samples that the
+// pixel has seen, with a larger chance for a sample that brings more light here, and
+// a weight `W` that makes the result correct in the mean (resampled importance
+// sampling). In each frame:
+// 1. The new sample of the trace pass goes into an empty reservoir.
+// 2. The reservoir of the same surface point in the frame before is merged in.
+// 3. The reservoirs of some random pixels around that place are merged in. Such a
+//    sample was made for another surface point: it counts with the change of the
+//    solid angle between the two (a Jacobian).
+// 4. If the chosen sample is not the new one, one ray tests that this pixel sees the
+//    sample point. If not, the pixel keeps its new sample.
+// 5. The light of the chosen sample, times `W`, is added to the `indirect` image.
+//
+// A reservoir, in three images:
+// - point:  xyz: the sample point, world space. w: the second number of its packed
+//           normal, or 2.0 for "no sample".
+// - light:  rgb: the light that the point sends back. a: the first number of the
+//           packed normal.
+// - weight: r: W. g: M, the number of samples that the reservoir has seen.
+
+#include "bindless.glsl"
+#include "scene.glsl"
+#include "denoise.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba32f)
+    uniform image2D images_rgba32f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform image2D images_rgba16f[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rg16f)
+    uniform image2D images_rg16f[];
+
+// Must agree with `RestirGi::execute` in src/restir.rs.
+// A vec3 has 12 bytes and an alignment of 16, so one 32-bit value fits after each one.
+layout(push_constant) uniform Push {
+    vec3 origin;            // camera position, world space
+    uint new_point;         // index in `images_rgba32f`: the sample of this frame
+    // The ray of a pixel is `forward + x * right + y * up`, as in trace.comp.
+    vec3 right;
+    uint new_light;         // index in `images_rgba16f`
+    vec3 up;
+    uint normal;            // index in `images_rgba16f`: normal in xyz (zero: no surface), distance in w
+    vec3 forward;
+    uint previous_normal;   // the same image of the frame before
+    uint motion;            // index in `images_rg16f`: screen motion in pixels
+    uint indirect;          // index in `images_rgba16f`: the pass adds its light to rgb
+    // The reservoirs of the frame before, and those that this pass writes.
+    uint previous_point;    // index in `images_rgba32f`
+    uint previous_light;    // index in `images_rgba16f`
+    uint previous_weight;   // index in `images_rg16f`
+    uint point;             // index in `images_rgba32f`
+    uint light;             // index in `images_rgba16f`
+    uint weight;            // index in `images_rg16f`
+    uint frame;             // number of the frame, for the random numbers
+    float frame_samples;    // paths for each pixel in this frame: the trace pass divides by it
+    // A reservoir of the frame before counts as this many samples at most. Lower: the
+    // light follows a change faster, with more noise. 0: no reservoir of the frame
+    // before is read (the first frame, a new image size).
+    float history;
+    uint pad;               // a vec2 starts at a multiple of 8 bytes
+    vec2 jitter;            // of this frame, in pixels: see trace.comp
+} push;
+
+const float PI = 3.14159265;
+// Reservoirs of pixels around the place, and how far around, in pixels.
+const int NEIGHBORS = 2;
+const float NEIGHBOR_RADIUS = 16.0;
+// A pixel of the frame before shows the same surface, or one that can share a sample:
+// the cosine between the normals, and the part by which the distances can differ.
+const float SAME_NORMAL = 0.9;
+const float SAME_DISTANCE = 0.1;
+// The largest weight of a sample. A sample at a flat angle has a very large one.
+const float MAX_WEIGHT = 64.0;
+
+uint rng_state;
+
+// The PCG hash, as in trace.comp.
+uint hash(uint value) {
+    uint state = value * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random() {
+    rng_state = hash(rng_state);
+    return float(rng_state >> 8u) / 16777216.0;
+}
+
+// A normal from its two packed numbers (the octahedral map, as in scene.glsl).
+vec3 unpacked(vec2 packed) {
+    vec3 n = vec3(packed, 1.0 - abs(packed.x) - abs(packed.y));
+    float fold = max(-n.z, 0.0);
+    n.x += n.x >= 0.0 ? -fold : fold;
+    n.y += n.y >= 0.0 ? -fold : fold;
+    return normalize(n);
+}
+
+// A sample of the bounce light, with the numbers of its reservoir.
+struct Reservoir {
+    vec3 point;   // the sample point
+    vec3 normal;  // the normal there
+    vec3 light;   // the light that the point sends back
+    float weight; // W
+    float count;  // M. Zero: no sample
+};
+
+Reservoir reservoir_at(uint point, uint light, uint weight, ivec2 pixel) {
+    vec4 a = imageLoad(images_rgba32f[point], pixel);
+    vec4 b = imageLoad(images_rgba16f[light], pixel);
+    vec2 c = imageLoad(images_rg16f[weight], pixel).xy;
+    Reservoir r;
+    r.point = a.xyz;
+    r.normal = unpacked(vec2(b.a, a.w));
+    r.light = b.rgb;
+    r.weight = c.x;
+    r.count = a.w > 1.5 ? 0.0 : c.y;
+    return r;
+}
+
+// The surface point that a pixel shows: the camera ray times the distance.
+vec3 surface_point(ivec2 pixel, ivec2 size, float distance) {
+    vec2 screen = (vec2(pixel) + 0.5 + push.jitter) / vec2(size) * 2.0 - 1.0;
+    return push.origin
+        + normalize(push.forward + screen.x * push.right - screen.y * push.up) * distance;
+}
+
+// How much light a sample brings to a surface point, as one number: its brightness
+// times the cosine at the surface. The chance of a sample follows this value.
+float target(Reservoir r, vec3 position, vec3 normal) {
+    return brightness(r.light) * max(dot(normal, normalize(r.point - position)), 0.0);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images_rgba16f[push.indirect]);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    rng_state = hash(uint(pixel.x) + hash(uint(pixel.y) + hash(push.frame ^ 0x9E3779B9u)));
+    vec4 surface = imageLoad(images_rgba16f[push.normal], pixel);
+
+    // 1. The new sample. The trace pass took its direction with a chance of
+    // `cosine / pi` (see the bounce in trace.comp).
+    Reservoir chosen;
+    chosen.point = vec3(0.0);
+    chosen.normal = vec3(0.0, 0.0, 1.0);
+    chosen.light = vec3(0.0);
+    chosen.count = 0.0;
+    chosen.weight = 0.0;
+    float chosen_target = 0.0;
+    float weights = 0.0; // the sum of the weights of all samples that were merged
+    float count = 0.0;
+    vec4 new_a = imageLoad(images_rgba32f[push.new_point], pixel);
+    Reservoir fresh = chosen;
+    vec3 position = vec3(0.0);
+    if (surface.xyz != vec3(0.0)) {
+        position = surface_point(pixel, size, surface.w);
+        if (new_a.w <= 1.5) {
+            vec4 new_b = imageLoad(images_rgba16f[push.new_light], pixel);
+            fresh.point = new_a.xyz;
+            fresh.normal = unpacked(vec2(new_b.a, new_a.w));
+            fresh.light = new_b.rgb;
+            fresh.count = 1.0;
+            float cosine = max(dot(surface.xyz, normalize(fresh.point - position)), 1e-3);
+            fresh.weight = min(PI / cosine, MAX_WEIGHT);
+            chosen = fresh;
+            chosen_target = target(fresh, position, surface.xyz);
+            weights = chosen_target * fresh.weight;
+            count = 1.0;
+        }
+    }
+    bool is_fresh = true;
+
+    if (surface.xyz != vec3(0.0) && push.history > 0.0) {
+        vec2 motion = imageLoad(images_rg16f[push.motion], pixel).xy;
+        ivec2 was = ivec2(round(vec2(pixel) - motion));
+        // 2. and 3.: the place itself, then pixels around it.
+        for (int index = 0; index <= NEIGHBORS; index++) {
+            ivec2 tap = was;
+            if (index > 0) {
+                float angle = 6.28318531 * random();
+                tap += ivec2(round(NEIGHBOR_RADIUS * sqrt(random()) * vec2(cos(angle), sin(angle))));
+            }
+            if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, size))) {
+                continue;
+            }
+            vec4 tap_surface = imageLoad(images_rgba16f[push.previous_normal], tap);
+            if (dot(tap_surface.xyz, surface.xyz) < SAME_NORMAL
+                || abs(tap_surface.w - surface.w) > SAME_DISTANCE * surface.w) {
+                continue;
+            }
+            Reservoir other = reservoir_at(push.previous_point, push.previous_light,
+                push.previous_weight, tap);
+            if (other.count <= 0.0) {
+                continue;
+            }
+            float other_target = target(other, position, surface.xyz);
+            if (index > 0) {
+                // The sample was made for the surface point of `tap`. From here the
+                // sample point is at another distance and angle: the same light, in
+                // another solid angle.
+                // ponytail: the place of that point with the camera of this frame.
+                // While the camera moves, it is off by the motion of one frame.
+                vec3 from_there = surface_point(tap, size, tap_surface.w) - other.point;
+                vec3 from_here = position - other.point;
+                float cos_there = dot(other.normal, normalize(from_there));
+                float cos_here = dot(other.normal, normalize(from_here));
+                if (cos_there <= 1e-3 || cos_here <= 0.0) {
+                    continue;
+                }
+                float jacobian = cos_here / cos_there
+                    * dot(from_there, from_there) / dot(from_here, from_here);
+                // A sample point very near this pixel: its light would count much
+                // too much.
+                if (jacobian > 10.0) {
+                    continue;
+                }
+                other_target *= jacobian;
+            }
+            float other_count = min(other.count, push.history);
+            float weight = other_target * other.weight * other_count;
+            weights += weight;
+            count += other_count;
+            if (random() * weights < weight) {
+                chosen = other;
+                chosen_target = target(other, position, surface.xyz);
+                is_fresh = false;
+            }
+        }
+    }
+
+    // 4. Does this pixel see the point of a sample that it took from another one?
+    if (!is_fresh && chosen_target > 0.0) {
+        vec3 start = position + surface.xyz * 0.01;
+        vec3 to_point = chosen.point + chosen.normal * 0.01 - start;
+        float length_to_point = length(to_point);
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, scene_tlas,
+            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, start, 0.0,
+            to_point / length_to_point, length_to_point);
+        while (rayQueryProceedEXT(query)) {}
+        if (rayQueryGetIntersectionTypeEXT(query, true)
+            == gl_RayQueryCommittedIntersectionTriangleEXT) {
+            // Hidden: the pixel keeps its new sample alone.
+            chosen = fresh;
+            chosen_target = fresh.count > 0.0 ? target(fresh, position, surface.xyz) : 0.0;
+            weights = chosen_target * fresh.weight;
+            count = fresh.count;
+        }
+    }
+
+    // The weight that makes the light of the chosen sample correct in the mean: the
+    // sum of all weights, over the number of samples and over its own target value.
+    chosen.weight = chosen_target > 0.0
+        ? min(weights / (chosen_target * count), MAX_WEIGHT)
+        : 0.0;
+    chosen.count = count;
+
+    // 5. A diffuse surface sends on `cosine / pi` of the light, without its color.
+    if (chosen.count > 0.0 && chosen.weight > 0.0) {
+        float cosine = max(dot(surface.xyz, normalize(chosen.point - position)), 0.0);
+        vec4 indirect = imageLoad(images_rgba16f[push.indirect], pixel);
+        indirect.rgb += chosen.light * (cosine / PI * chosen.weight / push.frame_samples);
+        imageStore(images_rgba16f[push.indirect], pixel, min(indirect, vec4(MAX_LIGHT)));
+    }
+
+    // The packed normal: the two numbers that `unpacked` reads.
+    vec3 n = chosen.count > 0.0 ? chosen.normal : vec3(0.0, 0.0, 1.0);
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec2 packed = n.z >= 0.0
+        ? n.xy
+        : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    imageStore(images_rgba32f[push.point], pixel,
+        vec4(chosen.point, chosen.count > 0.0 ? packed.y : 2.0));
+    imageStore(images_rgba16f[push.light], pixel, vec4(chosen.light, packed.x));
+    imageStore(images_rg16f[push.weight], pixel, vec4(chosen.weight, chosen.count, 0.0, 0.0));
+}

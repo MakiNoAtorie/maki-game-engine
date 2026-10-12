@@ -26,7 +26,7 @@ use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
 use crate::noise::NoiseBuffer;
 use crate::{
     Accumulation, DebugView, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights,
-    GpuMeshes, MAX_LIGHTS, bloom, denoise, ray_basis, shader_spirv, taa,
+    GpuMeshes, MAX_LIGHTS, bloom, denoise, ray_basis, restir, shader_spirv, taa,
 };
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
@@ -71,6 +71,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         partial_logged: false,
         built: None,
     });
+    let gi_samples = restir::add_images(graph);
     let trace = denoise::TraceImages {
         direct,
         indirect,
@@ -85,8 +86,20 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
             .create_compute_pipeline(shader_spirv!("trace.comp"))
             .expect("trace pipeline"),
         images: trace,
+        gi_samples,
         lights_logged: false,
     });
+    restir::add_pass(
+        gpu,
+        graph,
+        gi_samples,
+        restir::Inputs {
+            normal,
+            previous_normal,
+            motion,
+            indirect,
+        },
+    );
     let denoise = denoise::add_passes(gpu, graph, trace);
     // To the output resolution, with smooth edges.
     let resolved = taa::add_pass(
@@ -259,6 +272,8 @@ struct Trace {
     pipeline: ComputePipelineHandle,
     /// The pass writes all of them but `previous_normal`.
     images: denoise::TraceImages,
+    /// With `restir_gi`: the bounce sample of each pixel.
+    gi_samples: restir::SampleImages,
     /// True after the "too many lights" error, to log it one time.
     lights_logged: bool,
 }
@@ -277,6 +292,8 @@ impl Pass for Trace {
             images.normal,
             images.albedo,
             images.motion,
+            self.gi_samples.point,
+            self.gi_samples.light,
         ]
         .map(|image| (image, Access::StorageWrite))
         .to_vec()
@@ -355,10 +372,14 @@ impl Pass for Trace {
             buffer_index(ctx.gpu, ctx.world.resource::<NoiseBuffer>().0),
             frame.jitter[0].to_bits(),
             frame.jitter[1].to_bits(),
-            u32::from(frame.blue_noise),
+            // The `FLAG_*` bits of the shader.
+            u32::from(frame.blue_noise) | u32::from(frame.restir_gi) << 1,
+            // Two bindless indices in one field: each is below 65536.
+            ctx.bindless_index(self.gi_samples.point)
+                | ctx.bindless_index(self.gi_samples.light) << 16,
         ]);
         // The shader has a vec2 at `jitter`: it starts at a multiple of 8 bytes.
-        debug_assert_eq!(fields.len() - 3, 112 / 4);
+        debug_assert_eq!(fields.len() - 4, 112 / 4);
         ctx.gpu
             .dispatch_compute(
                 self.pipeline,
