@@ -2,9 +2,9 @@
 
 Top-down 3D horror game engine with path-traced lighting, written in Rust.
 
-## Current target (part 4: from renderer to engine)
-Turn the code into an engine that a game is built on, and build the tools to make rooms: engine/game split, textures, an editor for rooms and events. The plan is in `docs/part4/`. Parts 2 (playable vignette, `docs/part2/`) and 3 (picture quality, `docs/part3/`) are done.
-The architecture must let later features plug in without rework (upscaling, software tracer backend, Metal backend, skinned characters, baked lighting, audio, save/load). Favor correct seams over feature breadth.
+## Current target (part 5: from editor to game)
+Make the editor a tool for daily work and give the engine what a longer game needs: checks at load, a richer event format, an editor window that fits the display, key chords, a play signal, choices, sound, save and load, prefabs. The plan is in `docs/part5/`. Parts 2 (`docs/part2/`), 3 (`docs/part3/`), and 4 (`docs/part4/`) are done.
+The architecture must let later features plug in without rework (upscaling, software tracer backend, Metal backend, skinned characters, baked lighting). Favor correct seams over feature breadth.
 Picture quality and GPU time must not regress: compare `tools/bench.py` runs before and after each stage.
 
 ## Stack
