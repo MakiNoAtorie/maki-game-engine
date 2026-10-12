@@ -4,3 +4,5 @@
 # Written by `--bench-frames`.
 /bench.csv
 /bench.dump
+# Backup of the owner. Not part of the repository.
+/maki-renderer-*.zip

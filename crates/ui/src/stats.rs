@@ -1,17 +1,58 @@
 //! The stats panel: frame time, sample count, light, resolution, GPU time of each pass.
+//! And the frame counter in the corner of the picture.
 //! It uses only the public panel API, as a panel of another crate does.
+
+use std::time::{Duration, Instant};
 
 use maki_core::{App, Module, Time, Transform};
 use maki_render::{Accumulation, ExtractedFrame, FrameGraph, RenderGpu, RenderWorld};
 use maki_scene::{Light, Player};
 
-use crate::add_panel;
+use crate::{add_corner, add_panel};
 
 /// Adds the "Stats" panel. Needs `UiModule` to show it.
 pub struct StatsPanelModule;
 
+/// The frame time in milliseconds that the game would have with no limit: without the
+/// time that the CPU waited for the display (vsync) or for the GPU. The GPU time of
+/// the passes is the lower limit, because the wait for the GPU is not counted.
+fn work_ms(interval: Duration, wait: Duration, gpu_ms: f32) -> f32 {
+    (interval.saturating_sub(wait).as_secs_f32() * 1000.0).max(gpu_ms)
+}
+
 impl Module for StatsPanelModule {
     fn build(&self, app: &mut App) {
+        // State of the counter: the start of the frame before, and the mean work time.
+        let mut last = Instant::now();
+        let mut mean_ms = 0.0_f32;
+        add_corner(app, "Frame counter", true, move |ui, world| {
+            // The real time, not `Time::delta`: a benchmark run sets that to a fixed value.
+            let interval = std::mem::replace(&mut last, Instant::now()).elapsed();
+            let wait = world
+                .get_resource::<RenderGpu>()
+                .map_or(Duration::ZERO, |gpu| gpu.0.frame_wait());
+            let timings = world.get_resource::<FrameGraph>().and_then(|g| g.timings());
+            let gpu_ms = timings.map_or(0.0, |t| t.passes.iter().map(|(_, ms)| ms).sum());
+            let ms = work_ms(interval, wait, gpu_ms);
+            // A moving mean: the time of one frame changes too fast to read.
+            mean_ms = if mean_ms == 0.0 {
+                ms
+            } else {
+                mean_ms + (ms - mean_ms) * 0.05
+            };
+            let green = |text: String| {
+                egui::RichText::new(text)
+                    .monospace()
+                    .size(16.0)
+                    .color(egui::Color32::GREEN)
+            };
+            ui.label(green(format!(
+                "{:.0} fps",
+                1000.0 / mean_ms.max(f32::EPSILON)
+            )));
+            ui.label(green(format!("{mean_ms:.2} ms")));
+        });
+
         // State of the panel: the mean frame time in milliseconds.
         let mut frame_ms = 0.0_f32;
         add_panel(app, "Stats", true, move |ui, world| {
@@ -26,6 +67,7 @@ impl Module for StatsPanelModule {
             };
 
             let mut rows = vec![
+                // As the display shows them: with vsync, the rate of the display.
                 ("Frame time", format!("{frame_ms:.2} ms")),
                 ("FPS", format!("{:.0}", 1000.0 / frame_ms.max(f32::EPSILON))),
             ];

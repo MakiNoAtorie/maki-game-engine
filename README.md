@@ -41,7 +41,8 @@ The picture has a fixed size (`window_width`, `window_height`) and is in the top
 | Panel | Content |
 |---|---|
 | Help | Key and description of each binding |
-| Stats | Frame time (mean), FPS, sample count, internal resolution, player position, position and intensity of each light, GPU memory, GPU time of each frame graph pass |
+| Frame counter | Not a section: green text in the top left corner of the picture. The frame rate and the frame time that the game would have with no limit: the time of a frame without the wait for the display (vsync) or the GPU, and not less than the GPU time of the passes. A mean over some frames |
+| Stats | Frame time (mean) and FPS as the display shows them, sample count, internal resolution, player position, position and intensity of each light, GPU memory, GPU time of each frame graph pass |
 | Debug | The resolution (the picture size, from 640 x 360 to 2560 x 1440: the window follows). The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the config values that have an effect during a run: vsync, render scale, exposure, path tracer, denoiser, camera, player speeds. Not saved to the config file |
 | Bench | Starts a benchmark run (frames, script, light, picture dump) in the game that runs. Writes `bench.csv`; the game goes on. For numbers to compare between runs, use the command line |
 | Stages | Each room file that the game can show: the files in the directory of `start_room`, and `target/bench/<scenario>/room.ron` (the generated scenes; `python tools/bench.py run` makes them). A click loads the room. The config stays: set the render size or the sample count of a scenario in the Debug panel |

@@ -97,6 +97,9 @@ pub struct Gpu {
     swapchain: Swapchain,
     /// True: build the swapchain again before the next frame.
     swapchain_dirty: bool,
+    /// See [`Gpu::frame_wait`]: the sum of the frame in work, and of the last frame.
+    waiting: std::time::Duration,
+    waited: std::time::Duration,
     window_size: (u32, u32),
     vsync: bool,
     bindless: Bindless,
@@ -219,6 +222,8 @@ impl Gpu {
             // All bits for 64 valid bits. The shift is not defined for 64.
             timestamp_mask: u64::MAX >> (64 - timestamp_bits.clamp(1, 64)),
             finished_timestamps: Vec::new(),
+            waiting: std::time::Duration::ZERO,
+            waited: std::time::Duration::ZERO,
             ctx,
         })
     }
@@ -551,6 +556,13 @@ impl Gpu {
         }
     }
 
+    /// The time that the CPU waited in the last complete frame, in `begin_frame` and
+    /// `end_frame`: for the GPU to finish an older frame, and for the display (vsync).
+    /// A frame time without this is the time of the CPU work alone.
+    pub fn frame_wait(&self) -> std::time::Duration {
+        self.waited
+    }
+
     /// True between a `begin_frame` that returned true and `end_frame`.
     pub fn frame_active(&self) -> bool {
         self.active.is_some()
@@ -564,7 +576,9 @@ impl Gpu {
 
         // Wait until the GPU has finished the frame that used this slot before.
         self.slot = (self.slot + 1) % FRAMES_IN_FLIGHT;
+        let wait_start = std::time::Instant::now();
         unsafe { device.wait_for_fences(&[self.frames[self.slot].in_flight], true, u64::MAX) }?;
+        self.waiting = wait_start.elapsed();
         for garbage in std::mem::take(&mut self.frames[self.slot].garbage) {
             self.destroy_now(garbage);
         }
@@ -586,6 +600,7 @@ impl Gpu {
         }
 
         let frame = &self.frames[self.slot];
+        let wait_start = std::time::Instant::now();
         let acquired = unsafe {
             self.swapchain.loader.acquire_next_image(
                 self.swapchain.handle,
@@ -594,6 +609,7 @@ impl Gpu {
                 vk::Fence::null(),
             )
         };
+        self.waiting += wait_start.elapsed();
         let image_index = match acquired {
             // Suboptimal: the image is usable but no longer matches the window.
             Ok((index, suboptimal)) => {
@@ -978,11 +994,14 @@ impl Gpu {
             .wait_semaphores(&present_wait)
             .swapchains(&swapchains)
             .image_indices(&indices);
-        match unsafe {
+        let wait_start = std::time::Instant::now();
+        let presented = unsafe {
             self.swapchain
                 .loader
                 .queue_present(self.ctx.queue, &present)
-        } {
+        };
+        self.waited = self.waiting + wait_start.elapsed();
+        match presented {
             Ok(suboptimal) => self.swapchain_dirty |= suboptimal,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.swapchain_dirty = true,
             Err(error) => return Err(error.into()),

@@ -2,9 +2,10 @@
 
 Top-down 3D horror game engine with path-traced lighting, written in Rust.
 
-## Current target (part 3: picture quality)
-A sharp, stable, good-looking picture at 60 fps, at one sample for each pixel and frame: a denoiser that does not blur, anti-aliasing, and the look (tone curve, bloom). The plan is in `docs/part3/`. Part 2 (playable vignette, `docs/part2/`) is done.
-The architecture must let later features plug in without rework (upscaling, software tracer backend, Metal backend, skinned characters, editor, baked lighting). Favor correct seams over feature breadth.
+## Current target (part 4: from renderer to engine)
+Turn the code into an engine that a game is built on, and build the tools to make rooms: engine/game split, textures, an editor for rooms and events. The plan is in `docs/part4/`. Parts 2 (playable vignette, `docs/part2/`) and 3 (picture quality, `docs/part3/`) are done.
+The architecture must let later features plug in without rework (upscaling, software tracer backend, Metal backend, skinned characters, baked lighting, audio, save/load). Favor correct seams over feature breadth.
+Picture quality and GPU time must not regress: compare `tools/bench.py` runs before and after each stage.
 
 ## Stack
 - Rust stable, Cargo workspace.
@@ -13,7 +14,7 @@ The architecture must let later features plug in without rework (upscaling, soft
 - `bevy_ecs` standalone (not the Bevy engine). Do not use removed APIs: `SystemLabel`, `add_system_set`, run criteria, `State` push/pop.
 - `winit`, `gpu-allocator`, `egui`, `slotmap` (generational handles).
 - `tracing` for logging; `tracing-tracy` behind cargo feature `profile`.
-- Config in TOML.
+- Config in TOML. Room files (rooms and their events) in RON.
 - Use current stable crate versions and verify APIs against their docs.
 
 ## Workspace

@@ -45,9 +45,19 @@ pub type PanelFn = Box<dyn FnMut(&mut egui::Ui, &mut World) + Send + Sync>;
 struct Panel {
     name: &'static str,
     open: bool,
-    /// True: an egui window on top of the picture. False: a section of the column.
-    floating: bool,
+    place: Place,
     draw: PanelFn,
+}
+
+/// Where a panel is drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// A section of the column at the right of the picture.
+    Column,
+    /// An egui window on top of the picture.
+    Window,
+    /// Text with no window in the top left corner of the picture. Gets no input.
+    Corner,
 }
 
 /// Width of the panel column in egui points. A window that is wider than the picture
@@ -99,7 +109,19 @@ pub fn add_panel(
     open: bool,
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
-    register(app, name, open, false, Box::new(draw));
+    register(app, name, open, Place::Column, Box::new(draw));
+}
+
+/// Adds a small readout in the top left corner of the picture, with no window around
+/// it (a frame counter). The pointer goes through it. The parameters are those of
+/// [`add_panel`].
+pub fn add_corner(
+    app: &mut App,
+    name: &'static str,
+    open: bool,
+    draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
+) {
+    register(app, name, open, Place::Corner, Box::new(draw));
 }
 
 /// Adds a window on top of the picture, for text of the game (a message). Not for
@@ -111,16 +133,16 @@ pub fn add_window(
     open: bool,
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
-    register(app, name, open, true, Box::new(draw));
+    register(app, name, open, Place::Window, Box::new(draw));
 }
 
-fn register(app: &mut App, name: &'static str, open: bool, floating: bool, draw: PanelFn) {
+fn register(app: &mut App, name: &'static str, open: bool, place: Place, draw: PanelFn) {
     // `App` gives no direct access to a resource, so a `Startup` system adds the panel.
     // A system can run more than one time; the panel moves out in the first run.
     let mut panel = Some(Panel {
         name,
         open,
-        floating,
+        place,
         draw,
     });
     app.init_resource::<Panels>()
@@ -232,7 +254,8 @@ fn run_ui(world: &mut World) {
                     picture_pixels / root.ctx().pixels_per_point(),
                 );
                 // No open panel, no column: the egui frame is empty (a screenshot).
-                if panels.0.iter().any(|panel| panel.open && !panel.floating) {
+                let shown = |panel: &Panel, place| panel.open && panel.place == place;
+                if panels.0.iter().any(|panel| shown(panel, Place::Column)) {
                     // All of the window at the right of the picture.
                     let width = root.ctx().content_rect().width() - picture.width();
                     egui::Panel::right("panels")
@@ -241,7 +264,7 @@ fn run_ui(world: &mut World) {
                         .show(root, |ui| {
                             egui::ScrollArea::both().show(ui, |ui| {
                                 for panel in &mut panels.0 {
-                                    if panel.open && !panel.floating {
+                                    if shown(panel, Place::Column) {
                                         egui::CollapsingHeader::new(panel.name)
                                             .show(ui, |ui| (panel.draw)(ui, world));
                                     }
@@ -250,7 +273,17 @@ fn run_ui(world: &mut World) {
                         });
                 }
                 for panel in &mut panels.0 {
-                    if panel.open && panel.floating {
+                    if shown(panel, Place::Corner) {
+                        egui::Area::new(egui::Id::new(panel.name))
+                            .fixed_pos(picture.min + egui::vec2(8.0, 8.0))
+                            .interactable(false)
+                            .show(root.ctx(), |ui| {
+                                // A new area is narrow: the text must not wrap.
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                                (panel.draw)(ui, world)
+                            });
+                    }
+                    if shown(panel, Place::Window) {
                         egui::Window::new(panel.name)
                             .collapsible(false)
                             .resizable(false)

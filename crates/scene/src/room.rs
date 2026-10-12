@@ -10,8 +10,9 @@
 //! player, the camera, and the game state are not room entities: they stay.
 //!
 //! Assets: a mesh that the room makes from numbers (its walls, a cube) belongs to the
-//! room and is removed with it. A model file is loaded one time: the next room that
-//! names the same path gets the same handle.
+//! room and is removed with it. A model file that the new room does not name is
+//! removed too, with its meshes: a room change leaves nothing of the old room. A
+//! model that the new room names again (a reload) stays loaded.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -321,7 +322,8 @@ pub struct CurrentRoom {
     meshes: Vec<Handle<Mesh>>,
 }
 
-/// The models that room files named, by path. They stay loaded over room changes.
+/// The models of the current room, by path. `load_requested_room` removes those that
+/// the next room does not name.
 #[derive(Resource, Default)]
 pub struct RoomModels(HashMap<PathBuf, Handle<Model>>);
 
@@ -380,6 +382,29 @@ pub fn load_requested_room(
         meshes.remove(mesh);
     }
     let directory = target.path.parent().unwrap_or(Path::new(""));
+    // The models that only the old room used. Without this, each room that was shown
+    // keeps its meshes on the GPU, and the mesh table of the renderer gets full.
+    let named: Vec<PathBuf> = def
+        .props
+        .iter()
+        .filter_map(|prop| match &prop.mesh {
+            MeshDef::File(path) => Some(directory.join(path)),
+            _ => None,
+        })
+        .collect();
+    cache.0.retain(|path, model| {
+        let keep = named.contains(path);
+        if !keep {
+            // `None` for a model that failed to load: it has no meshes.
+            for mesh in models
+                .remove(*model)
+                .map_or(Vec::new(), |model| model.meshes)
+            {
+                meshes.remove(mesh);
+            }
+        }
+        keep
+    });
     let mut spawner = Spawner {
         commands: &mut commands,
         meshes: &mut meshes,
