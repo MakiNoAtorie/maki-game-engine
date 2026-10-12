@@ -58,6 +58,13 @@ impl Panels {
         }
     }
 
+    /// Hides each panel: the window shows the picture alone (a screenshot).
+    pub fn close_all(&mut self) {
+        for panel in &mut self.0 {
+            panel.open = false;
+        }
+    }
+
     /// Shows a hidden panel, hides a shown one. Does nothing if no panel has the name.
     pub fn toggle(&mut self, name: &str) {
         for panel in self.0.iter_mut().filter(|panel| panel.name == name) {

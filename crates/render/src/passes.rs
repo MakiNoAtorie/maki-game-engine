@@ -1,5 +1,5 @@
 //! The passes of the frame graph, in frame order:
-//! build_tlas -> trace -> the denoiser passes -> taa -> tonemap -> present.
+//! build_tlas -> trace -> the denoiser passes -> taa -> the bloom passes -> tonemap -> present.
 //! Other crates add passes between them: the ui crate puts `ui_overlay` before `present`.
 //!
 //! build_tlas and trace make the samples of the frame, and the denoiser passes (the
@@ -25,7 +25,7 @@ use crate::light::{LightBuffers, light_bytes};
 use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
 use crate::{
     Accumulation, DebugView, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights,
-    GpuMeshes, MAX_LIGHTS, denoise, ray_basis, shader_spirv, taa,
+    GpuMeshes, MAX_LIGHTS, bloom, denoise, ray_basis, shader_spirv, taa,
 };
 
 /// The TLAS has room for this many instances. More are not drawn; an error is logged.
@@ -96,6 +96,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
         [normal, previous_normal],
         denoise.direct.mean,
     );
+    let bloom = bloom::add_passes(gpu, graph, resolved);
     graph.add_pass(Tonemap {
         pipeline: gpu
             .create_compute_pipeline(shader_spirv!("tonemap.comp"))
@@ -107,6 +108,7 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
             })
             .expect("tonemap sampler"),
         hdr: resolved,
+        bloom,
         trace,
         denoise,
         output,
@@ -369,6 +371,8 @@ struct Tonemap {
     pipeline: ComputePipelineHandle,
     sampler: SamplerHandle,
     hdr: ResourceId,
+    /// The sum of the bloom blurs.
+    bloom: ResourceId,
     /// The images of the debug views.
     trace: denoise::TraceImages,
     denoise: denoise::DenoiseImages,
@@ -396,7 +400,10 @@ impl Pass for Tonemap {
         let filtered = [denoise.direct, denoise.indirect]
             .into_iter()
             .flat_map(|signal| signal.filtered_candidates());
-        let sampled = [self.hdr].into_iter().chain(views).chain(filtered);
+        let sampled = [self.hdr, self.bloom]
+            .into_iter()
+            .chain(views)
+            .chain(filtered);
         sampled
             .map(|image| (image, Access::Sampled))
             .chain([(self.output, Access::StorageWrite)])
@@ -440,6 +447,21 @@ impl Pass for Tonemap {
             ctx.bindless_index(trace.normal),
         ];
         push.extend(images.map(|image| ctx.bindless_index(image)));
+        // The look. Field order as in the `Push` block of the shader.
+        let look = &frame.look;
+        push.extend([
+            ctx.bindless_index(self.bloom),
+            // The bloom image is the sum of `LEVELS` blurs.
+            (look.bloom / bloom::LEVELS as f32).to_bits(),
+            look.tone_curve as u32,
+            look.vignette.to_bits(),
+            // Only the low bits: the number must differ from frame to frame.
+            frame.frame as u32,
+            0,
+        ]);
+        push.extend(vec3_bits(Vec3::from(look.lift), 0));
+        push.extend(vec3_bits(Vec3::from(look.gamma), 0));
+        push.extend(vec3_bits(Vec3::from(look.gain), 0));
         let push = push_constants(&push);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.output)))

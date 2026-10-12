@@ -20,7 +20,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// Log filter variable, same syntax as `RUST_LOG` (for example `debug` or `maki_core=trace`).
 const LOG_ENV: &str = "MAKI_LOG";
 
-const USAGE: &str = "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE] [--bench-static | --bench-light-frames N] [--bench-script walk|trip]]";
+const USAGE: &str = "usage: maki-game [CONFIG] [--bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames N] [--bench-script walk|trip]]";
 
 fn init_logging() {
     let filter = EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -40,6 +40,8 @@ struct Args {
     bench_frames: Option<u64>,
     /// With `bench_frames`: the file for the picture of the last frame.
     bench_dump: Option<PathBuf>,
+    /// With `bench_dump`: the file gets the picture as the window shows it, with no panel.
+    bench_shot: bool,
     /// With `bench_frames`: the light does not move.
     bench_static: bool,
     /// With `bench_frames`: the light moves in this many frames, then it stops.
@@ -53,6 +55,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
     let mut args = args.into_iter();
     let (mut config_path, mut bench_frames, mut bench_dump) = (None, None, None);
     let (mut bench_static, mut bench_script, mut bench_light_frames) = (false, None, None);
+    let mut bench_shot = false;
     while let Some(arg) = args.next() {
         if arg == "--bench-frames" {
             // The limit keeps a typing error from a table of rows that fills the memory.
@@ -66,6 +69,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
             bench_frames = Some(frames);
         } else if arg == "--bench-static" {
             bench_static = true;
+        } else if arg == "--bench-shot" {
+            bench_shot = true;
         } else if arg == "--bench-light-frames" {
             let frames = args.next().and_then(|frames| frames.to_str()?.parse().ok());
             bench_light_frames = Some(
@@ -95,6 +100,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Args> 
         config_path: config_path.unwrap_or_else(|| PathBuf::from(Config::DEFAULT_PATH)),
         bench_frames,
         bench_dump,
+        bench_shot,
         bench_static,
         bench_light_frames,
         bench_script,
@@ -136,6 +142,7 @@ fn main() -> anyhow::Result<()> {
             start: args.bench_frames.map(|frames| bench::BenchRun {
                 frames,
                 dump: args.bench_dump,
+                shot: args.bench_shot,
                 // A light that does not move: one that stops before the first frame.
                 light_frames: if args.bench_static {
                     Some(0)
@@ -166,6 +173,7 @@ mod tests {
                 config_path: default_path.clone(),
                 bench_frames: None,
                 bench_dump: None,
+                bench_shot: false,
                 bench_static: false,
                 bench_light_frames: None,
                 bench_script: None,
@@ -182,6 +190,7 @@ mod tests {
                     config_path: PathBuf::from("my.toml"),
                     bench_frames: Some(300),
                     bench_dump: None,
+                    bench_shot: false,
                     bench_static: false,
                     bench_light_frames: None,
                     bench_script: None,

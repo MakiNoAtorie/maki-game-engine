@@ -54,7 +54,7 @@ To add a panel from a module, call `maki_ui::add_panel(app, "Name", true, |ui, w
 ## Benchmark
 
 ```
-cargo run -p maki-game --release -- [CONFIG] --bench-frames N [--bench-dump FILE] [--bench-static | --bench-light-frames M] [--bench-script walk|trip]
+cargo run -p maki-game --release -- [CONFIG] --bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames M] [--bench-script walk|trip]
 ```
 
 The game runs N frames (1 to 1000000), writes `bench.csv` in the working directory, and stops. In this mode:
@@ -65,6 +65,7 @@ The game runs N frames (1 to 1000000), writes `bench.csv` in the working directo
 - `--bench-script NAME` holds the light and plays the game with a script of actions (`game/src/bench.rs`). `walk`: in room A the player walks and a door opens; the last motion shows in frame 180. `trip`: the full loop, 820 frames: room A, room B, the switch, back to room A, through the door that was locked.
 - `tools/bench.py` sets `samples_per_frame = 1` if the scenario does not set it: the automatic count would give each run another load.
 - `--bench-dump FILE` writes the picture of frame N (the picture before the tone curve, at the output resolution) to FILE: two little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel. The picture depends only on the config, the scene, and N. `python tools/bench.py same` compares two dumps.
+- `--bench-shot` (with `--bench-dump`): the file gets the picture as the window shows it (after the tone curve), and the run hides all panels. `python tools/shot.py OUT.png [--room room_b.ron --spawn west] [--set key=value ...]` runs the game that way and writes a PNG.
 - `vsync` is off, whatever the config file says.
 
 `bench.csv` has one row for each frame:
@@ -108,7 +109,11 @@ The first frames are slow (startup work): drop them when you compute a mean. An 
 | `denoise_direct_passes` | 1 | The same for the direct light. It has little noise and sharp shadow edges. A scene with large lights (wide soft shadows) can need more |
 | `denoise_reach` | 4096.0 | The filter gets narrower as the mean of a pixel gets more samples: a pass with `s` pixels between its points runs for a pixel while `s * s * samples` is at most this. 0: each pass runs at each pixel |
 | `indirect_clamp` | 8.0 | The largest light that one bounce ray adds to a pixel, in units of the light at the surface that the pixel shows. It removes the bright speckle of rare paths, and it makes light that comes by way of a mirror or through glass (caustics) darker. 0: no limit |
-| `exposure` | 1.0 | The picture is multiplied by this before the tone curve |
+| `exposure` | 1.0 | The picture is multiplied by this before the tone curve. Manual: an automatic exposure would take away the darkness that the game wants |
+| `tone_curve` | `"agx"` | The curve from light to display color. `"agx"`: the look of film, soft colors and contrast; a bright colored light goes to white with no change of its hue. `"neutral"` (Khronos PBR Neutral): colors as the scene has them, more contrast |
+| `bloom` | 0.04 | The part of a wide blur of the picture that is blended into it, 0 to 1: a soft glow around the lamp and its reflections. 0: none |
+| `vignette` | 0.25 | How dark the corners of the picture get, 0 (not at all) to 1 (black) |
+| `grade_lift`, `grade_gamma`, `grade_gain` | `[0, 0, 0]`, `[1, 1, 1]`, `[1, 1, 1]` | The color grade, each for R, G, B: lift moves black toward a color, gamma bends the middle tones, gain scales white. The defaults change nothing |
 | `fixed_hz` | 60.0 | Rate of the simulation steps (`FixedUpdate`), in steps per second |
 | `max_fixed_steps` | 8 | Limit of simulation steps in one frame |
 
@@ -153,6 +158,7 @@ The steps:
 A change of the camera keeps the samples of each pixel. A change of the lighting (a light, an object that moves and so its shadow) is handled for each kind of light. Direct light: the denoiser tests each pixel (`history_clamp`), so only the pixels where the light changed start again, and a shadow follows its object in some frames. Indirect light: its noise is too large for such a test at one sample for each frame, so its mean is cut to `light_history_samples` in the full picture for some frames. A change of the internal resolution, the window size, the room, or the mesh store starts the picture again, and so does R. While nothing changes and each pixel has `max_samples`, only the tonemap pass and the copy to the window run.
 
 3. Anti-aliasing and scaling (`taa`, `crates/render/src/taa.rs`). The trace pass moves all camera rays of a frame by one part of a pixel. The pass `taa` keeps the mean of the pictures of some frames at the window resolution: an edge gets smooth, also that of the lamp and of the background, which have no mean in the denoiser. With `render_scale` below 1 it puts each sample at its true place in the window grid. A point that moves on the screen takes more of the new frame, and its history counts only if it shows the same surface. This pass is the one step between the internal resolution and the window resolution: an upscaler (FSR, XeSS, MetalFX, DLSS) takes its place with the same inputs.
+4. The look (`bloom`, `tonemap`): a soft glow around the bright parts (`bloom`), darker corners (`vignette`), the exposure and the tone curve (`tone_curve`), the color grade, the sRGB curve, and dither: noise of one 8-bit step, so a dark gradient shows no bands.
 
 The camera rays do not hit the back side of a triangle, so the camera looks into the room through the near walls. For all other rays the walls are solid.
 
@@ -198,6 +204,6 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/scene` | The components that describe the world (mesh instance, light, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |
 | `crates/events` | Game state (flags, variables), event definitions, the event interpreter |
 | `crates/gpu` | Vulkan backend (resources, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
-| `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
+| `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
 | `crates/ui` | egui integration, panel registry, the overlay render pass, help and stats panels |
 | `game` | The binary: player, camera, controls, debug panels, benchmark. The rooms are in `game/assets/rooms` |

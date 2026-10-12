@@ -6,6 +6,18 @@ use anyhow::{Context, Result};
 use bevy_ecs::resource::Resource;
 use serde::{Deserialize, Serialize};
 
+/// The tone curve of the display transform. In the config file: `"agx"` or `"neutral"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToneCurve {
+    /// AgX: the look of film. Soft colors and contrast; a bright colored light goes
+    /// to white with no change of its hue.
+    #[default]
+    Agx,
+    /// Khronos PBR Neutral: colors as the scene has them, up to bright ones.
+    Neutral,
+}
+
 /// Engine settings, read from a TOML file at startup.
 // `default` lets an old config file omit fields that were added later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Resource)]
@@ -113,7 +125,22 @@ pub struct Config {
     /// at rest.
     pub taa_blend: f32,
     /// The picture is multiplied by this before the tone curve. 2.0 is one stop brighter.
+    /// Manual: an automatic exposure would take away the darkness that the game wants.
     pub exposure: f32,
+    /// The curve that bends light (0 to far above 1) into display color (0 to 1).
+    pub tone_curve: ToneCurve,
+    /// Bloom: the part of a wide blur of the picture that is blended into it, 0 to 1.
+    /// The lamp and its reflections get a soft glow. 0: no bloom.
+    pub bloom: f32,
+    /// How dark the corners of the picture get, 0 (not at all) to 1 (black).
+    pub vignette: f32,
+    /// The color grade, each for R, G, B. Lift moves black toward a color (0: no
+    /// change), gamma bends the middle tones (1: no change, above 1: brighter), gain
+    /// scales white (1: no change). Small values: 0.02 of lift in blue gives cold
+    /// shadows.
+    pub grade_lift: [f32; 3],
+    pub grade_gamma: [f32; 3],
+    pub grade_gain: [f32; 3],
     /// Rate of the FixedUpdate schedule, in steps per second.
     pub fixed_hz: f64,
     /// Limit of FixedUpdate steps in one frame. A longer frame counts as this many steps.
@@ -154,6 +181,12 @@ impl Default for Config {
             taa: true,
             taa_blend: 0.1,
             exposure: 1.0,
+            tone_curve: ToneCurve::Agx,
+            bloom: 0.04,
+            vignette: 0.25,
+            grade_lift: [0.0; 3],
+            grade_gamma: [1.0; 3],
+            grade_gain: [1.0; 3],
             fixed_hz: 60.0,
             max_fixed_steps: 8,
         }

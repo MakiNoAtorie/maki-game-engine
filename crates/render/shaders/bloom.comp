@@ -1,0 +1,85 @@
+#version 460
+// Passes "bloom_down_N" and "bloom_up_N": the glow around the bright parts of the
+// picture. See src/bloom.rs.
+//
+// A lens and the eye spread a small part of the light of each point over a wide area.
+// Around a point that is thousands of times brighter than the rest (the lamp, its
+// reflection), that small part shows as a glow. A wide blur of the full picture is
+// expensive, so the picture is made smaller in steps (each one half the size), and
+// then larger again, each step with a small blur pattern ("dual filtering", Bjørge,
+// ARM, 2015). The sum of all sizes is a blur that is narrow and wide at the same time.
+// The pass "tonemap" blends a small part of the result into the picture.
+
+#include "bindless.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = BINDLESS_SET, binding = BINDLESS_SAMPLED_IMAGES) uniform texture2D textures[];
+layout(set = BINDLESS_SET, binding = BINDLESS_SAMPLERS) uniform sampler samplers[];
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_IMAGES, rgba16f)
+    uniform writeonly image2D images[];
+
+// Must agree with `BloomPass::execute` in src/bloom.rs.
+layout(push_constant) uniform Push {
+    uint src;         // index in `textures`: the image to make smaller or larger
+    uint src_sampler; // index in `samplers`: blends between pixels
+    uint dst;         // index in `images`
+    uint mode;        // a MODE_* value
+    uint add;         // index in `textures`, for MODE_UP: the image of the size of `dst`
+} push;
+
+const uint MODE_FIRST_DOWN = 0u; // the picture to half its size
+const uint MODE_DOWN = 1u;       // to half the size
+const uint MODE_UP = 2u;         // to two times the size, plus `add`
+
+vec3 tap(vec2 uv) {
+    return textureLod(sampler2D(textures[push.src], samplers[push.src_sampler]), uv, 0.0).rgb;
+}
+
+// A tap of the picture with a weight that is small for a very bright color (Karis,
+// 2014). Without it, one bright pixel that comes and goes (a reflection on glass)
+// would make the glow of the full picture flicker.
+vec4 weighted_tap(vec2 uv) {
+    vec3 color = tap(uv);
+    float weight = 1.0 / (1.0 + dot(color, vec3(0.2126, 0.7152, 0.0722)));
+    return vec4(color * weight, weight);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(images[push.dst]);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    // One pixel of `src`.
+    vec2 texel = 1.0 / vec2(textureSize(sampler2D(textures[push.src], samplers[push.src_sampler]), 0));
+    vec3 color;
+    if (push.mode == MODE_FIRST_DOWN) {
+        // The pattern of MODE_DOWN, with the weights above.
+        vec4 sum = weighted_tap(uv) * 4.0
+            + weighted_tap(uv + texel * vec2(-1.0, -1.0))
+            + weighted_tap(uv + texel * vec2(1.0, -1.0))
+            + weighted_tap(uv + texel * vec2(-1.0, 1.0))
+            + weighted_tap(uv + texel * vec2(1.0, 1.0));
+        color = sum.rgb / sum.a;
+    } else if (push.mode == MODE_DOWN) {
+        // The center and four corners. Each tap is between four pixels of `src`, so
+        // the sampler gives their mean: 5 reads cover 16 pixels.
+        color = (tap(uv) * 4.0
+            + tap(uv + texel * vec2(-1.0, -1.0))
+            + tap(uv + texel * vec2(1.0, -1.0))
+            + tap(uv + texel * vec2(-1.0, 1.0))
+            + tap(uv + texel * vec2(1.0, 1.0))) / 8.0;
+    } else {
+        // Eight taps on a circle: a smooth bump, so the larger image shows no blocks.
+        vec3 blurred = (tap(uv + texel * vec2(-1.0, 0.0)) + tap(uv + texel * vec2(1.0, 0.0))
+            + tap(uv + texel * vec2(0.0, -1.0)) + tap(uv + texel * vec2(0.0, 1.0))
+            + (tap(uv + texel * vec2(-0.5, -0.5)) + tap(uv + texel * vec2(0.5, -0.5))
+                + tap(uv + texel * vec2(-0.5, 0.5)) + tap(uv + texel * vec2(0.5, 0.5))) * 2.0)
+            / 12.0;
+        color = blurred
+            + textureLod(sampler2D(textures[push.add], samplers[push.src_sampler]), uv, 0.0).rgb;
+    }
+    imageStore(images[push.dst], pixel, vec4(color, 1.0));
+}

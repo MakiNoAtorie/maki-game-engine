@@ -122,6 +122,18 @@ impl App {
             "taa_blend must be from 0 to 1"
         );
         ensure!(
+            (0.0..=1.0).contains(&config.bloom) && (0.0..=1.0).contains(&config.vignette),
+            "bloom and vignette must be from 0 to 1"
+        );
+        ensure!(
+            config.grade_gamma.iter().all(|value| *value > 0.0)
+                && [config.grade_lift, config.grade_gamma, config.grade_gain]
+                    .iter()
+                    .flatten()
+                    .all(|value| value.is_finite()),
+            "grade_lift, grade_gamma, and grade_gain must be numbers, and grade_gamma above 0"
+        );
+        ensure!(
             config.exposure.is_finite() && config.exposure > 0.0,
             "exposure must be a positive number"
         );

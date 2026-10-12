@@ -1,7 +1,7 @@
 //! The debug panel: what the window shows, and the config values that have an effect
 //! during a run.
 
-use maki_core::{App, Config, Module};
+use maki_core::{App, Config, Module, ToneCurve};
 use maki_render::{DebugView, MAX_DENOISE_PASSES};
 use maki_ui::{add_panel, egui};
 
@@ -52,6 +52,32 @@ impl Module for DebugPanelModule {
                         .logarithmic(true)
                         .text("exposure"),
                 );
+            });
+            ui.collapsing("Look", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("tone curve");
+                    ui.radio_value(&mut config.tone_curve, ToneCurve::Agx, "AgX");
+                    ui.radio_value(&mut config.tone_curve, ToneCurve::Neutral, "PBR Neutral");
+                });
+                ui.add(egui::Slider::new(&mut config.bloom, 0.0..=0.5).text("bloom"));
+                ui.add(egui::Slider::new(&mut config.vignette, 0.0..=1.0).text("vignette"));
+                // R, G, B of each grade control.
+                for (name, values, range) in [
+                    ("lift", &mut config.grade_lift, -0.2..=0.2),
+                    ("gamma", &mut config.grade_gamma, 0.5..=2.0),
+                    ("gain", &mut config.grade_gain, 0.5..=2.0),
+                ] {
+                    ui.horizontal(|ui| {
+                        for value in values {
+                            ui.add(
+                                egui::DragValue::new(value)
+                                    .speed(0.005)
+                                    .range(range.clone()),
+                            );
+                        }
+                        ui.label(name);
+                    });
+                }
             });
             ui.collapsing("Path tracer", |ui| {
                 ui.add(

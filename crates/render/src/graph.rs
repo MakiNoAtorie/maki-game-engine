@@ -35,6 +35,9 @@ pub enum SizeMode {
     Internal,
     /// The size of the swapchain images (the window).
     Output,
+    /// The output size divided by this number, rounded up, in each direction. For
+    /// the small images of a blur.
+    OutputDiv(u32),
 }
 
 /// An image that the graph makes and owns.
@@ -326,6 +329,7 @@ impl FrameGraph {
             let size = match desc.size {
                 SizeMode::Internal => internal_resolution,
                 SizeMode::Output => output,
+                SizeMode::OutputDiv(by) => (output.0.div_ceil(by), output.1.div_ceil(by)),
             };
             // An image gets the color attachment use only if a pass draws into it. A
             // pass that was added after the image was made causes a new image.

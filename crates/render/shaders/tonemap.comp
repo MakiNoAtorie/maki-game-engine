@@ -4,8 +4,18 @@
 // view it shows another image in place of the picture, of any size.
 //
 // The picture holds light: values from 0 to far above 1. A display shows 0 to 1.
-// Exposure sets which amount of light is "bright", and the tone curve bends all values
-// into 0..1 so that a bright area keeps some detail and does not go flat white.
+// The steps, for the picture (a debug view has only steps 3 and 6):
+// 1. Bloom: a small part of the blurred picture (src/bloom.rs) is blended in.
+// 2. Vignette: the corners get darker, as with a real lens. It leads the eye to the
+//    middle.
+// 3. Exposure sets which amount of light is "bright", and the tone curve bends all
+//    values into 0..1 so that a bright area keeps some detail and does not go flat
+//    white. Two curves (`push.curve`): AgX and Khronos PBR Neutral.
+// 4. The grade: lift, gamma, gain for R, G, and B, the three controls of a colorist.
+// 5. The sRGB curve of the display.
+// 6. Dither: the output has 8 bits, 256 steps. In a dark, smooth gradient (most of a
+//    horror picture) the eye sees each step as a band. Noise of one step, different
+//    in each pixel and frame, turns the bands into grain too fine to see.
 
 #include "bindless.glsl"
 
@@ -29,7 +39,24 @@ layout(push_constant) uniform Push {
     uint b;
     uint c;
     uint d;
+    // The look. See the top of the file.
+    uint bloom;           // index in `textures`: the sum of the bloom blurs, half size
+    float bloom_strength; // the part of the blur in the picture, times 1 / blurs. 0: none
+    uint curve;           // a CURVE_* value
+    float vignette;       // how dark the corners get, 0 (not at all) to 1 (black)
+    uint frame;           // number of the frame, for the dither
+    uint pad0;            // a vec3 has an alignment of 16: the next one starts at 64
+    vec3 lift;
+    float pad1;
+    vec3 gamma;
+    float pad2;
+    vec3 gain;
+    float pad3;
 } push;
+
+// Must agree with `ToneCurve` in the core crate.
+const uint CURVE_AGX = 0u;
+const uint CURVE_NEUTRAL = 1u;
 
 // What the pass shows. `Tonemap::execute` chooses the mode and the images `a` to `d`
 // for each `DebugView`.
@@ -99,10 +126,75 @@ vec3 debug_color(vec2 uv) {
     return surface.xyz * 0.5 + 0.5;
 }
 
-// The ACES filmic tone curve, in the short form of Krzysztof Narkowicz
-// ("ACES Filmic Tone Mapping Curve", 2016). Maps 0..infinity to 0..1.
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+// The AgX tone curve (Troy Sobotka, 2022; the short form of Benjamin Wrensch, "Minimal
+// AgX Implementation", 2023). The look of film: a bright, colored light goes to a
+// pale color and then to white, with no jump of the hue (the short ACES form turned a
+// bright red lamp orange and then yellow). Soft colors, soft contrast.
+// 1. Into the AgX color space: each channel gets a part of the other two.
+// 2. The brightness as stops (log2), from 12.5 stops below 1.0 to 4 stops above.
+// 3. An S curve over that range (here a polynomial that is close to it).
+// 4. Back to linear display colors.
+vec3 agx(vec3 light) {
+    const mat3 into = mat3(
+        0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+        0.0784335999999992, 0.878468636469772, 0.0784336,
+        0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const mat3 back = mat3(
+        1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+        -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+        -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+    const float LOWEST = -12.47393;
+    const float HIGHEST = 4.026069;
+    vec3 x = clamp(log2(max(into * light, vec3(1e-10))), LOWEST, HIGHEST);
+    x = (x - LOWEST) / (HIGHEST - LOWEST);
+    vec3 x2 = x * x;
+    vec3 x4 = x2 * x2;
+    x = 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2
+        + 0.1191 * x - 0.00232;
+    // The curve gives display values with a gamma of 2.2.
+    return pow(max(back * x, vec3(0.0)), vec3(2.2));
+}
+
+// The Khronos PBR Neutral tone curve (Khronos Group, 2024). Colors up to 0.76 stay as
+// the scene has them (a small offset takes the gray haze of dark colors away); only
+// brighter ones are pressed into the range, toward white. Colors as authored, more
+// contrast than AgX.
+vec3 neutral(vec3 color) {
+    const float START = 0.8 - 0.04; // the press starts here
+    const float TO_WHITE = 0.15;    // how fast a bright color loses its color
+    float lowest = min(color.r, min(color.g, color.b));
+    color -= lowest < 0.08 ? lowest - 6.25 * lowest * lowest : 0.04;
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < START) {
+        return color;
+    }
+    float d = 1.0 - START;
+    float new_peak = 1.0 - d * d / (peak + d - START);
+    color *= new_peak / peak;
+    float white = 1.0 - 1.0 / (TO_WHITE * (peak - new_peak) + 1.0);
+    return mix(color, vec3(new_peak), white);
+}
+
+// Light to linear display color, 0 to 1.
+vec3 tone_curve(vec3 light) {
+    return clamp(push.curve == CURVE_AGX ? agx(light) : neutral(light), 0.0, 1.0);
+}
+
+// A random number from 0.0 to 1.0 for a pixel and a frame (the PCG hash, as in
+// trace.comp).
+float pixel_random(uvec3 v) {
+    uint state = (v.x + v.y * 7919u + v.z * 104729u) * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return float(((word >> 22u) ^ word) >> 8u) / 16777216.0;
+}
+
+// The 8-bit color for the output, with dither: noise of one 8-bit step, as the sum of
+// two random numbers (a triangle shape: its mean and its strength do not depend on
+// the color, so no pattern shows).
+vec4 stored(vec3 encoded, ivec2 pixel) {
+    float noise = pixel_random(uvec3(pixel, push.frame))
+        + pixel_random(uvec3(pixel, push.frame + 1013u)) - 1.0;
+    return vec4(encoded + noise / 255.0, 1.0);
 }
 
 // Linear color to the sRGB transfer curve. The output image and the swapchain are
@@ -141,6 +233,19 @@ void main() {
         imageStore(images[push.dst], pixel, vec4(color, 1.0));
         return;
     }
-    vec3 mapped = aces(hdr * push.exposure);
-    imageStore(images[push.dst], pixel, vec4(srgb_encode(mapped), 1.0));
+    if (push.mode == MODE_PICTURE) {
+        if (push.bloom_strength > 0.0) {
+            hdr = mix(hdr, sampled(push.bloom, uv), push.bloom_strength);
+        }
+        // From the middle of the picture (0) to a corner (1), the same in X and Y.
+        float from_middle = length(uv * 2.0 - 1.0) / sqrt(2.0);
+        hdr *= 1.0 - push.vignette * smoothstep(0.35, 1.0, from_middle);
+    }
+    vec3 mapped = tone_curve(hdr * push.exposure);
+    if (push.mode == MODE_PICTURE) {
+        // Lift moves black toward a color, gain scales white, gamma bends the middle.
+        mapped = push.gain * (mapped + push.lift * (1.0 - mapped));
+        mapped = pow(clamp(mapped, 0.0, 1.0), 1.0 / push.gamma);
+    }
+    imageStore(images[push.dst], pixel, stored(srgb_encode(mapped), pixel));
 }

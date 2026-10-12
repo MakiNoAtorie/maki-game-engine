@@ -42,7 +42,7 @@ use maki_core::{App, Config, Input, Interpolated, Module, Time, Update, interpol
 use maki_platform::{Action, QuitRequested, ScriptedActions};
 use maki_render::{Format, FrameGraph, GpuMeshes, RenderGpu, RenderWorld};
 use maki_scene::{CurrentRoom, Light, RoomDef, RoomRequest, RoomTarget, load_requested_room};
-use maki_ui::{add_panel, egui};
+use maki_ui::{Panels, add_panel, egui};
 
 use crate::light::clamp_to_room;
 
@@ -68,6 +68,9 @@ pub struct BenchRun {
     pub frames: u64,
     /// `Some`: write the picture of the last bench frame to this file. See `dump_picture`.
     pub dump: Option<PathBuf>,
+    /// True: the file gets the picture as the window shows it (after the tone curve),
+    /// and the run hides all panels. False: the picture before the tone curve.
+    pub shot: bool,
     /// `Some`: the light moves in this many frames, then it stops. `Some(0)`: it does
     /// not move.
     pub light_frames: Option<u64>,
@@ -238,6 +241,7 @@ impl Module for BenchModule {
                     world.resource_mut::<Bench>().request = Some(BenchRun {
                         frames,
                         dump: dump.then(|| PathBuf::from(PANEL_DUMP_PATH)),
+                        shot: false,
                         light_frames: static_light.then_some(0),
                         script: script_name.and_then(script),
                     });
@@ -349,6 +353,7 @@ fn record_frame(
     render_world: Option<Res<RenderWorld>>,
     mut bench: ResMut<Bench>,
     mut quit: ResMut<QuitRequested>,
+    panels: Option<ResMut<Panels>>,
 ) {
     let now = Instant::now();
     let bench = &mut *bench;
@@ -361,6 +366,9 @@ fn record_frame(
         let vsync = config.vsync;
         if vsync {
             config.vsync = false;
+        }
+        if let (true, Some(mut panels)) = (run.shot, panels) {
+            panels.close_all();
         }
         if run.script.is_some() {
             // The frame numbers of a script start at the spawn point of the start room.
@@ -391,7 +399,12 @@ fn record_frame(
     if frame == frames + 1
         && let (Some(path), Some(graph), Some(mut gpu)) = (&active.run.dump, &graph, gpu)
     {
-        match dump_picture(path, graph, &mut gpu) {
+        let image = if active.run.shot {
+            "output"
+        } else {
+            "resolved"
+        };
+        match dump_picture(path, graph, &mut gpu, image) {
             Ok(()) => tracing::info!(path = %path.display(), "picture dumped"),
             Err(error) => {
                 tracing::error!(path = %path.display(), "cannot dump the picture: {error:#}")
@@ -453,11 +466,17 @@ fn record_frame(
     }
 }
 
-/// Writes the picture before the tone curve (the result of the anti-aliasing pass): two
+/// Writes the image `name` of the frame graph: `resolved` is the picture before the tone
+/// curve (the result of the anti-aliasing pass), `output` is what the window shows. two
 /// little-endian `u32` (width, height), then four `f32` (R, G, B, A) for each pixel.
 /// `tools/bench.py` reads the file.
-fn dump_picture(path: &Path, graph: &FrameGraph, gpu: &mut RenderGpu) -> anyhow::Result<()> {
-    let id = graph.resource("resolved").context("no picture image")?;
+fn dump_picture(
+    path: &Path,
+    graph: &FrameGraph,
+    gpu: &mut RenderGpu,
+    name: &str,
+) -> anyhow::Result<()> {
+    let id = graph.resource(name).context("no picture image")?;
     let format = graph.transient_desc(id).context("not an image")?.format;
     let (image, (width, height), state) = graph.image(id).context("no frame was drawn")?;
     let pixels = gpu.0.read_image(image, state)?;
@@ -472,6 +491,11 @@ fn dump_picture(path: &Path, graph: &FrameGraph, gpu: &mut RenderGpu) -> anyhow:
                 .copied()
                 .map(u16::from_ne_bytes);
             bytes.extend(halves.flat_map(|half| half_to_f32(half).to_le_bytes()));
+        }
+        // 0 to 255 as 0.0 to 1.0.
+        Format::Rgba8Unorm => {
+            let values = pixels.iter().map(|value| f32::from(*value) / 255.0);
+            bytes.extend(values.flat_map(f32::to_le_bytes));
         }
         other => anyhow::bail!("cannot dump an image of format {other:?}"),
     }

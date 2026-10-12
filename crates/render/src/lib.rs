@@ -26,6 +26,7 @@
 //! and embedded with `shader_spirv!`. See `build.rs` for the rules.
 
 mod accumulation;
+mod bloom;
 mod camera;
 mod denoise;
 mod graph;
@@ -40,7 +41,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Res, ResMut};
 use bevy_ecs::world::World;
-use maki_core::{App, Config, Extract, Module, Present, Render, Startup, Time};
+use maki_core::{App, Config, Extract, Module, Present, Render, Startup, Time, ToneCurve};
 use maki_gpu::{Gpu, GpuDesc};
 use maki_platform::{Window, WindowSize};
 use maki_scene::{CurrentRoom, ScreenFade};
@@ -153,9 +154,22 @@ pub struct ExtractedFrame {
     pub taa_blend: f32,
     /// The tonemap pass multiplies the picture by this.
     pub exposure: f32,
+    pub look: Look,
     /// How dark the fade makes the picture: 0.0 is the picture, 1.0 is black.
     pub fade: f32,
     pub debug_view: DebugView,
+}
+
+/// The look of the picture: the values of the config for the passes after the
+/// anti-aliasing (`bloom` and `tonemap`). See `Config` for each one.
+#[derive(Debug, Clone, Copy)]
+pub struct Look {
+    pub tone_curve: ToneCurve,
+    pub bloom: f32,
+    pub vignette: f32,
+    pub lift: [f32; 3],
+    pub gamma: [f32; 3],
+    pub gain: [f32; 3],
 }
 
 /// What the window shows. A resource of the game world: a debug panel writes it.
@@ -318,6 +332,14 @@ pub(crate) fn extract_frame(
         taa: config.taa,
         taa_blend: config.taa_blend,
         exposure: config.exposure,
+        look: Look {
+            tone_curve: config.tone_curve,
+            bloom: config.bloom,
+            vignette: config.vignette,
+            lift: config.grade_lift,
+            gamma: config.grade_gamma,
+            gain: config.grade_gain,
+        },
         fade: fade.map_or(0.0, |fade| fade.0.clamp(0.0, 1.0)),
         debug_view: *debug_view,
     });
