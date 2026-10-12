@@ -169,6 +169,13 @@ impl ConfigFile {
         Ok(())
     }
 
+    /// A file beside the config file, with its name and another extension: for what
+    /// a tool saves that is not a table (the layout of the editor). `None`: the
+    /// config is not a file on the disk, and nothing is saved.
+    pub fn beside(&self, extension: &str) -> Option<PathBuf> {
+        self.on_disk.then(|| self.path.with_extension(extension))
+    }
+
     /// The text of the file, with what `write` put into it.
     pub fn text(&self) -> &str {
         &self.text

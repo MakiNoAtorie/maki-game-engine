@@ -9,8 +9,8 @@
 //!   In each frame the world is made to show the document: a small change is
 //!   patched into the entities (`maki_scene::patch_room`), each other change loads
 //!   the room again from the text of the document.
-//! - `camera`: the free camera. `panels`, `widgets`: the outliner and the property
-//!   panel.
+//! - `camera`: the free camera. `panels`, `widgets`: the menus, the tool row, the
+//!   outliner, and the inspector, in the shell of `maki_ui` (docks, command list).
 //! - `view`: the pixel of a point, the ray of a pixel, the pick. `gizmo`: the handles
 //!   that move, turn, and scale the selection. `overlay`: the marks on the picture.
 //! - `ops`: add, delete, duplicate, names, and the history of undo and redo.
@@ -42,6 +42,7 @@ pub mod widgets;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use bevy_ecs::change_detection::DetectChangesMut;
@@ -53,8 +54,10 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::ResMut;
 use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
-use maki_core::{App, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update};
-use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
+use maki_core::{
+    App, ConfigFile, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update,
+};
+use maki_events::{Builtin, CommandRegistry, EventRunner, GameState, Problem};
 use maki_gameplay::StartRoom;
 use maki_platform::{
     Action, ActionState, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
@@ -64,7 +67,7 @@ use maki_scene::{
     ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomOverride, RoomRequest,
     RoomTarget, load_requested_room, patch_room,
 };
-use maki_ui::{PanelSizes, Panels, TOGGLE_HELP};
+use maki_ui::{COMMAND_SEARCH, NoticeLevel, Panels, TOGGLE_HELP, ToolCommand, notify};
 use serde::{Deserialize, Serialize};
 
 pub use camera::{EditorCamera, ORBIT, PAN, VIEW_GAME, VIEW_TOP, ZOOM_IN, ZOOM_OUT};
@@ -103,8 +106,10 @@ pub const PASTE: Action = Action("editor_paste");
 pub const FRAME: Action = Action("editor_frame");
 /// Ends a drag with no change. With no drag: selects nothing.
 pub const CANCEL: Action = Action("editor_cancel");
+/// The name of the selected item becomes a text field in its row of the outliner.
+pub const RENAME: Action = Action("editor_rename");
 
-const BINDINGS: [(Key, Action, &str); 11] = [
+const BINDINGS: [(Key, Action, &str); 12] = [
     (Key::F5, PLAY, "Play the room"),
     (Key::MouseLeft, SELECT, "Select, or drag a handle"),
     (
@@ -119,10 +124,12 @@ const BINDINGS: [(Key, Action, &str); 11] = [
     (Key::Q, TOGGLE_LOCAL, "Handles of the item / of the room"),
     (Key::Delete, DELETE, "Delete the selection"),
     (Key::F, FRAME, "Frame the selection in the view"),
+    (Key::F2, RENAME, "Rename the selected item"),
     (Key::Escape, CANCEL, "Cancel a drag, or select nothing"),
 ];
 
-const CHORDS: [(Chord, Action, &str); 6] = [
+const CHORDS: [(Chord, Action, &str); 7] = [
+    (Chord::ctrl(Key::P), COMMAND_SEARCH, "Search a command"),
     (Chord::ctrl(Key::Z), UNDO, "Undo"),
     (Chord::ctrl(Key::Y), REDO, "Redo"),
     (Chord::ctrl(Key::D), DUPLICATE, "Duplicate"),
@@ -141,11 +148,6 @@ pub struct EditorSettings {
     pub grid_step: f32,
     /// A rotation snaps to steps of this, in degrees.
     pub angle_step: f32,
-    /// The width of the outliner and of the property panel, and the height of the
-    /// event panel, in points of the UI. The user drags their edges.
-    pub left_width: f32,
-    pub right_width: f32,
-    pub event_height: f32,
 }
 
 impl Default for EditorSettings {
@@ -154,19 +156,6 @@ impl Default for EditorSettings {
             snap: true,
             grid_step: 0.25,
             angle_step: 15.0,
-            left_width: 230.0,
-            right_width: 340.0,
-            event_height: 300.0,
-        }
-    }
-}
-
-impl EditorSettings {
-    fn panel_sizes(&self) -> PanelSizes {
-        PanelSizes {
-            left: self.left_width,
-            right: self.right_width,
-            bottom: self.event_height,
         }
     }
 }
@@ -218,14 +207,14 @@ pub enum Command {
     UnpackPrefab,
     /// The view looks at the last selected item.
     Frame,
+    /// The name of the last selected item becomes a text field in the outliner.
+    Rename,
     /// Ends a drag of a handle with no change. With no drag: selects nothing.
     Cancel,
     Undo,
     Redo,
     /// Ends the app.
     Quit,
-    /// Shows or hides the window with the debug panels of the game.
-    DebugPanels,
     /// The answer to the question that a command asked for a document with changes
     /// that are not saved.
     Answer(Answer),
@@ -272,10 +261,14 @@ pub struct Editor {
     /// The spawn point where the game starts on `Play`. `None`, or a name that the
     /// room does not have: the first one.
     pub play_from: Option<String>,
-    /// One line for the user: what the last command did.
+    /// One line for the user: what the last command did. The status row shows it.
     pub status: String,
-    /// Why a command did not do its work. It shows until the user closes it.
+    /// Why a command did not do its work. It becomes a notice in the same frame.
     pub error: Option<String>,
+    /// The item whose row of the outliner becomes a text field in the next frame.
+    pub(crate) renaming: Option<Item>,
+    /// An event was the selected item in the frame before.
+    event_selected: bool,
     /// True until the cancel key is up: its press was for the game.
     ignore_cancel: bool,
     /// What a click would take now, and the pixel that it was found for.
@@ -659,6 +652,11 @@ impl Editor {
                     (camera.target, camera.distance) = (target, distance);
                 }
             }
+            Command::Rename => {
+                self.renaming = Some(self.primary()).filter(Item::has_name);
+                // The text field is in the outliner.
+                world.resource_mut::<Panels>().show(panels::OUTLINER);
+            }
             Command::Cancel => match self.drag.take() {
                 // No step of the history: the document is as before the drag.
                 Some(drag) => {
@@ -673,11 +671,6 @@ impl Editor {
             Command::Quit => {
                 world.resource_mut::<QuitHold>().0 = false;
                 world.resource_mut::<QuitRequested>().0 = true;
-            }
-            Command::DebugPanels => {
-                let mut panels = world.resource_mut::<Panels>();
-                let open = panels.debug_window();
-                panels.set_debug_window(!open);
             }
             Command::Answer(answer) => {
                 let Some(pending) = self.pending.take() else {
@@ -722,7 +715,72 @@ impl Editor {
 
     fn fail(&mut self, error: String) {
         tracing::error!("{error}");
+        self.status = "The command failed".to_owned();
         self.error = Some(error);
+    }
+
+    /// Gives an item a new name, as the name field of the inspector does: the
+    /// events that name the item follow. An empty name is no name.
+    pub fn rename(&mut self, item: &Item, new: String) {
+        let registry = self.registry.clone();
+        // The name that the item had.
+        let old = match item {
+            Item::Spawn(old) => {
+                self.rename_spawn(old, &new);
+                return;
+            }
+            Item::Event(index) => match self.document.events.get_mut(*index) {
+                Some(event) => Some(std::mem::replace(&mut event.name, new)),
+                None => return,
+            },
+            item => {
+                let room = &mut self.document.room;
+                let slot = match item {
+                    Item::Door(index) => room.doors.get_mut(*index).map(|door| &mut door.name),
+                    Item::Prop(index) => room.props.get_mut(*index).map(|prop| &mut prop.name),
+                    Item::Mover(index) => room.movers.get_mut(*index).map(|mover| &mut mover.name),
+                    Item::Light(index) => room.lights.get_mut(*index).map(|light| &mut light.name),
+                    Item::Prefab(index) => {
+                        room.prefabs.get_mut(*index).map(|prefab| &mut prefab.name)
+                    }
+                    _ => None,
+                };
+                let Some(slot) = slot else { return };
+                std::mem::replace(slot, (!new.is_empty()).then_some(new))
+            }
+        };
+        let more = self.document.renamed(item, old, &registry);
+        if !more.is_empty() {
+            self.status = more;
+        }
+        self.document.dirty = true;
+    }
+
+    /// Gives a spawn point a new name. A `Transfer` of this room to itself follows.
+    /// Other room files are not changed: the user gets their names. False: the name
+    /// is empty or in use, and nothing was changed.
+    pub fn rename_spawn(&mut self, old: &str, new: &str) -> bool {
+        let document = &mut self.document;
+        if !document.rename_spawn(old, new) {
+            return false;
+        }
+        let file = document.path.file_name().unwrap_or_default();
+        let file = file.to_string_lossy().into_owned();
+        let registry = self.registry.clone();
+        document.rename_in_events(&registry, |command: &Builtin| match command {
+            Builtin::Transfer(room, to) if *room == file && to == old => {
+                Some(Builtin::Transfer(room.clone(), new.to_owned()))
+            }
+            _ => None,
+        });
+        let users = spawn_users(&self.rooms, &document.path, old, &registry);
+        if !users.is_empty() {
+            let users = users.join(", ");
+            self.status = format!("{users}: a Transfer still names `{old}`");
+        }
+        document.dirty = true;
+        self.selection = vec![Item::Spawn(new.to_owned())];
+        true
     }
 
     /// The text of the title bar: the room file, the mark of a change that is not
@@ -819,7 +877,7 @@ impl Editor {
 
     /// Gives the keys, the clock, the player, and the picture to the editor or to
     /// the game. Runs in each frame: each part is written only if it differs.
-    fn apply_mode(&self, world: &mut World) {
+    fn apply_mode(&mut self, world: &mut World) {
         let playing = self.playing();
         let mode = if playing { InputMode::GAME } else { MODE };
         world.resource_mut::<InputMode>().set_if_neq(mode);
@@ -863,77 +921,273 @@ impl Editor {
         }
 
         let ask = self.pending.is_some();
-        // The event panel is under the picture while an event is selected.
-        let event = !playing && matches!(self.primary(), Item::Event(_));
         let mut panels = world.resource_mut::<Panels>();
-        for (panel, open) in [(panels::CONFIRM, ask), (panels::EVENT, event)] {
-            if panels.is_open(panel) != open {
-                panels.set_open(panel, open);
-            }
+        if panels.is_open(panels::CONFIRM) != ask {
+            panels.set_open(panels::CONFIRM, ask);
         }
+        // An event becomes the selected item: its panel shows. The user can close
+        // the tab while the event stays selected.
+        let event = !playing && matches!(self.primary(), Item::Event(_));
+        if event && !self.event_selected {
+            panels.show(panels::EVENT);
+        }
+        self.event_selected = event;
     }
 }
 
-impl Editor {
-    /// The keys of the editor that are commands or switches.
-    fn keys(&mut self, actions: &ActionState) {
-        let pressed = |action| actions.just_pressed(action);
-        // The play key stops a game. Its action is the same in the two input modes,
-        // so a key that is held over the change of the mode is one press.
-        if pressed(PLAY) && self.playing() {
-            self.request(Command::Stop);
-        }
-        if !actions.pressed(CANCEL) {
-            self.ignore_cancel = false;
-        }
-        if pressed(CANCEL) && !self.ignore_cancel {
-            self.request(Command::Cancel);
-        }
-        let commands = [
-            (PLAY, Command::Play),
-            (DELETE, Command::Delete),
-            (COPY, Command::Copy),
-            (PASTE, Command::Paste),
-            (FRAME, Command::Frame),
-            (UNDO, Command::Undo),
-            (REDO, Command::Redo),
-            (DUPLICATE, Command::Duplicate),
-            (SAVE, Command::Save),
-        ];
-        for (action, command) in commands {
-            // Not in a game: the press of the play key that stops the game would
-            // start it again, after the stop in the same queue.
-            if pressed(action) && !self.playing() {
-                self.request(command);
-            }
-        }
-        for (action, tool) in [
-            (TOOL_MOVE, Tool::Move),
-            (TOOL_ROTATE, Tool::Rotate),
-            (TOOL_SCALE, Tool::Scale),
-        ] {
-            if pressed(action) {
-                self.tool = tool;
-            }
-        }
-        if pressed(TOGGLE_LOCAL) {
-            self.local = !self.local;
-        }
-    }
+/// "Can run now" of the commands: the room is edited, and no question waits.
+fn editing(world: &World) -> bool {
+    let editor = world.resource::<Editor>();
+    !editor.playing() && editor.pending.is_none()
 }
 
-/// The key of an action of the editor, as the binding table has it: for the hover
-/// text of a button. Empty: the action has no key.
-pub(crate) fn key_of(world: &World, action: Action) -> String {
-    let bindings = &world.resource::<maki_platform::Bindings>().0;
-    let of_action =
-        |binding: &&maki_platform::Binding| binding.mode == MODE && binding.action == action;
-    let keys: Vec<String> = bindings
-        .iter()
-        .filter(of_action)
-        .map(|b| b.chord.label())
-        .collect();
-    keys.join(" or ")
+fn playing(world: &World) -> bool {
+    world.resource::<Editor>().playing()
+}
+
+/// A test runs: the events wait for a step.
+fn stepping(world: &World) -> bool {
+    playing(world) && world.resource::<EventRunner>().step_mode()
+}
+
+fn selected(world: &World) -> bool {
+    editing(world) && !world.resource::<Editor>().selection.is_empty()
+}
+
+/// The commands of the editor, for the command list of `maki_ui`: the menus, the
+/// tool buttons, the keys, and the command search are made from it.
+fn add_commands(app: &mut App) {
+    type CanRun = fn(&World) -> bool;
+    let mut add = |id, name, menu, action: Option<Action>, can_run: CanRun, command: Command| {
+        let run = move |world: &mut World| world.resource_mut::<Editor>().request(command.clone());
+        maki_ui::add_command(
+            app,
+            ToolCommand {
+                menu,
+                action,
+                can_run,
+                ..ToolCommand::new(id, name, run)
+            },
+        );
+    };
+    let can_undo: CanRun =
+        |world| editing(world) && world.resource::<Editor>().history_steps().0 > 0;
+    let can_redo: CanRun =
+        |world| editing(world) && world.resource::<Editor>().history_steps().1 > 0;
+    let named: CanRun = |world| editing(world) && world.resource::<Editor>().primary().has_name();
+    let prefab: CanRun =
+        |world| editing(world) && matches!(world.resource::<Editor>().primary(), Item::Prefab(_));
+    // The press of the cancel key that stopped a game is not a cancel.
+    let can_cancel: CanRun = |world| editing(world) && !world.resource::<Editor>().ignore_cancel;
+    add(
+        "editor.new",
+        "New room",
+        "File",
+        None,
+        editing,
+        Command::New,
+    );
+    add(
+        "editor.save",
+        "Save",
+        "File",
+        Some(SAVE),
+        editing,
+        Command::Save,
+    );
+    add("editor.quit", "Quit", "File", None, editing, Command::Quit);
+    add(
+        "editor.undo",
+        "Undo",
+        "Edit",
+        Some(UNDO),
+        can_undo,
+        Command::Undo,
+    );
+    add(
+        "editor.redo",
+        "Redo",
+        "Edit",
+        Some(REDO),
+        can_redo,
+        Command::Redo,
+    );
+    let duplicate = Command::Duplicate;
+    add(
+        "editor.duplicate",
+        "Duplicate",
+        "Edit",
+        Some(DUPLICATE),
+        selected,
+        duplicate,
+    );
+    add(
+        "editor.delete",
+        "Delete",
+        "Edit",
+        Some(DELETE),
+        selected,
+        Command::Delete,
+    );
+    add(
+        "editor.copy",
+        "Copy",
+        "Edit",
+        Some(COPY),
+        selected,
+        Command::Copy,
+    );
+    add(
+        "editor.paste",
+        "Paste",
+        "Edit",
+        Some(PASTE),
+        editing,
+        Command::Paste,
+    );
+    add(
+        "editor.rename",
+        "Rename",
+        "Edit",
+        Some(RENAME),
+        named,
+        Command::Rename,
+    );
+    let unpack = Command::UnpackPrefab;
+    add(
+        "editor.unpack_prefab",
+        "Unpack prefab",
+        "Edit",
+        None,
+        prefab,
+        unpack,
+    );
+    for (text, kind) in Kind::MENU {
+        // The id of a command is a text of the program: made one time, and kept.
+        let id = format!("editor.add.{}", text.to_lowercase().replace(' ', "_"));
+        add(id.leak(), text, "Add", None, editing, Command::Add(kind));
+    }
+    add(
+        "editor.frame",
+        "Frame in the view",
+        "View",
+        Some(FRAME),
+        editing,
+        Command::Frame,
+    );
+    add(
+        "editor.play",
+        "Play",
+        "",
+        Some(PLAY),
+        editing,
+        Command::Play,
+    );
+    // The same action in a game: the play key stops it.
+    add(
+        "editor.stop",
+        "Stop",
+        "",
+        Some(PLAY),
+        playing,
+        Command::Stop,
+    );
+    let cancel = "Cancel a drag, or select nothing";
+    add(
+        "editor.cancel",
+        cancel,
+        "",
+        Some(CANCEL),
+        can_cancel,
+        Command::Cancel,
+    );
+
+    // The commands that are not in the queue of the editor: they change one value.
+    let mut add = |id, name, menu, action: Option<Action>, can_run: CanRun, run: fn(&mut World)| {
+        maki_ui::add_command(
+            app,
+            ToolCommand {
+                menu,
+                action,
+                can_run,
+                run: Arc::new(run),
+                ..ToolCommand::new(id, name, |_| {})
+            },
+        );
+    };
+    add(
+        "editor.view_top",
+        "View from the top",
+        "View",
+        Some(VIEW_TOP),
+        editing,
+        camera::view_top,
+    );
+    let game = "View of the game camera";
+    add(
+        "editor.view_game",
+        game,
+        "View",
+        Some(VIEW_GAME),
+        editing,
+        camera::view_game,
+    );
+    add(
+        "editor.tool_move",
+        "Tool: move",
+        "",
+        Some(TOOL_MOVE),
+        editing,
+        |world| {
+            world.resource_mut::<Editor>().tool = Tool::Move;
+        },
+    );
+    add(
+        "editor.tool_rotate",
+        "Tool: rotate",
+        "",
+        Some(TOOL_ROTATE),
+        editing,
+        |world| {
+            world.resource_mut::<Editor>().tool = Tool::Rotate;
+        },
+    );
+    add(
+        "editor.tool_scale",
+        "Tool: scale",
+        "",
+        Some(TOOL_SCALE),
+        editing,
+        |world| {
+            world.resource_mut::<Editor>().tool = Tool::Scale;
+        },
+    );
+    let local = "Handles along the axes of the item, not of the room";
+    add(
+        "editor.local",
+        local,
+        "",
+        Some(TOGGLE_LOCAL),
+        editing,
+        |world| {
+            let mut editor = world.resource_mut::<Editor>();
+            editor.local = !editor.local;
+        },
+    );
+    let step = "Step: the next command of the event";
+    add("editor.step", step, "", None, stepping, |world| {
+        world.resource_mut::<EventRunner>().step_command();
+    });
+    add(
+        "editor.run",
+        "Run: no more steps",
+        "",
+        None,
+        stepping,
+        |world| {
+            world.resource_mut::<EventRunner>().set_step_mode(false);
+        },
+    );
 }
 
 /// What is under the pointer in the picture: a click takes it.
@@ -977,12 +1231,16 @@ impl Module for EditorModule {
     fn build(&self, app: &mut App) {
         let start = app.world().resource::<StartRoom>().clone();
         let registry = app.world().resource::<CommandRegistry>().clone();
-        // Written back to the config file: the grid step and the panel sizes of
-        // the last session.
+        // Written back to the config file: the snap and its steps of the last
+        // session.
         app.add_saved_settings::<EditorSettings>();
-        let sizes = app.world().resource::<EditorSettings>().panel_sizes();
+        // The layout of the docks is in a file beside the config file.
+        let layout = app.world().resource::<ConfigFile>().beside("layout.ron");
         app.init_resource::<Panels>();
-        app.resource_mut::<Panels>().set_tool_layout(sizes);
+        let mut panels = app.resource_mut::<Panels>();
+        panels.set_tool_layout(panels::LAYOUTS.to_vec(), layout);
+        // The status row has the frame time: nothing is over the picture.
+        panels.set_open("Frame counter", false);
         // The picture has the room that the panels leave in the window.
         *app.resource_mut::<PictureFit>() = PictureFit::Window;
         add_mode_bindings(app, MODE, &camera::BINDINGS);
@@ -1014,6 +1272,8 @@ impl Module for EditorModule {
             play_from: Some(start.spawn),
             status: String::new(),
             error: None,
+            renaming: None,
+            event_selected: false,
             ignore_cancel: false,
             hover: None,
             hover_pixel: None,
@@ -1034,14 +1294,17 @@ impl Module for EditorModule {
             (
                 // It has the full world: a command can load a room and stop a game.
                 // Before the loader: a room that it asks for shows in this frame.
+                // After the keys of the commands: a key is a command of this frame.
                 run_commands
                     .before(load_requested_room)
+                    .after(maki_ui::command_keys)
                     .ambiguous_with_all(),
                 // It has the full world: the GPU, and the meshes of the mirrors.
                 overlay::read_depth.ambiguous_with_all(),
                 camera::move_camera,
             ),
         );
+        add_commands(app);
         panels::build(app);
     }
 }
@@ -1109,9 +1372,9 @@ fn take_quit_request(mut quit: ResMut<QuitRequested>, mut editor: ResMut<Editor>
 /// Runs in `Update`: the commands of the queue, then the world follows the document.
 fn run_commands(world: &mut World) {
     world.resource_scope(|world, mut editor: Mut<Editor>| {
-        // A question waits: the keys of the editor do nothing.
-        if editor.pending.is_none() {
-            editor.keys(world.resource::<ActionState>());
+        // The cancel key is up: its next press is a cancel again.
+        if !world.resource::<ActionState>().pressed(CANCEL) {
+            editor.ignore_cancel = false;
         }
         for command in std::mem::take(&mut editor.queue) {
             editor.run(world, command, false);
@@ -1138,20 +1401,17 @@ fn run_commands(world: &mut World) {
         editor.apply_mode(world);
         let title = WindowTitle(editor.title());
         world.resource_mut::<WindowTitle>().set_if_neq(title);
-        // The panel sizes that the user dragged go to the settings, and so to the
-        // config file.
-        if let Some(sizes) = world.resource::<Panels>().tool_sizes() {
-            let old = world.resource::<EditorSettings>();
-            let rounded = |size: f32| size.round();
-            let new = EditorSettings {
-                left_width: rounded(sizes.left),
-                right_width: rounded(sizes.right),
-                event_height: rounded(sizes.bottom),
-                ..old.clone()
-            };
-            if new != *old {
-                *world.resource_mut::<EditorSettings>() = new;
-            }
+        // The tab of the picture has the name of the room file.
+        let path = &editor.document.path;
+        let file = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        let changed = if editor.document.dirty { " *" } else { "" };
+        let tab = format!("{file}{changed}");
+        world.resource_mut::<Panels>().set_document(&tab);
+        if let Some(error) = editor.error.take() {
+            notify(world, NoticeLevel::Error, error);
         }
         // A test: its page starts when the events of the room are loaded.
         if let Some((event, page)) = &editor.test

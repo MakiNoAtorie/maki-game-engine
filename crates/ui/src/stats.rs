@@ -4,7 +4,10 @@
 
 use std::time::{Duration, Instant};
 
-use maki_core::{App, Module, Time, Transform};
+use bevy_ecs::resource::Resource;
+use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::system::{Res, ResMut};
+use maki_core::{App, Module, Time, Transform, Update};
 use maki_render::{Accumulation, ExtractedFrame, FrameGraph, RenderGpu, RenderWorld};
 use maki_scene::{Light, Player};
 
@@ -20,26 +23,44 @@ fn work_ms(interval: Duration, wait: Duration, gpu_ms: f32) -> f32 {
     (interval.saturating_sub(wait).as_secs_f32() * 1000.0).max(gpu_ms)
 }
 
+/// The mean of the frame time with no limit ([`work_ms`]), in milliseconds: for the
+/// frame counter, and for the status row of a tool.
+#[derive(Resource)]
+pub struct FrameTime {
+    pub mean_ms: f32,
+    /// The start of the frame before.
+    last: Instant,
+}
+
+fn measure_frame_time(
+    mut time: ResMut<FrameTime>,
+    gpu: Option<Res<RenderGpu>>,
+    graph: Option<Res<FrameGraph>>,
+) {
+    // The real time, not `Time::delta`: a benchmark run sets that to a fixed value.
+    let interval = std::mem::replace(&mut time.last, Instant::now()).elapsed();
+    let wait = gpu.map_or(Duration::ZERO, |gpu| gpu.0.frame_wait());
+    let timings = graph.as_ref().and_then(|graph| graph.timings());
+    let gpu_ms = timings.map_or(0.0, |t| t.passes.iter().map(|(_, ms)| ms).sum());
+    let ms = work_ms(interval, wait, gpu_ms);
+    // A moving mean: the time of one frame changes too fast to read.
+    time.mean_ms = if time.mean_ms == 0.0 {
+        ms
+    } else {
+        time.mean_ms + (ms - time.mean_ms) * 0.05
+    };
+}
+
 impl Module for StatsPanelModule {
     fn build(&self, app: &mut App) {
-        // State of the counter: the start of the frame before, and the mean work time.
-        let mut last = Instant::now();
-        let mut mean_ms = 0.0_f32;
+        app.insert_resource(FrameTime {
+            mean_ms: 0.0,
+            last: Instant::now(),
+        })
+        // It reads what the renderer measured: in any order with it.
+        .add_systems(Update, measure_frame_time.ambiguous_with_all());
         add_corner(app, "Frame counter", true, move |ui, world| {
-            // The real time, not `Time::delta`: a benchmark run sets that to a fixed value.
-            let interval = std::mem::replace(&mut last, Instant::now()).elapsed();
-            let wait = world
-                .get_resource::<RenderGpu>()
-                .map_or(Duration::ZERO, |gpu| gpu.0.frame_wait());
-            let timings = world.get_resource::<FrameGraph>().and_then(|g| g.timings());
-            let gpu_ms = timings.map_or(0.0, |t| t.passes.iter().map(|(_, ms)| ms).sum());
-            let ms = work_ms(interval, wait, gpu_ms);
-            // A moving mean: the time of one frame changes too fast to read.
-            mean_ms = if mean_ms == 0.0 {
-                ms
-            } else {
-                mean_ms + (ms - mean_ms) * 0.05
-            };
+            let mean_ms = world.resource::<FrameTime>().mean_ms;
             let green = |text: String| {
                 egui::RichText::new(text)
                     .monospace()

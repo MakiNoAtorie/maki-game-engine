@@ -1,6 +1,6 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`. For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 42. For the session that goes on with part 6.
 
 ## State
 
@@ -8,7 +8,7 @@ Written 2026-10-12, at commit `0a371b5`. For the session that goes on with part 
 - Stage 41 (spike) is done and pushed: the Rust code of a project as a DLL that a program loads and loads again. Report: `stage-41.md`.
 - The plan of part 6 is `README.md`: the decisions of the owner (section 2, thirteen of them), the stage table (3.1), and the list of what is not there (3.2, items 1 to 34).
 - Stage files: `stage-42-editor-shell.md` (approved), `stage-43-editor-program-and-project.md`, `stage-45-asset-reload.md`, `stage-46-source-files.md` (planned, not approved). Stage 44 and the stages from 47 on have no file.
-- No code of stage 42 exists.
+- Stage 42 (the shell of the editor) is done: docks, the registries of panels and commands, the widgets, the theme. Report: `stage-42.md`.
 - `CLAUDE.md` has the "Current target" block of part 6, the line for `spike/`, and the working agreement of part 6. Rule 8 gets its new words in stage 43.
 - The spike code is in the tree and stays until stage 43 removes it: `spike/engine`, `spike/scripts`, `spike/host`, `tools/spike_reload.py`, the feature `dynamic` of the game, the profile `dynamic`.
 
@@ -35,12 +35,12 @@ The owner, 2026-10-12, for part 6: after each stage, always a sanity check, fill
 
 The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short.
 
-## Next: stage 42, the shell of the editor
+## Next: stage 43, the editor program and the project
 
-1. `python tools/bench.py run --label s41`: the base that stage 42 compares against. The rows of the side run `x41` of stage 41 were removed.
-2. Read `stage-42-editor-shell.md` and build what its prompt says. Check the current version and API of `egui_dock` against the egui version of the workspace first.
-3. The loop of `CLAUDE.md`: sanity check, gaps and bugs, report `stage-42.md`, the rows of `OPEN_ITEMS.md` that the stage closes or adds, commit, push.
-4. Stage 43, and so on.
+1. The base of the benchmark is the run `s42` (`tools/bench_history.csv`).
+2. Read `stage-43-editor-program-and-project.md` and build what its prompt says.
+3. The loop of `CLAUDE.md`: sanity check, gaps and bugs, report `stage-43.md`, the rows of `OPEN_ITEMS.md` that the stage closes or adds, commit, push.
+4. Stage 44 has no file: write it first. And so on.
 
 ## Facts that cost time to find
 
@@ -51,7 +51,9 @@ The owner plans by questions and answers: a question, an answer with a recommend
 - **The reload test**: `python tools/spike_reload.py`. It changes `spike/scripts/src/lib.rs` and puts it back.
 - **The shake script** of the benchmark needs room B: a config with `[rooms] start = "game/assets/rooms/room_b.ron"`, `start_spawn = "west"`, and `[save] enabled = false`.
 - **Git Bash has no `bc`**: time with `date +%s%3N`.
-- **The memory note `reference-verify-running-game`** has the method to run, drive, and look at the game and the editor on this machine. Its click positions are of the layout before stage 42.
+- **The memory note `reference-verify-running-game`** has the method to run, drive, and look at the game and the editor on this machine, with the places of the shell of stage 42.
+- **`cargo fmt` formats the files of `spike/` too** (they were never formatted): `git checkout -- spike` after it.
+- **The engine DLL after stage 42**: 54,809 symbols of 65,535.
 - **Line endings**: git warns "LF will be replaced by CRLF" for new files. It is not an error.
 
 ## When to stop and ask

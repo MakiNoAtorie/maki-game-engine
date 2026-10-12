@@ -8,7 +8,7 @@ use bevy_ecs::world::World;
 use maki_core::{App, Update};
 use maki_platform::{Action, ActionState, Bindings, InputMode, Key, add_bindings};
 
-use crate::{Panels, add_panel, run_ui};
+use crate::{Panels, ToolCommand, ToolCommands, add_panel, run_ui};
 
 pub(crate) const HELP: &str = "Help";
 
@@ -30,9 +30,17 @@ fn toggle_help(actions: Res<ActionState>, mut panels: ResMut<Panels>) {
 }
 
 /// The text of the panel: key and description of each binding of a mode, in table
-/// order.
-pub(crate) fn rows(bindings: &Bindings, mode: InputMode) -> Vec<(String, &'static str)> {
-    let row = |binding: &maki_platform::Binding| (binding.chord.label(), binding.description);
+/// order. `command`: the name of the command of a tool that an action starts now;
+/// it is the text in place of the description.
+pub(crate) fn rows(
+    bindings: &Bindings,
+    mode: InputMode,
+    command: impl Fn(Action) -> Option<&'static str>,
+) -> Vec<(String, &'static str)> {
+    let row = |binding: &maki_platform::Binding| {
+        let text = command(binding.action).unwrap_or(binding.description);
+        (binding.chord.label(), text)
+    };
     let of_mode = bindings.0.iter().filter(|binding| binding.mode == mode);
     of_mode.map(row).collect()
 }
@@ -43,9 +51,18 @@ fn help_panel(ui: &mut egui::Ui, world: &mut World) {
         .striped(true)
         .show(ui, |ui| {
             let mode = *world.resource::<InputMode>();
-            for (key, description) in rows(world.resource::<Bindings>(), mode) {
+            let commands = world.get_resource::<ToolCommands>().cloned();
+            let commands = commands.unwrap_or_default();
+            // One name for a command at each place: that of the command list.
+            let command = |action| {
+                let of_key = |command: &&ToolCommand| {
+                    command.action == Some(action) && (command.can_run)(world)
+                };
+                commands.iter().find(of_key).map(|command| command.name)
+            };
+            for (key, text) in rows(world.resource::<Bindings>(), mode, command) {
                 ui.label(key);
-                ui.label(description);
+                ui.label(text);
                 ui.end_row();
             }
         });

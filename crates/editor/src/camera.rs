@@ -8,6 +8,7 @@ use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::query::Without;
 use bevy_ecs::system::{Commands, Query, Res};
+use bevy_ecs::world::World;
 use glam::Vec3;
 use maki_gameplay::{CameraSettings, FollowCamera};
 use maki_platform::{Action, ActionState, Key, Picture, Pointer};
@@ -90,8 +91,6 @@ pub(crate) fn move_camera(
     actions: Res<ActionState>,
     pointer: Res<Pointer>,
     picture: Res<Picture>,
-    settings: Option<Res<CameraSettings>>,
-    editor: Res<Editor>,
     // `Without`: the two cameras are different entities, so this system and the
     // camera systems of the game need no order.
     mut cameras: Query<(&mut EditorCamera, &mut Camera), Without<FollowCamera>>,
@@ -99,18 +98,6 @@ pub(crate) fn move_camera(
     let [dx, dy] = pointer.delta;
     for (mut view, mut camera) in &mut cameras {
         let mut new = *view;
-        if actions.just_pressed(VIEW_GAME) {
-            let settings = settings.as_deref().cloned().unwrap_or_default();
-            new = EditorCamera::game_view(&settings);
-        }
-        if actions.just_pressed(VIEW_TOP) {
-            let room = &editor.document.room;
-            new.target = Vec3::ZERO;
-            (new.yaw, new.pitch) = (0.0, MAX_PITCH);
-            // The full room is in the picture, with the top of its walls.
-            let half_fov = (new.fov_y_degrees.to_radians() / 2.0).tan();
-            new.distance = room.width.max(room.depth) * 0.55 / half_fov + room.height;
-        }
         if actions.pressed(ORBIT) {
             new.yaw -= dx * TURN_SPEED;
             new.pitch = (new.pitch + dy * TURN_SPEED).clamp(0.05, MAX_PITCH);
@@ -132,6 +119,28 @@ pub(crate) fn move_camera(
         // Only a different value is a write: a camera at rest keeps the picture.
         view.set_if_neq(new);
         camera.set_if_neq(new.camera());
+    }
+}
+
+/// The command "View of the game camera".
+pub(crate) fn view_game(world: &mut World) {
+    let settings = world.get_resource::<CameraSettings>().cloned();
+    let new = EditorCamera::game_view(&settings.unwrap_or_default());
+    for mut view in world.query::<&mut EditorCamera>().iter_mut(world) {
+        *view = new;
+    }
+}
+
+/// The command "View from the top": the full room is in the picture, with the top
+/// of its walls.
+pub(crate) fn view_top(world: &mut World) {
+    let room = &world.resource::<Editor>().document.room;
+    let (size, height) = (room.width.max(room.depth), room.height);
+    for mut view in world.query::<&mut EditorCamera>().iter_mut(world) {
+        view.target = Vec3::ZERO;
+        (view.yaw, view.pitch) = (0.0, MAX_PITCH);
+        let half_fov = (view.fov_y_degrees.to_radians() / 2.0).tan();
+        view.distance = size * 0.55 / half_fov + height;
     }
 }
 

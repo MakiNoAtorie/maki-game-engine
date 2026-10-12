@@ -16,10 +16,12 @@
 //! 4. The `ui_overlay` pass of the frame graph (`overlay` module) draws the triangles
 //!    into the window image, after the compose pass and before the copy to the window.
 //!
-//! A tool (an editor) has another layout (`Panels::set_tool_layout`): panels at the
-//! four sides of the picture ([`add_tool_panel`]), with a size that the user drags,
-//! and the debug panels in one window. The picture then has the room that the
-//! panels leave (`maki_platform::PictureFit::Window`).
+//! A tool (an editor) has another layout (`Panels::set_tool_layout`): the shell of
+//! the `shell` module. A menu row, a tool row, a status row, and docks with tabs:
+//! each panel of [`add_tool_panel`] and each debug panel is a tab, and the picture
+//! is the tab in the middle (`maki_platform::PictureFit::Window`). The commands of
+//! the tool are one list (`commands` module), its widgets one set (`widgets`
+//! module), and its look one table (`theme` module).
 //!
 //! A module adds a debug panel with [`add_panel`], a panel at the left of the picture
 //! with [`add_left_panel`], and a window on top of the picture (game text) with
@@ -28,11 +30,15 @@
 //! the message window and game state panel of the events (`events` module) are
 //! added in the same way.
 
+mod commands;
 mod events;
 mod help;
 mod overlay;
 mod render_panel;
+mod shell;
 mod stats;
+pub mod theme;
+pub mod widgets;
 
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::MessageReader;
@@ -48,19 +54,35 @@ use serde::{Deserialize, Serialize};
 
 /// For the `egui::Ui` parameter of a panel function: a module that adds a panel uses
 /// this, so it has the same egui version as this crate.
+pub use commands::{
+    COMMAND_SEARCH, ToolCommand, ToolCommands, add_command, command_item, command_keys, key_label,
+    run_command,
+};
 pub use egui;
 pub use events::{EventsUiModule, game_state_panel};
 pub use help::TOGGLE_HELP;
 pub use render_panel::RenderPanelModule;
-pub use stats::StatsPanelModule;
+pub use shell::{Layout, SearchRow};
+pub use stats::{FrameTime, StatsPanelModule};
+pub use theme::THEME;
+pub use widgets::{Jobs, NoticeLevel, Notices, notify};
 
 /// Draws the content of one panel. It gets the game world: a debug panel can show, and
 /// change, all game state. The [`Panels`] resource is not in the world during the call.
 pub type PanelFn = Box<dyn FnMut(&mut egui::Ui, &mut World) + Send + Sync>;
 
+/// What is in a menu of the menu row of a tool, under its commands.
+type Menu = (&'static str, Option<PanelFn>);
+
 struct Panel {
+    /// The id: unique, and the same in each version (the layout file has it).
     name: &'static str,
+    /// The text of its tab and of its row in the "Window" menu.
+    title: &'static str,
+    icon: &'static str,
     open: bool,
+    /// As its module added it: a layout of a tool starts from this.
+    default_open: bool,
     /// For a section of the column: it is unfolded when it shows for the first time.
     unfolded: bool,
     place: Place,
@@ -85,33 +107,44 @@ enum Place {
     Modal,
     /// The places of a tool layout: see [`ToolPlace`].
     Top,
+    TopMiddle,
     Right,
     Bottom,
     Status,
 }
 
-/// A place of the layout of a tool, around the picture.
+/// A place of the layout of a tool. `Left`, `Right`, and `Bottom` are docks: the
+/// panel is a tab, and the place is its dock in the default layout only. The user
+/// moves the tab to each other dock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPlace {
-    /// Rows at the top of the window: a menu bar, a tool bar.
+    /// The tool row under the menus, from its left edge: tools and switches.
     Top,
-    /// At the left of the picture. The user drags its width.
+    /// The middle of the tool row: play and stop.
+    TopMiddle,
+    /// The dock at the left of the picture: lists of the things of a document.
     Left,
-    /// At the right of the picture. The user drags its width.
+    /// The dock at the right of the picture: the values of the selected thing.
     Right,
-    /// Under the picture, between the left and the right panel, only while a panel
-    /// of this place is open. The user drags its height.
+    /// The dock under the picture, between the left and the right dock: wide
+    /// panels, lists of files, logs.
     Bottom,
     /// One row at the bottom of the window.
     Status,
 }
 
-/// The sizes of the panels of a tool that the user drags, in egui points.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PanelSizes {
-    pub left: f32,
-    pub right: f32,
-    pub bottom: f32,
+/// A panel of the layout of a tool, for [`add_tool_panel`].
+#[derive(Debug, Clone, Copy)]
+pub struct ToolPanel {
+    /// Unique, and the same in each version: the layout file has it.
+    pub id: &'static str,
+    /// The text of its tab and of its row in the "Window" menu.
+    pub title: &'static str,
+    /// One character of `theme::icon`, before the title.
+    pub icon: &'static str,
+    pub place: ToolPlace,
+    /// The state at the start, and in a layout that does not close it.
+    pub open: bool,
 }
 
 /// The `[ui]` table of the config file.
@@ -145,10 +178,6 @@ impl Settings for UiSettings {
 const COLUMN_WIDTH: f32 = 440.0;
 /// Width of the panel at the left of the picture, in egui points.
 const LEFT_WIDTH: f32 = 240.0;
-/// The least and the largest width of a side panel of a tool, and the same for the
-/// height of its bottom panel, in egui points.
-const SIDE_RANGE: [f32; 2] = [160.0, 700.0];
-const BOTTOM_RANGE: [f32; 2] = [120.0, 700.0];
 
 /// The panel registry: all panels, by name. Each open panel is one section of the
 /// column, one part of the left panel, or one egui window on top of the picture.
@@ -157,10 +186,20 @@ pub struct Panels {
     panels: Vec<Panel>,
     /// True after `close_all`: no column, so no menu.
     hidden: bool,
-    /// `Some`: the layout of a tool, with the sizes of its panels.
-    tool: Option<PanelSizes>,
-    /// In the layout of a tool: the window with the debug panels is open.
-    debug_window: bool,
+    /// `Some`: the layout of a tool.
+    tool: Option<shell::Shell>,
+    /// The menus of the menu row of a tool, in the order of `add_menu`.
+    menus: Vec<Menu>,
+}
+
+impl Panel {
+    /// True: a tab of a dock of a tool layout.
+    fn is_tab(&self) -> bool {
+        matches!(
+            self.place,
+            Place::Column | Place::Left | Place::Right | Place::Bottom
+        )
+    }
 }
 
 impl Panels {
@@ -195,24 +234,84 @@ impl Panels {
         self.named(name).for_each(|panel| panel.open = !panel.open);
     }
 
-    /// The layout of a tool: the panels of [`add_tool_panel`] around the picture, and
-    /// the debug panels of [`add_panel`] in one window that is closed at the start
-    /// (`set_debug_window`). `sizes`: of the panels at the start.
-    pub fn set_tool_layout(&mut self, sizes: PanelSizes) {
-        self.tool = Some(sizes);
+    /// The layout of a tool: the shell with its docks (`shell` module). `layouts`:
+    /// the named layouts, the default one first. `file`: where the layout is saved
+    /// and read; `None`: it is not saved.
+    pub fn set_tool_layout(&mut self, layouts: Vec<Layout>, file: Option<std::path::PathBuf>) {
+        self.tool = Some(shell::Shell::new(layouts, file));
     }
 
-    /// The sizes that the panels of a tool have now. `None`: not the layout of a tool.
-    pub fn tool_sizes(&self) -> Option<PanelSizes> {
-        self.tool
+    /// The title of the tab with the picture: the name of the document of a tool.
+    pub fn set_document(&mut self, title: &str) {
+        if let Some(shell) = self.tool.as_mut().filter(|shell| shell.document != title) {
+            shell.document = title.to_owned();
+        }
     }
 
-    pub fn debug_window(&self) -> bool {
-        self.debug_window
+    /// Opens a panel of a tool and makes its tab the one that its dock shows.
+    pub fn show(&mut self, name: &str) {
+        self.set_open(name, true);
+        if let Some(shell) = &mut self.tool {
+            shell.focus = Some(name.to_owned());
+        }
     }
 
-    pub fn set_debug_window(&mut self, open: bool) {
-        self.debug_window = open;
+    /// The names of the layouts of a tool, and the one that was applied last.
+    pub fn layouts(&self) -> (Vec<&'static str>, &str) {
+        match &self.tool {
+            Some(shell) => (shell.layout_names(), &shell.current),
+            None => (Vec::new(), ""),
+        }
+    }
+
+    /// Applies a named layout of a tool in the next frame.
+    pub fn apply_layout(&mut self, name: &str) {
+        if let Some(shell) = &mut self.tool {
+            shell.request = Some(name.to_owned());
+        }
+    }
+
+    /// The panels that the "Window" menu of a tool lists: the id, the title, and
+    /// if it is open.
+    pub fn window_list(&self) -> Vec<(&'static str, &'static str, bool)> {
+        let tabs = self.panels.iter().filter(|panel| panel.is_tab());
+        tabs.map(|panel| (panel.name, panel.title, panel.open))
+            .collect()
+    }
+
+    /// The tabs that are in one dock with the tab of a panel, with that tab. Empty:
+    /// the panel is not open, or the first frame did not run.
+    pub fn tabs_with(&self, name: &str) -> Vec<String> {
+        let dock = self.tool.as_ref().and_then(|shell| shell.dock.as_ref());
+        let path = dock.and_then(|dock| Some((dock, dock.find_tab_from(|tab| tab == name)?)));
+        let leaf = path.and_then(|(dock, path)| dock.leaf(path.node_path()).ok());
+        leaf.map_or(Vec::new(), |leaf| leaf.tabs.clone())
+    }
+
+    /// The rows of the command search of a tool for a text.
+    pub fn search(&self, world: &World, query: &str) -> Vec<SearchRow> {
+        match &self.tool {
+            Some(shell) => shell::search_rows(shell, &self.panels, world, query),
+            None => Vec::new(),
+        }
+    }
+
+    /// The text of the layout file for the layout of now. Empty: no tool layout, or
+    /// the first frame did not run.
+    pub fn layout_text(&self) -> String {
+        let shell = self.tool.as_ref();
+        shell.map_or(String::new(), |shell| {
+            shell::layout_text(shell, &self.panels)
+        })
+    }
+
+    /// Takes the layout of the text of a layout file. False: the text is not a
+    /// layout, and nothing is changed.
+    pub fn read_layout(&mut self, text: &str) -> bool {
+        let Some(shell) = &mut self.tool else {
+            return false;
+        };
+        shell::read_layout(shell, &mut self.panels, text)
     }
 
     /// The section of a panel of the column is unfolded when it shows for the first
@@ -247,23 +346,36 @@ pub fn add_left_panel(
     register(app, name, open, Place::Left, Box::new(draw));
 }
 
-/// Adds a panel of the layout of a tool (`Panels::set_tool_layout`). More than one
-/// at a place: one below the other. The parameters are those of [`add_panel`].
+/// Adds a panel of the layout of a tool (`Panels::set_tool_layout`): one call, and
+/// the panel is a tab of its dock, a row of the "Window" menu, and a row of the
+/// command search. More than one at a place that is not a dock: one after the
+/// other. `draw` is as that of [`add_panel`].
 pub fn add_tool_panel(
     app: &mut App,
-    name: &'static str,
-    place: ToolPlace,
-    open: bool,
+    panel: ToolPanel,
     draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
 ) {
-    let place = match place {
+    let place = match panel.place {
         ToolPlace::Top => Place::Top,
+        ToolPlace::TopMiddle => Place::TopMiddle,
         ToolPlace::Left => Place::Left,
         ToolPlace::Right => Place::Right,
         ToolPlace::Bottom => Place::Bottom,
         ToolPlace::Status => Place::Status,
     };
-    register(app, name, open, place, Box::new(draw));
+    register(app, panel.id, panel.open, place, Box::new(draw));
+    let mut panels = app.resource_mut::<Panels>();
+    let added = panels.panels.last_mut().expect("it was added");
+    (added.title, added.icon) = (panel.title, panel.icon);
+}
+
+/// Adds a menu to the menu row of a tool, after the menus that were added before
+/// it. It lists each command of the command list with this name as its
+/// `ToolCommand::menu`, and under them what `extra` draws (a list of files, a text
+/// field). The "Window" menu is the last one, and is not added.
+pub fn add_menu(app: &mut App, name: &'static str, extra: Option<PanelFn>) {
+    app.init_resource::<Panels>();
+    app.resource_mut::<Panels>().menus.push((name, extra));
 }
 
 /// Adds a small readout in the top left corner of the picture, with no window around
@@ -327,7 +439,10 @@ fn register(app: &mut App, name: &'static str, open: bool, place: Place, draw: P
     );
     panels.panels.push(Panel {
         name,
+        title: name,
+        icon: theme::icon::PANEL,
         open,
+        default_open: open,
         unfolded: false,
         place,
         draw,
@@ -365,8 +480,13 @@ impl Module for UiModule {
     fn build(&self, app: &mut App) {
         app.add_settings::<UiSettings>();
         let scale = app.world().resource::<UiSettings>().scale;
-        let context = UiContext::default();
+        let mut context = UiContext::default();
         context.ctx.set_zoom_factor(scale);
+        // egui takes a new zoom at the start of its next frame. An empty frame now:
+        // the first frame of the app then has the size of the window in the points
+        // of the zoom (the docks of a tool get their sizes from it).
+        let output = context.ctx.run_ui(egui::RawInput::default(), |_| {});
+        context.textures.append(output.textures_delta);
         app.insert_resource(context)
             .init_resource::<Panels>()
             .add_systems(
@@ -375,7 +495,11 @@ impl Module for UiModule {
                     .after(setup_renderer)
                     .run_if(resource_exists::<RenderGpu>),
             )
+            .init_resource::<ToolCommands>()
             .add_systems(Input, feed_events)
+            // Before the egui frame: a panel shows what the command did. It has the
+            // full world, as `run_ui`.
+            .add_systems(Update, command_keys.before(run_ui).ambiguous_with_all())
             // `run_ui` has the full world, because a panel can read all game state.
             // It thus conflicts with each system of `Update`. The order to them changes
             // only if a panel shows a value of this frame or of the frame before.
@@ -430,8 +554,13 @@ fn run_ui(world: &mut World) {
                 panels,
                 hidden,
                 tool,
-                debug_window,
+                menus,
             } = panels;
+            // The look of a tool. The panels of a game keep the look of egui.
+            if let Some(shell) = tool.as_mut().filter(|shell| !shell.themed) {
+                theme::apply(&ui.ctx);
+                shell.themed = true;
+            }
             let shown = |panel: &Panel, place| panel.open && panel.place == place;
             let left = panels.iter().any(|panel| shown(panel, Place::Left));
             let left_width = if left { LEFT_WIDTH } else { 0.0 };
@@ -447,73 +576,8 @@ fn run_ui(world: &mut World) {
                     egui::pos2(place.left as f32, place.top as f32) * points,
                     egui::vec2(place.width as f32, place.height as f32) * points,
                 );
-                if let Some(sizes) = tool {
-                    // All panels of one place in one egui panel. Returns its size.
-                    let mut side = |panel: egui::Panel, place: Place, root: &mut egui::Ui| {
-                        if !panels.iter().any(|panel| shown(panel, place)) {
-                            return egui::Vec2::ZERO;
-                        }
-                        let response = panel.show(root, |ui| {
-                            // The panel keeps the size that the user gave it, also
-                            // with less content (egui makes it as small as that).
-                            match place {
-                                Place::Left | Place::Right => {
-                                    ui.set_min_width(ui.available_width());
-                                }
-                                Place::Bottom => ui.set_min_height(ui.available_height()),
-                                _ => {}
-                            }
-                            for panel in panels.iter_mut() {
-                                if shown(panel, place) {
-                                    (panel.draw)(ui, world);
-                                }
-                            }
-                        });
-                        response.response.rect.size()
-                    };
-                    // In this order: the top and the status row have the full width,
-                    // and the bottom panel is between the two side panels.
-                    let top = side(egui::Panel::top("tool top"), Place::Top, root);
-                    let status = side(egui::Panel::bottom("tool status"), Place::Status, root);
-                    let dragged = |panel: egui::Panel, size: f32, range: [f32; 2]| {
-                        panel
-                            .resizable(true)
-                            .default_size(size)
-                            .size_range(range[0]..=range[1])
-                    };
-                    let panel = dragged(egui::Panel::left("tool left"), sizes.left, SIDE_RANGE);
-                    let left = side(panel, Place::Left, root);
-                    let panel = dragged(egui::Panel::right("tool right"), sizes.right, SIDE_RANGE);
-                    let right = side(panel, Place::Right, root);
-                    let panel = dragged(
-                        egui::Panel::bottom("tool bottom"),
-                        sizes.bottom,
-                        BOTTOM_RANGE,
-                    );
-                    let bottom = side(panel, Place::Bottom, root);
-                    room = [left.x, right.x, top.y, status.y + bottom.y];
-                    // A panel that does not show keeps the size that it had.
-                    let kept = |new: f32, old: f32| if new > 0.0 { new } else { old };
-                    *sizes = PanelSizes {
-                        left: kept(left.x, sizes.left),
-                        right: kept(right.x, sizes.right),
-                        bottom: kept(bottom.y, sizes.bottom),
-                    };
-                    // The debug panels: one window on top of the picture.
-                    egui::Window::new("Debug panels")
-                        .open(debug_window)
-                        .default_width(COLUMN_WIDTH)
-                        .default_pos(picture.min + egui::vec2(16.0, 16.0))
-                        .vscroll(true)
-                        .show(root.ctx(), |ui| {
-                            for panel in panels.iter_mut() {
-                                if shown(panel, Place::Column) {
-                                    egui::CollapsingHeader::new(panel.name)
-                                        .default_open(panel.unfolded)
-                                        .show(ui, |ui| (panel.draw)(ui, world));
-                                }
-                            }
-                        });
+                if let Some(shell) = tool.as_mut().filter(|_| !*hidden) {
+                    room = shell::show(shell, panels, menus, root, world);
                 } else if left {
                     egui::Panel::left("left panels")
                         .exact_size(LEFT_WIDTH)
@@ -616,9 +680,26 @@ fn run_ui(world: &mut World) {
 
             // The pointer is on a panel, or a text field has the focus: the input
             // system starts no action from that device in the next frame.
+            let pointer = match tool.as_ref().and_then(|shell| shell.picture) {
+                // A tool: the docks fill the window, so the pointer is on a panel
+                // at each place but on the picture, where no tab floats over it.
+                Some(picture) => {
+                    let ctx = &ui.ctx;
+                    let on_panel = |at: egui::Pos2| {
+                        let layer = ctx.layer_id_at(at);
+                        let under =
+                            layer.is_none_or(|layer| layer.order == egui::Order::Background);
+                        !(picture.contains(at) && under)
+                    };
+                    let at = ctx.input(|input| input.pointer.interact_pos());
+                    let down = ctx.input(|input| input.pointer.any_down());
+                    ctx.egui_is_using_pointer() || (at.is_some_and(on_panel) && !down)
+                }
+                None => ui.ctx.egui_wants_pointer_input(),
+            };
             *world.resource_mut::<InputCapture>() = InputCapture {
                 keyboard: ui.ctx.egui_wants_keyboard_input(),
-                pointer: ui.ctx.egui_wants_pointer_input(),
+                pointer,
             };
         });
     });
@@ -707,12 +788,158 @@ mod tests {
             binding(maki_platform::Chord::ctrl(Key::Z), "A chord"),
         ]);
         let mode = maki_platform::InputMode::GAME;
-        let rows = help::rows(&bindings, mode);
+        let rows = help::rows(&bindings, mode, |_| None);
         let rows: Vec<_> = rows
             .iter()
             .map(|(key, text)| (key.as_str(), *text))
             .collect();
         assert_eq!(rows, [("R", "Changed binding"), ("Ctrl+Z", "A chord")]);
-        assert!(help::rows(&bindings, maki_platform::InputMode("other")).is_empty());
+        assert!(help::rows(&bindings, maki_platform::InputMode("other"), |_| None).is_empty());
+        // A command of a tool gives its name to the row of its key.
+        let named = help::rows(&bindings, mode, |_| Some("Command"));
+        assert_eq!(named[0], ("R".to_owned(), "Command"));
+    }
+
+    /// A tool app with no window: the shell runs, nothing is drawn. `ids`: its
+    /// panels, with their docks.
+    fn tool_app(ids: &[(&'static str, ToolPlace)]) -> App {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(PlatformModule).add_module(UiModule);
+        for (id, place) in ids {
+            let panel = ToolPanel {
+                id,
+                title: id,
+                icon: "",
+                place: *place,
+                open: true,
+            };
+            add_tool_panel(&mut app, panel, |_, _| {});
+        }
+        let layout = |name, debug| Layout {
+            name,
+            closed: &[],
+            debug,
+            sizes: [200.0; 3],
+        };
+        let layouts = vec![layout("Default", false), layout("Debug", true)];
+        app.resource_mut::<Panels>().set_tool_layout(layouts, None);
+        app
+    }
+
+    #[derive(Resource, Default)]
+    struct Count(u32);
+
+    /// A module of another crate: one call for its panel, one for its command.
+    struct CounterModule;
+
+    const COUNT: maki_platform::Action = maki_platform::Action("test_count");
+
+    impl Module for CounterModule {
+        fn build(&self, app: &mut App) {
+            app.init_resource::<Count>();
+            maki_platform::add_bindings(app, &[(Key::K, COUNT, "Count")]);
+            let panel = ToolPanel {
+                id: "counter",
+                title: "Counter",
+                icon: theme::icon::PANEL,
+                place: ToolPlace::Left,
+                open: true,
+            };
+            add_tool_panel(app, panel, |ui, world| {
+                ui.label(world.resource::<Count>().0.to_string());
+            });
+            let run = |world: &mut World| world.resource_mut::<Count>().0 += 1;
+            let command = ToolCommand {
+                menu: "Test",
+                action: Some(COUNT),
+                ..ToolCommand::new("test.count", "Count one up", run)
+            };
+            add_command(app, command);
+        }
+    }
+
+    #[test]
+    fn a_module_adds_a_panel_and_a_command_to_the_shell_of_a_tool() {
+        let mut app = tool_app(&[("list", ToolPlace::Left), ("log", ToolPlace::Bottom)]);
+        app.add_module(CounterModule);
+        app.run(|mut app| {
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let panels = world.resource::<Panels>();
+            // In "Window", and open.
+            let window = panels.window_list();
+            assert!(window.contains(&("counter", "Counter", true)), "{window:?}");
+            // In its default dock: with the other panel of the left dock.
+            assert_eq!(panels.tabs_with("counter"), ["list", "counter"]);
+            assert_eq!(panels.tabs_with("log"), ["log"]);
+            // A debug panel of a game is a tab that the default layout closes.
+            assert!(window.contains(&("Help", "Help", false)), "{window:?}");
+            // In the command search, with its key.
+            let texts = |query: &str| -> Vec<String> {
+                let rows = panels.search(world, query);
+                rows.into_iter().map(|row| row.text).collect()
+            };
+            assert_eq!(texts("count up"), ["Test: Count one up"]);
+            assert_eq!(panels.search(world, "count up")[0].key, "K");
+            assert_eq!(texts("window counter"), ["Window: Counter"]);
+            assert_eq!(texts("layout"), ["Layout: Default", "Layout: Debug"]);
+            // Its key runs it.
+            app.write_message(RawInput::KeyDown(Key::K));
+            app.advance(Duration::from_millis(16));
+            assert_eq!(app.world().resource::<Count>().0, 1);
+
+            // "Window" closes and opens a tab; a named layout opens the debug panels.
+            app.resource_mut::<Panels>().set_open("counter", false);
+            app.advance(Duration::from_millis(16));
+            assert!(
+                app.world()
+                    .resource::<Panels>()
+                    .tabs_with("counter")
+                    .is_empty()
+            );
+            app.resource_mut::<Panels>().apply_layout("Debug");
+            app.advance(Duration::from_millis(16));
+            let panels = app.world().resource::<Panels>();
+            assert_eq!(panels.tabs_with("counter"), ["list", "counter"]);
+            assert_eq!(panels.tabs_with("Help"), ["Help", "log"]);
+            assert_eq!(panels.layouts().1, "Debug");
+        });
+    }
+
+    #[test]
+    fn the_layout_is_written_and_read() {
+        let (left, right, bottom) = (ToolPlace::Left, ToolPlace::Right, ToolPlace::Bottom);
+        // The app that writes: the user closes one tab.
+        let app = tool_app(&[("list", left), ("log", bottom), ("gone", right)]);
+        let text = app.run(|mut app| {
+            app.advance(Duration::from_millis(16));
+            app.resource_mut::<Panels>().set_open("log", false);
+            app.advance(Duration::from_millis(16));
+            app.world().resource::<Panels>().layout_text()
+        });
+        assert!(text.contains("gone"), "{text}");
+
+        // A later version reads it: one panel is gone, and one is new.
+        let app = tool_app(&[("list", left), ("log", bottom), ("new", right)]);
+        app.run(|mut app| {
+            app.advance(Duration::from_millis(16));
+            assert!(app.resource_mut::<Panels>().read_layout(&text));
+            app.advance(Duration::from_millis(16));
+            let panels = app.world().resource::<Panels>();
+            // As the file has it.
+            assert_eq!(panels.tabs_with("list"), ["list"]);
+            assert!(!panels.is_open("log"));
+            // The new panel is in its default dock, and the gone one is no tab.
+            assert_eq!(panels.tabs_with("new"), ["new"]);
+            assert!(!panels.layout_text().contains("gone"));
+            // The same layout gives the same text, but for the panel list.
+            let again = panels.layout_text();
+            assert!(app.resource_mut::<Panels>().read_layout(&again));
+            assert_eq!(app.world().resource::<Panels>().layout_text(), again);
+
+            // A file that is not a layout: the layout stays.
+            assert!(!app.resource_mut::<Panels>().read_layout("not a layout"));
+            assert_eq!(app.world().resource::<Panels>().layout_text(), again);
+        });
     }
 }

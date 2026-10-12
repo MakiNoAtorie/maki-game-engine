@@ -21,12 +21,12 @@ use maki_ui::egui::{self, Color32, Ui};
 use crate::events::{
     ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, optional, same_kind, text};
+use crate::widgets::{choice, drag, number, optional, row, same_kind, text};
 use crate::{Command as EditorCommand, Editor};
 
-pub(crate) const ERROR: Color32 = Color32::from_rgb(255, 110, 90);
+pub(crate) const ERROR: Color32 = maki_ui::THEME.error;
 /// A warning of a check, and the mark of a name that no event writes.
-pub(crate) const HINT: Color32 = Color32::from_rgb(235, 190, 80);
+pub(crate) const HINT: Color32 = maki_ui::THEME.warning;
 /// The mark of a flag or a variable that an event reads and no event writes.
 pub(crate) const NEVER_WRITTEN: &str = "no event sets it";
 
@@ -417,13 +417,7 @@ fn seconds(ui: &mut Ui, value: &mut f32) -> bool {
 
 /// The widgets of the arguments of a built-in command. True: a value was changed.
 fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
-    let whole = |ui: &mut Ui, value: &mut i32| {
-        ui.horizontal(|ui| {
-            ui.label("value");
-            ui.add(drag(value)).changed()
-        })
-        .inner
-    };
+    let whole = |ui: &mut Ui, value: &mut i32| row(ui, "value", |ui| ui.add(drag(value)).changed());
     match command {
         Builtin::SetFlag(name, value) => {
             pick_flag(ui, name, lists) | ui.checkbox(value, "set").changed()
@@ -687,12 +681,10 @@ pub(crate) fn event_properties(
             ("center (X, Z)", &mut area.center, -100.0),
             ("size (X, Z)", &mut area.size, 0.05),
         ] {
-            ui.horizontal(|ui| {
-                ui.label(label);
+            row(ui, label, |ui| {
                 for part in value {
-                    changed |= ui
-                        .add(drag(part).speed(0.01).range(least..=100.0))
-                        .changed();
+                    let drag = drag(part).speed(0.01).range(least..=100.0).suffix(" m");
+                    changed |= ui.add(drag).changed();
                 }
             });
         }
@@ -701,7 +693,7 @@ pub(crate) fn event_properties(
     for problem in problems.iter().filter(|problem| problem.command.is_none()) {
         ui.colored_label(color(problem), problem.text.as_str());
     }
-    ui.weak("Pages and commands: the panel under the picture.");
+    ui.weak("Pages and commands: the panel \"Events\".");
     Some(changed)
 }
 
@@ -717,7 +709,7 @@ pub(crate) fn event_panel(
     let registry = editor.registry.clone();
     let (mut lists, problems) = lists_and_problems(editor, index);
     let actions = [crate::DELETE, crate::DUPLICATE, crate::COPY, crate::PASTE];
-    lists.row_keys = actions.map(|action| crate::key_of(world, action));
+    lists.row_keys = actions.map(|action| maki_ui::key_label(world, action));
     let problems: Vec<&Problem> = problems.iter().collect();
     let state = world.resource::<GameState>().clone();
     let editors = world

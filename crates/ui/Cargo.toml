@@ -15,5 +15,7 @@ maki-render.workspace = true
 bevy_ecs.workspace = true
 egui.workspace = true
 egui-winit.workspace = true
+egui_dock.workspace = true
+ron.workspace = true
 serde.workspace = true
 tracing.workspace = true

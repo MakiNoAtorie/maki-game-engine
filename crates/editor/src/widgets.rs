@@ -1,5 +1,7 @@
-//! Widgets of the property panel: one function for each kind of value of a room
-//! file. Each returns true in a frame where the user changed the value.
+//! The rows of the inspector for the values of a room file: a file, a texture, a
+//! mesh, a pose, a look. They are rows of the one property grid of the tool
+//! (`maki_ui::widgets`). Each returns true in a frame where the user changed the
+//! value.
 //!
 //! The public ones are for the argument widgets of the commands of a module
 //! (`add_argument_editor`).
@@ -8,49 +10,10 @@ use std::path::{Path, PathBuf};
 
 use maki_assets::Material;
 use maki_scene::{Filter, LookDef, MeshDef, PoseDef, TextureDef};
-use maki_ui::egui::{self, DragValue, Ui};
-
-/// The widget of a number. A value of the file that is out of the range of the
-/// widget stays as it is until the user changes it: a look at an item does not
-/// change the room.
-pub(crate) fn drag<Num: egui::emath::Numeric>(value: &mut Num) -> DragValue<'_> {
-    DragValue::new(value).clamp_existing_to_range(false)
-}
-
-/// The width of the label of a value: the values of the rows are in one column.
-const LABEL_WIDTH: f32 = 118.0;
-
-/// The label of a row, in the label column. An empty label takes no room.
-pub(crate) fn label(ui: &mut Ui, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    let size = egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y);
-    let layout = egui::Layout::left_to_right(egui::Align::Center);
-    ui.allocate_ui_with_layout(size, layout, |ui| {
-        ui.set_min_width(LABEL_WIDTH);
-        ui.label(text);
-    });
-}
-
-/// The unit of a value, from its label: meters, degrees, seconds. Empty: a count
-/// or a factor.
-// ponytail: by the words of the labels of this crate. A parameter of each widget
-// call if a label gets the wrong unit.
-fn unit(label: &str) -> &'static str {
-    let has = |words: &[&str]| words.iter().any(|word| label.contains(word));
-    if has(&["seconds"]) {
-        " s"
-    } else if has(&["degrees", "rotation"]) {
-        " deg"
-    } else if has(&[
-        "width", "depth", "height", "offset", "size", "radius", "position", "from", "to",
-    ]) {
-        " m"
-    } else {
-        ""
-    }
-}
+use maki_ui::egui::{self, Ui};
+pub(crate) use maki_ui::widgets::{
+    choice, color, drag, number as number_or, optional, row, same_kind, text, toggle, vector,
+};
 
 /// A number with a label and its unit. Drag it, or click it and type.
 pub fn number(
@@ -60,80 +23,7 @@ pub fn number(
     speed: f32,
     range: std::ops::RangeInclusive<f32>,
 ) -> bool {
-    ui.horizontal(|ui| {
-        label(ui, text);
-        let drag = drag(value).speed(speed).range(range).suffix(unit(text));
-        ui.add(drag).changed()
-    })
-    .inner
-}
-
-/// The colors of X, Y, and Z: those of the handles of the gizmo.
-pub(crate) const AXES: [egui::Color32; 3] = [
-    egui::Color32::from_rgb(235, 80, 80),
-    egui::Color32::from_rgb(90, 210, 90),
-    egui::Color32::from_rgb(90, 140, 255),
-];
-
-/// Three numbers of X, Y, and Z, each with its letter in the color of its axis.
-pub(crate) fn vector(ui: &mut Ui, text: &str, value: &mut [f32; 3], speed: f32) -> bool {
-    ui.horizontal(|ui| {
-        label(ui, text);
-        let mut changed = false;
-        for (axis, part) in value.iter_mut().enumerate() {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.colored_label(AXES[axis], ["X", "Y", "Z"][axis]);
-            changed |= ui.add(drag(part).speed(speed).suffix(unit(text))).changed();
-        }
-        changed
-    })
-    .inner
-}
-
-/// Linear RGB. The numbers can go above 1 (a surface with a light of its own); the
-/// color button shows and sets the part up to 1.
-pub(crate) fn color(ui: &mut Ui, text: &str, value: &mut [f32; 3]) -> bool {
-    ui.horizontal(|ui| {
-        label(ui, text);
-        // On a copy: the button writes the color back also with no change, with the
-        // rounding of its color space.
-        let mut picked = *value;
-        let mut changed = ui.color_edit_button_rgb(&mut picked).changed();
-        if changed {
-            *value = picked;
-        }
-        for part in value {
-            let drag = drag(part).speed(0.01).range(0.0..=1000.0);
-            changed |= ui.add(drag).changed();
-        }
-        changed
-    })
-    .inner
-}
-
-/// A text field. The value changes when the field loses the focus, not with each
-/// key: half of a file name is not a file.
-pub(crate) fn text(ui: &mut Ui, text: &str, value: &mut String) -> bool {
-    ui.horizontal(|ui| {
-        label(ui, text);
-        let id = ui.make_persistent_id(text);
-        // The text while it is typed.
-        let typed = ui.ctx().memory(|memory| memory.has_focus(id));
-        let typed = typed.then(|| ui.ctx().data(|data| data.get_temp::<String>(id)));
-        let mut buffer = typed.flatten().unwrap_or_else(|| value.clone());
-        let response = ui.add(egui::TextEdit::singleline(&mut buffer).id(id));
-        if response.has_focus() {
-            ui.ctx().data_mut(|data| data.insert_temp(id, buffer));
-            return false;
-        }
-        ui.ctx().data_mut(|data| data.remove::<String>(id));
-        let changed = response.lost_focus() && buffer != *value;
-        if changed {
-            *value = buffer;
-        }
-        changed
-    })
-    .inner
+    number_or(ui, text, value, None, speed, range)
 }
 
 /// A name that an item can be without: an empty field is no name.
@@ -194,8 +84,7 @@ pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -
         .collect();
     // Forward slashes: the same room file on each system.
     let mut name = value.to_string_lossy().replace('\\', "/");
-    ui.horizontal(|ui| {
-        label(ui, text);
+    row(ui, text, |ui| {
         let show = |ui: &mut Ui, name: &str| crate::pictures::show(ui, &directory.join(name));
         let pictures = crate::pictures::has_picture(extensions);
         if pictures && !name.is_empty() {
@@ -210,17 +99,14 @@ pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -
         }
         changed
     })
-    .inner
 }
 
 /// A name of a list, picked from it by a click, with a search field: a thing of the
 /// room that a command names. A name that the list does not have shows in red.
 pub fn pick(ui: &mut Ui, text: &str, value: &mut String, known: &[String]) -> bool {
-    ui.horizontal(|ui| {
-        label(ui, text);
+    row(ui, text, |ui| {
         crate::event_panel::picker(ui, text, value, known, &[], false)
     })
-    .inner
 }
 
 /// The extensions of the sound files.
@@ -232,59 +118,6 @@ pub(crate) const MODELS: [&str; 2] = ["gltf", "glb"];
 /// The extension of the prefab files.
 pub(crate) const PREFABS: [&str; 1] = ["prefab"];
 
-/// A list to choose one option from. `same` tells if the value is that option (for
-/// an enum with fields: the same variant).
-pub(crate) fn choice<T: Clone>(
-    ui: &mut Ui,
-    label: &str,
-    value: &mut T,
-    options: &[(&str, T)],
-    same: impl Fn(&T, &T) -> bool,
-) -> bool {
-    ui.horizontal(|ui| {
-        self::label(ui, label);
-        let current = options.iter().find(|(_, option)| same(option, value));
-        let mut changed = false;
-        egui::ComboBox::from_id_salt(label)
-            .selected_text(current.map_or("?", |(name, _)| name))
-            .show_ui(ui, |ui| {
-                for (name, option) in options {
-                    let selected = same(option, value);
-                    if ui.selectable_label(selected, *name).clicked() && !selected {
-                        *value = option.clone();
-                        changed = true;
-                    }
-                }
-            });
-        changed
-    })
-    .inner
-}
-
-/// The same variant of an enum.
-pub(crate) fn same_kind<T>(a: &T, b: &T) -> bool {
-    std::mem::discriminant(a) == std::mem::discriminant(b)
-}
-
-/// A value that an item can be without: a checkbox, and the value while it is set.
-pub(crate) fn optional<T>(
-    ui: &mut Ui,
-    label: &str,
-    value: &mut Option<T>,
-    default: impl FnOnce() -> T,
-    edit: impl FnOnce(&mut Ui, &mut T) -> bool,
-) -> bool {
-    let mut set = value.is_some();
-    let mut changed = ui.checkbox(&mut set, label).changed();
-    if changed {
-        *value = set.then(default);
-    }
-    if let Some(value) = value {
-        changed |= ui.indent(label, |ui| edit(ui, value)).inner;
-    }
-    changed
-}
-
 pub(crate) fn texture(ui: &mut Ui, label: &str, value: &mut Option<TextureDef>) -> bool {
     let default = || TextureDef {
         path: PathBuf::new(),
@@ -294,7 +127,14 @@ pub(crate) fn texture(ui: &mut Ui, label: &str, value: &mut Option<TextureDef>) 
     optional(ui, label, value, default, |ui, texture| {
         let filters = [("Linear", Filter::Linear), ("Nearest", Filter::Nearest)];
         file(ui, "file", &mut texture.path, &PICTURES)
-            | number(ui, "scale", &mut texture.scale, 0.01, 0.01..=100.0)
+            | number_or(
+                ui,
+                "scale",
+                &mut texture.scale,
+                Some(1.0),
+                0.01,
+                0.01..=100.0,
+            )
             | choice(ui, "filter", &mut texture.filter, &filters, PartialEq::eq)
     })
 }
@@ -321,7 +161,7 @@ pub(crate) fn mesh(ui: &mut Ui, value: &mut MeshDef) -> bool {
         changed |= match value {
             MeshDef::Cube(size) => number(ui, "size", size, 0.01, 0.01..=100.0),
             MeshDef::Cuboid(min, max) => {
-                vector(ui, "from", min, 0.01) | vector(ui, "to", max, 0.01)
+                vector(ui, "from", min, None, 0.01) | vector(ui, "to", max, None, 0.01)
             }
             MeshDef::Sphere {
                 radius,
@@ -329,11 +169,9 @@ pub(crate) fn mesh(ui: &mut Ui, value: &mut MeshDef) -> bool {
                 rings,
             } => {
                 let count = |ui: &mut Ui, text, value: &mut u32, least| {
-                    ui.horizontal(|ui| {
-                        label(ui, text);
+                    row(ui, text, |ui| {
                         ui.add(drag(value).range(least..=256)).changed()
                     })
-                    .inner
                 };
                 number(ui, "radius", radius, 0.01, 0.01..=100.0)
                     | count(ui, "segments", segments, 3)
@@ -348,9 +186,21 @@ pub(crate) fn mesh(ui: &mut Ui, value: &mut MeshDef) -> bool {
 pub(crate) fn pose(ui: &mut Ui, label: &str, value: &mut PoseDef) -> bool {
     ui.label(label);
     ui.indent(label, |ui| {
-        vector(ui, "position", &mut value.position, 0.01)
-            | vector(ui, "rotation", &mut value.rotation, 0.5)
-            | vector(ui, "scale", &mut value.scale, 0.01)
+        // A pose that the room file leaves out: at the origin, not turned, size 1.
+        let default = PoseDef::default();
+        vector(
+            ui,
+            "position",
+            &mut value.position,
+            Some(default.position),
+            0.01,
+        ) | vector(
+            ui,
+            "rotation",
+            &mut value.rotation,
+            Some(default.rotation),
+            0.5,
+        ) | vector(ui, "scale", &mut value.scale, Some(default.scale), 0.01)
     })
     .inner
 }

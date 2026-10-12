@@ -989,3 +989,66 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
+    let (app, directory) = editor_app("shell");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        let world = app.world();
+        let panels = world.resource::<Panels>();
+        // The panels are tabs of their docks, and the layouts have their names.
+        for panel in [panels::OUTLINER, panels::INSPECTOR, panels::EVENT] {
+            assert_eq!(panels.tabs_with(panel), [panel]);
+        }
+        let (layouts, current) = panels.layouts();
+        assert_eq!(layouts, ["Build", "Logic", "Look", "Animate", "Debug"]);
+        assert_eq!(current, "Build");
+        // The command search has a command with its menu and its key, and knows
+        // that a command cannot run now.
+        let row = |query: &str| panels.search(world, query).remove(0);
+        let save = row("save");
+        assert_eq!(
+            (save.text.as_str(), save.key.as_str()),
+            ("File: Save", "Ctrl+S")
+        );
+        assert!(save.can_run && !row("undo").can_run);
+        assert_eq!(row("add cuboid").text, "Add: Cuboid");
+
+        // The key of "Rename": the row of the lamp in the outliner is a text field
+        // in the next frame. Its end gives the name, and the event follows.
+        app.resource_mut::<Editor>().select(Item::Light(0), false);
+        app.write_message(maki_platform::RawInput::KeyDown(Key::F2));
+        app.advance(Duration::from_millis(20));
+        app.write_message(maki_platform::RawInput::KeyUp(Key::F2));
+        app.resource_mut::<Editor>()
+            .rename(&Item::Light(0), "bulb".to_owned());
+        frames(&mut app, 2);
+        let editor = app.world().resource::<Editor>();
+        assert_eq!(editor.document.room.lights[0].name.as_deref(), Some("bulb"));
+        assert!(editor.document.text().contains(r#"LightOff("bulb")"#));
+        assert!(editor.document.dirty);
+
+        // The layout "Look" closes the event panel; an event that is selected
+        // shows it again.
+        app.resource_mut::<Panels>().apply_layout("Look");
+        frames(&mut app, 2);
+        assert!(!app.world().resource::<Panels>().is_open(panels::EVENT));
+        app.resource_mut::<Editor>().select(Item::Event(0), false);
+        frames(&mut app, 2);
+        assert!(app.world().resource::<Panels>().is_open(panels::EVENT));
+
+        // A command that fails is a notice, not a window that must be answered.
+        request(&mut app, Command::Answer(Answer::DoNotSave));
+        let missing = directory.join("none.ron");
+        app.resource_mut::<Editor>().document.dirty = false;
+        request(&mut app, Command::Open(missing));
+        let notices = app.world().resource::<maki_ui::Notices>();
+        let texts: Vec<&str> = notices.texts().collect();
+        assert!(
+            texts.len() == 1 && texts[0].contains("none.ron"),
+            "{texts:?}"
+        );
+        assert!(app.world().resource::<Editor>().pending().is_none());
+    });
+}

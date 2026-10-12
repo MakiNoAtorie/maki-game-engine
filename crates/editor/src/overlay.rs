@@ -124,7 +124,7 @@ const GRID: Color32 = Color32::from_rgba_premultiplied(70, 70, 70, 70);
 const MARK: Color32 = Color32::from_rgb(120, 200, 255);
 const AREA: Color32 = Color32::from_rgb(255, 170, 60);
 const SELECTED: Color32 = Color32::from_rgb(255, 235, 60);
-use crate::widgets::AXES;
+const AXES: [Color32; 3] = maki_ui::THEME.axes;
 /// Points of a circle.
 const CIRCLE_POINTS: usize = 32;
 
@@ -244,13 +244,17 @@ fn game_frame(world: &mut World, pen: &Pen, picture: egui::Rect, stroke: Stroke)
 
 /// The panel function of the overlay.
 pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
+    let picture = ui.clip_rect();
     if editor.playing() {
+        // The one mode of the editor: the frame of the picture shows it.
+        let stroke = egui::Stroke::new(2.0, maki_ui::THEME.play);
+        let kind = egui::StrokeKind::Inside;
+        ui.painter().rect_stroke(picture, 0.0, stroke, kind);
         return;
     }
     let Some(view) = crate::editor_view(world) else {
         return;
     };
-    let picture = ui.clip_rect();
     // Out of the world while the pens have it: the marks need the world too.
     let depth = world.remove_resource::<MarkDepth>().unwrap_or_default();
     let pen = |depth| Pen {

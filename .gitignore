@@ -1,6 +1,8 @@
 /target
 # Generated on first run.
 /config.toml
+# Written by the editor: the layout of its docks.
+/config.layout.ron
 # Left by tools/convert_config.py.
 /config.toml.old
 # Written by `--bench-frames`.

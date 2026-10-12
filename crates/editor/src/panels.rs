@@ -1,82 +1,151 @@
-//! The panels of the editor, around the picture: at the top the menus and the row
-//! with play, the tools, and the snap; at the left the outliner (each item of the
-//! room, by name); at the right the properties of the selected item; under the
-//! picture the event panel, while an event is selected; at the bottom the status
-//! row. While the game is played, the running events and the game state take the
-//! place of the outliner and the properties.
+//! The panels of the editor, in the shell of `maki_ui`: the menus of the menu row;
+//! in the tool row the tools and the snap at the left, and play and stop in the
+//! middle; the outliner (each item of the room, by name) in the left dock; the
+//! inspector (the values of the selected item) in the right dock; the events panel in
+//! the bottom dock; the status row. While the game is played, the running events and
+//! the game state take the place of the outliner and the inspector.
 //!
 //! A panel writes the document and the command queue of the [`Editor`], never the
-//! entities of the room.
+//! entities of the room. A button of a command is made from the command list
+//! (`maki_ui::ToolCommands`): its name and its key are written at one place.
 
 use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::{Mut, World};
 use maki_assets::Wall;
 use maki_core::App;
-use maki_events::{Builtin, EventRunner, Problem};
-use maki_scene::{MeshDef, SoundDef};
+use maki_events::{EventRunner, Problem};
+use maki_scene::{MeshDef, PropDef, SoundDef};
 use maki_ui::egui::{self, Ui};
-use maki_ui::{ToolPlace, add_modal, add_overlay, add_tool_panel, game_state_panel};
+use maki_ui::theme::icon;
+use maki_ui::widgets::{
+    TreeRow, frame_time_label, jobs_label, property_grid, tool_button, tree_filter, tree_group,
+    tree_row, tree_shows,
+};
+use maki_ui::{
+    Layout, THEME, ToolCommands, ToolPanel, ToolPlace, add_menu, add_modal, add_overlay,
+    add_tool_panel, game_state_panel,
+};
 
 use crate::event_panel::{ERROR, HINT, NEVER_WRITTEN, event_panel, event_properties};
-use crate::widgets::{choice, color, drag, look, mesh, name, number, pose, texture, vector};
-use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool, spawn_users};
+use crate::widgets::{
+    choice, color, drag, look, mesh, name, number, number_or, pose, texture, toggle, vector,
+};
+use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool};
 
-/// The panel under the picture. Open while an event is selected (`Editor::apply_mode`).
-pub(crate) const EVENT: &str = "Event";
+pub(crate) const OUTLINER: &str = "outliner";
+pub(crate) const INSPECTOR: &str = "inspector";
+/// The panel of the pages and the commands of the selected event.
+pub(crate) const EVENT: &str = "events";
 pub(crate) const CONFIRM: &str = "Question";
 
+/// The named layouts. With the panels of now, "Animate" is as "Build": a later
+/// panel (the timeline) makes the difference.
+pub(crate) const LAYOUTS: [Layout; 5] = [
+    // To make a room: the outliner, the inspector, and the events.
+    layout("Build", &[], false, 280.0),
+    // To write events: more room for the event panel.
+    layout("Logic", &[], false, 440.0),
+    // To set light and materials: the picture has the room of the event panel.
+    layout("Look", &[EVENT], false, 280.0),
+    layout("Animate", &[], false, 280.0),
+    // Each debug panel of the game, as tabs under the picture.
+    layout("Debug", &[], true, 360.0),
+];
+
+const fn layout(
+    name: &'static str,
+    closed: &'static [&'static str],
+    debug: bool,
+    bottom: f32,
+) -> Layout {
+    Layout {
+        name,
+        closed,
+        debug,
+        sizes: [240.0, 340.0, bottom],
+    }
+}
+
 pub(crate) fn build(app: &mut App) {
+    let panel = |id, title, icon, place| ToolPanel {
+        id,
+        title,
+        icon,
+        place,
+        open: true,
+    };
+    // The menus: their commands are in the command list (`crate::add_commands`).
     // The text of the "Save as" field.
     let mut save_as = String::new();
+    let file = move |ui: &mut Ui, world: &mut World| {
+        with_editor(world, |_, editor| file_menu(ui, editor, &mut save_as))
+    };
+    add_menu(app, "File", Some(Box::new(file)));
+    let edit =
+        |ui: &mut Ui, world: &mut World| with_editor(world, |_, editor| prefab_menu(ui, editor));
+    add_menu(app, "Edit", Some(Box::new(edit)));
+    let add =
+        |ui: &mut Ui, world: &mut World| with_editor(world, |_, editor| add_files(ui, editor));
+    add_menu(app, "Add", Some(Box::new(add)));
+    add_menu(app, "View", None);
+
     add_tool_panel(
         app,
-        "Editor menu",
-        ToolPlace::Top,
-        true,
-        move |ui, world| {
-            with_editor(world, |world, editor| top(ui, world, editor, &mut save_as));
-        },
+        panel("editor tools", "Tools", "", ToolPlace::Top),
+        tools,
     );
+    let play = panel("editor play", "Play", "", ToolPlace::TopMiddle);
+    add_tool_panel(app, play, play_row);
     // The text of the filter field of the outliner.
     let mut filter = String::new();
-    add_tool_panel(app, "Outliner", ToolPlace::Left, true, move |ui, world| {
+    let outliner_panel = panel(OUTLINER, "Outliner", icon::OUTLINER, ToolPlace::Left);
+    add_tool_panel(app, outliner_panel, move |ui, world| {
         with_editor(world, |world, editor| {
             outliner(ui, world, editor, &mut filter)
         });
     });
     // The text of the name field of the game state.
     let mut new_name = String::new();
-    add_tool_panel(
-        app,
-        "Properties",
-        ToolPlace::Right,
-        true,
-        move |ui, world| {
-            let scroll = egui::ScrollArea::vertical().auto_shrink(false);
-            scroll.show(ui, |ui| {
-                // In a game: what the game changes, in place of what the editor changes.
-                if world.resource::<Editor>().playing() {
-                    ui.strong("Game state");
-                    game_state_panel(ui, world, &mut new_name);
+    let inspector = panel(INSPECTOR, "Inspector", icon::INSPECTOR, ToolPlace::Right);
+    add_tool_panel(app, inspector, move |ui, world| {
+        let scroll = egui::ScrollArea::vertical().auto_shrink(false);
+        scroll.show(ui, |ui| {
+            // In a game: what the game changes, in place of what the editor changes.
+            if world.resource::<Editor>().playing() {
+                ui.strong("Game state");
+                game_state_panel(ui, world, &mut new_name);
+                return;
+            }
+            with_editor(world, |world, editor| {
+                property_grid(ui, |ui| properties(ui, world, editor))
+            });
+        });
+    });
+    let events = panel(EVENT, "Events", icon::EVENTS, ToolPlace::Bottom);
+    add_tool_panel(app, events, |ui, world| {
+        with_editor(world, |world, editor| {
+            let index = match editor.primary() {
+                Item::Event(index) if !editor.playing() => index,
+                _ if editor.playing() => {
+                    ui.weak("A game runs. The outliner has the events that run.");
                     return;
                 }
-                with_editor(world, |world, editor| properties(ui, world, editor));
-            });
-        },
-    );
-    add_tool_panel(app, EVENT, ToolPlace::Bottom, false, |ui, world| {
-        with_editor(world, |world, editor| {
-            let Item::Event(index) = editor.primary() else {
-                return;
+                _ => {
+                    ui.weak(
+                        "Select an event in the outliner: its pages and its commands show here.",
+                    );
+                    return;
+                }
             };
             if event_panel(ui, world, editor, index) == Some(true) {
                 editor.document.dirty = true;
             }
         });
     });
-    add_tool_panel(app, "Status", ToolPlace::Status, true, |ui, world| {
-        with_editor(world, |_, editor| status_bar(ui, editor));
+    let status = panel("editor status", "Status", "", ToolPlace::Status);
+    add_tool_panel(app, status, |ui, world| {
+        with_editor(world, |world, editor| status_bar(ui, world, editor));
     });
     add_overlay(app, "Editor marks", true, |ui, world| {
         with_editor(world, |world, editor| {
@@ -85,7 +154,8 @@ pub(crate) fn build(app: &mut App) {
     });
     // Open while a command waits for the answer (`Editor::apply_mode`).
     // In the middle of the window, and nothing else gets input: the room does
-    // not change while the question waits.
+    // not change while the question waits. The one window that must be answered:
+    // its answer cannot be undone.
     add_modal(app, CONFIRM, false, |ui, world| {
         with_editor(world, |_, editor| {
             let unsaved = [
@@ -145,67 +215,22 @@ fn model_files(room: &Path) -> Vec<PathBuf> {
     )
 }
 
-/// The rows at the top of the window: the menus, and the row with play, the tools,
-/// and the snap. In a game: stop, and the steps of a test.
-fn top(ui: &mut Ui, world: &mut World, editor: &mut Editor, save_as: &mut String) {
-    // A drag of a value, or a text that is typed: the history waits for its end.
-    let pointer_down = ui.ctx().input(|input| input.pointer.any_down());
-    editor.busy = pointer_down || ui.ctx().memory(|memory| memory.focused().is_some());
-    let playing = editor.playing();
-    ui.horizontal(|ui| {
-        if !playing {
-            // These menus have a text field: a click in a menu must not close it.
-            // Each button of them closes the menu itself.
-            let stay = egui::containers::menu::MenuConfig::new()
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-            let menu = |name| egui::containers::menu::MenuButton::new(name).config(stay.clone());
-            menu("File").ui(ui, |ui| file_menu(ui, editor, save_as));
-            menu("Edit").ui(ui, |ui| edit_menu(ui, world, editor));
-        }
-        ui.menu_button("View", |ui| {
-            if ui
-                .button("Debug panels")
-                .on_hover_text("Help, Stats, Debug, Gameplay, Game state, Bench: one window")
-                .clicked()
-            {
-                editor.request(Command::DebugPanels);
-                ui.close();
-            }
-        });
-    });
-    ui.horizontal(|ui| {
-        if playing {
-            play_row(ui, world, editor);
-        } else {
-            tools(ui, world, editor);
-        }
-    });
-    ui.add_space(2.0);
+/// The row of a command of the command list in a menu of a panel: its name and its
+/// key. True: it was clicked. The caller asks the editor for the command: the
+/// editor is not in the world here, so the command itself cannot run.
+fn command_row(ui: &mut Ui, world: &World, id: &str) -> bool {
+    let commands = world.resource::<ToolCommands>().clone();
+    let Some(command) = commands.get(id) else {
+        return false;
+    };
+    let button = egui::Button::new(command.name).shortcut_text(command.key(world));
+    ui.add(button).clicked()
 }
 
-/// The commands of the "Edit" menu, with what each needs.
-fn edit_menu(ui: &mut Ui, world: &World, editor: &mut Editor) {
-    let some = !editor.selection.is_empty();
-    let (undo, redo) = editor.history_steps();
-    let buttons = [
-        ("Undo", undo > 0, Command::Undo, crate::UNDO),
-        ("Redo", redo > 0, Command::Redo, crate::REDO),
-        ("Duplicate", some, Command::Duplicate, crate::DUPLICATE),
-        ("Delete", some, Command::Delete, crate::DELETE),
-        ("Copy", some, Command::Copy, crate::COPY),
-        ("Paste", true, Command::Paste, crate::PASTE),
-        ("Frame in the view", true, Command::Frame, crate::FRAME),
-    ];
-    for (text, enabled, command, action) in buttons {
-        let button = egui::Button::new(text).shortcut_text(crate::key_of(world, action));
-        if ui.add_enabled(enabled, button).clicked() {
-            editor.request(command);
-            ui.close();
-        }
-    }
-    ui.separator();
+/// Under the commands of the "Edit" menu: the name field of "Make prefab".
+fn prefab_menu(ui: &mut Ui, editor: &mut Editor) {
     let is_part = |item: &Item| matches!(item, Item::Prop(_) | Item::Light(_));
-    let parts = editor.selection.iter().any(is_part);
+    let parts = !editor.playing() && editor.selection.iter().any(is_part);
     ui.horizontal(|ui| {
         let field = egui::TextEdit::singleline(&mut editor.prefab_name)
             .desired_width(120.0)
@@ -217,61 +242,50 @@ fn edit_menu(ui: &mut Ui, world: &World, editor: &mut Editor) {
             .on_hover_text(
                 "The selected props and lights become the file prefabs/<name>.prefab, and \
                  one prefab in their place. A file of that name is replaced: each room \
-                 that names it shows the change.",
+                 that names it shows the change. \"Unpack prefab\" puts the props and \
+                 lights of the selected prefab back into the room, to change them.",
             );
         if button.clicked() {
             editor.request(Command::MakePrefab(name));
             ui.close();
         }
     });
-    let prefab = matches!(editor.primary(), Item::Prefab(_));
-    let unpack = ui
-        .add_enabled(prefab, egui::Button::new("Unpack prefab"))
-        .on_hover_text(
-            "The props and lights of the selected prefab go into the room, to change \
-             them. \"Make prefab\" with the same name then changes the prefab in each room.",
-        );
-    if unpack.clicked() {
-        editor.request(Command::UnpackPrefab);
-        ui.close();
-    }
 }
 
-/// The row of a game: stop, and in a test the steps.
-fn play_row(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
-    if ui.button("Stop").clicked() {
-        editor.request(Command::Stop);
-    }
-    // A test: the events wait for a step before each command.
-    let mut runner = world.resource_mut::<EventRunner>();
-    if runner.step_mode() {
-        if ui
-            .button("Step")
-            .on_hover_text("The next command of the event")
-            .clicked()
-        {
-            runner.step_command();
+/// The middle of the tool row: play, and where the game starts. In a game: stop,
+/// and in a test the steps.
+fn play_row(ui: &mut Ui, world: &mut World) {
+    if world.resource::<Editor>().playing() {
+        let stop = egui::RichText::new(format!("{} Stop", icon::STOP)).color(THEME.play);
+        tool_button(ui, world, "editor.stop", stop, false);
+        // A test: the events wait for a step before each command.
+        if world.resource::<EventRunner>().step_mode() {
+            tool_button(
+                ui,
+                world,
+                "editor.step",
+                format!("{} Step", icon::STEP),
+                false,
+            );
+            tool_button(
+                ui,
+                world,
+                "editor.run",
+                format!("{} Run", icon::PLAY),
+                false,
+            );
         }
-        if ui
-            .button("Run")
-            .on_hover_text("No more steps: the events run")
-            .clicked()
-        {
-            runner.set_step_mode(false);
-        }
-    } else {
-        ui.weak("or the quit key");
+        return;
     }
-}
-
-/// The row of the editor: play, the tool of the gizmo, the snap, and "Add".
-fn tools(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
-    // The key of an action, from the binding table, as the hover text of its button.
-    let key = |action| crate::key_of(world, action);
-    if ui.button("Play").on_hover_text(key(crate::PLAY)).clicked() {
-        editor.request(Command::Play);
-    }
+    tool_button(
+        ui,
+        world,
+        "editor.play",
+        format!("{} Play", icon::PLAY),
+        false,
+    );
     // Where the game starts.
+    let mut editor = world.resource_mut::<Editor>();
     let spawns: Vec<String> = editor.document.room.spawns.keys().cloned().collect();
     let chosen = editor
         .play_from
@@ -287,49 +301,64 @@ fn tools(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
                     editor.play_from = Some(spawn);
                 }
             }
-        });
-    ui.separator();
-    for (tool, text, action) in [
-        (Tool::Move, "Move", crate::TOOL_MOVE),
-        (Tool::Rotate, "Rotate", crate::TOOL_ROTATE),
-        (Tool::Scale, "Scale", crate::TOOL_SCALE),
+        })
+        .response
+        .on_hover_text("The spawn point where the game starts");
+}
+
+/// The left of the tool row: the tool of the gizmo, and the snap.
+fn tools(ui: &mut Ui, world: &mut World) {
+    // A drag of a value, or a text that is typed: the history waits for its end.
+    let pointer_down = ui.ctx().input(|input| input.pointer.any_down());
+    let busy = pointer_down || ui.ctx().memory(|memory| memory.focused().is_some());
+    let mut editor = world.resource_mut::<Editor>();
+    editor.busy = busy;
+    let (tool, playing) = (editor.tool, editor.playing());
+    for (id, icon, of_button) in [
+        ("editor.tool_move", icon::MOVE, Tool::Move),
+        ("editor.tool_rotate", icon::ROTATE, Tool::Rotate),
+        ("editor.tool_scale", icon::SCALE, Tool::Scale),
     ] {
-        ui.selectable_value(&mut editor.tool, tool, text)
-            .on_hover_text(key(action));
+        tool_button(ui, world, id, icon, tool == of_button);
     }
-    let local = format!(
-        "The handles follow the axes of the item, not those of the room ({})",
-        key(crate::TOGGLE_LOCAL)
+    tool_button(
+        ui,
+        world,
+        "editor.local",
+        "Local",
+        world.resource::<Editor>().local,
     );
-    ui.checkbox(&mut editor.local, "Local").on_hover_text(local);
     ui.separator();
-    let old = world.resource::<EditorSettings>();
-    let mut settings = old.clone();
-    ui.checkbox(&mut settings.snap, "Snap");
-    ui.add(
-        drag(&mut settings.grid_step)
-            .speed(0.01)
-            .range(0.01..=10.0)
-            .suffix(" m"),
-    );
-    ui.add(
-        drag(&mut settings.angle_step)
-            .speed(0.5)
-            .range(1.0..=90.0)
-            .suffix(" deg"),
-    );
-    // Only a different value is a write.
-    if settings != *old {
-        *world.resource_mut::<EditorSettings>() = settings;
-    }
-    ui.separator();
-    ui.menu_button("Add", |ui| {
-        for (text, kind) in Kind::MENU {
-            if ui.button(text).clicked() {
-                editor.request(Command::Add(kind));
-                ui.close();
-            }
+    ui.add_enabled_ui(!playing, |ui| {
+        let old = world.resource::<EditorSettings>();
+        let mut settings = old.clone();
+        ui.checkbox(&mut settings.snap, "Snap")
+            .on_hover_text(format!(
+                "A drag of a handle snaps to the steps ({} in a drag: the other way)",
+                maki_ui::key_label(world, crate::SNAP_SWITCH)
+            ));
+        ui.add(
+            drag(&mut settings.grid_step)
+                .speed(0.01)
+                .range(0.01..=10.0)
+                .suffix(" m"),
+        );
+        ui.add(
+            drag(&mut settings.angle_step)
+                .speed(0.5)
+                .range(1.0..=90.0)
+                .suffix(" deg"),
+        );
+        // Only a different value is a write.
+        if settings != *old {
+            *world.resource_mut::<EditorSettings>() = settings;
         }
+    });
+}
+
+/// Under the commands of the "Add" menu: the model files and the prefab files.
+fn add_files(ui: &mut Ui, editor: &mut Editor) {
+    ui.add_enabled_ui(!editor.playing(), |ui| {
         ui.menu_button("Model file", |ui| {
             let models = model_files(&editor.document.path);
             if models.is_empty() {
@@ -380,42 +409,33 @@ fn room_files(directory: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Under the commands of the "File" menu: the room files to open, and "Save as".
 fn file_menu(ui: &mut Ui, editor: &mut Editor, save_as: &mut String) {
-    if ui.button("New room").clicked() {
-        editor.request(Command::New);
-        ui.close();
-    }
-    ui.menu_button("Open", |ui| {
-        for path in room_files(editor.rooms()) {
-            if ui.button(file_name(&path)).clicked() {
-                editor.request(Command::Open(path));
+    ui.add_enabled_ui(!editor.playing(), |ui| {
+        ui.menu_button("Open", |ui| {
+            for path in room_files(editor.rooms()) {
+                if ui.button(file_name(&path)).clicked() {
+                    editor.request(Command::Open(path));
+                    ui.close();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            let field = egui::TextEdit::singleline(save_as)
+                .desired_width(120.0)
+                .hint_text("name.ron");
+            ui.add(field);
+            let name = save_as.trim();
+            if ui.button("Save as").clicked() && !name.is_empty() {
+                let path = editor.rooms().join(name).with_extension("ron");
+                editor.request(Command::SaveAs(path));
                 ui.close();
             }
-        }
+        });
     });
-    if ui.button("Save").clicked() {
-        editor.request(Command::Save);
-        ui.close();
-    }
-    ui.horizontal(|ui| {
-        let field = egui::TextEdit::singleline(save_as)
-            .desired_width(120.0)
-            .hint_text("name.ron");
-        ui.add(field);
-        let name = save_as.trim();
-        if ui.button("Save as").clicked() && !name.is_empty() {
-            let path = editor.rooms().join(name).with_extension("ron");
-            editor.request(Command::SaveAs(path));
-            ui.close();
-        }
-    });
-    if ui.button("Quit").clicked() {
-        editor.request(Command::Quit);
-        ui.close();
-    }
 }
 
-/// The left panel: each item of the room. In a game: what each event does now.
+/// The outliner: each item of the room. In a game: what each event does now.
 fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, filter: &mut String) {
     if editor.playing() {
         ui.strong("Running events");
@@ -432,71 +452,58 @@ fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, filter: &mut St
         }
         return;
     }
-    let field = egui::TextEdit::singleline(filter)
-        .hint_text("filter")
-        .desired_width(f32::INFINITY);
-    ui.add(field);
+    tree_filter(ui, filter);
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
             let problems = editor.problems();
             for (title, items) in sections(&editor.document) {
                 let Some(title) = title else {
-                    rows(ui, editor, items, &problems, "");
+                    rows(ui, world, editor, items, &problems, "");
                     continue;
                 };
-                egui::CollapsingHeader::new(format!("{title} ({})", items.len()))
-                    .id_salt(title)
-                    .default_open(true)
-                    .show(ui, |ui| rows(ui, editor, items, &problems, filter));
+                tree_group(ui, title, items.len(), |ui| {
+                    rows(ui, world, editor, items, &problems, filter)
+                });
             }
         });
+    // A row that does not show (a filter, a folded group) is not renamed later.
+    editor.renaming = None;
 }
 
-/// The row at the bottom of the window: what the last command did, or in red why a
-/// command did not do its work (until the user closes it), and the count of the
-/// problems of the events. A click on the count lists them; a click on one goes to
-/// its event, page, and command row.
-fn status_bar(ui: &mut Ui, editor: &mut Editor) {
-    ui.horizontal(|ui| {
-        let mut closed = false;
-        match &editor.error {
-            Some(error) => {
-                closed = ui.small_button("x").on_hover_text("Close").clicked();
-                ui.colored_label(ERROR, error.as_str());
-            }
-            None => {
-                ui.label(editor.status.as_str());
-            }
-        }
-        if closed {
-            editor.error = None;
-        }
+/// The status row, in four parts: what the last command did; the jobs that run; the
+/// count of the problems of the events (a click lists them, and a click on one goes
+/// to its event, page, and command row); the frame time.
+fn status_bar(ui: &mut Ui, world: &World, editor: &mut Editor) {
+    ui.label(editor.status.as_str());
+    ui.separator();
+    jobs_label(ui, world);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        frame_time_label(ui, world);
+        ui.separator();
         let problems = editor.problems();
         let warnings = problems.iter().filter(|problem| problem.warning).count();
         let errors = problems.len() - warnings;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if problems.is_empty() {
-                ui.weak("no problem in the events");
-                return;
-            }
-            let color = if errors > 0 { ERROR } else { HINT };
-            let count = format!("{errors} errors, {warnings} warnings in the events");
-            ui.menu_button(egui::RichText::new(count).color(color), |ui| {
-                for problem in &problems {
-                    let event = &editor.document.events[problem.event];
-                    let place = match &problem.command {
-                        Some((page, _)) => format!("{}, page {}", event.name, page + 1),
-                        None => event.name.clone(),
-                    };
-                    let color = if problem.warning { HINT } else { ERROR };
-                    let text = format!("{place}: {}", problem.text);
-                    if ui.button(egui::RichText::new(text).color(color)).clicked() {
-                        go_to_problem(editor, problem);
-                        ui.close();
-                    }
+        if problems.is_empty() {
+            ui.weak("no problem in the events");
+            return;
+        }
+        let color = if errors > 0 { ERROR } else { HINT };
+        let count = format!("{errors} errors, {warnings} warnings in the events");
+        ui.menu_button(egui::RichText::new(count).color(color), |ui| {
+            for problem in &problems {
+                let event = &editor.document.events[problem.event];
+                let place = match &problem.command {
+                    Some((page, _)) => format!("{}, page {}", event.name, page + 1),
+                    None => event.name.clone(),
+                };
+                let color = if problem.warning { HINT } else { ERROR };
+                let text = format!("{place}: {}", problem.text);
+                if ui.button(egui::RichText::new(text).color(color)).clicked() {
+                    go_to_problem(editor, problem);
+                    ui.close();
                 }
-            });
+            }
         });
     });
 }
@@ -522,31 +529,35 @@ fn go_to_problem(editor: &mut Editor, problem: &Problem) {
 /// problems as its hover text.
 fn rows(
     ui: &mut Ui,
+    world: &World,
     editor: &mut Editor,
     items: Vec<(Item, String)>,
     problems: &[Problem],
     filter: &str,
 ) {
-    let filter = filter.to_lowercase();
     for (item, label) in items {
-        if !label.to_lowercase().contains(&filter) {
+        if !tree_shows(filter, &label) {
             continue;
         }
         let selected =
             editor.selection.contains(&item) || (item == Item::Room && editor.selection.is_empty());
         let of_item = |problem: &&Problem| Item::Event(problem.event) == item;
         let found: Vec<&Problem> = problems.iter().filter(of_item).collect();
-        let text = if found.is_empty() {
-            egui::RichText::new(label)
-        } else {
-            let error = found.iter().any(|problem| !problem.warning);
-            egui::RichText::new(label).color(if error { ERROR } else { HINT })
+        let error = found.iter().any(|problem| !problem.warning);
+        let texts: Vec<&str> = found.iter().map(|problem| problem.text.as_str()).collect();
+        let row = TreeRow {
+            label: &label,
+            selected,
+            color: (!found.is_empty()).then_some(if error { ERROR } else { HINT }),
+            hover: &texts.join("\n"),
+            rename: editor.renaming.as_ref() == Some(&item),
         };
-        let mut row = ui.selectable_label(selected, text);
-        if !found.is_empty() {
-            let texts: Vec<&str> = found.iter().map(|problem| problem.text.as_str()).collect();
-            row = row.on_hover_text(texts.join("\n"));
+        // The index of an item changes with a delete: the salt is the item.
+        let row = tree_row(ui, &item, row);
+        if let Some(new) = row.renamed {
+            editor.rename(&item, new);
         }
+        let row = row.response;
         if row.clicked() {
             // The room is "nothing selected". Shift adds, as in the picture.
             let add = ui.ctx().input(|input| input.modifiers.shift);
@@ -566,12 +577,16 @@ fn rows(
         }
         // The menu of the right mouse button: the commands for this item.
         row.context_menu(|ui| {
-            for (text, command) in [
-                ("Frame in the view", Command::Frame),
-                ("Duplicate", Command::Duplicate),
-                ("Delete", Command::Delete),
+            for (id, command) in [
+                ("editor.rename", Command::Rename),
+                ("editor.frame", Command::Frame),
+                ("editor.duplicate", Command::Duplicate),
+                ("editor.delete", Command::Delete),
             ] {
-                if ui.button(text).clicked() {
+                if command == Command::Rename && !item.has_name() {
+                    continue;
+                }
+                if command_row(ui, world, id) {
                     if !editor.selection.contains(&item) {
                         editor.select(item.clone(), false);
                     }
@@ -804,7 +819,7 @@ fn item_properties(
                 | choice(ui, "doorway", &mut door.doorway, &doorways, PartialEq::eq)
                 | number(ui, "seconds to open", &mut door.seconds, 0.05, 0.05..=60.0)
                 | color(ui, "color", &mut door.color)
-                | ui.checkbox(&mut door.open, "open at the start").changed()
+                | toggle(ui, "open at the start", &mut door.open, Some(false))
         }
         Item::Prop(index) => {
             let prop = room.props.get_mut(*index)?;
@@ -814,9 +829,12 @@ fn item_properties(
                 | pose(ui, "pose", &mut prop.pose)
                 // A file has its own colors and materials.
                 | (!is_file && look(ui, &mut prop.look))
-                | ui.checkbox(&mut prop.collider, "blocks the player").changed()
-                | (is_file
-                    && number(ui, "radius of its lights", &mut prop.light_radius, 0.01, 0.01..=10.0))
+                | toggle(ui, "blocks the player", &mut prop.collider, Some(true))
+                | (is_file && {
+                    let default = Some(PropDef::default().light_radius);
+                    let radius = &mut prop.light_radius;
+                    number_or(ui, "radius of its lights", radius, default, 0.01, 0.01..=10.0)
+                })
         }
         Item::Prefab(index) => {
             let prefab = room.prefabs.get_mut(*index)?;
@@ -848,11 +866,11 @@ fn item_properties(
             let light = room.lights.get_mut(*index)?;
             let down = || [0.0, -1.0, 0.0];
             name(ui, &mut light.name)
-                | vector(ui, "position", &mut light.position, 0.01)
+                | vector(ui, "position", &mut light.position, None, 0.01)
                 | number(ui, "radius", &mut light.radius, 0.005, 0.01..=10.0)
                 | color(ui, "color", &mut light.color)
                 | number(ui, "intensity", &mut light.intensity, 0.1, 0.0..=10000.0)
-                | ui.checkbox(&mut light.on, "on").changed()
+                | toggle(ui, "on", &mut light.on, Some(true))
                 // One group: a direction is of use only with a cone.
                 | {
                     let (cone, direction) = (&mut light.cone, &mut light.direction);
@@ -863,44 +881,26 @@ fn item_properties(
                                 "direction (not set: down)",
                                 direction,
                                 down,
-                                |ui, to| vector(ui, "", to, 0.01),
+                                |ui, to| vector(ui, "", to, None, 0.01),
                             )
                     })
                 }
                 // A lamp that hums. An event finds the sound by the name of the light.
                 | crate::widgets::optional(ui, "sound", &mut light.sound, SoundDef::default, |ui, sound| {
+                    let default = SoundDef::default();
                     crate::widgets::file(ui, "sound file", &mut sound.file, &crate::widgets::SOUNDS)
-                        | number(ui, "volume", &mut sound.volume, 0.01, 0.0..=4.0)
-                        | number(ui, "reach (radius)", &mut sound.reach, 0.05, 0.1..=100.0)
-                        | ui.checkbox(&mut sound.on, "on at the start").changed()
+                        | number_or(ui, "volume", &mut sound.volume, Some(default.volume), 0.01, 0.0..=4.0)
+                        | number_or(ui, "reach (radius)", &mut sound.reach, Some(default.reach), 0.05, 0.1..=100.0)
+                        | toggle(ui, "on at the start", &mut sound.on, Some(default.on))
                 })
         }
         Item::Spawn(spawn) => {
             let mut new = spawn.clone();
             let renamed =
-                crate::widgets::text(ui, "name", &mut new) && document.rename_spawn(spawn, &new);
+                crate::widgets::text(ui, "name", &mut new) && editor.rename_spawn(spawn, &new);
             let now = if renamed { &new } else { spawn };
-            let position = document.room.spawns.get_mut(now)?;
-            let moved = vector(ui, "position", position, 0.01);
-            if renamed {
-                // A `Transfer` of this room to itself follows. Other room files are
-                // not changed: the user gets their names.
-                let file = file_name(&document.path);
-                let registry = editor.registry.clone();
-                document.rename_in_events(&registry, |command: &Builtin| match command {
-                    Builtin::Transfer(room, to) if *room == file && to == spawn => {
-                        Some(Builtin::Transfer(room.clone(), new.clone()))
-                    }
-                    _ => None,
-                });
-                let users = spawn_users(&editor.rooms, &document.path, spawn, &registry);
-                if !users.is_empty() {
-                    let users = users.join(", ");
-                    editor.status = format!("{users}: a Transfer still names `{spawn}`");
-                }
-                editor.selection = vec![Item::Spawn(new)];
-            }
-            renamed | moved
+            let position = editor.document.room.spawns.get_mut(now)?;
+            renamed | vector(ui, "position", position, None, 0.01)
         }
         // `event_panel` shows an event.
         Item::Event(_) => return None,

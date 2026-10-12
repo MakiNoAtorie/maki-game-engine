@@ -26,6 +26,7 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - `audio`: the sound output (`kira`), sound assets, music, the sounds at a place in the room, the audio event commands. No type of `kira` in its public API.
 - `gameplay`: generic gameplay modules (camera follow, walking controller, start room, debug controls), each with its own settings.
 - `devtools`: tools that a game opts into (benchmark runner, room list, gameplay panel).
+- `ui`: egui, the debug panels of a game, and the shell of a tool (docks with tabs, the panel and command registries, the widgets, the theme).
 - `editor`: the room editor. The game has it behind the cargo feature `editor` (`maki-game --editor`); a build without the feature has no editor code. It edits a document (room, events, comments) and builds the world from it; it never saves the world.
 - `game/`: content, the module list, and code that is specific to this game. Generic code goes into an engine crate.
 - `spike/` (stage 41, until stage 43 removes it): the engine crates as one DLL, a script DLL, and a test program. Built only when named, with `--profile dynamic`.
@@ -35,7 +36,7 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 2. No `ash` or Vulkan type in any public API outside the `gpu` crate.
 3. The renderer reads only data copied into it during the Extract stage, never game state directly.
 4. Gameplay code reads input actions, never raw keys.
-5. Every feature is a module that registers its own systems and resources. Adding a module must not require editing another module. A module owns its config table (`Settings`), its input actions and their keys (`add_bindings`), and its event commands (`CommandRegistry`).
+5. Every feature is a module that registers its own systems and resources. Adding a module must not require editing another module. A module owns its config table (`Settings`), its input actions and their keys (`add_bindings`), and its event commands (`CommandRegistry`). A module adds its panels and its commands of the editor to the shell (`maki_ui::add_tool_panel`, `add_command`), with no change in the editor crate.
 6. Long-lived resources (GPU resources, assets) are referenced by generational handles.
 7. Gameplay state that must survive a room change (flags, variables, player state) lives in resources outside room entities.
 8. Game content (rooms, events) is data, not code. A new room or event must not need a recompile.

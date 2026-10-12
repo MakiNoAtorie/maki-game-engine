@@ -12,7 +12,7 @@ use maki_scene::{LightDef, PoseDef, RoomDef, RoomValidators, check_room, ron_opt
 use crate::ron_text::{Notes, pretty, read_notes};
 
 /// One thing of a room that the outliner lists and the property panel shows.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
 pub enum Item {
     /// The size and the textures of the room.
     #[default]
@@ -50,6 +50,13 @@ pub struct Document {
     pub notes: Notes,
     /// True: the document is not what the file holds.
     pub dirty: bool,
+}
+
+impl Item {
+    /// True: the item has a name that the user gives it.
+    pub fn has_name(&self) -> bool {
+        !matches!(self, Item::Room | Item::Doorway(_))
+    }
 }
 
 impl Document {
