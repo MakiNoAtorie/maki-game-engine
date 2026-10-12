@@ -426,3 +426,89 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_test_of_a_page_plays_the_room_in_step_mode_and_stop_ends_it() {
+    use maki_events::EventRunner;
+
+    let (app, directory) = editor_app("test-run");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        request(&mut app, Command::Test("leave".to_owned(), 0));
+        frames(&mut app, 10);
+        // The game runs, and each event waits before its first command.
+        let world = app.world();
+        assert!(world.resource::<Editor>().playing());
+        assert!(world.resource::<EventRunner>().step_mode());
+        let waits = |app: &App| {
+            let running = app.world().resource::<EventRunner>().running();
+            running
+                .iter()
+                .filter_map(|event| event.current())
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+        };
+        // The page that the test started, and the same page by its own trigger.
+        assert_eq!(
+            waits(&app),
+            [r#"SetFlag("left", true)"#, r#"SetFlag("left", true)"#]
+        );
+        assert!(!app.world().resource::<GameState>().flag("left"));
+
+        app.resource_mut::<EventRunner>().step_command();
+        frames(&mut app, 3);
+        assert!(app.world().resource::<GameState>().flag("left"));
+        assert_eq!(waits(&app)[0], r#"LightOff("lamp")"#);
+        assert!(lamp(&app).0.on);
+
+        // Stop: no step mode, no flag, and a play after it runs with no steps.
+        request(&mut app, Command::Stop);
+        assert!(!app.world().resource::<EventRunner>().step_mode());
+        assert!(!app.world().resource::<GameState>().flag("left"));
+        request(&mut app, Command::Play);
+        frames(&mut app, 20);
+        assert_eq!(
+            app.world().resource::<CurrentRoom>().path,
+            directory.join("b.ron")
+        );
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_module_gives_the_widgets_for_the_arguments_of_its_command() {
+    use maki_events::CommandRegistry;
+    use maki_ui::egui;
+
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+    enum Sound {
+        Play(String, f32),
+    }
+
+    let (mut app, directory) = editor_app("arguments");
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    registry.add(|_: &Sound, _, _| true);
+    // The widgets of the module: here they only make the sound louder.
+    add_argument_editor(&mut app, |_ui, Sound::Play(_, volume): &mut Sound| {
+        *volume += 1.0;
+        true
+    });
+    let editors = app.world().resource::<ArgumentEditors>().clone();
+    let sound = registry.parse_command(r#"Play("door", 0.5)"#).unwrap();
+    let wait = registry.parse_command("Wait(1.0)").unwrap();
+    let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        let mut edit = |command| {
+            editors
+                .0
+                .iter()
+                .find_map(|edit| edit(ui, command, &registry))
+        };
+        // A command of another enum: not this editor. Its own: the changed command.
+        assert_eq!(edit(&wait), None);
+        let louder = registry.command(Sound::Play("door".to_owned(), 1.5));
+        assert_eq!(edit(&sound), Some(louder));
+    });
+    // egui panics when texture changes are dropped unread.
+    output.textures_delta.clear();
+    std::fs::remove_dir_all(&directory).unwrap();
+}

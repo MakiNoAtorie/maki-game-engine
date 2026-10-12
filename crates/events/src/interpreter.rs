@@ -68,8 +68,8 @@ impl RunningEvent {
         list.get(*index)
     }
 
-    /// One fixed step. True: the event has ended.
-    fn step(&mut self, world: &mut World) -> bool {
+    /// One fixed step. True: the event has ended. `steps`: see `EventRunner::steps`.
+    fn step(&mut self, world: &mut World, steps: &mut Option<u32>) -> bool {
         for _ in 0..MAX_COMMANDS_PER_STEP {
             // A list at its end is closed: the list around it goes on.
             while self
@@ -83,6 +83,13 @@ impl RunningEvent {
                 return true;
             };
             let command = list[*index].clone();
+            // Step mode: a command starts only if a step was asked for.
+            if let (false, Some(left)) = (self.waiting, steps.as_mut()) {
+                if *left == 0 {
+                    return false;
+                }
+                *left -= 1;
+            }
             let start = !std::mem::replace(&mut self.waiting, true);
             if start {
                 self.memory = None;
@@ -125,6 +132,10 @@ pub struct EventRunner {
     /// not walk into it.
     new_room: bool,
     running: Vec<RunningEvent>,
+    /// Step mode, for a tool that shows an event command by command. `None`: off,
+    /// the events run. `Some`: the number of commands that can still start; at 0
+    /// each event waits before its next command.
+    steps: Option<u32>,
 }
 
 impl EventRunner {
@@ -143,6 +154,36 @@ impl EventRunner {
     /// The events of the current room.
     pub fn events(&self) -> &[EventDef] {
         &self.events
+    }
+
+    /// Turns the step mode on or off. On: no command starts until [`Self::step`].
+    pub fn set_step_mode(&mut self, on: bool) {
+        self.steps = on.then_some(0);
+    }
+
+    pub fn step_mode(&self) -> bool {
+        self.steps.is_some()
+    }
+
+    /// In step mode: one more command can start.
+    pub fn step_command(&mut self) {
+        if let Some(steps) = &mut self.steps {
+            *steps += 1;
+        }
+    }
+
+    /// Starts the commands of a page of an event of the room now, whatever its
+    /// trigger and its conditions are: for a test of the page. False: the room has
+    /// no such event or page.
+    pub fn start_event(&mut self, name: &str, page: usize) -> bool {
+        let event = self.events.iter().find(|event| event.name == name);
+        let Some(page) = event.and_then(|event| event.pages.get(page)) else {
+            return false;
+        };
+        tracing::debug!(event = name, "event starts for a test");
+        let running = RunningEvent::new(name, page.trigger, &page.commands);
+        self.running.push(running);
+        true
     }
 
     /// The events of a new room take the place of the old ones. A `Parallel` event of
@@ -168,7 +209,7 @@ impl EventRunner {
 
         let mut index = 0;
         while index < self.running.len() {
-            if self.running[index].step(world) {
+            if self.running[index].step(world, &mut self.steps) {
                 self.running.remove(index);
             } else {
                 index += 1;

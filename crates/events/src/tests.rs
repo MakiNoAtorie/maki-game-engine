@@ -342,3 +342,71 @@ fn a_module_adds_commands_that_wait_and_that_hold_command_lists() {
     });
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn in_step_mode_each_command_waits_for_its_step_and_a_page_starts_for_a_test() {
+    let directory = directory("step");
+    // The second page needs a flag that nothing sets, and an interact that no
+    // one gives: only a test starts it.
+    let events = r#"(name: "door", pages: [
+        (trigger: Interact, commands: [SetFlag("first", true)]),
+        (conditions: [Flag("never")], trigger: Interact, commands: [
+            SetFlag("a", true), Wait(0.04), SetFlag("b", true), SetFlag("c", true),
+        ]),
+    ])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    let app = game(&directory);
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        let current = |app: &App| {
+            let runner = app.world().resource::<EventRunner>();
+            runner
+                .running()
+                .first()
+                .and_then(|event| event.current())
+                .map(|c| format!("{c:?}"))
+        };
+        let mut runner = app.resource_mut::<EventRunner>();
+        assert!(!runner.start_event("door", 7) && !runner.start_event("window", 0));
+        runner.set_step_mode(true);
+        assert!(runner.start_event("door", 1));
+        // No step was asked for: the event waits before its first command.
+        steps(&mut app, 5);
+        assert_eq!(current(&app).as_deref(), Some(r#"SetFlag("a", true)"#));
+        assert!(!flag(&app, "a"));
+
+        // One step: one command. The wait takes its time, then waits for a step.
+        app.resource_mut::<EventRunner>().step_command();
+        steps(&mut app, 1);
+        assert!(flag(&app, "a"));
+        assert_eq!(current(&app).as_deref(), Some("Wait(0.04)"));
+        app.resource_mut::<EventRunner>().step_command();
+        steps(&mut app, 5);
+        assert_eq!(current(&app).as_deref(), Some(r#"SetFlag("b", true)"#));
+        assert!(!flag(&app, "b"));
+
+        // Step mode off: the rest runs.
+        app.resource_mut::<EventRunner>().set_step_mode(false);
+        steps(&mut app, 1);
+        assert!(flag(&app, "b") && flag(&app, "c") && !flag(&app, "first"));
+        assert_eq!(running(&app), 0);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_command_is_read_from_its_text() {
+    let registry = CommandRegistry::default();
+    registry.add(crate::builtin::run);
+    let command = registry
+        .parse_command(r#"If("seen", [Wait(0.5)], [])"#)
+        .unwrap();
+    let Some(Builtin::If(flag, yes, no)) = command.get::<Builtin>() else {
+        panic!("an If: {command:?}");
+    };
+    assert_eq!((flag.as_str(), yes.len(), no.len()), ("seen", 1, 0));
+    assert_eq!(Some(&yes[0]), registry.command(Builtin::Wait(0.5)).as_ref());
+    for bad in ["Wait(", "Wait(\"long\")", "Explode", ""] {
+        assert!(registry.parse_command(bad).is_err(), "{bad}");
+    }
+}

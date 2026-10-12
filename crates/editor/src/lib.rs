@@ -14,6 +14,8 @@
 //! - `view`: the pixel of a point, the ray of a pixel, the pick. `gizmo`: the handles
 //!   that move, turn, and scale the selection. `overlay`: the marks on the picture.
 //! - `ops`: add, delete, duplicate, names, and the history of undo and redo.
+//! - `events`: the commands of a page as rows, the names that the events of all
+//!   rooms use, the checks of the editor. `event_panel`: the panel of an event.
 //!
 //! Edit and play: while the room is edited, the simulation stands still
 //! (`Time::paused`), the keys are those of the editor ([`MODE`]), the player does not
@@ -26,6 +28,8 @@
 
 mod camera;
 mod document;
+mod event_panel;
+mod events;
 mod gizmo;
 mod ops;
 mod overlay;
@@ -63,6 +67,8 @@ use serde::{Deserialize, Serialize};
 
 pub use camera::{EditorCamera, ORBIT, PAN, VIEW_GAME, VIEW_TOP, ZOOM_IN, ZOOM_OUT};
 pub use document::{Document, Item, Place};
+pub use event_panel::{ArgumentEditors, EventUi, add_argument_editor};
+pub use events::{Names, OtherRoom, Problem, Row, RowKind, Use, names, other_rooms, problems};
 pub use gizmo::{Drag, Gizmo, Handle, Tool};
 pub use ops::{History, Kind, spawn_users};
 pub use ron_text::{Notes, pretty, read_notes};
@@ -157,6 +163,9 @@ pub enum Command {
     SaveAs(PathBuf),
     Play,
     Stop,
+    /// Plays the room in step mode and starts a page of an event (its name, the
+    /// index of the page), whatever its trigger and conditions are.
+    Test(String, usize),
     /// A new item, on the floor at the point that the view looks at.
     Add(Kind),
     /// Removes the selected items.
@@ -203,6 +212,12 @@ pub struct Editor {
     /// The handle that the pointer drags.
     drag: Option<Drag>,
     history: History,
+    /// The state of the event panel.
+    pub(crate) event_ui: EventUi,
+    /// The other room files beside the open one. `None`: read them again.
+    others: Option<Vec<OtherRoom>>,
+    /// The page that a test waits to start, when the room of the game is loaded.
+    test: Option<(String, usize)>,
     /// The spawn point where the game starts on `Play`. `None`, or a name that the
     /// room does not have: the first one.
     pub play_from: Option<String>,
@@ -279,6 +294,21 @@ impl Editor {
         self.history.steps()
     }
 
+    /// The other room files of the game: for the names that their events use, and
+    /// for the spawn points that a `Transfer` can name. Read from the disk after an
+    /// open and a save, not in each frame.
+    pub fn others(&mut self) -> &[OtherRoom] {
+        let (path, registry) = (&self.document.path, &self.registry);
+        self.others
+            .get_or_insert_with(|| other_rooms(path, registry))
+    }
+
+    /// What the checks of the editor find in the events of the room.
+    pub fn problems(&mut self) -> Vec<Problem> {
+        let others = self.others().to_vec();
+        problems(&self.document, &others)
+    }
+
     /// The pointer in the picture: a click takes a handle of the gizmo or selects
     /// the item under it, and a drag of a handle changes the document.
     fn viewport(&mut self, world: &mut World) {
@@ -347,7 +377,7 @@ impl Editor {
         }
         let asks = matches!(
             command,
-            Command::New | Command::Open(_) | Command::Play | Command::Quit
+            Command::New | Command::Open(_) | Command::Play | Command::Test(..) | Command::Quit
         );
         if asks && self.document.dirty && !confirmed {
             self.pending = Some(command);
@@ -376,6 +406,12 @@ impl Editor {
             }
             Command::Play => self.play(world),
             Command::Stop => self.stop(world),
+            Command::Test(event, page) => {
+                self.play(world);
+                // After `play`: it sets the event runner back.
+                world.resource_mut::<EventRunner>().set_step_mode(true);
+                self.test = Some((event, page));
+            }
             Command::Add(kind) => {
                 // On the floor, at the point that the view looks at, on the grid.
                 let mut cameras = world.query::<&EditorCamera>();
@@ -450,11 +486,20 @@ impl Editor {
         self.selection.clear();
         self.shown = None;
         self.history.reset(&self.document);
+        self.others = None;
+        self.event_ui.row = None;
     }
 
     fn save(&mut self) {
         match self.document.save() {
-            Ok(()) => self.status = "Saved".to_owned(),
+            Ok(()) => {
+                // A "Save as" is a new file among the others.
+                self.others = None;
+                self.status = match self.problems().len() {
+                    0 => "Saved".to_owned(),
+                    count => format!("Saved, with {count} problems in the events"),
+                };
+            }
             Err(error) => self.fail(format!("{error:#}")),
         }
     }
@@ -513,6 +558,7 @@ impl Editor {
         reset_play_state(world);
         // The world shows what the game made of the room, or another room.
         self.shown = None;
+        self.test = None;
         self.status = "Stopped".to_owned();
     }
 
@@ -686,6 +732,9 @@ impl Module for EditorModule {
             registry,
             drag: None,
             history: History::default(),
+            event_ui: EventUi::default(),
+            others: None,
+            test: None,
             play_from: Some(start.spawn),
             status: String::new(),
             rooms: self.rooms.clone(),
@@ -797,6 +846,14 @@ fn run_commands(world: &mut World) {
         }
         editor.sync(world);
         editor.apply_mode(world);
+        // A test: its page starts when the events of the room are loaded.
+        if let Some((event, page)) = &editor.test
+            && world
+                .resource_mut::<EventRunner>()
+                .start_event(event, *page)
+        {
+            editor.test = None;
+        }
         // The room that the game is in, for the panel.
         if editor.playing() {
             let room = &world.resource::<CurrentRoom>().path;

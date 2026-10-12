@@ -223,6 +223,15 @@ impl CommandRegistry {
         Ok(file?.events)
     }
 
+    /// One command from its text in the form of a room file: `Wait(0.5)`. For a
+    /// tool that lets the user type a command of a module that it does not know.
+    pub fn parse_command(&self, text: &str) -> Result<Command, ron::error::SpannedError> {
+        let before = PARSING.replace(Some(self.clone()));
+        let command = maki_scene::ron_options().from_str::<Command>(text);
+        PARSING.set(before);
+        command
+    }
+
     /// A check for `maki_scene::RoomValidators`: a room with a bad event is not loaded.
     pub fn validate_events(&self, text: &str) -> Result<(), String> {
         self.parse_events(text)

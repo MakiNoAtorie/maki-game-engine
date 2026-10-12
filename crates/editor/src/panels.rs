@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use bevy_ecs::world::{Mut, World};
 use maki_assets::Wall;
 use maki_core::App;
-use maki_events::Builtin;
+use maki_events::{Builtin, EventRunner};
 use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
 use maki_ui::{Panels, add_left_panel, add_overlay, add_panel, add_window};
 
+use crate::event_panel::event_panel;
 use crate::widgets::{choice, color, drag, look, mesh, name, number, pose, texture, vector};
 use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool, spawn_users};
 
@@ -32,9 +33,12 @@ pub(crate) fn build(app: &mut App) {
         });
     });
     add_panel(app, PROPERTIES, true, |ui, world| {
-        with_editor(world, |_, editor| properties(ui, editor));
+        with_editor(world, |world, editor| properties(ui, world, editor));
     });
     app.resource_mut::<Panels>().unfold(PROPERTIES);
+    add_panel(app, "Where used", true, |ui, world| {
+        with_editor(world, |_, editor| where_used(ui, editor));
+    });
     add_overlay(app, "Editor marks", true, |ui, world| {
         with_editor(world, |world, editor| {
             crate::overlay::draw(ui, world, editor)
@@ -226,7 +230,26 @@ fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, save_as: &mut S
             if ui.button("Stop").clicked() {
                 editor.request(Command::Stop);
             }
-            ui.weak("or the quit key");
+            // A test: the events wait for a step before each command.
+            let mut runner = world.resource_mut::<EventRunner>();
+            if runner.step_mode() {
+                if ui
+                    .button("Step")
+                    .on_hover_text("The next command of the event")
+                    .clicked()
+                {
+                    runner.step_command();
+                }
+                if ui
+                    .button("Run")
+                    .on_hover_text("No more steps: the events run")
+                    .clicked()
+                {
+                    runner.set_step_mode(false);
+                }
+            } else {
+                ui.weak("or the quit key");
+            }
             return;
         }
         ui.menu_button("File", |ui| file_menu(ui, editor, save_as));
@@ -254,6 +277,15 @@ fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, save_as: &mut S
     let changed = if editor.document.dirty { " *" } else { "" };
     ui.strong(format!("{}{changed}", file_name(&editor.document.path)));
     ui.weak(editor.status.as_str());
+    if editor.playing() {
+        // What each event does now: in a test, the command that waits for a step.
+        for event in world.resource::<EventRunner>().running() {
+            let command = event
+                .current()
+                .map_or(String::new(), |command| format!("{command:?}"));
+            ui.label(format!("{}: {command}", event.name));
+        }
+    }
     ui.separator();
 
     let playing = editor.playing();
@@ -263,7 +295,12 @@ fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, save_as: &mut S
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
-                for (title, items) in sections(&editor.document) {
+                let bad: Vec<usize> = editor
+                    .problems()
+                    .iter()
+                    .map(|problem| problem.event)
+                    .collect();
+                for (title, items) in sections(&editor.document, &bad) {
                     let Some(title) = title else {
                         rows(ui, editor, items);
                         continue;
@@ -298,7 +335,7 @@ type Section = (Option<&'static str>, Vec<(Item, String)>);
 
 /// The lists of the outliner: the title of each, and its items with their labels. An
 /// item with no name has its kind and its index.
-fn sections(document: &Document) -> Vec<Section> {
+fn sections(document: &Document, bad_events: &[usize]) -> Vec<Section> {
     let room = &document.room;
     let named = |name: &Option<String>, kind: &str, index: usize| match name {
         Some(name) => name.clone(),
@@ -335,7 +372,15 @@ fn sections(document: &Document) -> Vec<Section> {
     let spawns = room.spawns.keys();
     let spawns = spawns.map(|name| (Item::Spawn(name.clone()), name.clone()));
     let events = document.events.iter().enumerate();
-    let events = events.map(|(index, event)| (Item::Event(index), event.name.clone()));
+    let events = events.map(|(index, event)| {
+        // An event that the checks of the editor found something in.
+        let mark = if bad_events.contains(&index) {
+            " (!)"
+        } else {
+            ""
+        };
+        (Item::Event(index), format!("{}{mark}", event.name))
+    });
     vec![
         (None, vec![(Item::Room, "Room".to_owned())]),
         (Some("Doorways"), doorways.collect()),
@@ -348,7 +393,34 @@ fn sections(document: &Document) -> Vec<Section> {
     ]
 }
 
-fn properties(ui: &mut Ui, editor: &mut Editor) {
+/// Each flag and each variable of the game, with each place that reads or writes it.
+fn where_used(ui: &mut Ui, editor: &mut Editor) {
+    let others = editor.others().to_vec();
+    let names = crate::names(&editor.document, &others);
+    for (kind, names) in [("Flags", &names.flags), ("Variables", &names.variables)] {
+        ui.label(kind);
+        for (name, uses) in names {
+            let writes = uses.iter().filter(|place| place.writes).count();
+            let title = format!("{name}: {} reads, {writes} writes", uses.len() - writes);
+            // The name is the identity: the header stays unfolded when a count changes.
+            egui::CollapsingHeader::new(title)
+                .id_salt((kind, name))
+                .show(ui, |ui| {
+                    for place in uses {
+                        let access = if place.writes { "writes" } else { "reads" };
+                        let (room, event, page, text) =
+                            (&place.room, &place.event, place.page, &place.text);
+                        ui.label(format!("{access}: {room}, {event}, page {page}: {text}"));
+                    }
+                });
+        }
+        if names.is_empty() {
+            ui.weak("none");
+        }
+    }
+}
+
+fn properties(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
     if editor.playing() {
         ui.weak("Stop the game to change the room.");
         return;
@@ -362,7 +434,11 @@ fn properties(ui: &mut Ui, editor: &mut Editor) {
     }
     // `Some`: the name of the item was changed, from this one.
     let mut old_name = None;
-    let Some(mut changed) = item_properties(ui, editor, &item, &mut old_name) else {
+    let shown = match &item {
+        Item::Event(index) => event_panel(ui, world, editor, *index, &mut old_name),
+        item => item_properties(ui, editor, item, &mut old_name),
+    };
+    let Some(mut changed) = shown else {
         ui.weak("The room has no such item.");
         return;
     };
@@ -528,42 +604,7 @@ fn item_properties(
             }
             renamed | moved
         }
-        // The event editor is a later stage: the name and the area, and what the
-        // pages are, with no widget.
-        Item::Event(index) => {
-            let event = document.events.get_mut(*index)?;
-            let old = event.name.clone();
-            let mut changed = crate::widgets::text(ui, "name", &mut event.name);
-            if changed {
-                *old_name = Some(Some(old));
-            }
-            let area = &mut event.area;
-            for (label, value, least) in [
-                ("area center (X, Z)", &mut area.center, -100.0),
-                ("area size (X, Z)", &mut area.size, 0.0),
-            ] {
-                ui.horizontal(|ui| {
-                    ui.label(label);
-                    for part in value {
-                        let drag = drag(part).speed(0.01).range(least..=100.0);
-                        changed |= ui.add(drag).changed();
-                    }
-                });
-            }
-            for (number, page) in event.pages.iter().enumerate() {
-                let title = format!("page {number}: {:?}", page.trigger);
-                egui::CollapsingHeader::new(title)
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for condition in &page.conditions {
-                            ui.label(format!("if {condition:?}"));
-                        }
-                        for command in &page.commands {
-                            ui.label(format!("{command:?}"));
-                        }
-                    });
-            }
-            changed
-        }
+        // `event_panel` shows an event.
+        Item::Event(_) => return None,
     })
 }
