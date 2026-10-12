@@ -217,21 +217,23 @@ impl Document {
         ) -> usize {
             let mut count = 0;
             for command in commands {
-                let Some(builtin) = command.get::<Builtin>() else {
-                    continue;
+                // The lists of a command hold commands too.
+                let lists = registry.lists(command);
+                let mut lists: Vec<Vec<Command>> =
+                    lists.into_iter().map(|list| list.1.to_vec()).collect();
+                let inner: usize = lists
+                    .iter_mut()
+                    .map(|list| walk(list, registry, change))
+                    .sum();
+                count += inner;
+                let new = if inner > 0 {
+                    registry.with_lists(command, lists)
+                } else {
+                    let new = command.get::<Builtin>().and_then(change);
+                    new.inspect(|_| count += 1)
+                        .and_then(|new| registry.command(new))
                 };
-                let new = match builtin {
-                    // The two lists of an `If` hold commands too.
-                    Builtin::If(conditions, yes, no) => {
-                        let (mut yes, mut no) = (yes.clone(), no.clone());
-                        let inner =
-                            walk(&mut yes, registry, change) + walk(&mut no, registry, change);
-                        count += inner;
-                        (inner > 0).then(|| Builtin::If(conditions.clone(), yes, no))
-                    }
-                    other => change(other).inspect(|_| count += 1),
-                };
-                if let Some(new) = new.and_then(|new| registry.command(new)) {
+                if let Some(new) = new {
                     *command = new;
                 }
             }
@@ -646,15 +648,15 @@ pub fn spawn_users(
     spawn: &str,
     registry: &CommandRegistry,
 ) -> Vec<String> {
-    fn names(commands: &[Command], target: (&str, &str)) -> bool {
-        commands
-            .iter()
-            .any(|command| match command.get::<Builtin>() {
-                Some(Builtin::Transfer(room, spawn)) => (room.as_str(), spawn.as_str()) == target,
-                Some(Builtin::If(_, yes, no)) => names(yes, target) || names(no, target),
-                _ => false,
-            })
-    }
+    let names = |commands: &[Command], target: (&str, &str)| -> bool {
+        let mut found = false;
+        registry.each_command(commands, &mut |command| {
+            if let Some(Builtin::Transfer(room, spawn)) = command.get() {
+                found |= (room.as_str(), spawn.as_str()) == target;
+            }
+        });
+        found
+    };
     let Some(room_name) = room.file_name().and_then(|name| name.to_str()) else {
         return Vec::new();
     };

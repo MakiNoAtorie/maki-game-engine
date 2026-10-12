@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::check::{CheckContext, Finding};
 use crate::command::{Command, Step};
+use crate::interpreter::{ChoiceBox, Choices};
 use crate::model::{Compare, Condition, all_hold};
-use crate::{GameState, INTERACT, MessageBox};
+use crate::{CHOICE_DOWN, CHOICE_UP, GameState, INTERACT, MessageBox};
 
 /// Text arguments are names: of a flag, a variable, or an entity of the room file
 /// (`name:` of a door, a mover, a light).
@@ -38,6 +39,9 @@ pub enum Builtin {
     LightIntensity(String, f32),
     /// Shows the text until the player presses interact.
     Message(String),
+    /// A question: the text, and for each answer its text and the commands that run
+    /// if the player takes it. `Choice("Open it?", [("Yes", [..]), ("No", [])])`.
+    Choice(String, Vec<(String, Vec<Command>)>),
     /// To black, in this many seconds.
     FadeOut(f32),
     /// Back to the picture.
@@ -100,6 +104,43 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             }
             world.resource_mut::<MessageBox>().0 = None;
         }
+        Builtin::Choice(question, answers) => {
+            if step.start {
+                tracing::debug!(event = step.event, question, "question");
+                world.resource_mut::<MessageBox>().0 = Some(question.clone());
+                world.resource_mut::<ChoiceBox>().0 = Some(Choices {
+                    answers: answers.iter().map(|answer| answer.0.clone()).collect(),
+                    selected: 0,
+                });
+                // Not in this step: the press that started the event, or that
+                // closed a message before, is not the answer.
+                return false;
+            }
+            let actions = world.resource::<FixedActionState>();
+            let pressed = |action| actions.just_pressed(action);
+            let (up, down, take) = (pressed(CHOICE_UP), pressed(CHOICE_DOWN), pressed(INTERACT));
+            let mut choice = world.resource_mut::<ChoiceBox>();
+            let Some(choices) = &mut choice.0 else {
+                // Another module took the question away: the event goes on.
+                return true;
+            };
+            // The mark stops at the first and at the last answer.
+            let last = answers.len().saturating_sub(1);
+            let selected = (choices.selected + down as usize).min(last);
+            let selected = selected.saturating_sub(up as usize);
+            if choices.selected != selected {
+                choices.selected = selected;
+            }
+            if !take {
+                return false;
+            }
+            choice.0 = None;
+            world.resource_mut::<MessageBox>().0 = None;
+            if let Some((answer, commands)) = answers.get(selected) {
+                tracing::debug!(event = step.event, answer, "answer");
+                step.open(commands.clone());
+            }
+        }
         Builtin::FadeOut(seconds) | Builtin::FadeIn(seconds) => {
             let passed = world.resource::<Time>().fixed_delta.as_secs_f32();
             let part = if *seconds > 0.0 {
@@ -140,6 +181,36 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
     true
 }
 
+/// The command lists of a built-in command (`CommandRegistry::add_lists`): the two
+/// of an `If`, and one for each answer of a `Choice`.
+pub(crate) fn lists(command: &Builtin) -> Vec<(String, &[Command])> {
+    match command {
+        Builtin::If(_, then, otherwise) => {
+            vec![(String::new(), then), ("Else".to_owned(), otherwise)]
+        }
+        Builtin::Choice(_, answers) => {
+            let answers = answers.iter();
+            let list = answers.map(|answer| (format!("Answer: {}", answer.0), answer.1.as_slice()));
+            list.collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A built-in command with other lists, in the order of [`lists`].
+pub(crate) fn with_lists(command: &Builtin, lists: Vec<Vec<Command>>) -> Builtin {
+    let mut lists = lists.into_iter();
+    let mut next = || lists.next().unwrap_or_default();
+    match command {
+        Builtin::If(conditions, ..) => Builtin::If(conditions.clone(), next(), next()),
+        Builtin::Choice(question, answers) => {
+            let answers = answers.iter().map(|answer| (answer.0.clone(), next()));
+            Builtin::Choice(question.clone(), answers.collect())
+        }
+        other => other.clone(),
+    }
+}
+
 /// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
 pub(crate) fn row_text(command: &Builtin) -> Option<String> {
     let condition = |condition: &Condition| match condition {
@@ -172,6 +243,7 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Builtin::LightOff(name) => format!("Light {name}: off"),
         Builtin::LightIntensity(name, value) => format!("Light {name}: intensity {value}"),
         Builtin::Message(text) => format!("Message: {text}"),
+        Builtin::Choice(question, _) => format!("Question: {question}"),
         Builtin::FadeOut(seconds) => format!("Fade to black, {seconds} s"),
         Builtin::FadeIn(seconds) => format!("Fade to the picture, {seconds} s"),
         Builtin::Transfer(room, spawn) => format!("Go to {room}, at {spawn}"),
@@ -192,6 +264,7 @@ pub(crate) fn help(name: &str) -> Option<&'static str> {
         "LightOff" => "Turns a light of the room off.",
         "LightIntensity" => "Sets how bright a light of the room is.",
         "Message" => "Shows a text until the player presses interact.",
+        "Choice" => "Asks a question. The commands of the answer that the player takes run.",
         "FadeOut" => "The picture goes to black.",
         "FadeIn" => "The picture comes back from black.",
         "Transfer" => "Goes to a spawn point of a room. The event goes on there.",
@@ -213,6 +286,9 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
             let found = room.doors.iter().any(|door| named(&door.name, name))
                 || room.movers.iter().any(|mover| named(&mover.name, name));
             (!found).then(|| Finding::error(format!("the room has no door or mover `{name}`")))
+        }
+        Builtin::Choice(_, answers) if answers.is_empty() => {
+            Some(Finding::error("a question needs an answer".to_owned()))
         }
         // A warning: a room is made before the room that it leads to.
         Builtin::Transfer(file, spawn) => match context.has_spawn(file, spawn) {

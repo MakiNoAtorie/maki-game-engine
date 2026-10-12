@@ -514,3 +514,78 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
+    let directory = directory("choice");
+    let events = r#"(name: "ask", pages: [(trigger: Autorun, commands: [
+        Message("A door."),
+        Choice("Open it?", [
+            ("Yes", [SetFlag("yes", true)]),
+            ("No", [SetFlag("no", true),
+                OpenDoor("dor")]),
+        ]),
+        SetFlag("after", true)])])"#;
+    // The check of the loader: the line of a command in the list of an answer, and
+    // a question with no answer.
+    let app = game(&directory);
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let path = directory.join("a.ron");
+    let error = maki_scene::check_room(&path, &room(events), validators).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .ends_with(":12: event `ask`: the room has no door or mover `dor`"),
+        "{error}"
+    );
+    let empty = r#"(name: "ask", pages: [(trigger: Autorun, commands: [Choice("?", [])])])"#;
+    let error = maki_scene::check_room(&path, &room(empty), validators).unwrap_err();
+    assert!(
+        error.to_string().contains("a question needs an answer"),
+        "{error}"
+    );
+
+    let events = events.replace("OpenDoor(\"dor\")", "OpenDoor(\"door\")");
+    std::fs::write(&path, room(&events)).unwrap();
+    app.run(|mut app| {
+        let tap = |app: &mut App, key| {
+            app.write_message(RawInput::KeyDown(key))
+                .write_message(RawInput::KeyUp(key));
+            app.advance(STEP);
+        };
+        let choice = |app: &App| app.world().resource::<ChoiceBox>().0.clone();
+        let message = |app: &App| app.world().resource::<MessageBox>().0.clone();
+        steps(&mut app, 3);
+        assert_eq!(message(&app).as_deref(), Some("A door."));
+        assert_eq!(choice(&app), None);
+        // The press that closes the message is not the answer of the question.
+        interact(&mut app);
+        assert_eq!(message(&app).as_deref(), Some("Open it?"));
+        let answers = vec!["Yes".to_owned(), "No".to_owned()];
+        let shown = |selected| {
+            Some(Choices {
+                answers: answers.clone(),
+                selected,
+            })
+        };
+        assert_eq!(choice(&app), shown(0));
+        steps(&mut app, 2);
+        assert!(!flag(&app, "yes") && !flag(&app, "no"));
+        // The mark goes down and up, and stops at the two ends.
+        tap(&mut app, Key::ArrowUp);
+        assert_eq!(choice(&app), shown(0));
+        tap(&mut app, Key::ArrowDown);
+        tap(&mut app, Key::ArrowDown);
+        assert_eq!(choice(&app), shown(1));
+        tap(&mut app, Key::W);
+        assert_eq!(choice(&app), shown(0));
+        tap(&mut app, Key::S);
+        // The answer: its list runs, then the commands after the question.
+        interact(&mut app);
+        assert_eq!((choice(&app), message(&app)), (None, None));
+        steps(&mut app, 20);
+        assert!(flag(&app, "no") && !flag(&app, "yes") && flag(&app, "after"));
+        assert_eq!(running(&app), 0);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}

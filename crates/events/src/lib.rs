@@ -28,13 +28,17 @@ use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
 
 pub use builtin::Builtin;
-pub use check::{CheckContext, Finding, Problem, each_command};
-pub use command::{Command, CommandRegistry, CommandSet, Step};
-pub use interpreter::{EventRunner, MessageBox, RunningEvent, run_events};
+pub use check::{CheckContext, Finding, Problem};
+pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, Step};
+pub use interpreter::{ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, run_events};
 pub use model::{Area, Compare, Condition, EventDef, Page, Trigger, active_page, all_hold};
 
-/// Starts the event that the player faces, and closes a message.
+/// Starts the event that the player faces, closes a message, and takes the marked
+/// answer of a question.
 pub const INTERACT: Action = Action("interact");
+/// Move the mark of a question (`Choice`) to the answer above or below.
+pub const CHOICE_UP: Action = Action("choice_up");
+pub const CHOICE_DOWN: Action = Action("choice_down");
 
 /// What the player has done, as flags (yes or no) and variables (whole numbers), each
 /// with a name. Events set them and have them as conditions. A name that was never
@@ -74,16 +78,22 @@ impl Module for EventsModule {
         registry.add(builtin::run);
         registry.add_check(builtin::check);
         registry.add_texts(builtin::row_text, builtin::help);
+        registry.add_lists(builtin::lists, builtin::with_lists);
         add_bindings(
             app,
             &[
                 (Key::Z, INTERACT, "Interact"),
                 (Key::Enter, INTERACT, "Interact"),
+                (Key::ArrowUp, CHOICE_UP, "Question: the answer above"),
+                (Key::W, CHOICE_UP, "Question: the answer above"),
+                (Key::ArrowDown, CHOICE_DOWN, "Question: the answer below"),
+                (Key::S, CHOICE_DOWN, "Question: the answer below"),
             ],
         );
         app.init_resource::<GameState>()
             .init_resource::<EventRunner>()
             .init_resource::<MessageBox>()
+            .init_resource::<ChoiceBox>()
             .init_resource::<RoomValidators>();
         // A room with a bad event is not loaded. The check has the registry, with
         // the commands and the checks that other modules add later.

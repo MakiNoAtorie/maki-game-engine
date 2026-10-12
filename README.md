@@ -49,7 +49,7 @@ The picture has a fixed size (`width` and `height` of `[window]`) and is at the 
 | Bench | Starts a benchmark run (frames, script, light, picture dump) in the game that runs. Writes `bench.csv`; the game goes on. For numbers to compare between runs, use the command line |
 | Stages | Each room file that the game can show: the files in the directory of the start room, and `target/bench/<scenario>/room.ron` (the generated scenes; `python tools/bench.py run` makes them). A click loads the room. The config stays: set the render size or the sample count of a scenario in the Debug panel |
 | Game state | Flags and variables of the events, with a field to add one; the events that run |
-| Message | The text of a `Message` command. A window on top of the picture, at its bottom (`maki_ui::add_window`). Open only while a message waits |
+| Text box | Not a section: the text of a `Message` command, or the question and the answers of a `Choice`, in a box at the bottom of the picture (`crates/ui/src/events.rs`), with the keys that go on. Open only while a text waits |
 
 While the mouse pointer is on a panel, the mouse (buttons, wheel, motion) starts no action. While a text field of a panel has the keyboard focus, keys start no action.
 
@@ -320,13 +320,14 @@ An event has pages. A page has conditions, a trigger, and commands. The active p
 | `OpenDoor("name")`, `CloseDoor("name")` | Send a door or a mover to its other pose, and wait until it is there |
 | `LightOn("name")`, `LightOff("name")`, `LightIntensity("name", 4.0)` | Change a light of the room |
 | `Message("text")` | Show the text until the player presses interact |
+| `Choice("question", [("Yes", [...]), ("No", [...])])` | Show the question and the answers. The player moves the mark (up, down) and presses interact; the list of that answer runs, then the commands after the question |
 | `FadeOut(0.4)`, `FadeIn(0.4)` | To black and back, in seconds |
 | `Transfer("room_b.ron", "west")` | To a spawn point of another room. The event goes on in the new room |
 | `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
 
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.
 
-The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/src/shake.rs` is the example.
+The commands are an open set. A module writes its commands as one enum with the serde derives and adds it, with the function that runs one step of a command, to `maki_events::CommandRegistry` in `Module::build`. The room file then names the variants as it names the built-in ones; a name that no module added, or a bad argument, is an error with the file and the line when the room loads. The built-in commands are added the same way (`crates/events/src/builtin.rs`). `game/src/shake.rs` is the example. A command that holds lists of commands (`If`, `Choice`) tells so with `CommandRegistry::add_lists`: the checks of the loader and the event panel of the editor then walk and show the lists of each module in the same way, with the label of each list as a row (`Else`, `Answer: Yes`).
 
 The loader checks the events of a room file (`crates/events/src/check.rs`). An error has the file and the line of the command, and the room does not load: a light, a door, or a mover that the room does not have, and two events with one name. A warning is logged, and the room loads: a `Transfer` to a room file or a spawn point that does not exist. The commands of a page after a `Transfer` run in the other room and are not checked. A module adds the check of its own commands with `CommandRegistry::add_check`.
 
@@ -346,7 +347,7 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 | `crates/gameplay` | Gameplay that games of this kind share, each a module with its own settings: camera that follows the player, walking controller, start room and reload, move actions and quit, debug control of a light and of the movers |
 | `crates/gpu` | Vulkan backend (resources, images with mip levels, bindless set, acceleration structures, compute dispatch, 2D draw calls); the only crate that shows Vulkan types |
 | `crates/render` | Render world, frame graph, render passes (path tracer, denoiser, anti-aliasing, bloom, tonemap), extraction of camera, lights, and mesh instances, acceleration structures, motion vectors |
-| `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the message window and the game state panel of the events |
+| `crates/ui` | egui integration, panel registry, the overlay render pass; the help, stats, and renderer panels; the text box of the game (message, question) and the game state panel of the events |
 | `crates/devtools` | Tools that a game opts into: benchmark runner with its command line options and panel, list of the room files, panel of the gameplay settings |
 | `crates/editor` | The room editor, behind the feature `editor` of the game: the document (room, events, comments), the writer of room files, the free camera, the outliner and the property panel, the pick, the gizmo, the marks on the picture, add, delete, duplicate, undo and redo, the event panel with its checks and the test of a page, play and stop |
 | `game` | The binary: the module list, the benchmark scripts, the `ShakeCamera` command. The rooms are in `game/assets/rooms` |

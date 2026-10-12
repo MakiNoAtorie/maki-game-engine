@@ -452,9 +452,10 @@ fn go_to_problem(editor: &mut Editor, problem: &Problem) {
         return;
     };
     let commands = &editor.document.events[problem.event].pages[*page].commands;
-    let rows = crate::events::rows(commands);
+    let registry = &editor.registry;
+    let rows = crate::events::rows(commands, registry);
     let of_command = |row: &crate::Row| {
-        row.kind == crate::RowKind::Command && row.command(commands) == Some(command)
+        row.kind == crate::RowKind::Command && row.command(commands, registry) == Some(command)
     };
     let row = rows.into_iter().map(|row| row.0).find(of_command);
     editor.event_ui.go_to(problem.event, *page, row);
@@ -587,7 +588,7 @@ fn sections(document: &Document) -> Vec<Section> {
 /// it. A place in the open room is a link: a click goes to the event and its page.
 fn where_used(ui: &mut Ui, editor: &mut Editor) {
     let others = editor.others().to_vec();
-    let names = crate::names(&editor.document, &others);
+    let names = crate::names(&editor.document, &others, &editor.registry);
     let own = crate::events::file_name(&editor.document);
     let mut go_to = None;
     for (kind, names) in [("Flags", &names.flags), ("Variables", &names.variables)] {

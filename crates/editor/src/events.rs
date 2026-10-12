@@ -20,136 +20,144 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use maki_events::{
-    Builtin, CheckContext, Command, CommandRegistry, Condition, EventDef, Problem, each_command,
-};
+use maki_events::{Builtin, CheckContext, Command, CommandRegistry, EventDef, Problem};
 
 use crate::Document;
 
-/// A list of commands in a page: for each `If` on the way down from the list of the
-/// page, its index and its branch (true: the second list, "else").
-pub type ListPath = Vec<(usize, bool)>;
+/// A list of commands in a page: for each command with lists on the way down from
+/// the list of the page, its index and the index of its list (`CommandRegistry::lists`:
+/// 1 is the "else" of an `If`, or the second answer of a question).
+pub type ListPath = Vec<(usize, usize)>;
 
 /// A row of the command list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Row {
     pub list: ListPath,
-    /// In the list. For `Else` and `End`: the index of their `If`.
+    /// In the list. For `Branch` and `End`: the index of their command.
     pub index: usize,
     pub kind: RowKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowKind {
-    /// A command. An `If` is the row of its first line.
+    /// A command. A command with lists is the row of its first line.
     #[default]
     Command,
-    /// The line between the two lists of an `If`.
-    Else,
-    /// The line after an `If`.
+    /// The line before a list of a command, with the label of the list: `Else`, or
+    /// an answer of a question. The number is the index of the list.
+    Branch(usize),
+    /// The line after a command with lists.
     End,
 }
 
 impl Row {
     /// Where a new command goes when this row is selected: after a command, at the
-    /// start of the first list of an `If`, at the start of its second list for
-    /// `Else`, and after the `If` for `End`.
-    pub fn insert_place(&self, commands: &[Command]) -> (ListPath, usize) {
-        let is_if = matches!(
-            self.command(commands).and_then(|c| c.get()),
-            Some(Builtin::If(..))
-        );
-        let branch = |second: bool| {
+    /// start of the first list of a command with lists, at the start of its list
+    /// for a `Branch`, and after the command for `End`.
+    pub fn insert_place(
+        &self,
+        commands: &[Command],
+        registry: &CommandRegistry,
+    ) -> (ListPath, usize) {
+        let command = self.command(commands, registry);
+        let has_lists = command.is_some_and(|command| !registry.lists(command).is_empty());
+        let branch = |list_index: usize| {
             let mut list = self.list.clone();
-            list.push((self.index, second));
+            list.push((self.index, list_index));
             (list, 0)
         };
         match self.kind {
-            RowKind::Command if is_if => branch(false),
-            RowKind::Else => branch(true),
+            RowKind::Command if has_lists => branch(0),
+            RowKind::Branch(list) => branch(list),
             RowKind::Command | RowKind::End => (self.list.clone(), self.index + 1),
         }
     }
 
-    /// The command of the row. For `Else` and `End`: their `If`.
-    pub fn command<'a>(&self, commands: &'a [Command]) -> Option<&'a Command> {
-        list(commands, &self.list)?.get(self.index)
+    /// The command of the row. For `Branch` and `End`: their command.
+    pub fn command<'a>(
+        &self,
+        commands: &'a [Command],
+        registry: &CommandRegistry,
+    ) -> Option<&'a Command> {
+        list(commands, &self.list, registry)?.get(self.index)
     }
 }
 
-/// The list at a path. `None`: the path does not lead to an `If`.
-pub fn list<'a>(commands: &'a [Command], path: &[(usize, bool)]) -> Option<&'a [Command]> {
-    let Some(((index, second), rest)) = path.split_first() else {
+/// The list at a path. `None`: the path does not lead to a list of a command.
+pub fn list<'a>(
+    commands: &'a [Command],
+    path: &[(usize, usize)],
+    registry: &CommandRegistry,
+) -> Option<&'a [Command]> {
+    let Some(((index, list_index), rest)) = path.split_first() else {
         return Some(commands);
     };
-    match commands.get(*index)?.get::<Builtin>()? {
-        Builtin::If(_, yes, no) => list(if *second { no } else { yes }, rest),
-        _ => None,
-    }
+    let lists = registry.lists(commands.get(*index)?);
+    list(lists.get(*list_index)?.1, rest, registry)
 }
 
-/// Changes the list at a path, and makes each `If` on the way again with its new
-/// list. `None`, with no change: the path does not lead to an `If`.
+/// Changes the list at a path, and makes each command on the way again with its new
+/// list (`CommandRegistry::with_lists`). `None`, with no change: the path does not
+/// lead to a list of a command.
 pub fn edit_list<R>(
     commands: &mut Vec<Command>,
-    path: &[(usize, bool)],
+    path: &[(usize, usize)],
     registry: &CommandRegistry,
     change: impl FnOnce(&mut Vec<Command>) -> R,
 ) -> Option<R> {
-    let Some(((index, second), rest)) = path.split_first() else {
+    let Some(((index, list_index), rest)) = path.split_first() else {
         return Some(change(commands));
     };
-    let Builtin::If(conditions, yes, no) = commands.get(*index)?.get::<Builtin>()? else {
-        return None;
-    };
-    let (conditions, mut yes, mut no) = (conditions.clone(), yes.clone(), no.clone());
-    let result = edit_list(
-        if *second { &mut no } else { &mut yes },
-        rest,
-        registry,
-        change,
-    )?;
-    commands[*index] = registry.command(Builtin::If(conditions, yes, no))?;
+    let command = commands.get(*index)?;
+    let lists = registry.lists(command);
+    let mut lists: Vec<Vec<Command>> = lists.into_iter().map(|list| list.1.to_vec()).collect();
+    let result = edit_list(lists.get_mut(*list_index)?, rest, registry, change)?;
+    commands[*index] = registry.with_lists(command, lists)?;
     Some(result)
 }
 
-/// The first line of an `If`: `If Flag("open") and Variable("count", Equals, 3)`.
-pub fn if_text(conditions: &[Condition]) -> String {
-    let texts: Vec<String> = conditions.iter().map(|c| format!("{c:?}")).collect();
-    if texts.is_empty() {
-        return "If (no condition: always)".to_owned();
-    }
-    format!("If {}", texts.join(" and "))
+/// The text of a command in a list of rows or of uses: the line that its module
+/// gives for a reader, else the command as a room file has it.
+pub fn command_text(command: &Command, registry: &CommandRegistry) -> String {
+    let text = registry.row_text(command);
+    text.unwrap_or_else(|| format!("{command:?}"))
 }
 
-/// The rows of a command list, with the depth of each (the number of `If` around it)
-/// and its text.
-pub fn rows(commands: &[Command]) -> Vec<(Row, usize, String)> {
-    fn walk(commands: &[Command], path: &ListPath, out: &mut Vec<(Row, usize, String)>) {
+/// The rows of a command list, with the depth of each (the number of commands with
+/// lists around it) and its text.
+pub fn rows(commands: &[Command], registry: &CommandRegistry) -> Vec<(Row, usize, String)> {
+    fn walk(
+        commands: &[Command],
+        path: &ListPath,
+        registry: &CommandRegistry,
+        out: &mut Vec<(Row, usize, String)>,
+    ) {
         for (index, command) in commands.iter().enumerate() {
             let row = |kind| Row {
                 list: path.clone(),
                 index,
                 kind,
             };
-            let Some(Builtin::If(conditions, yes, no)) = command.get::<Builtin>() else {
-                out.push((row(RowKind::Command), path.len(), format!("{command:?}")));
+            let text = command_text(command, registry);
+            out.push((row(RowKind::Command), path.len(), text));
+            let lists = registry.lists(command);
+            if lists.is_empty() {
                 continue;
-            };
-            out.push((row(RowKind::Command), path.len(), if_text(conditions)));
-            for (second, branch) in [(false, yes), (true, no)] {
-                if second {
-                    out.push((row(RowKind::Else), path.len(), "Else".to_owned()));
+            }
+            for (list_index, (label, list)) in lists.into_iter().enumerate() {
+                // An empty label: the list starts with no line (the first of an `If`).
+                if !label.is_empty() {
+                    out.push((row(RowKind::Branch(list_index)), path.len(), label));
                 }
                 let mut inner = path.clone();
-                inner.push((index, second));
-                walk(branch, &inner, out);
+                inner.push((index, list_index));
+                walk(list, &inner, registry, out);
             }
             out.push((row(RowKind::End), path.len(), "End".to_owned()));
         }
     }
     let mut out = Vec::new();
-    walk(commands, &Vec::new(), &mut out);
+    walk(commands, &Vec::new(), registry, &mut out);
     out
 }
 
@@ -219,7 +227,7 @@ impl Names {
         names.map(|(name, _)| name.clone()).collect()
     }
 
-    fn add(&mut self, room: &str, events: &[EventDef]) {
+    fn add(&mut self, room: &str, events: &[EventDef], registry: &CommandRegistry) {
         for event in events {
             for (page_index, page) in event.pages.iter().enumerate() {
                 let mut place = |variable: bool, name: &str, text: String, writes: bool| {
@@ -240,11 +248,12 @@ impl Names {
                     let text = format!("if {condition:?}");
                     place(condition.is_variable(), condition.name(), text, false);
                 }
-                each_command(&page.commands, &mut |command| match command.get() {
+                registry.each_command(&page.commands, &mut |command| match command.get() {
                     Some(Builtin::If(conditions, ..)) => {
                         for condition in conditions {
                             let variable = condition.is_variable();
-                            place(variable, condition.name(), if_text(conditions), false);
+                            let text = command_text(command, registry);
+                            place(variable, condition.name(), text, false);
                         }
                     }
                     Some(Builtin::SetFlag(name, _)) => {
@@ -311,11 +320,11 @@ pub fn file_name(document: &Document) -> String {
 }
 
 /// The names that the open room and the other rooms use.
-pub fn names(document: &Document, others: &[OtherRoom]) -> Names {
+pub fn names(document: &Document, others: &[OtherRoom], registry: &CommandRegistry) -> Names {
     let mut names = Names::default();
-    names.add(&file_name(document), &document.events);
+    names.add(&file_name(document), &document.events, registry);
     for room in others {
-        names.add(&room.file, &room.events);
+        names.add(&room.file, &room.events, registry);
     }
     names
 }
@@ -364,15 +373,15 @@ mod tests {
         Document::parse(Path::new(name), &text, registry).unwrap()
     }
 
-    fn texts(commands: &[Command]) -> Vec<String> {
-        rows(commands)
+    fn texts(commands: &[Command], registry: &CommandRegistry) -> Vec<String> {
+        rows(commands, registry)
             .into_iter()
             .map(|(_, depth, text)| format!("{}{text}", "  ".repeat(depth)))
             .collect()
     }
 
     #[test]
-    fn the_rows_of_a_page_show_the_lists_of_an_if_and_a_change_in_them_makes_the_if_again() {
+    fn the_rows_of_a_page_show_the_lists_of_a_command_and_a_change_in_them_makes_it_again() {
         let registry = registry();
         let event = r#"(name: "door", pages: [(trigger: Interact, commands: [
             SetFlag("seen", true),
@@ -381,58 +390,59 @@ mod tests {
         ])])"#;
         let mut document = document(&registry, "a.ron", event);
         let commands = &mut document.events[0].pages[0].commands;
+        let texts = |commands: &[Command]| texts(commands, &registry);
         assert_eq!(
             texts(commands),
             [
-                r#"SetFlag("seen", true)"#,
-                r#"If Flag("open")"#,
-                r#"  OpenDoor("door")"#,
-                r#"  If Flag("late") and Variable("turns", Less, 3)"#,
+                "Flag seen: set",
+                "If open",
+                "  Open door",
+                "  If late and turns < 3",
                 "  Else",
-                "    Wait(1.0)",
+                "    Wait 1 s",
                 "  End",
                 "Else",
-                r#"  Message("Locked.")"#,
+                "  Message: Locked.",
                 "End",
-                "FadeIn(0.5)",
+                "Fade to the picture, 0.5 s",
             ]
         );
-        let all = rows(commands);
+        let all = rows(commands, &registry);
         let row = |text: &str| all.iter().find(|row| row.2 == text).unwrap().0.clone();
 
         // A new command after `Wait`, in the second list of the inner `If`.
-        let wait = row("Wait(1.0)");
-        assert_eq!(wait.list, [(1, false), (1, true)]);
-        let (list, index) = wait.insert_place(commands);
+        let wait = row("Wait 1 s");
+        assert_eq!(wait.list, [(1, 0), (1, 1)]);
+        let (list, index) = wait.insert_place(commands, &registry);
         let light = registry
             .command(Builtin::LightOff("lamp".to_owned()))
             .unwrap();
         edit_list(commands, &list, &registry, |list| list.insert(index, light)).unwrap();
-        assert_eq!(texts(commands)[6], r#"    LightOff("lamp")"#);
+        assert_eq!(texts(commands)[6], "    Light lamp: off");
         // The first line of an `If`: into its first list. `Else`: into the second.
-        let inner = row(r#"If Flag("late") and Variable("turns", Less, 3)"#);
+        let inner = row("If late and turns < 3");
         assert_eq!(
-            inner.insert_place(commands),
-            (vec![(1, false), (1, false)], 0)
+            inner.insert_place(commands, &registry),
+            (vec![(1, 0), (1, 0)], 0)
         );
         let outer_else = all
             .iter()
-            .find(|row| row.0.kind == RowKind::Else && row.1 == 0)
+            .find(|row| row.0.kind == RowKind::Branch(1) && row.1 == 0)
             .unwrap();
-        assert_eq!(outer_else.0.insert_place(commands), (vec![(1, true)], 0));
+        assert_eq!(
+            outer_else.0.insert_place(commands, &registry),
+            (vec![(1, 1)], 0)
+        );
 
         // The first command moves into the first list of the outer `If`: the `If`
         // is at index 0 then.
         assert!(move_command(
             commands,
-            &row(r#"SetFlag("seen", true)"#),
-            (vec![(1, false)], 0),
+            &row("Flag seen: set"),
+            (vec![(1, 0)], 0),
             &registry
         ));
-        assert_eq!(
-            texts(commands)[..2],
-            [r#"If Flag("open")"#, r#"  SetFlag("seen", true)"#]
-        );
+        assert_eq!(texts(commands)[..2], ["If open", "  Flag seen: set"]);
         // An `If` does not go into itself.
         let outer = Row {
             list: Vec::new(),
@@ -443,12 +453,42 @@ mod tests {
         assert!(!move_command(
             commands,
             &outer,
-            (vec![(0, true)], 0),
+            (vec![(0, 1)], 0),
             &registry
         ));
         assert_eq!(texts(commands), before);
+
+        // A question: one list for each answer, with the answer as the label of its
+        // row. A new command goes into the list of the selected label row.
+        let answer = |text: &str| (text.to_owned(), Vec::new());
+        let question = Builtin::Choice("Open it?".to_owned(), vec![answer("Yes"), answer("No")]);
+        commands.push(registry.command(question).unwrap());
+        let all = rows(commands, &registry);
+        let no = all.iter().find(|row| row.2 == "Answer: No").unwrap();
+        assert_eq!(no.0.kind, RowKind::Branch(1));
+        let (list, index) = no.0.insert_place(commands, &registry);
+        assert_eq!((list.clone(), index), (vec![(2, 1)], 0));
+        let message = registry.command(Builtin::Message("Then not.".to_owned()));
+        edit_list(commands, &list, &registry, |list| {
+            list.insert(index, message.unwrap())
+        })
+        .unwrap();
+        let last = texts(commands);
+        assert_eq!(
+            last[last.len() - 5..],
+            [
+                "Question: Open it?",
+                "Answer: Yes",
+                "Answer: No",
+                "  Message: Then not.",
+                "End",
+            ]
+        );
         // What was changed is written and read as the same commands.
         let text = document.text();
+        assert!(
+            text.contains(r#"Choice("Open it?", [("Yes", []), ("No", [Message("Then not.")])])"#)
+        );
         assert_eq!(registry.parse_events(&text).unwrap(), document.events);
     }
 
@@ -484,7 +524,7 @@ mod tests {
             ["b.ron"]
         );
 
-        let names = names(&document, &others);
+        let names = names(&document, &others, &registry);
         assert_eq!(names.flags.keys().collect::<Vec<_>>(), ["power_off", "x"]);
         let uses: Vec<_> = names.flags["power_off"]
             .iter()

@@ -37,6 +37,18 @@ const MAX_COMMANDS_PER_STEP: usize = 256;
 #[derive(Resource, Debug, Clone, PartialEq, Default)]
 pub struct MessageBox(pub Option<String>);
 
+/// The answers of a question that the game shows under the message. `None`: no
+/// question. The command `Choice` writes it and waits; the game draws it.
+#[derive(Resource, Debug, Clone, PartialEq, Default)]
+pub struct ChoiceBox(pub Option<Choices>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choices {
+    pub answers: Vec<String>,
+    /// The index of the answer that has the mark.
+    pub selected: usize,
+}
+
 /// An event whose commands run.
 #[derive(Debug)]
 pub struct RunningEvent {
@@ -302,11 +314,16 @@ pub(crate) fn load_room_events(
 
 /// Runs in `ResetPlay`: no event runs, no message shows. The flags and variables
 /// stay: see `maki_core::ResetPlay`.
-pub(crate) fn reset_play(mut runner: ResMut<EventRunner>, mut message: ResMut<MessageBox>) {
+pub(crate) fn reset_play(
+    mut runner: ResMut<EventRunner>,
+    mut message: ResMut<MessageBox>,
+    mut choice: ResMut<ChoiceBox>,
+) {
     use bevy_ecs::change_detection::DetectChangesMut;
 
     *runner = EventRunner::default();
     message.set_if_neq(MessageBox(None));
+    choice.set_if_neq(ChoiceBox(None));
 }
 
 /// Runs in `FixedUpdate`: one step of the interpreter.

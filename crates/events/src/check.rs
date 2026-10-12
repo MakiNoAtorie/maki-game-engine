@@ -73,18 +73,6 @@ pub struct Problem {
     pub text: String,
 }
 
-/// Calls `visit` for each command of a list, also in the lists of an `If`, in the
-/// order of the text of a room file.
-pub fn each_command(commands: &[Command], visit: &mut dyn FnMut(&Command)) {
-    for command in commands {
-        visit(command);
-        if let Some(Builtin::If(_, yes, no)) = command.get() {
-            each_command(yes, visit);
-            each_command(no, visit);
-        }
-    }
-}
-
 fn is_transfer(command: &Command) -> bool {
     matches!(command.get(), Some(Builtin::Transfer(..)))
 }
@@ -108,7 +96,7 @@ impl CommandRegistry {
                 // The commands after a `Transfer` run in another room: its names
                 // are not known here.
                 let mut left = false;
-                each_command(&list.commands, &mut |command| {
+                self.each_command(&list.commands, &mut |command| {
                     if left {
                         return;
                     }

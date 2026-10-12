@@ -158,7 +158,22 @@ struct Set {
     check: Option<Checker>,
     /// The texts of the module for a tool (`add_texts`).
     texts: Option<Texts>,
+    /// The command lists that the commands of the enum hold (`add_lists`).
+    lists: Option<Lists>,
 }
+
+/// The command lists in a command, with the label of each, and the command made
+/// again with other lists.
+#[derive(Clone)]
+struct Lists {
+    get: GetLists,
+    set: SetLists,
+}
+
+/// The command lists of a command, each with the text of the line before it.
+pub type LabeledLists<'a> = Vec<(String, &'a [Command])>;
+type GetLists = Arc<dyn for<'a> Fn(&'a dyn Any) -> LabeledLists<'a> + Send + Sync>;
+type SetLists = Arc<dyn Fn(&dyn Any, Vec<Vec<Command>>) -> Arc<dyn AnyCommand> + Send + Sync>;
 
 /// A command of the enum as a line for a reader. `None`: the module gives none.
 type RowText = Arc<dyn Fn(&dyn Any) -> Option<String> + Send + Sync>;
@@ -217,7 +232,73 @@ impl CommandRegistry {
             }),
             check: None,
             texts: None,
+            lists: None,
         });
+    }
+
+    /// Tells which command lists the commands of the enum `T` hold: an `If` has
+    /// two, a question one for each answer. Code that walks or changes all commands
+    /// of an event (the checks, a tool) finds them with this, and knows no command
+    /// of a module. Call after `add::<T>`.
+    ///
+    /// `get`: the lists of a command, each with the text of the line before it in a
+    /// list of rows (`Else`); an empty text is no line. No list: an empty `Vec`.
+    /// `set`: the same command with these lists, in the order of `get`.
+    ///
+    /// Panics if the enum `T` was not added.
+    pub fn add_lists<T: CommandSet>(
+        &self,
+        get: for<'a> fn(&'a T) -> LabeledLists<'a>,
+        set: fn(&T, Vec<Vec<Command>>) -> T,
+    ) {
+        let mut sets = self.0.write().expect("no writer panics");
+        let found = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
+        let found = found.expect("add the commands before their lists");
+        fn of<T: CommandSet>(command: &dyn Any) -> &T {
+            command.downcast_ref().expect("a value of this enum")
+        }
+        found.lists = Some(Lists {
+            get: Arc::new(move |command| get(of::<T>(command))),
+            set: Arc::new(move |command, lists| Arc::new(set(of::<T>(command), lists))),
+        });
+    }
+
+    fn lists_of(&self, command: &Command) -> Option<(Lists, Handler)> {
+        let value = command.as_any();
+        let sets = self.0.read().expect("no writer panics");
+        let set = sets.iter().find(|set| set.type_id == value.type_id())?;
+        Some((set.lists.clone()?, set.run.clone()))
+    }
+
+    /// The command lists in a command, each with the text of the line before it.
+    /// Empty: the command holds no list.
+    pub fn lists<'a>(&self, command: &'a Command) -> LabeledLists<'a> {
+        match self.lists_of(command) {
+            Some((lists, _)) => (lists.get)(command.as_any()),
+            None => Vec::new(),
+        }
+    }
+
+    /// A command with other lists, in the order of [`Self::lists`]. `None`: the
+    /// command holds no list.
+    pub fn with_lists(&self, command: &Command, lists: Vec<Vec<Command>>) -> Option<Command> {
+        let (of_set, run) = self.lists_of(command)?;
+        Some(Command {
+            value: (of_set.set)(command.as_any(), lists),
+            run,
+            order: 0,
+        })
+    }
+
+    /// Calls `visit` for each command of a list, and for each command in a list of
+    /// a command, in the order of the text of a room file.
+    pub fn each_command(&self, commands: &[Command], visit: &mut dyn FnMut(&Command)) {
+        for command in commands {
+            visit(command);
+            for (_, list) in self.lists(command) {
+                self.each_command(list, visit);
+            }
+        }
     }
 
     /// Gives a tool (an editor) the texts of the commands of the enum `T`. `row`:

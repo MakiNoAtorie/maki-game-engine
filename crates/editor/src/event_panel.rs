@@ -112,7 +112,7 @@ pub(crate) fn row_command(
 ) -> bool {
     let selected = ui.selected();
     let copies = |range: &std::ops::RangeInclusive<usize>, path: &ListPath| -> Vec<Command> {
-        let list = crate::events::list(commands, path).unwrap_or_default();
+        let list = crate::events::list(commands, path, registry).unwrap_or_default();
         let rows = list.iter().skip(*range.start());
         rows.take(range.end() - range.start() + 1)
             .cloned()
@@ -122,7 +122,7 @@ pub(crate) fn row_command(
     // an `Else` or an `End`, or at the end of the page.
     let place = |ui: &EventUi, commands: &[Command]| match (&selected, &ui.row) {
         (Some((path, range)), _) => (path.clone(), range.end() + 1),
-        (None, Some(row)) => row.insert_place(commands),
+        (None, Some(row)) => row.insert_place(commands, registry),
         (None, None) => (Vec::new(), commands.len()),
     };
     let new = match command {
@@ -443,6 +443,38 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
             changed |= pick(ui, "spawn", spawn, spawns);
             changed
         }
+        Builtin::Choice(question, answers) => {
+            ui.label("question");
+            let field = egui::TextEdit::multiline(question)
+                .desired_rows(2)
+                .desired_width(f32::INFINITY);
+            let mut changed = ui.add(field).changed();
+            // The commands of an answer are rows of the list, under its label.
+            ui.label("answers");
+            let mut removed = None;
+            for (index, (answer, _)) in answers.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("x")
+                        .on_hover_text("Remove the answer, with its commands")
+                        .clicked()
+                    {
+                        removed = Some(index);
+                    }
+                    let field = egui::TextEdit::singleline(answer).desired_width(f32::INFINITY);
+                    changed |= ui.add(field).changed();
+                });
+            }
+            if let Some(index) = removed {
+                answers.remove(index);
+                changed = true;
+            }
+            if ui.button("Add an answer").clicked() {
+                answers.push(("Answer".to_owned(), Vec::new()));
+                changed = true;
+            }
+            changed
+        }
     }
 }
 
@@ -460,6 +492,10 @@ fn new_command(name: &str, lists: &Lists, registry: &CommandRegistry) -> Option<
         "If" => {
             let flag = Condition::Flag(first(&lists.flags, "flag"));
             Builtin::If(vec![flag], Vec::new(), Vec::new())
+        }
+        "Choice" => {
+            let answer = |text: &str| (text.to_owned(), Vec::new());
+            Builtin::Choice("Question?".to_owned(), vec![answer("Yes"), answer("No")])
         }
         "OpenDoor" => Builtin::OpenDoor(first(&lists.movers, "")),
         "CloseDoor" => Builtin::CloseDoor(first(&lists.movers, "")),
@@ -556,7 +592,7 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
 fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>) {
     let registry = editor.registry.clone();
     let others = editor.others().to_vec();
-    let used = names(&editor.document, &others);
+    let used = names(&editor.document, &others, &registry);
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
     problems.retain(|problem| problem.event == index);
     let room = &editor.document.room;
@@ -841,7 +877,7 @@ fn command_rows(
     page_index: usize,
 ) -> bool {
     let list = &mut page.commands;
-    let all = rows(list);
+    let all = rows(list, registry);
     // A row that is not there after a change of the list is not selected.
     if event_ui
         .row
@@ -853,9 +889,9 @@ fn command_rows(
     let selected = event_ui.row.clone();
     let selected_command = selected.as_ref().filter(|row| row.kind == RowKind::Command);
     // Where "Add" and "Paste" put a command: after the selected row, or at the end.
-    let place = selected
-        .as_ref()
-        .map_or((Vec::new(), list.len()), |row| row.insert_place(list));
+    let place = selected.as_ref().map_or((Vec::new(), list.len()), |row| {
+        row.insert_place(list, registry)
+    });
     let mut changed = false;
     let mut insert: Vec<Command> = Vec::new();
     let mut row_command = None;
@@ -916,7 +952,7 @@ fn command_rows(
             // page have the same problem.
             let command = Some(row)
                 .filter(|row| row.kind == RowKind::Command)
-                .and_then(|row| row.command(list));
+                .and_then(|row| row.command(list, registry));
             let bad = problems.iter().find(|problem| {
                 let of_problem = problem.command.as_ref();
                 command.is_some_and(|command| of_problem == Some(&(page_index, command.clone())))
@@ -982,7 +1018,7 @@ fn command_rows(
         // Onto a command: before it. Onto `Else` or `End`: where a new command goes.
         let to = match to.kind {
             RowKind::Command => (to.list.clone(), to.index),
-            _ => to.insert_place(list),
+            _ => to.insert_place(list, registry),
         };
         if move_command(list, &from, to, registry) {
             event_ui.row = None;
@@ -1032,7 +1068,7 @@ fn command_arguments(
         .row
         .clone()
         .filter(|row| row.kind == RowKind::Command)
-        && let Some(command) = row.command(list).cloned()
+        && let Some(command) = row.command(list, registry).cloned()
     {
         let new = if let Some(mut builtin) = command.get::<Builtin>().cloned() {
             arguments(ui, &mut builtin, lists)
