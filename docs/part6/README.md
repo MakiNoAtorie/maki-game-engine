@@ -1,6 +1,6 @@
 # Part 6: plan (draft)
 
-State: in discussion with the owner. Stage 41 (the spike) is done. This file holds what is decided.
+State: in discussion with the owner. Stages 41 to 46 are done; the object model is planned as stages 47 to 53 (2.14). This file holds what is decided.
 
 ## 1. Direction
 
@@ -240,6 +240,28 @@ The default layout, and where each later panel goes:
 
 Docks: the crate `egui_dock`. Not in the shell stage: a tab with no content, a panel in a second window of the OS, the log panel.
 
+### 2.14 How the object model is built (owner, 2026-10-12)
+
+The model is 2.1. This is how it is built, from what Unreal, Unity, Godot, and Bevy have in common.
+
+What they have in common:
+
+- One description of a field, many users: the inspector, the file, the undo, and the changes of a prefab instance read the same list (`UPROPERTY`, the serialized fields of Unity, `@export`, `Reflect`).
+- The editor changes the saved form, not the live objects. Play makes a copy. The editor has this since part 5 (the document, then the world).
+- A component that the code does not have any more stays as data ("missing script" of Unity). A script DLL that does not build must not lose the values of a room.
+- An instance of a prefab stores only what it changed.
+
+The build:
+
+- An object is an entity of `bevy_ecs`, and a component of an object is a component of `bevy_ecs`. No second layer at run time.
+- In the document and in the file, a component is its name and a tree of values (field name to value), not a Rust type. The undo, the changes of a prefab instance, and a component with no code are operations on the tree, written one time.
+- A component type registers three things: its name, its table of fields, and the function that builds it from the tree.
+- The table of fields comes from a derive of the engine, on top of `serde`: a proc-macro crate of the workspace (`syn` and `quote` are in the tree). A field has a kind (number, switch, text, vector, color, choice, file, object, list, group) and its hints (range, step, kind of file). Not `bevy_reflect`: it is a new dependency, more general than the inspector needs, and the engine DLL is at 56,599 of its 65,535 symbols.
+- A script is a component with a trait for the hooks (start, step, interact, enter area). The engine runs one system for each registered type.
+- A wire is as in Source: a component names its outputs, and an input is a registered command. Wires come after the hooks.
+
+The order is data, then behavior, then the way with no code. Each stage leaves the game as it runs, with the benchmark against the stage before. The stages are in 3.1.
+
 ## 3. Open
 
 ### 3.1 Stages
@@ -252,7 +274,13 @@ Docks: the crate `egui_dock`. Not in the shell stage: a tab with no content, a p
 | 44 | The editor loads a new build of the script DLL while it runs: build after a save, the build errors in a panel, "Open in editor" (2.4) (`stage-44-script-reload.md`) | Done (`stage-44.md`) |
 | 45 | A changed asset file shows at once (`stage-45-asset-reload.md`) | Done (`stage-45.md`) |
 | 46 | Source files of other programs: `.blend`, `.obj`, `.psd` (`stage-46-source-files.md`) | Done (`stage-46.md`) |
-| 47 and later | The object model of 2.1, with items 1 to 5 of section 3.2, the events as components and the three general commands (2.8), "New script" with its templates (2.7), and the log panel (2.4) | In discussion |
+| 47 | Fields that describe themselves (item 1 of 3.2): the derive, the registry of component types, the properties panel from the table of fields. On the item kinds as they are: no change of the room file (2.14) | Planned |
+| 48 | The room file is a list of objects (2.1): the new format, the migration of the rooms, the outliner, the pick, and the gizmo for any object | Planned |
+| 49 | Prefabs: a kind is a prefab file, the player is data, an instance with changes (item 2) | Planned |
+| 50 | Script components with hooks, each command as a function of a script, "New script" with its templates (2.7), the log panel (2.4) | Planned |
+| 51 | The events as components, and the three general commands (2.8) | Planned |
+| 52 | Wires between objects (item 3) | Planned |
+| 53 | Who is the player (item 4), and the states of the game (item 5) | Planned |
 | After the object model | What the events lack (2.8), in one stage | Not planned |
 
 Stages 45 and 46 need stage 43 only. They can come before stage 44 or after the object model.
@@ -261,7 +289,7 @@ Stages 45 and 46 need stage 43 only. They can come before stage 44 or after the 
 
 From Unreal, Unity, Godot, and Bevy. "Not there" is from a search of the code, not a full check. A stage gets its number and its file when it is planned.
 
-With the object model (stage 47 and later). Item 1 is designed first: the others need it.
+With the object model (stages 47 to 53; 2.14). Item 1 is stage 47: the others need it. Item 2 is stage 49, item 3 is stage 52, items 4 and 5 are stage 53.
 
 | # | Item | What it is | Now |
 |---|---|---|---|

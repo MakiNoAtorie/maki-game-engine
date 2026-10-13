@@ -1,13 +1,13 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 46. For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 46 and after the plan of the object model (2.14). For the session that goes on with part 6.
 
 ## State
 
 - Parts 2 to 5 are done (stages up to 40). Part 6 has started.
 - Stage 41 (spike) is done and pushed: the Rust code of a project as a DLL that a program loads and loads again. Report: `stage-41.md`.
 - The plan of part 6 is `README.md`: the decisions of the owner (section 2, thirteen of them), the stage table (3.1), and the list of what is not there (3.2, items 1 to 34).
-- Stage files: `stage-42-editor-shell.md` (approved), `stage-43-editor-program-and-project.md`, `stage-45-asset-reload.md`, `stage-46-source-files.md` (planned, not approved). Stage 44 and the stages from 47 on have no file.
+- Stage files: `stage-42-editor-shell.md` (approved), `stage-43-editor-program-and-project.md`, `stage-45-asset-reload.md`, `stage-46-source-files.md` (planned, not approved). Stage 44 had no file, and the stages from 47 on have none: the session writes each one.
 - Stage 42 (the shell of the editor) is done: docks, the registries of panels and commands, the widgets, the theme. Report: `stage-42.md`.
 - Stage 43 (the editor program, and the game as a project) is done: `maki-engine`, the engine DLL, `programs/editor`, the project `game/` with its script crate. Report: `stage-43.md`.
 - Stage 44 (a new build of the script DLL while the editor runs) is done: the watch, the build behind the work, the load into a new app in the same window, the panel "Build", "Open in editor". Stage file `stage-44-script-reload.md` (written by the session, not seen by the owner), report `stage-44.md`.
@@ -29,21 +29,22 @@ In short, what `README.md` section 2 decides:
 - Animation with a step mode, for the look of drawn animation; no smear of the denoiser at a pose jump (2.6).
 - Templates of "New script" (2.7). Physics on Rapier, particles, fog, no fluid simulation (2.9). Lights, effects, post effects, baked bounce light as a mode of a room (2.10). Asset browser (2.11). Log, console, debug tools (2.12).
 - The shell of the editor comes before all of them (2.13).
+- How the object model is built: a component in the document is a name and a tree of values, the table of fields from a derive of the engine on `serde` (not `bevy_reflect`), a script as a component with a trait of hooks, wires as in Source. Stages 47 to 53 (2.14).
 
 ## Working agreement
 
 The owner, 2026-10-12, for part 6: after each stage, always a sanity check, fill the gaps, fix the bugs, push, and then the next stage. `CLAUDE.md` ("Working agreement") has the loop and the cases to stop and ask. The session does not wait for the owner between two stages.
 
-- A next stage with no stage file (44, and 47 on): write the file first. A proposal of a stage file that the owner did not change is taken as given (stages 43, 45, 46).
-- The object model (stage 47 and later) is "in discussion" in the stage table: stop there and ask.
+- A next stage with no stage file (44, and 47 to 53): write the file first. A proposal of a stage file that the owner did not change is taken as given (stages 43, 45, 46).
+- The object model was "in discussion" until the owner said "add it to the plan" for 2.14 (2026-10-12). Stages 47 to 53 are planned: no stop between them but the cases of `CLAUDE.md`.
 
 The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short.
 
-## Next: stage 47, the object model (in discussion)
+## Next: stage 47, fields that describe themselves
 
-1. Stage 47 is "in discussion" in the stage table: do not start it. Ask the owner, by questions and answers, and write the stage file only after the owner says so.
+1. Read `README.md` 2.1 and 2.14, and item 1 of 3.2. Write the stage file `stage-47-fields.md` in the form of the others, then build it.
 2. The base of the benchmark is the run `s46` (`tools/bench_history.csv`).
-3. The loop of `CLAUDE.md`.
+3. The loop of `CLAUDE.md`. Count the symbols of the engine DLL after the stage (56,599 of 65,535 after stage 46).
 4. Do not start a program of the owner that has documents (Photoshop) for a check: see `stage-46.md`, section 7. Blender with `--background --factory-startup` is fine.
 
 ## Facts that cost time to find
