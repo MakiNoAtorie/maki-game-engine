@@ -22,6 +22,8 @@ edition = "2024"
 # Dependency rule: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu
 # -> render -> ui -> devtools -> editor -> engine -> game.
 # A crate may depend only on crates to its left.
+# The derive macros of `maki-core`. Not in the rule above: it is code of the build.
+maki-macros = { path = "crates/macros" }
 maki-core = { path = "crates/core" }
 maki-platform = { path = "crates/platform" }
 maki-assets = { path = "crates/assets" }
@@ -61,6 +63,14 @@ serde = { version = "1.0.229", features = ["derive"] }
 # The format of the room files: Rust syntax for data, with line numbers in its errors.
 ron = "0.12.2"
 toml = "1.1.8"
+# The tree of values of a thing with fields (`maki_core::fields`): what the inspector
+# changes. The gltf crate has it too: the same version, no second copy.
+serde_json = "1.0.153"
+# For the derive macros of the engine (`crates/macros`). The macros of serde and of
+# bevy_ecs have them too.
+syn = { version = "2.0.119", features = ["full"] }
+quote = "1.0.47"
+proc-macro2 = "1.0.107"
 # The event commands are enums of types that the events crate does not know: this
 # calls their serde code through a trait object.
 erased-serde = "0.4.10"

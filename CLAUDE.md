@@ -20,7 +20,9 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Use current stable crate versions and verify APIs against their docs.
 
 ## Workspace
-`crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/audio`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, `crates/engine` (with `crates/engine/dylib`), `programs/editor`, and `game/` (the project of this repository).
+`crates/macros`, `crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/audio`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, `crates/engine` (with `crates/engine/dylib`), `programs/editor`, and `game/` (the project of this repository).
+- `macros`: the derive macros of the engine (`Fields`). `core` shows them under its own name; no other crate names `macros`.
+- `core`: config, app and schedules, time, transform, and the fields that describe themselves (`maki_core::fields`): a type with `#[derive(Fields)]` has the table of its fields and its value as a tree (`serde_json::Value`), and the inspector is drawn from the table. A new type with fields for a tool gets the derive, never panel code by hand.
 - `scene`: the components that describe the world, the room data format, load and unload of rooms.
 - `events`: flags and variables, event definitions, the event interpreter, the registry of event commands.
 - `audio`: the sound output (`kira`), sound assets, music, the sounds at a place in the room, the audio event commands. No type of `kira` in its public API.

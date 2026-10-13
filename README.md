@@ -88,6 +88,7 @@ A tool has another layout (`Panels::set_tool_layout`, the editor): panels at the
 - New, open, and quit ask first if the room has changes that are not saved; "Save as" asks before it writes over the file of another room. The question is in the middle of the window, and nothing else takes input while it waits. Enter is the first answer, Esc is "Cancel".
 - The item or the handle under the pointer shows it: a thin white box around the item, a thicker and brighter handle. Esc in a drag of a handle puts the values of the start of the drag back, with no step of the history; Esc with no drag selects nothing.
 - Delete, Ctrl+D (duplicate), Ctrl+C, and Ctrl+V go to the list that had the last click: the items (the picture, the outliner) or the command rows of the event panel. Copy and paste are for command rows only. The hover text of a button has the key of its action, from the binding table.
+- Inspector: the rows of an item (the room, a doorway, a door, a prop, a mover, a light, a prefab) come from the table of the fields of its type (`maki_core::fields`, the derive `Fields`): the label, the kind of widget, the range, the step, and the default of a field are written at the field, in the crate of the type, and the editor has no code for an item kind. The doc comment of a field is the hover text of its label. A value that is not its default has "back to default". A spawn point and an event have rows of their own.
 - Inspector: the labels are in one column and the values in the next one, also for a group in a group; a length has `m`, an angle `deg`, a time `s`, and X, Y, Z have the colors of the gizmo. A texture and a glTF file are picked from the list of the files at the room file. The direction of a light is in the group of its cone.
 
 The panel "Events" shows the selected event (selected in the outliner or by its area in the picture); its tab comes to the front when an event is selected. At its left the pages with their conditions and trigger, in the middle the command rows, at the right the arguments of the selected row:
@@ -396,7 +397,8 @@ Dependencies flow in one direction: each crate can use only the crates above it 
 
 | Crate | Role |
 |---|---|
-| `crates/core` | Config file and the settings trait, app and schedules, time, transform, interpolation between fixed steps |
+| `crates/macros` | The derive macros of the engine (`Fields`). Code of the build: `crates/core` shows them under its own name, and no other crate names this one |
+| `crates/core` | Config file and the settings trait, app and schedules, time, transform, interpolation between fixed steps. Fields that describe themselves (`fields`): the derive `Fields` gives a type the table of its fields and its value as a tree; a module gives a type a name, and a tool finds the table by that name |
 | `crates/platform` | Window, input actions (an open set: a module adds its own, with their keys and mouse buttons), input modes (the bindings of the game, of the editor), the pointer, input capture |
 | `crates/assets` | Asset stores and handles, mesh asset with its material and texture coordinates, texture asset and its store, glTF loader, mesh generators |
 | `crates/scene` | The components that describe the world (mesh instance, light, sound source, camera, player, collider, mover, door), collision, the room file format, load and unload of rooms |

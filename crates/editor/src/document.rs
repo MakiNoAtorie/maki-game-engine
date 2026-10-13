@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use glam::{Quat, Vec3};
+use maki_core::Fields;
+use maki_core::fields::{Value, read};
 use maki_events::{Area, CommandRegistry, EventDef};
 use maki_scene::{LightDef, PoseDef, RoomDef, RoomValidators, check_room, ron_options};
 
@@ -136,6 +138,44 @@ impl Document {
         std::fs::write(&self.path, self.text())
             .with_context(|| format!("cannot write room file {}", self.path.display()))?;
         self.dirty = false;
+        Ok(())
+    }
+
+    /// The fields of an item as a tree, and the name of its type for the table of
+    /// its fields (`maki_core::FieldTypes`). `None`: the document has no such item,
+    /// or the item has rows of its own (a spawn point, an event).
+    pub fn tree(&self, item: &Item) -> Option<(&'static str, Value)> {
+        let room = &self.room;
+        Some(match item {
+            Item::Room => ("room", room.shell().tree()),
+            Item::Doorway(index) => ("doorway", room.doorways.get(*index)?.tree()),
+            Item::Door(index) => ("door", room.doors.get(*index)?.tree()),
+            Item::Prop(index) => ("prop", room.props.get(*index)?.tree()),
+            Item::Mover(index) => ("mover", room.movers.get(*index)?.tree()),
+            Item::Light(index) => ("light", room.lights.get(*index)?.tree()),
+            Item::Prefab(index) => ("prefab", room.prefabs.get(*index)?.tree()),
+            Item::Spawn(_) | Item::Event(_) => return None,
+        })
+    }
+
+    /// Reads a changed tree of [`Document::tree`] back into its item. An error: the
+    /// tree is not one of the item, and the item is as before.
+    pub fn set_tree(&mut self, item: &Item, tree: Value) -> Result<()> {
+        fn set<T: serde::de::DeserializeOwned>(slot: Option<&mut T>, tree: Value) -> Result<()> {
+            *slot.context("the room has no such item")? = read(tree)?;
+            Ok(())
+        }
+        let room = &mut self.room;
+        match item {
+            Item::Room => room.set_shell(read(tree)?),
+            Item::Doorway(index) => set(room.doorways.get_mut(*index), tree)?,
+            Item::Door(index) => set(room.doors.get_mut(*index), tree)?,
+            Item::Prop(index) => set(room.props.get_mut(*index), tree)?,
+            Item::Mover(index) => set(room.movers.get_mut(*index), tree)?,
+            Item::Light(index) => set(room.lights.get_mut(*index), tree)?,
+            Item::Prefab(index) => set(room.prefabs.get_mut(*index), tree)?,
+            Item::Spawn(_) | Item::Event(_) => return Err(anyhow!("the item has no tree")),
+        }
         Ok(())
     }
 

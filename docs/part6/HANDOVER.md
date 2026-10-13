@@ -1,6 +1,6 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 46 and after the plan of the object model (2.14). For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 47. For the session that goes on with part 6.
 
 ## State
 
@@ -13,6 +13,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 44 (a new build of the script DLL while the editor runs) is done: the watch, the build behind the work, the load into a new app in the same window, the panel "Build", "Open in editor". Stage file `stage-44-script-reload.md` (written by the session, not seen by the owner), report `stage-44.md`.
 - Stage 45 (a changed asset file shows at once) is done: the watch of the asset files (`maki_assets::AssetWatch`), each store forgets a changed file, the room loads again. Report: `stage-45.md`.
 - Stage 46 (source files of other programs) is done: the table of converters in the editor crate (`sources.rs`), `.blend` and `.obj` to `.glb` by Blender with no window, `.psd` to `.png` by own code, one thread that looks at the folder of the room files. Report: `stage-46.md`.
+- Stage 47 (fields that describe themselves) is done: the derive `Fields` (`crates/macros`), `maki_core::fields` (the table of the fields of a type, its value as a tree of `serde_json::Value`, the registry `FieldTypes`), the derive on the item kinds of a room, and the inspector of the editor from the table (`crates/editor/src/fields.rs`). The room file did not change. Stage file `stage-47-fields.md` (written by the session), report `stage-47.md`.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
@@ -40,11 +41,13 @@ The owner, 2026-10-12, for part 6: after each stage, always a sanity check, fill
 
 The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short.
 
-## Next: stage 47, fields that describe themselves
+## Next: stage 48, the room file is a list of objects
 
-1. Read `README.md` 2.1 and 2.14, and item 1 of 3.2. Write the stage file `stage-47-fields.md` in the form of the others, then build it.
-2. The base of the benchmark is the run `s46` (`tools/bench_history.csv`).
-3. The loop of `CLAUDE.md`. Count the symbols of the engine DLL after the stage (56,599 of 65,535 after stage 46).
+1. Read `README.md` 2.1 and 2.14, and `stage-47.md` (section 6: what stage 48 must decide). Write the stage file `stage-48-objects.md` in the form of the others, then build it.
+2. Two things to decide in the stage file, and to ask the owner if the code does not give the answer:
+   - A component with no code in the file. RON needs the type to read a value: a component of a script DLL that did not build cannot become a tree. Keep its text, or a form of the file that reads with no type.
+   - The symbols of the engine DLL: 57,783 of 65,535 after stage 47, and each type that is read from a tree adds some. Count after the first components; `opt-level = 2` for the engine crates in the profile `dynamic` is the way out that is not measured.
+3. The base of the benchmark is the run `s47` (`tools/bench_history.csv`). The loop of `CLAUDE.md`.
 4. Do not start a program of the owner that has documents (Photoshop) for a check: see `stage-46.md`, section 7. Blender with `--background --factory-startup` is fine.
 
 ## Facts that cost time to find

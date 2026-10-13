@@ -1540,7 +1540,9 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "glam 0.34.1",
+ "maki-macros",
  "serde",
+ "serde_json",
  "toml",
  "tracing",
 ]
@@ -1705,6 +1707,15 @@ dependencies = [
  "raw-window-handle",
  "slotmap",
  "tracing",
+]
+
+[[package]]
+name = "maki-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

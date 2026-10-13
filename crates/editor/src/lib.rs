@@ -31,6 +31,7 @@ mod camera;
 mod document;
 mod event_panel;
 mod events;
+pub mod fields;
 mod gizmo;
 mod ops;
 mod overlay;

@@ -18,9 +18,9 @@ pub use mover::{Door, Mover, MoverState, move_movers};
 pub use room::{
     CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PrefabDef,
     PrefabUse, PropDef, RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride,
-    RoomProblem, RoomRequest, RoomTarget, RoomValidator, RoomValidators, SoundDef, TextureDef,
-    check_room, load_requested_room, parse_room, patch_room, pose_in, pose_out, prefab_text,
-    read_prefab, read_room, ron_options,
+    RoomProblem, RoomRequest, RoomShell, RoomTarget, RoomValidator, RoomValidators, SoundDef,
+    TextureDef, check_room, load_requested_room, parse_room, patch_room, pose_in, pose_out,
+    prefab_text, read_prefab, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
@@ -28,6 +28,14 @@ pub struct SceneModule;
 
 impl Module for SceneModule {
     fn build(&self, app: &mut App) {
+        // The item kinds of a room file, for the tools.
+        maki_core::add_field_type::<RoomShell>(app, "room");
+        maki_core::add_field_type::<maki_assets::Doorway>(app, "doorway");
+        maki_core::add_field_type::<DoorDef>(app, "door");
+        maki_core::add_field_type::<PropDef>(app, "prop");
+        maki_core::add_field_type::<MoverDef>(app, "mover");
+        maki_core::add_field_type::<LightDef>(app, "light");
+        maki_core::add_field_type::<PrefabUse>(app, "prefab");
         // The stores normally come from `AssetsModule`. This keeps the loader
         // independent of the order in which the modules are added.
         app.init_resource::<maki_assets::Assets<Mesh>>()

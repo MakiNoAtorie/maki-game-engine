@@ -1088,3 +1088,129 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         assert_eq!(super::session(world).unwrap(), session);
     });
 }
+
+/// The rows of each item kind come from the table of its fields, and what the
+/// inspector reads back is the item.
+#[test]
+fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
+    use maki_assets::{Doorway, Material, Wall};
+    use maki_core::FieldTypes;
+    use maki_core::fields::{Kind, Value};
+    use maki_scene::{DoorDef, LookDef, MoverDef, PoseDef, PrefabUse, PropDef};
+    use maki_ui::egui;
+
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(SceneModule);
+    let types = app.world().resource::<FieldTypes>();
+
+    // A room with one of each kind, and with numbers that are not exact in binary.
+    let mut document = Document::new_room(PathBuf::from("room.ron"));
+    let room = &mut document.room;
+    room.doorways.push(Doorway {
+        wall: Wall::NegX,
+        offset: 0.3,
+        width: 1.0,
+        height: 2.0,
+        depth: 1.0,
+    });
+    room.doors.push(DoorDef {
+        name: Some("door".to_owned()),
+        doorway: 0,
+        seconds: 1.2,
+        color: [0.35, 0.2, 0.1],
+        open: false,
+    });
+    let look = LookDef {
+        color: Some([0.15, 0.3, 0.45]),
+        material: Some(Material::Metal { roughness: 0.3 }),
+        ..LookDef::default()
+    };
+    room.props.push(PropDef {
+        name: Some("crate".to_owned()),
+        look: look.clone(),
+        ..PropDef::default()
+    });
+    room.movers.push(MoverDef {
+        name: None,
+        mesh: MeshDef::Cuboid([-0.5, 0.0, -0.5], [0.5, 1.0, 0.5]),
+        look,
+        a: PoseDef::default(),
+        b: PoseDef {
+            position: [0.0, 1.1, 0.0],
+            ..PoseDef::default()
+        },
+        seconds: 2.0,
+    });
+    room.prefabs.push(PrefabUse {
+        name: None,
+        file: PathBuf::from("table.prefab"),
+        pose: PoseDef::default(),
+    });
+    let items = [
+        Item::Room,
+        Item::Doorway(0),
+        Item::Door(0),
+        Item::Prop(0),
+        Item::Mover(0),
+        Item::Light(0),
+        Item::Prefab(0),
+    ];
+
+    // A frame with no input: the rows of each kind are drawn, and no value changes.
+    let before = document.clone();
+    let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        for item in &items {
+            let (name, mut tree) = document.tree(item).unwrap();
+            let shown = tree.clone();
+            let kind = &types.get(name).unwrap().kind;
+            let lists = |_: &str| vec!["doorway 0".to_owned()];
+            assert!(
+                !crate::fields::show(ui, kind, &mut tree, &lists),
+                "{item:?}"
+            );
+            assert_eq!(tree, shown, "{item:?}");
+            document.set_tree(item, tree).unwrap();
+        }
+    });
+    // egui panics when texture changes are dropped unread.
+    output.textures_delta.clear();
+    // The tree of each item, read back: the same document, and the same file.
+    assert_eq!(document, before);
+    assert_eq!(document.text(), before.text());
+
+    // A changed tree changes its item, and no other.
+    let (name, mut tree) = document.tree(&Item::Prop(0)).unwrap();
+    tree["pose"]["position"] = Value::from(vec![1.0, 2.0, 3.0]);
+    // The variant that the list of the mesh gives for "Sphere".
+    let Kind::Group(table) = &types.get(name).unwrap().kind else {
+        panic!("a prop is a struct");
+    };
+    let mesh = table.iter().find(|field| field.name == "mesh").unwrap();
+    let Kind::Choice(variants) = &mesh.kind else {
+        panic!("a mesh is an enum");
+    };
+    tree["mesh"] = variants[2].zero();
+    document.set_tree(&Item::Prop(0), tree.clone()).unwrap();
+    let prop = &document.room.props[0];
+    assert_eq!(prop.pose.position, [1.0, 2.0, 3.0]);
+    let sphere = MeshDef::Sphere {
+        radius: 0.5,
+        segments: 32,
+        rings: 16,
+    };
+    assert_eq!(
+        (&prop.mesh, &prop.name),
+        (&sphere, &before.room.props[0].name)
+    );
+    assert_eq!(document.room.lights, before.room.lights);
+
+    // A tree that is not one of the item, an item that is not there, an item with
+    // rows of its own: an error or `None`, and the document stays.
+    let was = document.clone();
+    assert!(document.set_tree(&Item::Light(0), Value::Null).is_err());
+    assert!(document.set_tree(&Item::Light(0), tree.clone()).is_err());
+    assert!(document.set_tree(&Item::Prop(9), tree).is_err());
+    assert!(document.tree(&Item::Prop(9)).is_none());
+    assert!(document.tree(&Item::Spawn("start".to_owned())).is_none());
+    assert_eq!(document, was);
+}

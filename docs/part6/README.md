@@ -1,6 +1,6 @@
 # Part 6: plan (draft)
 
-State: in discussion with the owner. Stages 41 to 46 are done; the object model is planned as stages 47 to 53 (2.14). This file holds what is decided.
+State: in discussion with the owner. Stages 41 to 47 are done; the object model is stages 47 to 53 (2.14). This file holds what is decided.
 
 ## 1. Direction
 
@@ -256,7 +256,7 @@ The build:
 - An object is an entity of `bevy_ecs`, and a component of an object is a component of `bevy_ecs`. No second layer at run time.
 - In the document and in the file, a component is its name and a tree of values (field name to value), not a Rust type. The undo, the changes of a prefab instance, and a component with no code are operations on the tree, written one time.
 - A component type registers three things: its name, its table of fields, and the function that builds it from the tree.
-- The table of fields comes from a derive of the engine, on top of `serde`: a proc-macro crate of the workspace (`syn` and `quote` are in the tree). A field has a kind (number, switch, text, vector, color, choice, file, object, list, group) and its hints (range, step, kind of file). Not `bevy_reflect`: it is a new dependency, more general than the inspector needs, and the engine DLL is at 56,599 of its 65,535 symbols.
+- The table of fields comes from a derive of the engine, on top of `serde`: a proc-macro crate of the workspace (`syn` and `quote` are in the tree). Stage 47 built it: the tree is `serde_json::Value` (in the tree by `gltf`), the derive writes the tree, and `serde` reads it back. A field has a kind (number, switch, text, vector, color, choice, file, object, list, group) and its hints (range, step, kind of file). Not `bevy_reflect`: it is a new dependency, more general than the inspector needs, and the engine DLL is at 56,599 of its 65,535 symbols.
 - A script is a component with a trait for the hooks (start, step, interact, enter area). The engine runs one system for each registered type.
 - A wire is as in Source: a component names its outputs, and an input is a registered command. Wires come after the hooks.
 
@@ -274,7 +274,7 @@ The order is data, then behavior, then the way with no code. Each stage leaves t
 | 44 | The editor loads a new build of the script DLL while it runs: build after a save, the build errors in a panel, "Open in editor" (2.4) (`stage-44-script-reload.md`) | Done (`stage-44.md`) |
 | 45 | A changed asset file shows at once (`stage-45-asset-reload.md`) | Done (`stage-45.md`) |
 | 46 | Source files of other programs: `.blend`, `.obj`, `.psd` (`stage-46-source-files.md`) | Done (`stage-46.md`) |
-| 47 | Fields that describe themselves (item 1 of 3.2): the derive, the registry of component types, the properties panel from the table of fields. On the item kinds as they are: no change of the room file (2.14) | Planned |
+| 47 | Fields that describe themselves (item 1 of 3.2): the derive, the registry of component types, the properties panel from the table of fields. On the item kinds as they are: no change of the room file (2.14) (`stage-47-fields.md`) | Done (`stage-47.md`) |
 | 48 | The room file is a list of objects (2.1): the new format, the migration of the rooms, the outliner, the pick, and the gizmo for any object | Planned |
 | 49 | Prefabs: a kind is a prefab file, the player is data, an instance with changes (item 2) | Planned |
 | 50 | Script components with hooks, each command as a function of a script, "New script" with its templates (2.7), the log panel (2.4) | Planned |

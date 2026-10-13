@@ -33,7 +33,7 @@ use maki_assets::{
     AssetChanged, AssetWatch, Assets, Doorway, Handle, LoadState, Material, Mesh, Model,
     ModelLoads, TextureRef, Textures,
 };
-use maki_core::{Interpolated, Transform};
+use maki_core::{Fields, Interpolated, Transform};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +80,42 @@ pub struct RoomDef {
     pub events: IgnoredAny,
 }
 
+/// The fields of a room that are of the room itself, not of a thing in it: what a
+/// tool shows for "the room".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+pub struct RoomShell {
+    #[field(label = "width (X)", range = 1.0..=100.0, step = 0.05)]
+    pub width: f32,
+    #[field(label = "depth (Z)", range = 1.0..=100.0, step = 0.05)]
+    pub depth: f32,
+    #[field(label = "height (Y)", range = 1.0..=100.0, step = 0.05)]
+    pub height: f32,
+    #[field(label = "floor texture")]
+    pub floor: Option<TextureDef>,
+    #[field(label = "wall texture")]
+    pub walls: Option<TextureDef>,
+}
+
+impl RoomDef {
+    pub fn shell(&self) -> RoomShell {
+        RoomShell {
+            width: self.width,
+            depth: self.depth,
+            height: self.height,
+            floor: self.floor.clone(),
+            walls: self.walls.clone(),
+        }
+    }
+
+    pub fn set_shell(&mut self, shell: RoomShell) {
+        self.width = shell.width;
+        self.depth = shell.depth;
+        self.height = shell.height;
+        self.floor = shell.floor;
+        self.walls = shell.walls;
+    }
+}
+
 // The fields of this file that have a default are not written when they have it
 // (`skip_serializing_if`): a file that a tool saves is as short as one that a person
 // wrote.
@@ -93,13 +129,15 @@ fn is_true(value: &bool) -> bool {
 }
 
 /// Where a thing is. Each field has a default, so a file gives only what differs.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields, default)]
+#[fields(default)]
 pub struct PoseDef {
     #[serde(skip_serializing_if = "is_default")]
     pub position: [f32; 3],
     /// Degrees around X, Y, and Z. The turn around Z is done first, then X, then Y.
     #[serde(skip_serializing_if = "is_default")]
+    #[field(step = 0.5)]
     pub rotation: [f32; 3],
     #[serde(skip_serializing_if = "is_ones")]
     pub scale: [f32; 3],
@@ -142,12 +180,13 @@ impl PoseDef {
 
 /// A prefab file that a room names. The items of the file show in the room; a
 /// change of the file changes each room that names it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct PrefabUse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// From the directory of the room file.
+    #[field(label = "prefab file", file = "prefab")]
     pub file: PathBuf,
     /// Where the origin of the prefab is in the room, and its turn and scale.
     #[serde(default, skip_serializing_if = "is_default")]
@@ -206,20 +245,29 @@ pub fn pose_out(outer: &Transform, pose: &Transform) -> Transform {
 }
 
 /// The shape of a prop or a mover.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum MeshDef {
     /// A cube of this size with its center at the origin.
-    Cube(f32),
+    #[field(default = MeshDef::Cube(1.0))]
+    Cube(#[field(label = "size", range = 0.01..=100.0)] f32),
     /// A box between two corners.
-    Cuboid([f32; 3], [f32; 3]),
+    #[field(default = MeshDef::Cuboid([-0.5, 0.0, -0.5], [0.5, 1.0, 0.5]))]
+    Cuboid(
+        #[field(label = "from")] [f32; 3],
+        #[field(label = "to")] [f32; 3],
+    ),
+    #[field(default = MeshDef::Sphere { radius: 0.5, segments: 32, rings: 16 })]
     Sphere {
+        #[field(range = 0.01..=100.0)]
         radius: f32,
+        #[field(range = 3.0..=256.0)]
         segments: u32,
+        #[field(range = 2.0..=256.0)]
         rings: u32,
     },
     /// A glTF file (`.gltf` or `.glb`). A path that is not absolute starts at the
     /// directory of the room file. The point lights of the file become lights.
-    File(PathBuf),
+    File(#[field(label = "glTF file", file = "model")] PathBuf),
 }
 
 impl MeshDef {
@@ -239,16 +287,18 @@ impl MeshDef {
 }
 
 /// A texture for a generated mesh.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct TextureDef {
     /// An image file (PNG or JPEG). A path that is not absolute starts at the
     /// directory of the room file.
+    #[field(label = "file", file = "picture")]
     pub path: PathBuf,
     /// The texture coordinates are multiplied by this: 2.0 shows the image two times
     /// where it showed one time. The coordinates of the room box, a cube, and a
     /// cuboid are meters; those of a sphere go one time around it.
     #[serde(default = "one", skip_serializing_if = "is_one")]
+    #[field(default = one(), range = 0.01..=100.0)]
     pub scale: f32,
     #[serde(default, skip_serializing_if = "is_default")]
     pub filter: Filter,
@@ -263,7 +313,7 @@ fn is_one(value: &f32) -> bool {
 }
 
 /// How a texture shows when its texels are larger than the pixels of the picture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Fields)]
 pub enum Filter {
     /// Texels blend.
     #[default]
@@ -284,7 +334,7 @@ impl TextureDef {
 }
 
 /// How a generated mesh looks. A file has its own colors and materials.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields, default)]
 pub struct LookDef {
     /// The color texture. The color multiplies it: give a texture the color white.
@@ -292,6 +342,7 @@ pub struct LookDef {
     pub texture: Option<TextureDef>,
     /// Linear RGB. `None`: the color of the generator.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[field(color, some = [1.0; 3])]
     pub color: Option<[f32; 3]>,
     /// `None`: diffuse.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,6 +350,7 @@ pub struct LookDef {
     /// A light of its own, linear RGB: the mesh shows with this color and lights
     /// the room by bounce rays. `None`: no light.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[field(color, some = [1.0; 3])]
     pub emissive: Option<[f32; 3]>,
 }
 
@@ -321,24 +373,28 @@ impl LookDef {
 }
 
 /// A thing that does not move.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
+#[fields(default)]
 pub struct PropDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub mesh: MeshDef,
     #[serde(default, skip_serializing_if = "is_default")]
     pub pose: PoseDef,
+    /// How a generated mesh looks. A file has its own colors and materials.
     #[serde(default, skip_serializing_if = "is_default")]
     pub look: LookDef,
     /// True: the box around the prop blocks the player.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
+    #[field(label = "blocks the player")]
     pub collider: bool,
     /// For a file: the radius of each light of the file, in meters.
     #[serde(
         default = "default_light_radius",
         skip_serializing_if = "is_default_light_radius"
     )]
+    #[field(label = "light radius", range = 0.01..=10.0)]
     pub light_radius: f32,
 }
 
@@ -368,25 +424,31 @@ fn is_default_light_radius(radius: &f32) -> bool {
     *radius == default_light_radius()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct LightDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub position: [f32; 3],
     /// Meters.
+    #[field(range = 0.01..=10.0, step = 0.005)]
     pub radius: f32,
     /// Linear RGB.
+    #[field(color)]
     pub color: [f32; 3],
+    #[field(range = 0.0..=10000.0, step = 0.1)]
     pub intensity: f32,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
+    #[field(default = true)]
     pub on: bool,
     /// A cone light: the direction of the middle of the cone. `None`: straight down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[field(label = "direction of the cone (not set: down)", some = [0.0, -1.0, 0.0])]
     pub direction: Option<[f32; 3]>,
     /// A cone light: degrees from `direction` to the edge of the cone. `None`: light
     /// in all directions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[field(label = "cone (degrees to the edge)", range = 1.0..=180.0, step = 0.5, some = 30.0)]
     pub cone: Option<f32>,
     /// A sound that loops at the place of the light: a lamp that hums.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -394,20 +456,25 @@ pub struct LightDef {
 }
 
 /// A sound that loops at the place of a thing of the room.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
+#[fields(default)]
 pub struct SoundDef {
     /// A sound file (WAV or Ogg Vorbis). A path that is not absolute starts at the
     /// directory of the room file.
+    #[field(label = "sound file", file = "sound")]
     pub file: PathBuf,
     /// 1.0: as loud as the file is.
     #[serde(default = "one", skip_serializing_if = "is_one")]
+    #[field(range = 0.0..=4.0)]
     pub volume: f32,
     /// Meters. The sound is silent for a listener that is farther away.
     #[serde(default = "default_reach", skip_serializing_if = "is_default_reach")]
+    #[field(label = "reach (radius)", range = 0.1..=100.0, step = 0.05)]
     pub reach: f32,
     /// False: silent until an event turns the sound on.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
+    #[field(label = "on at the start")]
     pub on: bool,
 }
 
@@ -461,17 +528,24 @@ impl LightDef {
 
 /// A door in a doorway of the room. It turns on the side of the opening that is
 /// nearer to the start of the wall, into the room.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct DoorDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Index in `doorways`, from 0.
+    #[field(pick = "doorways")]
     pub doorway: usize,
     /// Seconds from closed to open.
     #[serde(
         default = "default_door_seconds",
         skip_serializing_if = "is_default_door_seconds"
+    )]
+    #[field(
+        label = "seconds to open",
+        range = 0.05..=60.0,
+        step = 0.05,
+        default = default_door_seconds()
     )]
     pub seconds: f32,
     /// Linear RGB.
@@ -479,9 +553,11 @@ pub struct DoorDef {
         default = "default_door_color",
         skip_serializing_if = "is_default_door_color"
     )]
+    #[field(color)]
     pub color: [f32; 3],
     /// True: the door is open when the room loads.
     #[serde(default, skip_serializing_if = "is_default")]
+    #[field(label = "open at the start", default = false)]
     pub open: bool,
 }
 
@@ -502,7 +578,7 @@ fn is_default_door_color(color: &[f32; 3]) -> bool {
 }
 
 /// A thing that moves between two poses: see [`Mover`]. Its mesh is a generated shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct MoverDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -511,9 +587,12 @@ pub struct MoverDef {
     #[serde(default, skip_serializing_if = "is_default")]
     pub look: LookDef,
     /// The pose at the start.
+    #[field(label = "pose at the start (a)")]
     pub a: PoseDef,
+    #[field(label = "second pose (b)")]
     pub b: PoseDef,
     /// Seconds from `a` to `b`.
+    #[field(label = "seconds from a to b", range = 0.05..=600.0, step = 0.05)]
     pub seconds: f32,
 }
 
@@ -1425,6 +1504,62 @@ mod tests {
         let config = ron::ser::PrettyConfig::default();
         let text = ron_options().to_string_pretty(&room, config).unwrap();
         assert_eq!(parse_room(&text).unwrap(), room);
+    }
+
+    #[test]
+    fn each_item_kind_goes_to_its_tree_and_back() {
+        use maki_core::fields::{FieldTypes, read};
+
+        // The table of each kind names the fields as serde does: the tree of a
+        // kind with nothing set (`zero`) reads as the kind. What was read gives a
+        // tree that reads as itself. (Not `zero` itself: the end of a range is an
+        // `f64`, 0.1, and the field has the `f32` next to it.)
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(SceneModule);
+        let types = app.world().resource::<FieldTypes>();
+        let names: Vec<&str> = types.iter().map(|(name, _)| name).collect();
+        assert_eq!(
+            names,
+            [
+                "door", "doorway", "light", "mover", "prefab", "prop", "room"
+            ]
+        );
+        for (name, kind) in types.iter() {
+            let tree =
+                (kind.check)(&kind.kind.zero()).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!((kind.check)(&tree), Ok(tree), "{name}");
+        }
+
+        // A thing with values goes to its tree and back with no change, also a
+        // number that is not exact in binary (0.15).
+        let room = sample();
+        assert_eq!(
+            read::<PropDef>(room.props[0].tree()).unwrap(),
+            room.props[0]
+        );
+        assert_eq!(
+            read::<LightDef>(room.lights[0].tree()).unwrap(),
+            room.lights[0]
+        );
+        assert_eq!(
+            read::<DoorDef>(room.doors[0].tree()).unwrap(),
+            room.doors[0]
+        );
+        assert_eq!(
+            read::<MoverDef>(room.movers[0].tree()).unwrap(),
+            room.movers[0]
+        );
+        assert_eq!(
+            read::<Doorway>(room.doorways[0].tree()).unwrap(),
+            room.doorways[0]
+        );
+        // The room itself: its own fields, and no list of its things.
+        let mut shell = room.shell();
+        assert_eq!(read::<RoomShell>(shell.tree()).unwrap(), shell);
+        shell.width = 9.0;
+        let mut changed = room.clone();
+        changed.set_shell(shell);
+        assert_eq!((changed.width, &changed.props), (9.0, &room.props));
     }
 
     #[test]

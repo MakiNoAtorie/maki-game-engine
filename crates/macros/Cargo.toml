@@ -1,0 +1,14 @@
+[package]
+name = "maki-macros"
+version.workspace = true
+edition.workspace = true
+
+# The derive macros of the engine. `maki-core` shows them under its own name: no
+# other crate names this one.
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true

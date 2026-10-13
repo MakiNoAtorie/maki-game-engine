@@ -4,12 +4,13 @@ use std::f32::consts::{PI, TAU};
 
 use anyhow::{Result, ensure};
 use glam::Vec3;
+use maki_core::Fields;
 use serde::{Deserialize, Serialize};
 
 use crate::TextureRef;
 
 /// How a surface sends light back.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Fields)]
 pub enum Material {
     /// Sends light back equally in all directions, with the base color (paper, plaster).
     Diffuse,
@@ -17,21 +18,27 @@ pub enum Material {
     Mirror,
     /// Clear glass: a part of the light is reflected, the rest goes through and bends.
     /// The base color tints the light that goes through.
+    #[field(default = Material::Glass { ior: 1.5 })]
     Glass {
         /// Index of refraction: how much the light bends. 1.5 for window glass, 1.33 for water.
+        #[field(range = 1.0..=3.0)]
         ior: f32,
     },
     /// A rough mirror (brushed steel, worn brass): the reflection is soft, more so
     /// with more roughness. The base color tints it. No diffuse light.
+    #[field(default = Material::Metal { roughness: 0.3 })]
     Metal {
         /// 0.05 (almost a mirror) to 1.0 (no reflection that shows a shape).
+        #[field(range = 0.05..=1.0)]
         roughness: f32,
     },
     /// A diffuse surface with the base color under a clear, rough coat (plastic,
     /// paint, wet stone): the coat reflects some percent of the light, more at a flat
     /// angle, with no tint.
+    #[field(default = Material::Plastic { roughness: 0.3 })]
     Plastic {
         /// As for `Metal`.
+        #[field(range = 0.05..=1.0)]
         roughness: f32,
     },
 }
@@ -43,11 +50,15 @@ impl Material {
 }
 
 /// A wall of a room, named by the side of the room that it is on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Fields)]
 pub enum Wall {
+    #[field(label = "NegX (west)")]
     NegX,
+    #[field(label = "PosX (east)")]
     PosX,
+    #[field(label = "NegZ (back)")]
     NegZ,
+    #[field(label = "PosZ (front)")]
     PosZ,
 }
 
@@ -68,16 +79,20 @@ impl Wall {
 }
 
 /// An opening in a wall of a room, with a short passage behind it that ends at a wall.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct Doorway {
     pub wall: Wall,
     /// Where the center of the opening is along the wall: its X coordinate for a Z
     /// wall, its Z coordinate for an X wall.
+    #[field(range = -50.0..=50.0, step = 0.05)]
     pub offset: f32,
+    #[field(range = 0.1..=100.0, step = 0.05)]
     pub width: f32,
+    #[field(range = 0.1..=100.0, step = 0.05)]
     pub height: f32,
     /// Length of the passage behind the wall, in meters.
+    #[field(label = "passage depth", range = 0.1..=100.0, step = 0.05)]
     pub depth: f32,
 }
 

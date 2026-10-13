@@ -59,7 +59,66 @@ output = false",
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
             count += document.events.len();
+
+            // The inspector reads each item as a tree of its fields, and reads a
+            // changed tree back. With no change: the same room, and the same file.
+            let room = &document.room;
+            let lists = [
+                ("doorway", room.doorways.len()),
+                ("door", room.doors.len()),
+                ("prop", room.props.len()),
+                ("mover", room.movers.len()),
+                ("light", room.lights.len()),
+                ("prefab", room.prefabs.len()),
+            ];
+            let mut items = vec![maki_editor::Item::Room];
+            for (list, length) in lists {
+                items.extend((0..length).map(|index| match list {
+                    "doorway" => maki_editor::Item::Doorway(index),
+                    "door" => maki_editor::Item::Door(index),
+                    "prop" => maki_editor::Item::Prop(index),
+                    "mover" => maki_editor::Item::Mover(index),
+                    "light" => maki_editor::Item::Light(index),
+                    _ => maki_editor::Item::Prefab(index),
+                }));
+            }
+            let mut again = document.clone();
+            for item in &items {
+                let (_, tree) = again.tree(item).unwrap();
+                again.set_tree(item, tree).unwrap();
+            }
+            assert_eq!(again.room, document.room, "{name}");
+            assert_eq!(again.text(), text, "{name}");
         }
         assert_eq!(count, 7);
+    }
+
+    /// A component of this game says what its fields are with the derive of the
+    /// engine. The script crate names `maki-engine` only.
+    #[test]
+    fn a_type_of_the_script_crate_describes_its_fields() {
+        use maki_engine::core::Fields;
+        use maki_engine::core::fields::{Kind, read};
+
+        /// A lamp that swings.
+        #[derive(Debug, PartialEq, Fields, serde::Serialize, serde::Deserialize)]
+        struct Swing {
+            /// The largest angle, in degrees.
+            #[field(range = 0.0..=90.0, step = 0.5)]
+            angle: f32,
+            #[field(label = "seconds for one swing", default = 2.0)]
+            seconds: f32,
+        }
+
+        let Kind::Group(table) = Swing::kind() else {
+            panic!("a struct is a group");
+        };
+        assert_eq!(table[0].help, "The largest angle, in degrees.");
+        assert_eq!(table[1].label, "seconds for one swing");
+        let swing = Swing {
+            angle: 12.5,
+            seconds: 2.0,
+        };
+        assert_eq!(read::<Swing>(swing.tree()).unwrap(), swing);
     }
 }

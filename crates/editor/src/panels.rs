@@ -12,10 +12,10 @@
 use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::{Mut, World};
-use maki_assets::Wall;
-use maki_core::App;
+use maki_core::fields::Value;
+use maki_core::{App, FieldTypes};
 use maki_events::{EventRunner, Problem};
-use maki_scene::{MeshDef, PropDef, SoundDef};
+use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
 use maki_ui::theme::icon;
 use maki_ui::widgets::{
@@ -28,9 +28,7 @@ use maki_ui::{
 };
 
 use crate::event_panel::{ERROR, HINT, NEVER_WRITTEN, event_panel, event_properties};
-use crate::widgets::{
-    choice, color, drag, look, mesh, name, number, number_or, pose, texture, toggle, vector,
-};
+use crate::widgets::{drag, vector};
 use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool};
 
 pub(crate) const OUTLINER: &str = "outliner";
@@ -714,7 +712,7 @@ fn where_used(ui: &mut Ui, editor: &mut Editor) {
     }
 }
 
-fn properties(ui: &mut Ui, _world: &mut World, editor: &mut Editor) {
+fn properties(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
     // For the file pickers of the widgets.
     let directory = editor.document.path.parent().unwrap_or(Path::new(""));
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
@@ -729,7 +727,7 @@ fn properties(ui: &mut Ui, _world: &mut World, editor: &mut Editor) {
     let mut old_name = None;
     let shown = match &item {
         Item::Event(index) => event_properties(ui, editor, *index, &mut old_name),
-        item => item_properties(ui, editor, item, &mut old_name),
+        item => item_properties(ui, world, editor, item, &mut old_name),
     };
     let Some(mut changed) = shown else {
         ui.weak("The room has no such item.");
@@ -769,144 +767,67 @@ fn properties(ui: &mut Ui, _world: &mut World, editor: &mut Editor) {
     egui::CollapsingHeader::new("Where used").show(ui, |ui| where_used(ui, editor));
 }
 
-/// The widgets of one item. True: a value was changed. `None`: the document has no
-/// such item.
+/// The rows of one item, from the table of its fields (`maki_core::fields`): no
+/// field of an item kind has its name here. True: a value was changed. `None`: the
+/// document has no such item.
 fn item_properties(
     ui: &mut Ui,
+    world: &World,
     editor: &mut Editor,
     item: &Item,
     old_name: &mut Option<Option<String>>,
 ) -> Option<bool> {
-    const SIZE: std::ops::RangeInclusive<f32> = 0.1..=100.0;
-    let document = &mut editor.document;
-    let room = &mut document.room;
-    // The name field of an item that events find by its name.
-    let mut name = |ui: &mut Ui, value: &mut Option<String>| {
-        let old = value.clone();
-        let changed = name(ui, value);
-        if changed {
-            *old_name = Some(old);
-        }
-        changed
-    };
-    Some(match item {
-        Item::Room => {
-            number(ui, "width (X)", &mut room.width, 0.05, 1.0..=100.0)
-                | number(ui, "depth (Z)", &mut room.depth, 0.05, 1.0..=100.0)
-                | number(ui, "height (Y)", &mut room.height, 0.05, 1.0..=100.0)
-                | texture(ui, "floor texture", &mut room.floor)
-                | texture(ui, "wall texture", &mut room.walls)
-        }
-        Item::Doorway(index) => {
-            let doorway = room.doorways.get_mut(*index)?;
-            let walls = [
-                ("NegX (west)", Wall::NegX),
-                ("PosX (east)", Wall::PosX),
-                ("NegZ (back)", Wall::NegZ),
-                ("PosZ (front)", Wall::PosZ),
-            ];
-            choice(ui, "wall", &mut doorway.wall, &walls, PartialEq::eq)
-                | number(ui, "offset", &mut doorway.offset, 0.05, -50.0..=50.0)
-                | number(ui, "width", &mut doorway.width, 0.05, SIZE)
-                | number(ui, "height", &mut doorway.height, 0.05, SIZE)
-                | number(ui, "passage depth", &mut doorway.depth, 0.05, SIZE)
-        }
-        Item::Door(index) => {
-            // The labels of the outliner.
-            let doorways = room.doorways.iter().enumerate();
-            let labels: Vec<String> = doorways
-                .map(|(index, doorway)| format!("doorway {index} ({:?})", doorway.wall))
-                .collect();
-            let door = room.doors.get_mut(*index)?;
-            let doorways: Vec<(&str, usize)> = labels.iter().map(String::as_str).zip(0..).collect();
-            name(ui, &mut door.name)
-                | choice(ui, "doorway", &mut door.doorway, &doorways, PartialEq::eq)
-                | number(ui, "seconds to open", &mut door.seconds, 0.05, 0.05..=60.0)
-                | color(ui, "color", &mut door.color)
-                | toggle(ui, "open at the start", &mut door.open, Some(false))
-        }
-        Item::Prop(index) => {
-            let prop = room.props.get_mut(*index)?;
-            let is_file = matches!(prop.mesh, MeshDef::File(_));
-            name(ui, &mut prop.name)
-                | mesh(ui, &mut prop.mesh)
-                | pose(ui, "pose", &mut prop.pose)
-                // A file has its own colors and materials.
-                | (!is_file && look(ui, &mut prop.look))
-                | toggle(ui, "blocks the player", &mut prop.collider, Some(true))
-                | (is_file && {
-                    let default = Some(PropDef::default().light_radius);
-                    let radius = &mut prop.light_radius;
-                    number_or(ui, "radius of its lights", radius, default, 0.01, 0.01..=10.0)
-                })
-        }
-        Item::Prefab(index) => {
-            let prefab = room.prefabs.get_mut(*index)?;
-            let files = &crate::widgets::PREFABS;
-            name(ui, &mut prefab.name)
-                | crate::widgets::file(ui, "prefab file", &mut prefab.file, files)
-                | pose(ui, "pose", &mut prefab.pose)
-        }
-        Item::Mover(index) => {
-            let mover = room.movers.get_mut(*index)?;
-            ui.checkbox(
-                &mut editor.second_pose,
-                "the gizmo changes the second pose (b) only",
-            );
-            name(ui, &mut mover.name)
-                | mesh(ui, &mut mover.mesh)
-                | look(ui, &mut mover.look)
-                | pose(ui, "pose at the start (a)", &mut mover.a)
-                | pose(ui, "second pose (b)", &mut mover.b)
-                | number(
-                    ui,
-                    "seconds from a to b",
-                    &mut mover.seconds,
-                    0.05,
-                    0.05..=600.0,
-                )
-        }
-        Item::Light(index) => {
-            let light = room.lights.get_mut(*index)?;
-            let down = || [0.0, -1.0, 0.0];
-            name(ui, &mut light.name)
-                | vector(ui, "position", &mut light.position, None, 0.01)
-                | number(ui, "radius", &mut light.radius, 0.005, 0.01..=10.0)
-                | color(ui, "color", &mut light.color)
-                | number(ui, "intensity", &mut light.intensity, 0.1, 0.0..=10000.0)
-                | toggle(ui, "on", &mut light.on, Some(true))
-                // One group: a direction is of use only with a cone.
-                | {
-                    let (cone, direction) = (&mut light.cone, &mut light.direction);
-                    crate::widgets::optional(ui, "cone", cone, || 30.0, |ui, cone| {
-                        number(ui, "degrees to the edge", cone, 0.5, 1.0..=180.0)
-                            | crate::widgets::optional(
-                                ui,
-                                "direction (not set: down)",
-                                direction,
-                                down,
-                                |ui, to| vector(ui, "", to, None, 0.01),
-                            )
-                    })
-                }
-                // A lamp that hums. An event finds the sound by the name of the light.
-                | crate::widgets::optional(ui, "sound", &mut light.sound, SoundDef::default, |ui, sound| {
-                    let default = SoundDef::default();
-                    crate::widgets::file(ui, "sound file", &mut sound.file, &crate::widgets::SOUNDS)
-                        | number_or(ui, "volume", &mut sound.volume, Some(default.volume), 0.01, 0.0..=4.0)
-                        | number_or(ui, "reach (radius)", &mut sound.reach, Some(default.reach), 0.05, 0.1..=100.0)
-                        | toggle(ui, "on at the start", &mut sound.on, Some(default.on))
-                })
-        }
+    // What is not a field of an item kind.
+    match item {
+        // A spawn point is a name and a place in a map of the room.
         Item::Spawn(spawn) => {
             let mut new = spawn.clone();
             let renamed =
                 crate::widgets::text(ui, "name", &mut new) && editor.rename_spawn(spawn, &new);
             let now = if renamed { &new } else { spawn };
             let position = editor.document.room.spawns.get_mut(now)?;
-            renamed | vector(ui, "position", position, None, 0.01)
+            return Some(renamed | vector(ui, "position", position, None, 0.01));
         }
         // `event_panel` shows an event.
         Item::Event(_) => return None,
-    })
+        Item::Mover(_) => {
+            let label = "the gizmo changes the second pose (b) only";
+            ui.checkbox(&mut editor.second_pose, label);
+        }
+        _ => {}
+    }
+
+    let (type_name, mut tree) = editor.document.tree(item)?;
+    let types = world.get_resource::<FieldTypes>();
+    let Some(table) = types.and_then(|types| types.get(type_name)) else {
+        ui.weak(format!(
+            "No module gave the type \"{type_name}\" its fields."
+        ));
+        return Some(false);
+    };
+    let name_before = tree.get("name").cloned();
+    // The lists of the room that a field picks from, with the labels of the outliner.
+    let doorways = &editor.document.room.doorways;
+    let lists = |list: &str| -> Vec<String> {
+        let doorways = doorways.iter().enumerate();
+        match list {
+            "doorways" => doorways
+                .map(|(index, doorway)| format!("doorway {index} ({:?})", doorway.wall))
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    if !crate::fields::show(ui, &table.kind, &mut tree, &lists) {
+        return Some(false);
+    }
+    // The name of an item that events find by its name.
+    if tree.get("name") != name_before.as_ref() {
+        let old = name_before.as_ref().and_then(Value::as_str);
+        *old_name = Some(old.map(str::to_owned));
+    }
+    if let Err(error) = editor.document.set_tree(item, tree) {
+        editor.status = format!("The change was not taken: {error:#}");
+        return Some(false);
+    }
+    Some(true)
 }

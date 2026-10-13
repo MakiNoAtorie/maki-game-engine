@@ -3,7 +3,7 @@
 //! - The property grid: [`property_grid`] and its rows ([`row`], [`number`],
 //!   [`vector`], [`color`], [`text`], [`toggle`], [`choice`], [`optional`]). A label
 //!   column and a value column. Each row function returns true in a frame where the
-//!   user changed the value.
+//!   user changed the value. [`help`] gives the next row a hover text.
 //! - The tree: [`tree_filter`], [`tree_group`], [`tree_row`].
 //! - The tool button: [`tool_button`], for a command of the command list.
 //! - The notice: [`notify`]. It shows over a corner of the window and stops no work.
@@ -33,6 +33,28 @@ pub fn property_grid<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     result
 }
 
+const HELP: &str = "property grid help";
+
+/// The hover text of the label of the next row. An empty text: none.
+// Not a parameter of each row function: most rows have no help.
+pub fn help(ui: &Ui, text: &str) {
+    let id = egui::Id::new(HELP);
+    ui.data_mut(|data| {
+        data.remove::<String>(id);
+        if !text.is_empty() {
+            data.insert_temp(id, text.to_owned());
+        }
+    });
+}
+
+/// Shows the text of [`help`] over a label, one time.
+fn with_help(ui: &Ui, label: Response) {
+    let text: Option<String> = ui.data_mut(|data| data.remove_temp(egui::Id::new(HELP)));
+    if let Some(text) = text {
+        label.on_hover_text(text);
+    }
+}
+
 /// One row: the label in the label column, and what `add` draws in the value
 /// column. An empty label takes no room.
 pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
@@ -46,7 +68,8 @@ pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
             let layout = egui::Layout::left_to_right(egui::Align::Center);
             ui.allocate_ui_with_layout(size, layout, |ui| {
                 ui.set_min_width(width);
-                ui.add(egui::Label::new(label).truncate());
+                let label = ui.add(egui::Label::new(label).truncate());
+                with_help(ui, label);
             });
         }
         add(ui)
@@ -225,7 +248,9 @@ pub fn optional<T>(
     edit: impl FnOnce(&mut Ui, &mut T) -> bool,
 ) -> bool {
     let mut set = value.is_some();
-    let mut changed = ui.checkbox(&mut set, label).changed();
+    let switch = ui.checkbox(&mut set, label);
+    let mut changed = switch.changed();
+    with_help(ui, switch);
     if changed {
         *value = set.then(default);
     }
