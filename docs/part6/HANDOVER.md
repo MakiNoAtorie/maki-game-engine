@@ -43,6 +43,8 @@ The owner plans by questions and answers: a question, an answer with a recommend
 
 ## Next: stage 48, the room file is a list of objects
 
+The session of 2026-10-12 ended after stage 47, at the word of the owner. Stage 48 starts when the owner says so.
+
 1. Read `README.md` 2.1 and 2.14, and `stage-47.md` (section 6: what stage 48 must decide). Write the stage file `stage-48-objects.md` in the form of the others, then build it.
 2. Two things to decide in the stage file, and to ask the owner if the code does not give the answer:
    - A component with no code in the file. RON needs the type to read a value: a component of a script DLL that did not build cannot become a tree. Keep its text, or a form of the file that reads with no type.
