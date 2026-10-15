@@ -955,8 +955,8 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
         assert_eq!(room.objects[4].pose.position, [1.0, 0.0, 0.0]);
         let file = directory.join("prefabs/pair.prefab");
         let places = |file: &Path| -> Vec<[f32; 3]> {
-            let props = read_prefab(file).unwrap().props;
-            props.iter().map(|prop| prop.pose.position).collect()
+            let objects = read_prefab(file).unwrap().objects;
+            objects.iter().map(|object| object.pose.position).collect()
         };
         assert_eq!(places(&file), [[0.0, 0.5, 0.0], [1.0, 0.5, 0.0]]);
         // The world shows the two cubes, and a click on one selects the prefab.
@@ -1184,6 +1184,7 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
         name: None,
         file: PathBuf::from("table.prefab"),
         pose: PoseDef::default(),
+        changes: Default::default(),
     };
     room.objects.push(prefab.into_object());
     let mut items = vec![Item::Room];
@@ -1350,4 +1351,49 @@ fn an_object_shows_each_component_and_keeps_one_with_no_type() {
     );
     let again = Document::parse(Path::new("room.ron"), &saved, &registry).unwrap();
     assert_eq!(again.text(), saved);
+}
+
+/// An instance of a prefab shows the objects of its file with its changes, in the
+/// world and in the inspector; a look in the inspector changes nothing.
+#[test]
+fn an_instance_shows_its_prefab_with_its_changes() {
+    use maki_scene::{PrefabUse, ron_options};
+
+    let (app, directory) = editor_app("instance");
+    std::fs::create_dir_all(directory.join("prefabs")).unwrap();
+    let lamp = r#"(objects: [(name: "lamp", pose: (position: (0.0, 2.0, 0.0)),
+        components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})])"#;
+    std::fs::write(directory.join("prefabs/lamp.prefab"), lamp).unwrap();
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        // A change of the intensity only; the radius follows the file.
+        let changes = ron_options()
+            .from_str(r#"{"lamp/light": {"intensity": 3.0}}"#)
+            .unwrap();
+        let used = PrefabUse {
+            name: Some("lamp 2".to_owned()),
+            file: PathBuf::from("prefabs/lamp.prefab"),
+            pose: Default::default(),
+            changes,
+        };
+        let mut editor = app.resource_mut::<Editor>();
+        editor.document.room.objects.push(used.into_object());
+        editor.document.dirty = true;
+        let item = Item::Object(editor.document.room.objects.len() - 1);
+        editor.selection = vec![item];
+        frames(&mut app, 3);
+        let before = app.world().resource::<Editor>().document.clone();
+        frames(&mut app, 3);
+        assert_eq!(app.world().resource::<Editor>().document, before);
+
+        let world = app.world();
+        let mut lights = world.try_query::<(&Light, &RoomItem)>().unwrap();
+        let of_instance: Vec<f32> = lights
+            .iter(world)
+            .filter(|(_, at)| at.0 == before.room.objects.len() - 1)
+            .map(|(light, _)| light.intensity)
+            .collect();
+        assert_eq!(of_instance, [3.0]);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
 }

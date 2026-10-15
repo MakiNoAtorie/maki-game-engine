@@ -161,8 +161,10 @@ fn compact(text: &str) -> String {
 pub struct ComponentType {
     /// The tree of a text. `Err`: why the type does not read it.
     pub tree: fn(&ComponentText) -> Result<Value, String>,
-    /// The text of a tree. `Err`: why the type does not read it.
-    pub text: fn(&Value) -> Result<ComponentText, String>,
+    /// The text of a tree over the old text of the component: a field that the tree
+    /// does not have (`#[field(skip)]`) keeps its old value. `Err`: why the type does
+    /// not read it.
+    pub text: fn(&ComponentText, &Value) -> Result<ComponentText, String>,
 }
 
 /// The types of components by name. [`add_component_type`] adds one.
@@ -188,9 +190,23 @@ pub fn add_component_type<T: Fields + Serialize + DeserializeOwned>(
             Ok(value) => Ok(value.tree()),
             Err(error) => Err(error.to_string()),
         },
-        text: |tree| match read::<T>(tree.clone()) {
-            Ok(value) => Ok(ComponentText::of(&value)),
-            Err(error) => Err(error.to_string()),
+        text: |old, tree| {
+            // The old value with each field of the tree in place of its own.
+            let old = old
+                .read::<T>()
+                .ok()
+                .and_then(|old| serde_json::to_value(old).ok());
+            let full = match (old, tree) {
+                (Some(Value::Object(mut fields)), Value::Object(new)) => {
+                    fields.extend(new.clone());
+                    Value::Object(fields)
+                }
+                _ => tree.clone(),
+            };
+            match read::<T>(full) {
+                Ok(value) => Ok(ComponentText::of(&value)),
+                Err(error) => Err(error.to_string()),
+            }
         },
     };
     app.init_resource::<ComponentTypes>();
@@ -286,7 +302,7 @@ mod tests {
         let tree = (prop.tree)(text).unwrap();
         assert_eq!(tree["collider"], Value::Bool(false));
         // The text that the type writes reads as the same prop.
-        let back = (prop.text)(&tree).unwrap();
+        let back = (prop.text)(text, &tree).unwrap();
         assert_eq!(back.read::<Prop>().unwrap(), text.read::<Prop>().unwrap());
         assert!((prop.tree)(&ComponentText::parse("(angle: 1.0)").unwrap()).is_err());
         assert!(types.get("swing").is_none());

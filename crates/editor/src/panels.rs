@@ -9,6 +9,7 @@
 //! entities of the room. A button of a command is made from the command list
 //! (`maki_ui::ToolCommands`): its name and its key are written at one place.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::{Mut, World};
@@ -832,5 +833,123 @@ fn components(ui: &mut Ui, world: &World, editor: &mut Editor, index: usize) -> 
             Err(error) => editor.status = format!("The change was not taken: {error:#}"),
         }
     }
-    changed
+    changed | instance(ui, tables, editor, index, types)
+}
+
+/// Takes the value of the prefab file again for `field` of the change `key` (all of
+/// it for an empty `field`). A change with no field left goes.
+fn reset(changes: &mut BTreeMap<String, Value>, key: &str, field: &str) {
+    match changes.get_mut(key) {
+        Some(Value::Object(fields)) if !field.is_empty() => {
+            fields.remove(field);
+            if fields.is_empty() {
+                changes.remove(key);
+            }
+        }
+        _ => drop(changes.remove(key)),
+    }
+}
+
+/// The objects of the prefab file of an instance, a group for each of their
+/// components with the changes of the instance merged in. A changed field has a
+/// mark and a button that takes the value of the file again. True: a change.
+// ponytail: the prefab file is read in each frame while its instance is selected; a
+// cache by the time of the file if it shows in a profile.
+fn instance(
+    ui: &mut Ui,
+    tables: Option<&FieldTypes>,
+    editor: &mut Editor,
+    index: usize,
+    types: &ComponentTypes,
+) -> bool {
+    let Some(Ok(used)) = editor.document.room.objects[index].prefab() else {
+        return false;
+    };
+    let directory = editor.document.path.parent().unwrap_or(Path::new(""));
+    let prefab = match maki_scene::read_prefab(&directory.join(&used.file)) {
+        Ok(prefab) => prefab,
+        Err(error) => {
+            ui.weak(format!("{error:#}"));
+            return false;
+        }
+    };
+    let mut changes = used.changes.clone();
+    for (number, object) in prefab.objects.iter().enumerate() {
+        ui.separator();
+        let label = object
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("object {number}"));
+        ui.strong(format!("{label} (of the prefab)"));
+        for (name, text) in &object.components {
+            let key = maki_scene::change_key(number, object, name);
+            let (Some(kind), Some(table)) = (types.get(name), tables.and_then(|t| t.get(name)))
+            else {
+                ui.weak(format!("{name}: no module registered this type"));
+                continue;
+            };
+            let Ok(base) = (kind.tree)(text) else {
+                ui.weak(format!("{name}: the file has a value that does not read"));
+                continue;
+            };
+            ui.label(name);
+            let mut tree = base.clone();
+            if let Some(change) = changes.get(&key) {
+                maki_scene::merge(&mut tree, change);
+            }
+            let shown = ui.push_id(&key, |ui| {
+                crate::fields::show(ui, &table.kind, &mut tree, &|_| Vec::new())
+            });
+            if shown.inner {
+                match maki_scene::difference(&base, &tree) {
+                    Some(change) => changes.insert(key.clone(), change),
+                    None => changes.remove(&key),
+                };
+            }
+            // The marks of the changed fields, each with its reset.
+            let fields: Vec<String> = match changes.get(&key) {
+                Some(Value::Object(fields)) => fields.keys().cloned().collect(),
+                Some(_) => vec![String::new()],
+                None => Vec::new(),
+            };
+            for field in fields {
+                ui.horizontal(|ui| {
+                    let what = if field.is_empty() { "all" } else { &field };
+                    ui.colored_label(HINT, format!("changed: {what}"));
+                    if ui.button("reset").clicked() {
+                        reset(&mut changes, &key, &field);
+                    }
+                });
+            }
+        }
+    }
+    if changes == used.changes {
+        return false;
+    }
+    let object = &mut editor.document.room.objects[index];
+    let prefab = maki_scene::PrefabFile {
+        file: used.file,
+        changes,
+    };
+    object.set_component("prefab", &prefab);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reset_takes_the_value_of_the_file_again() {
+        let text =
+            r#"{"lamp/light": {"intensity": 3.0, "radius": 0.2}, "box/prop": {"Cube": 1.0}}"#;
+        let mut changes: BTreeMap<String, Value> =
+            maki_scene::ron_options().from_str(text).unwrap();
+        reset(&mut changes, "lamp/light", "intensity");
+        assert_eq!(changes["lamp/light"].as_object().unwrap().len(), 1);
+        reset(&mut changes, "lamp/light", "radius");
+        assert!(!changes.contains_key("lamp/light"));
+        reset(&mut changes, "box/prop", "");
+        assert!(changes.is_empty());
+    }
 }

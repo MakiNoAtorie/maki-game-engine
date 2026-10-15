@@ -11,6 +11,8 @@ glam.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+# The changes of a prefab instance are trees (`maki_core::fields::Value`).
+serde_json.workspace = true
 ron.workspace = true
 
 [dev-dependencies]

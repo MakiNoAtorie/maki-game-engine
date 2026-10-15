@@ -36,7 +36,8 @@ use maki_core::{Fields, Interpolated, Transform};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ObjectDef};
+use crate::object::{ComponentText, ComponentTypes, ObjectDef};
+use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, Player, SoundSource,
     room_colliders,
@@ -202,58 +203,13 @@ impl PoseDef {
     }
 }
 
-/// A prefab file that a room names. The items of the file show in the room; a
-/// change of the file changes each room that names it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PrefabUse {
-    pub name: Option<String>,
-    /// From the directory of the room file.
-    pub file: PathBuf,
-    /// Where the origin of the prefab is in the room, and its turn and scale.
-    pub pose: PoseDef,
-}
-
-/// The component of an object that shows a prefab file at the pose of the object.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
-#[serde(deny_unknown_fields)]
-pub struct PrefabFile {
-    /// From the directory of the room file.
-    #[field(label = "prefab file", file = "prefab")]
-    pub file: PathBuf,
-}
-
 /// The component of an object that is a place where the player can enter the room:
 /// at the position of the object. Events name it by the name of the object.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnPoint {}
 
-impl PrefabUse {
-    /// The prefab use as an object with the component `prefab`.
-    pub fn into_object(self) -> ObjectDef {
-        let mut object = ObjectDef {
-            name: self.name,
-            pose: self.pose,
-            ..ObjectDef::default()
-        };
-        object.set_component("prefab", &PrefabFile { file: self.file });
-        object
-    }
-}
-
 impl ObjectDef {
-    /// The object as a prefab use, if it has the component `prefab`.
-    pub fn prefab(&self) -> Option<Result<PrefabUse, ron::error::SpannedError>> {
-        Some(
-            self.component::<PrefabFile>("prefab")?
-                .map(|prefab| PrefabUse {
-                    name: self.name.clone(),
-                    file: prefab.file,
-                    pose: self.pose,
-                }),
-        )
-    }
-
     /// A spawn point at `position`.
     pub fn spawn_point(name: String, position: [f32; 3]) -> Self {
         let mut object = ObjectDef {
@@ -272,34 +228,6 @@ impl ObjectDef {
     pub fn is_spawn(&self) -> bool {
         self.components.contains_key("spawn")
     }
-}
-
-/// The content of a prefab file: props and lights around one origin (a table with
-/// its chairs). The format of an item is that of a room file. A file name in it (a
-/// model, a texture) starts at the directory of the room file that names the prefab.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrefabDef {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub props: Vec<PropDef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lights: Vec<LightDef>,
-}
-
-/// Reads a prefab file. The error has the file, the line, and the column.
-pub fn read_prefab(path: &Path) -> Result<PrefabDef> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read prefab file {}", path.display()))?;
-    ron_options()
-        .from_str(&text)
-        .map_err(|error| anyhow!("{}:{error}", path.display()))
-}
-
-/// The text of a prefab file.
-pub fn prefab_text(prefab: &PrefabDef) -> String {
-    let config = ron::ser::PrettyConfig::default();
-    let text = ron_options().to_string_pretty(prefab, config);
-    text.expect("a prefab has no value that RON cannot write")
 }
 
 /// The pose in the room of an item of a prefab: `inner` in the space of `outer`.
@@ -1123,7 +1051,12 @@ pub(crate) fn reload_changed(
         .iter()
         .filter(|(path, model)| old(path, model));
     let old_models: Vec<PathBuf> = models_of.map(|(path, _)| path.clone()).collect();
-    if old_meshes.is_empty() && old_models.is_empty() {
+    // A prefab file is read at each load of the room.
+    let prefabs = prefab_files(&current);
+    let prefab = files
+        .iter()
+        .any(|file| prefabs.iter().any(|prefab| prefab == file));
+    if old_meshes.is_empty() && old_models.is_empty() && !prefab {
         return;
     }
     for path in old_models {
@@ -1142,16 +1075,35 @@ pub(crate) fn reload_changed(
     }
 }
 
-/// Runs in `Update`, after the room loader: tells the watch the model files of the
-/// room.
-pub(crate) fn watch_models(cache: Res<RoomModels>, watch: Option<ResMut<AssetWatch>>) {
+/// Runs in `Update`, after the room loader: tells the watch the model files and the
+/// prefab files of the room.
+pub(crate) fn watch_models(
+    cache: Res<RoomModels>,
+    current: Res<CurrentRoom>,
+    watch: Option<ResMut<AssetWatch>>,
+) {
     use bevy_ecs::change_detection::DetectChanges;
 
-    if let Some(mut watch) = watch.filter(|watch| watch.on && cache.is_changed()) {
+    let Some(mut watch) = watch.filter(|watch| watch.on) else {
+        return;
+    };
+    if cache.is_changed() {
         let check: maki_assets::Check = maki_assets::check_model;
         let files = cache.by_path.keys().map(|path| (path.clone(), check));
         watch.set("models", files.collect());
     }
+    if current.is_changed() {
+        let check: maki_assets::Check = |path| read_prefab(path).map(drop);
+        let files = prefab_files(&current).into_iter();
+        watch.set("prefabs", files.map(|path| (path, check)).collect());
+    }
+}
+
+/// The prefab files that the current room names.
+fn prefab_files(current: &CurrentRoom) -> Vec<PathBuf> {
+    let directory = current.path.parent().unwrap_or(Path::new(""));
+    let prefabs = current.def.each_prefab().into_iter();
+    prefabs.map(|(_, used)| directory.join(used.file)).collect()
 }
 
 /// A model of a prop while it loads. `spawn_loaded_models` replaces the entity with
@@ -1179,6 +1131,7 @@ pub fn load_requested_room(
     mut textures: ResMut<Textures>,
     mut cache: ResMut<RoomModels>,
     mut loads: ResMut<ModelLoads>,
+    types: Res<ComponentTypes>,
     room_entities: Query<Entity, With<RoomEntity>>,
     mut players: Query<&mut Interpolated, With<Player>>,
 ) {
@@ -1254,6 +1207,7 @@ pub fn load_requested_room(
     cache.old_meshes.clear();
     let mut spawner = Spawner {
         commands: &mut commands,
+        types: &types,
         meshes: &mut meshes,
         models: &mut models,
         textures: &mut textures,
@@ -1305,6 +1259,8 @@ pub fn load_requested_room(
 /// Spawns the entities of a room.
 struct Spawner<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
+    /// For the changes of a prefab instance.
+    types: &'a ComponentTypes,
     meshes: &'a mut Assets<Mesh>,
     models: &'a mut Assets<Model>,
     textures: &'a mut Textures,
@@ -1374,23 +1330,27 @@ impl Spawner<'_, '_, '_> {
             self.commands.spawn((RoomEntity, collider));
         }
         for (index, object) in def.objects.iter().enumerate() {
-            // `check_room` read the text of each component of the scene.
-            let item = RoomItem(index);
-            if let Some(Ok(prop)) = object.prop() {
-                self.prop(&prop, item);
-            }
-            if let Some(Ok(light)) = object.light() {
-                self.light(&light, item);
-            }
-            if let (Some(Ok(door)), Some(Ok(doorway))) = (object.door(), object.doorway()) {
-                self.door(&object.name, &door, item, &doorway, width, depth);
-            }
-            if let Some(Ok(mover)) = object.mover() {
-                self.mover(&mover, item);
-            }
-            if let Some(Ok(used)) = object.prefab() {
-                self.prefab(&used, item);
-            }
+            self.object(object, RoomItem(index), width, depth);
+        }
+    }
+
+    /// The entities of the components of the scene of an object. `check_room` read
+    /// the text of each of them.
+    fn object(&mut self, object: &ObjectDef, item: RoomItem, width: f32, depth: f32) {
+        if let Some(Ok(prop)) = object.prop() {
+            self.prop(&prop, item);
+        }
+        if let Some(Ok(light)) = object.light() {
+            self.light(&light, item);
+        }
+        if let (Some(Ok(door)), Some(Ok(doorway))) = (object.door(), object.doorway()) {
+            self.door(&object.name, &door, item, &doorway, width, depth);
+        }
+        if let Some(Ok(mover)) = object.mover() {
+            self.mover(&mover, item);
+        }
+        if let Some(Ok(used)) = object.prefab() {
+            self.prefab(&used, item, width, depth);
         }
     }
 
@@ -1414,7 +1374,10 @@ impl Spawner<'_, '_, '_> {
     /// not read: an error in the log, and the room shows without it.
     // ponytail: the file is read at each load of the room. A store by path when a
     // room names many prefabs.
-    fn prefab(&mut self, used: &PrefabUse, item: RoomItem) {
+    /// The objects of a prefab file, each at its place in the room, with the changes
+    /// of the instance. A file that does not read: an error in the log, and the room
+    /// shows without it.
+    fn prefab(&mut self, used: &PrefabUse, item: RoomItem, width: f32, depth: f32) {
         let prefab = match read_prefab(&self.directory.join(&used.file)) {
             Ok(prefab) => prefab,
             Err(error) => {
@@ -1422,30 +1385,13 @@ impl Spawner<'_, '_, '_> {
                 return;
             }
         };
-        let outer = used.pose.transform();
-        for prop in &prefab.props {
-            self.prop_at(prop, pose_in(&outer, &prop.pose.transform()), item);
-        }
-        for light in &prefab.lights {
-            let at = Transform::from_translation(light.position.into());
-            let direction = light
-                .direction
-                .map(|direction| outer.rotation * Vec3::from(direction));
-            let light = LightDef {
-                position: pose_in(&outer, &at).translation.into(),
-                direction: direction.map(Into::into),
-                ..light.clone()
-            };
-            self.light(&light, item);
+        for object in instance_objects(used, &prefab, self.types) {
+            self.object(&object, item, width, depth);
         }
     }
 
     fn prop(&mut self, prop: &PropDef, item: RoomItem) {
-        self.prop_at(prop, prop.pose.transform(), item);
-    }
-
-    /// A prop at a pose that is not that of its definition (an item of a prefab).
-    fn prop_at(&mut self, prop: &PropDef, transform: Transform, item: RoomItem) {
+        let transform = prop.pose.transform();
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
                 let path = self.directory.join(path);
@@ -1978,8 +1924,10 @@ mod tests {
             let mut loads = ModelLoads::default();
             let mut textures = Textures::default();
             let mut commands = world.commands();
+            let types = ComponentTypes::default();
             let mut spawner = Spawner {
                 commands: &mut commands,
+                types: &types,
                 meshes: &mut meshes,
                 models: &mut models,
                 textures: &mut textures,
@@ -2430,13 +2378,11 @@ watch = true",
         let directory = std::env::temp_dir().join(format!("maki-prefabs-{}", std::process::id()));
         std::fs::create_dir_all(directory.join("prefabs")).unwrap();
         // A table, a chair 1 m in front of it, and a lamp 2 m above the origin.
-        let table = r#"(
-            props: [
-                (name: "table", mesh: Cube(1.0), pose: (position: (0.0, 0.5, 0.0))),
-                (name: "chair", mesh: Cube(0.4), pose: (position: (0.0, 0.2, 1.0))),
-            ],
-            lights: [(position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 3.0)],
-        )"#;
+        let table = r#"(objects: [
+            (name: "table", pose: (position: (0.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(1.0))}),
+            (name: "chair", pose: (position: (0.0, 0.2, 1.0)), components: {"prop": (mesh: Cube(0.4))}),
+            (pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 3.0)}),
+        ])"#;
         let file = directory.join("prefabs/table.prefab");
         std::fs::write(&file, table).unwrap();
         // Room A has it at a place. Room B has it two times, one with a quarter turn,

@@ -202,7 +202,6 @@ impl Document {
         let component_type = types
             .get(name)
             .with_context(|| format!("no module registered the type \"{name}\""))?;
-        let text = (component_type.text)(tree).map_err(|error| anyhow!(error))?;
         let object = self
             .room
             .objects
@@ -212,7 +211,7 @@ impl Document {
             .components
             .get_mut(name)
             .context("the object has no such component")?;
-        *slot = text;
+        *slot = (component_type.text)(slot, tree).map_err(|error| anyhow!(error))?;
         Ok(())
     }
 

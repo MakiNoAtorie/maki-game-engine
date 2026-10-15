@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use glam::Vec3;
 use maki_assets::{Doorway, Wall};
 use maki_audio::AudioCommand;
+use maki_core::Transform;
 use maki_events::{Area, Builtin, Command, CommandRegistry, CommandSet, EventDef, Page, Trigger};
 use maki_scene::{
-    DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef, PrefabDef, PrefabUse, PropDef,
-    RoomDef, pose_in, pose_out, prefab_text, read_prefab,
+    ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef, PrefabDef,
+    PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
 };
 
 use crate::ron_text::Notes;
@@ -306,6 +307,7 @@ impl Document {
                     name: None,
                     file,
                     pose: on_floor(0.0),
+                    changes: Default::default(),
                 };
                 room.objects.push(used.into_object());
                 let name = self.unique_name(&item, &stem);
@@ -497,11 +499,11 @@ impl Document {
         copies
     }
 
-    /// Writes the selected props and lights as a prefab file, and puts one prefab in
+    /// Writes the selected objects as a prefab file, and puts one instance of it in
     /// their place. `file`: from the directory of the room file. `outer`: the pose
-    /// that the prefab gets in this room; `None`: at the floor point of the first of
-    /// the items, with no turn. A file of that name is replaced: each room that
-    /// names it shows the new content. Returns the prefab. `Err`: why not.
+    /// that the instance gets in this room; `None`: at the floor point of the first
+    /// of the objects, with no turn. A file of that name is replaced: each room that
+    /// names it shows the new content. Returns the instance. `Err`: why not.
     // The file is written now, not with the room, and undo does not bring the old
     // file back: a prefab file is not a part of the document.
     pub fn make_prefab(
@@ -510,51 +512,37 @@ impl Document {
         file: &Path,
         outer: Option<PoseDef>,
     ) -> Result<Item, String> {
-        let room = &self.room;
-        let is_part = |item: &&Item| match item {
-            // A prefab file has props and lights: an object with another component
-            // would lose it.
-            Item::Object(index) => room.objects.get(*index).is_some_and(|object| {
-                let mut names = object.components.keys();
-                !object.components.is_empty() && names.all(|name| name == "prop" || name == "light")
-            }),
-            _ => false,
+        // No prefab in a prefab yet: an instance is left out.
+        let is_part = |item: &&Item| {
+            let object = self.object(item);
+            object.is_some_and(|object| !object.components.contains_key("prefab"))
         };
         let parts: Vec<Item> = items.iter().filter(is_part).cloned().collect();
         let Some(first) = parts.first() else {
-            return Err("A prefab is made of props and lights: select some first".to_owned());
+            return Err(
+                "A prefab is made of objects that are not prefabs: select some first".to_owned(),
+            );
         };
         let outer = outer.unwrap_or_else(|| {
-            let (at, _) = self.pose_of(first, false).expect("a prop or a light");
+            let at = self
+                .object(first)
+                .expect("`parts` has objects")
+                .pose
+                .position;
             PoseDef {
-                position: in_floor(at),
+                position: in_floor(at.into()),
                 ..PoseDef::default()
             }
         });
         let space = outer.transform();
-        let (mut props, mut lights) = (Vec::new(), Vec::new());
-        for item in &parts {
-            let object = self.object(item).expect("`parts` has objects");
-            props.extend(object.prop().and_then(Result::ok));
-            lights.extend(object.light().and_then(Result::ok));
-        }
-        let mut prefab = PrefabDef::default();
-        for mut prop in props {
-            prop.pose = tidy(PoseDef::of(&pose_out(&space, &prop.pose.transform())));
-            prefab.props.push(prop);
-        }
-        for mut light in lights {
-            let at = PoseDef {
-                position: light.position,
-                ..PoseDef::default()
-            };
-            light.position = tidy(PoseDef::of(&pose_out(&space, &at.transform()))).position;
-            let back = space.rotation.inverse();
-            light.direction = light
-                .direction
-                .map(|direction| (back * Vec3::from(direction)).into());
-            prefab.lights.push(light);
-        }
+        let objects = parts
+            .iter()
+            .map(|item| self.object(item).expect("`parts` has objects"));
+        let prefab = PrefabDef {
+            objects: objects
+                .map(|object| into_space(object.clone(), &space))
+                .collect(),
+        };
         let path = self.path.parent().unwrap_or(Path::new("")).join(file);
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))
             .and_then(|()| std::fs::write(&path, prefab_text(&prefab)))
@@ -568,6 +556,7 @@ impl Document {
             // Forward slashes: the same room file on each system.
             file: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
             pose: outer,
+            changes: Default::default(),
         };
         self.room.objects.push(used.into_object());
         let name = self.unique_name(&item, &stem);
@@ -576,34 +565,23 @@ impl Document {
         Ok(item)
     }
 
-    /// Puts the props and the lights of a prefab into the room, each at its place,
-    /// in place of the prefab: to change them, and to make the prefab again. Returns
-    /// the new items, and the file and the pose that the prefab had.
-    pub fn unpack_prefab(&mut self, item: &Item) -> Result<(Vec<Item>, PathBuf, PoseDef), String> {
+    /// Puts the objects of a prefab instance into the room, each at its place and
+    /// with the changes of the instance, in place of the instance: to change them,
+    /// and to make the prefab again. `types`: for the changes. Returns the new
+    /// objects, and the file and the pose that the instance had.
+    pub fn unpack_prefab(
+        &mut self,
+        item: &Item,
+        types: &ComponentTypes,
+    ) -> Result<(Vec<Item>, PathBuf, PoseDef), String> {
         let Some(used) = self.prefab_use(item) else {
             return Err("Select a prefab first".to_owned());
         };
         let path = self.path.parent().unwrap_or(Path::new("")).join(&used.file);
         let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
-        let space = used.pose.transform();
-        let mut objects = Vec::new();
-        for mut prop in prefab.props {
-            prop.pose = tidy(PoseDef::of(&pose_in(&space, &prop.pose.transform())));
-            objects.push(prop.into_object());
-        }
-        for mut light in prefab.lights {
-            let at = PoseDef {
-                position: light.position,
-                ..PoseDef::default()
-            };
-            light.position = tidy(PoseDef::of(&pose_in(&space, &at.transform()))).position;
-            light.direction = light
-                .direction
-                .map(|direction| (space.rotation * Vec3::from(direction)).into());
-            objects.push(light.into_object());
-        }
         let mut items = Vec::new();
-        for mut object in objects {
+        for mut object in instance_objects(&used, &prefab, types) {
+            object.pose = tidy(object.pose);
             let item = Item::Object(self.room.objects.len());
             let name = object.name.take();
             self.room.objects.push(object);
@@ -611,8 +589,7 @@ impl Document {
             self.room.objects.last_mut().expect("pushed above").name = name;
             items.push(item);
         }
-        // The new objects are behind the prefab: their indices go one down if it
-        // was an object.
+        // The new objects are behind the instance: their indices go one down.
         self.delete(std::slice::from_ref(item));
         if let Item::Object(gone) = item {
             for new in &mut items {
@@ -640,6 +617,24 @@ impl Document {
         (self.room, self.events, self.notes) = content;
         self.dirty = true;
     }
+}
+
+/// An object of the room in the space of a prefab at `space`: the inverse of the
+/// place that `maki_scene::instance_objects` gives it.
+fn into_space(mut object: ObjectDef, space: &Transform) -> ObjectDef {
+    object.pose = tidy(PoseDef::of(&pose_out(space, &object.pose.transform())));
+    if let Some(Ok(mut light)) = object.light() {
+        let back = space.rotation.inverse();
+        light.direction = light
+            .direction
+            .map(|direction| (back * Vec3::from(direction)).into());
+        object.set_light(light);
+    }
+    if let Some(Ok(mut mover)) = object.mover() {
+        mover.b = tidy(PoseDef::of(&pose_out(space, &mover.b.transform())));
+        object.set_mover(mover);
+    }
+    object
 }
 
 /// The index of an item in its list. 0 for the room.

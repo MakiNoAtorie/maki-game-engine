@@ -6,6 +6,7 @@
 mod collision;
 mod mover;
 mod object;
+mod prefab;
 mod room;
 
 use bevy_ecs::component::Component;
@@ -17,13 +18,16 @@ use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transfo
 pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{ComponentText, ComponentType, ComponentTypes, ObjectDef, add_component_type};
+pub use prefab::{
+    PrefabDef, PrefabFile, PrefabUse, change_key, changed_text, difference, instance_objects,
+    merge, prefab_text, read_prefab,
+};
 pub use room::{
     CurrentRoom, DoorLeaf, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef, MoverPath,
-    PoseDef, PrefabDef, PrefabFile, PrefabUse, Prop, PropDef, RoomCheck, RoomDef, RoomEntity,
-    RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest, RoomShell, RoomTarget,
-    RoomValidator, RoomValidators, SoundDef, SpawnPoint, TextureDef, check_room,
-    load_requested_room, parse_room, patch_room, pose_in, pose_out, prefab_text, read_prefab,
-    read_room, ron_options,
+    PoseDef, Prop, PropDef, RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride,
+    RoomProblem, RoomRequest, RoomShell, RoomTarget, RoomValidator, RoomValidators, SoundDef,
+    SpawnPoint, TextureDef, check_room, load_requested_room, parse_room, patch_room, pose_in,
+    pose_out, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.

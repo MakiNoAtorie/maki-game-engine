@@ -66,8 +66,8 @@ use maki_platform::{
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
-    ActiveCamera, Camera, CurrentRoom, MeshInstance, Player, RoomDef, RoomOverride, RoomRequest,
-    RoomTarget, load_requested_room, patch_room,
+    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, Player, RoomDef, RoomOverride,
+    RoomRequest, RoomTarget, load_requested_room, patch_room,
 };
 use maki_ui::{COMMAND_SEARCH, NoticeLevel, Panels, TOGGLE_HELP, ToolCommand, notify};
 use serde::{Deserialize, Serialize};
@@ -657,16 +657,20 @@ impl Editor {
                     Err(reason) => self.status = reason,
                 }
             }
-            Command::UnpackPrefab => match self.document.unpack_prefab(&self.primary()) {
-                Ok((items, file, pose)) => {
-                    let stem = file.file_stem().unwrap_or_default();
-                    self.prefab_name = stem.to_string_lossy().into_owned();
-                    self.unpacked = Some((file, pose));
-                    self.selection = items;
-                    self.status = "Unpacked".to_owned();
+            Command::UnpackPrefab => {
+                let no_types = ComponentTypes::default();
+                let types = world.get_resource::<ComponentTypes>().unwrap_or(&no_types);
+                match self.document.unpack_prefab(&self.primary(), types) {
+                    Ok((items, file, pose)) => {
+                        let stem = file.file_stem().unwrap_or_default();
+                        self.prefab_name = stem.to_string_lossy().into_owned();
+                        self.unpacked = Some((file, pose));
+                        self.selection = items;
+                        self.status = "Unpacked".to_owned();
+                    }
+                    Err(reason) => self.status = reason,
                 }
-                Err(reason) => self.status = reason,
-            },
+            }
             Command::Frame => {
                 let at = self.document.pose_of(&self.primary(), self.second_pose);
                 let room = &self.document.room;
