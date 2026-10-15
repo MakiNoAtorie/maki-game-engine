@@ -365,10 +365,11 @@ mod tests {
     fn document(registry: &CommandRegistry, name: &str, events: &str) -> Document {
         let text = format!(
             r#"(width: 8.0, depth: 8.0, height: 3.0,
-                doorways: [(wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)],
-                doors: [(name: "door", doorway: 0)],
-                lights: [(name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)],
-                spawns: {{"start": (0.0, 0.0, 0.0)}},
+                objects: [
+                    (name: "door", components: {{"door": (), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
+                    (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {{"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)}}),
+                    (name: "start", components: {{"spawn": ()}}),
+                ],
                 events: [{events}])"#
         );
         Document::parse(Path::new(name), &text, registry).unwrap()
@@ -498,7 +499,7 @@ mod tests {
         let registry = registry();
         let directory = std::env::temp_dir().join(format!("maki-names-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let other = r#"(width: 4, depth: 4, height: 3, spawns: {"west": (0, 0, 0)}, events: [
+        let other = r#"(width: 4, depth: 4, height: 3, objects: [(name: "west", components: {"spawn": ()})], events: [
             (name: "switch", pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])]),
         ])"#;
         std::fs::write(directory.join("b.ron"), other).unwrap();

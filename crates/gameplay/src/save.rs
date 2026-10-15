@@ -321,12 +321,12 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         // The event of room A goes to room B, saves, and sets a variable after the
         // save point.
-        let room_a = r#"(width: 4, depth: 4, height: 3, spawns: {"start": (1.0, 0.0, 1.0)}, events: [
+        let room_a = r#"(width: 4, depth: 4, height: 3, objects: [(name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()})], events: [
             (name: "go", pages: [(trigger: Autorun, commands: [
                 SetFlag("seen", true), Transfer("b.ron", "in"), SavePoint, SetVariable("count", 3),
             ])]),
         ])"#;
-        let room_b = r#"(width: 4, depth: 4, height: 3, spawns: {"in": (-1.0, 0.0, 0.5)})"#;
+        let room_b = r#"(width: 4, depth: 4, height: 3, objects: [(name: "in", pose: (position: (-1.0, 0.0, 0.5)), components: {"spawn": ()})])"#;
         std::fs::write(directory.join("a.ron"), room_a).unwrap();
         std::fs::write(directory.join("b.ron"), room_b).unwrap();
         let (room_b, at) = (directory.join("b.ron"), Vec3::new(-1.0, 0.0, 0.5));
@@ -353,7 +353,7 @@ mod tests {
         // A save file that names a bad room, then one that is no save file: the
         // start room, with no flag.
         let start = (directory.join("a.ron"), false, 0, Vec3::new(1.0, 0.0, 1.0));
-        let room_a = r#"(width: 4, depth: 4, height: 3, spawns: {"start": (1.0, 0.0, 1.0)})"#;
+        let room_a = r#"(width: 4, depth: 4, height: 3, objects: [(name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()})])"#;
         std::fs::write(directory.join("a.ron"), room_a).unwrap();
         std::fs::write(&room_b, "not a room").unwrap();
         game(&directory).run(|mut app| assert_eq!(state(&mut app), start));

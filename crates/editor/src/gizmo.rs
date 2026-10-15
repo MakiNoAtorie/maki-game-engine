@@ -361,7 +361,7 @@ impl Drag {
                         area.size[axis] = round((to[axis] - fixed).abs().max(SMALLEST));
                     }
                 }
-                Some(item @ (Item::Doorway(_) | Item::Object(_))) => {
+                Some(item @ Item::Object(_)) => {
                     let room = &document.room;
                     let (width, depth, height) = (room.width, room.depth, room.height);
                     let Some(mut doorway) = document.doorway(item) else {
@@ -421,9 +421,8 @@ impl Drag {
                     if document.with_mover_b(item, |b| moved_point(&mut b.position)) && b_only {
                         continue;
                     }
-                    match document.place(item, second) {
+                    match document.place(item) {
                         Some(Place::Pose(pose)) => moved_point(&mut pose.position),
-                        Some(Place::Point(point)) => moved_point(point),
                         Some(Place::Area(area)) => {
                             area.center = [
                                 moved(area.center[0], offset.x),
@@ -467,9 +466,8 @@ impl Drag {
                     if document.with_mover_b(item, |pose| turned(pose)) && b_only {
                         continue;
                     }
-                    match document.place(item, second) {
+                    match document.place(item) {
                         Some(Place::Pose(pose)) => turned(pose),
-                        Some(Place::Point(point)) => around(point),
                         // An area has no turn: its sides are along X and Z.
                         Some(Place::Area(_)) | None => {}
                     }
@@ -485,7 +483,7 @@ impl Drag {
                     if second && document.with_mover_b(item, |pose| scaled(pose)) {
                         continue;
                     }
-                    if let Some(Place::Pose(pose)) = document.place(item, second) {
+                    if let Some(Place::Pose(pose)) = document.place(item) {
                         scaled(pose);
                     }
                 }
@@ -509,7 +507,8 @@ mod tests {
 
     use super::*;
 
-    /// A view from the +Z side and above, and a room with one cube at (1.1, 0.5, 0).
+    /// A view from the +Z side and above, and a room with one cube at (1.1, 0.5, 0):
+    /// object 2, behind the lamp and the spawn point of a new room.
     fn scene() -> (View, Document, [Item; 1]) {
         let camera = Camera {
             position: Vec3::new(0.0, 9.0, 7.0),
@@ -519,11 +518,11 @@ mod tests {
         let mut document = Document::new_room(PathBuf::from("room.ron"));
         let mut cube = PropDef::default();
         cube.pose.position = [1.1, 0.5, 0.0];
-        document.room.props.push(cube);
+        document.room.objects.push(cube.into_object());
         (
             View::new(camera, [1280.0, 720.0]),
             document,
-            [Item::Prop(0)],
+            [Item::Object(2)],
         )
     }
 
@@ -554,7 +553,7 @@ mod tests {
             false,
         );
         drag.apply(&view, to, steps, &mut document, &selection, false);
-        document.room.props[0].pose
+        document.room.objects[2].pose
     }
 
     #[test]
@@ -674,21 +673,24 @@ mod tests {
 
         // A doorway of 1 x 2 m in the middle of the back wall of the room of 8 m:
         // from 3.5 to 4.5 m along the wall, which is from x = -0.5 to 0.5.
-        document.room.doorways.push(Doorway {
+        let mut doorway = maki_scene::ObjectDef::default();
+        let opening = Doorway {
             wall: Wall::NegZ,
             offset: 0.0,
             width: 1.0,
             height: 2.0,
             depth: 1.0,
-        });
-        let item = Item::Doorway(0);
+        };
+        doorway.set_component("doorway", &opening);
+        document.room.objects.push(doorway);
+        let item = Item::Object(3);
         let gizmo = Gizmo::of(&document, &item, false, false, Tool::Move, &view).unwrap();
         assert!(!gizmo.posed && gizmo.points().len() == 2);
         assert_eq!(gizmo.points()[1].1, Vec3::new(0.5, 2.0, -4.0));
         // The right top corner goes to x = 1.5 and up to 2.5 m.
         let to = Vec3::new(1.5, 2.5, -4.0);
         let wide = drag_point(document.clone(), item.clone(), Handle::Corner(1), to);
-        let doorway = wide.room.doorways[0];
+        let doorway = wide.doorway(&item).unwrap();
         assert_eq!(
             (doorway.width, doorway.offset, doorway.height),
             (2.0, 0.5, 2.5)
@@ -697,7 +699,7 @@ mod tests {
         // the room.
         let to = Vec3::new(-6.0, 3.6, -4.0);
         let end = drag_point(document, item, Handle::Corner(0), to);
-        let doorway = end.room.doorways[0];
+        let doorway = end.doorway(&Item::Object(3)).unwrap();
         assert_eq!(
             (doorway.width, doorway.offset, doorway.height),
             (4.5, -1.75, 3.0)
@@ -714,7 +716,7 @@ mod tests {
             position: [x, 0.5, 0.0],
             ..PoseDef::default()
         };
-        document.room.movers.push(MoverDef {
+        let mover = MoverDef {
             name: None,
             mesh: MeshDef::Cube(0.5),
             look: Default::default(),
@@ -724,9 +726,10 @@ mod tests {
                 ..PoseDef::default()
             },
             seconds: 1.0,
-        });
+        };
+        document.room.objects.push(mover.into_object());
         // The gizmo is at the last item: the cube.
-        let selection = [Item::Mover(0), Item::Prop(0)];
+        let selection = [Item::Object(3), Item::Object(2)];
         let drag = |tool: Tool, handle: Handle, to: &dyn Fn(&Gizmo) -> Vec3| {
             let mut document = document.clone();
             let gizmo = Gizmo::of(&document, &selection[1], false, false, tool, &view).unwrap();
@@ -739,16 +742,16 @@ mod tests {
             let to = view.project(to(&gizmo)).unwrap();
             let steps = Some((0.25, 15.0));
             drag.apply(&view, to, steps, &mut document, &selection, false);
-            document.room
+            document
         };
         // A quarter turn around Y (+Z goes to +X): the mover goes around the cube,
         // from 1 m at its +X side to 1 m at its -Z side, with its two poses.
         let turned = drag(Tool::Rotate, Handle::Axis(1), &|gizmo| {
             gizmo.origin + Vec3::X * gizmo.length
         });
-        assert_eq!(turned.props[0].pose.position, [1.1, 0.5, 0.0]);
-        assert_eq!(turned.props[0].pose.rotation, [0.0, 90.0, 0.0]);
-        let mover = &turned.movers[0];
+        assert_eq!(turned.room.objects[2].pose.position, [1.1, 0.5, 0.0]);
+        assert_eq!(turned.room.objects[2].pose.rotation, [0.0, 90.0, 0.0]);
+        let mover = &turned.mover(&selection[0]).unwrap();
         assert_eq!(
             (mover.a.position, mover.b.position),
             ([1.1, 0.5, -1.0], [1.1, 1.5, -1.0])
@@ -760,8 +763,8 @@ mod tests {
 
         // A move on the floor, 1 m to +Z: the cube, and the two poses of the mover.
         let moved = drag(Tool::Move, Handle::Floor, &|gizmo| gizmo.origin + Vec3::Z);
-        assert_eq!(moved.props[0].pose.position, [1.0, 0.5, 1.0]);
-        let mover = &moved.movers[0];
+        assert_eq!(moved.room.objects[2].pose.position, [1.0, 0.5, 1.0]);
+        let mover = &moved.mover(&selection[0]).unwrap();
         assert_eq!(
             (mover.a.position, mover.b.position),
             ([2.0, 0.5, 1.0], [2.0, 1.5, 1.0])

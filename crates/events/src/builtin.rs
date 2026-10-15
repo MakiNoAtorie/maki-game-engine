@@ -289,13 +289,11 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
             let moves = |object: &&maki_scene::ObjectDef| {
                 object.components.contains_key("door") || object.components.contains_key("mover")
             };
-            let found = room.doors.iter().any(|door| named(&door.name, name))
-                || room.movers.iter().any(|mover| named(&mover.name, name))
-                || room
-                    .objects
-                    .iter()
-                    .filter(moves)
-                    .any(|object| named(&object.name, name));
+            let found = room
+                .objects
+                .iter()
+                .filter(moves)
+                .any(|object| named(&object.name, name));
             (!found).then(|| Finding::error(format!("the room has no door or mover `{name}`")))
         }
         Builtin::Choice(_, answers) if answers.is_empty() => {

@@ -15,7 +15,7 @@ The stage is five tickets (GitHub issues #1 to #5). Each leaves the game as it r
 |---|---|
 | #1 | The list `objects` beside the old lists. The registry of component types. Props are the first kind: the props of the three rooms move into the list, and "add" of the editor makes an object. Outliner, pick, gizmo, inspector on objects |
 | #2 | Lights as a component |
-| #3 | Doors, doorways, movers as components (a door names its doorway object) |
+| #3 | Doors, doorways, movers as components (a door is a component of the object of its doorway) |
 | #4 | Prefab uses and the rest (spawn points, the ops of the editor: make and unpack a prefab) |
 | #5 | The old lists, their item kinds in the editor, and `RoomItem` variants go. Report `stage-48.md` |
 

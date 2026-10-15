@@ -59,7 +59,7 @@ use maki_assets::{AssetChanged, AssetFailed, AssetWatch};
 use maki_core::{
     App, ConfigFile, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update,
 };
-use maki_events::{Builtin, CommandRegistry, EventRunner, GameState, Problem};
+use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
 use maki_gameplay::StartRoom;
 use maki_platform::{
     Action, ActionState, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
@@ -593,13 +593,9 @@ impl Editor {
                 }
             }
             Command::Delete => {
-                let more = self.document.delete(&self.selection);
+                self.document.delete(&self.selection);
                 self.selection.clear();
-                self.status = if more.is_empty() {
-                    "Deleted".to_owned()
-                } else {
-                    more
-                };
+                self.status = "Deleted".to_owned();
             }
             Command::Duplicate => {
                 let copies = self.document.duplicate(&self.selection);
@@ -757,32 +753,17 @@ impl Editor {
         let registry = self.registry.clone();
         // The name that the item had.
         let old = match item {
-            Item::Spawn(old) => {
-                self.rename_spawn(old, &new);
-                return;
-            }
             Item::Event(index) => match self.document.events.get_mut(*index) {
                 Some(event) => Some(std::mem::replace(&mut event.name, new)),
                 None => return,
             },
-            item => {
-                let room = &mut self.document.room;
-                let slot = match item {
-                    Item::Door(index) => room.doors.get_mut(*index).map(|door| &mut door.name),
-                    Item::Object(index) => {
-                        room.objects.get_mut(*index).map(|object| &mut object.name)
-                    }
-                    Item::Prop(index) => room.props.get_mut(*index).map(|prop| &mut prop.name),
-                    Item::Mover(index) => room.movers.get_mut(*index).map(|mover| &mut mover.name),
-                    Item::Light(index) => room.lights.get_mut(*index).map(|light| &mut light.name),
-                    Item::Prefab(index) => {
-                        room.prefabs.get_mut(*index).map(|prefab| &mut prefab.name)
-                    }
-                    _ => None,
-                };
-                let Some(slot) = slot else { return };
-                std::mem::replace(slot, (!new.is_empty()).then_some(new))
-            }
+            Item::Object(index) => match self.document.room.objects.get_mut(*index) {
+                Some(object) => {
+                    std::mem::replace(&mut object.name, (!new.is_empty()).then_some(new))
+                }
+                None => return,
+            },
+            Item::Room => return,
         };
         let spawn = match item {
             Item::Object(index) => self.document.room.objects[*index].is_spawn(),
@@ -802,33 +783,6 @@ impl Editor {
             }
         }
         self.document.dirty = true;
-    }
-
-    /// Gives a spawn point a new name. A `Transfer` of this room to itself follows.
-    /// Other room files are not changed: the user gets their names. False: the name
-    /// is empty or in use, and nothing was changed.
-    pub fn rename_spawn(&mut self, old: &str, new: &str) -> bool {
-        let document = &mut self.document;
-        if !document.rename_spawn(old, new) {
-            return false;
-        }
-        let file = document.path.file_name().unwrap_or_default();
-        let file = file.to_string_lossy().into_owned();
-        let registry = self.registry.clone();
-        document.rename_in_events(&registry, |command: &Builtin| match command {
-            Builtin::Transfer(room, to) if *room == file && to == old => {
-                Some(Builtin::Transfer(room.clone(), new.to_owned()))
-            }
-            _ => None,
-        });
-        let users = spawn_users(&self.rooms, &document.path, old, &registry);
-        if !users.is_empty() {
-            let users = users.join(", ");
-            self.status = format!("{users}: a Transfer still names `{old}`");
-        }
-        document.dirty = true;
-        self.selection = vec![Item::Spawn(new.to_owned())];
-        true
     }
 
     /// The text of the title bar: the room file, the mark of a change that is not

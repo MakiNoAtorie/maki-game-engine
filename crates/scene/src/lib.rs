@@ -18,10 +18,10 @@ pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{ComponentText, ComponentType, ComponentTypes, ObjectDef, add_component_type};
 pub use room::{
-    CurrentRoom, DoorDef, DoorLeaf, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef,
-    MoverPath, PoseDef, PrefabDef, PrefabFile, PrefabUse, Prop, PropDef, RoomCheck, RoomDef,
-    RoomEntity, RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest, RoomShell,
-    RoomTarget, RoomValidator, RoomValidators, SoundDef, SpawnPoint, TextureDef, check_room,
+    CurrentRoom, DoorLeaf, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef, MoverPath,
+    PoseDef, PrefabDef, PrefabFile, PrefabUse, Prop, PropDef, RoomCheck, RoomDef, RoomEntity,
+    RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest, RoomShell, RoomTarget,
+    RoomValidator, RoomValidators, SoundDef, SpawnPoint, TextureDef, check_room,
     load_requested_room, parse_room, patch_room, pose_in, pose_out, prefab_text, read_prefab,
     read_room, ron_options,
 };
@@ -33,8 +33,6 @@ impl Module for SceneModule {
     fn build(&self, app: &mut App) {
         // The item kinds of a room file, for the tools.
         maki_core::add_field_type::<RoomShell>(app, "room");
-        maki_core::add_field_type::<DoorDef>(app, "door item");
-        maki_core::add_field_type::<PropDef>(app, "prop item");
         // The fields of an object but its components.
         maki_core::add_field_type::<ObjectDef>(app, "object");
         // The types of components of the scene.
@@ -45,9 +43,6 @@ impl Module for SceneModule {
         add_component_type::<MoverPath>(app, "mover");
         add_component_type::<PrefabFile>(app, "prefab");
         add_component_type::<SpawnPoint>(app, "spawn");
-        maki_core::add_field_type::<MoverDef>(app, "mover item");
-        maki_core::add_field_type::<LightDef>(app, "light item");
-        maki_core::add_field_type::<PrefabUse>(app, "prefab item");
         // The stores normally come from `AssetsModule`. This keeps the loader
         // independent of the order in which the modules are added.
         app.init_resource::<maki_assets::Assets<Mesh>>()

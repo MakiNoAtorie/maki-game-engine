@@ -111,11 +111,12 @@ SCENARIOS = {
 # door, its light), with the scene file as the one prop. `MODEL` is the path, quoted.
 MODEL_ROOM = """(
     width: 8.0, depth: 8.0, height: 3.0,
-    doorways: [(wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2)],
-    doors: [(doorway: 0)],
-    props: [(mesh: File(MODEL), collider: false)],
-    lights: [(position: (0.0, 2.0, 2.0), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)],
-    spawns: {"start": (-0.5, 0.0, 2.6)},
+    objects: [
+        (components: {"door": (), "doorway": (wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2)}),
+        (components: {"prop": (mesh: File(MODEL), collider: false)}),
+        (pose: (position: (0.0, 2.0, 2.0)), components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)}),
+        (name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
+    ],
 )
 """
 
@@ -125,15 +126,15 @@ TEXTURED_ROOM = """(
     width: 8.0, depth: 8.0, height: 3.0,
     floor: (path: "checker.png"),
     walls: (path: "bricks.png", scale: 2.0, filter: Nearest),
-    props: [
-        (mesh: File("props.glb"), collider: false),
-        (mesh: Cube(0.7), pose: (position: (2.6, 0.35, 1.6), rotation: (0.0, 25.0, 0.0)),
-            look: (color: (1.0, 1.0, 1.0), texture: (path: "crate.png", scale: 1.4286, filter: Nearest))),
-        (mesh: Sphere(radius: 0.5, segments: 48, rings: 24), pose: (position: (-3.0, 0.5, 0.6)), look: (color: (0.9, 0.9, 0.9), material: Mirror)),
-        (mesh: Sphere(radius: 0.45, segments: 48, rings: 24), pose: (position: (0.9, 0.45, 2.2)), look: (color: (1.0, 1.0, 1.0), material: Glass(ior: 1.5))),
+    objects: [
+        (components: {"prop": (mesh: File("props.glb"), collider: false)}),
+        (pose: (position: (2.6, 0.35, 1.6), rotation: (0.0, 25.0, 0.0)), components: {"prop": (mesh: Cube(0.7),
+            look: (color: (1.0, 1.0, 1.0), texture: (path: "crate.png", scale: 1.4286, filter: Nearest)))}),
+        (pose: (position: (-3.0, 0.5, 0.6)), components: {"prop": (mesh: Sphere(radius: 0.5, segments: 48, rings: 24), look: (color: (0.9, 0.9, 0.9), material: Mirror))}),
+        (pose: (position: (0.9, 0.45, 2.2)), components: {"prop": (mesh: Sphere(radius: 0.45, segments: 48, rings: 24), look: (color: (1.0, 1.0, 1.0), material: Glass(ior: 1.5)))}),
+        (pose: (position: (0.0, 2.3, 1.0)), components: {"light": (radius: 0.15, color: (1.0, 0.92, 0.82), intensity: 12.0)}),
+        (name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
     ],
-    lights: [(position: (0.0, 2.3, 1.0), radius: 0.15, color: (1.0, 0.92, 0.82), intensity: 12.0)],
-    spawns: {"start": (-0.5, 0.0, 2.6)},
 )
 """
 
@@ -267,7 +268,9 @@ def command_run(args):
     commit = commit_id()
     rows = []
     for name in names:
-        params, columns = run_scenario(name, args.frames, args.warmup, args.label)
+        # `--behind`: the window opens behind the others and takes no focus.
+        overrides = {"window.focus": False} if args.behind else None
+        params, columns = run_scenario(name, args.frames, args.warmup, args.label, overrides)
         for column, values in columns.items():
             stats = (f"{value:.3f}" for value in summarize(values))
             rows.append([run_id, commit, f"{name}/{column}", params, len(values), "ms", *stats])
@@ -529,6 +532,7 @@ if __name__ == "__main__":
     run.add_argument("--frames", type=int, default=700)
     run.add_argument("--warmup", type=int, default=100, help="first frames that are not measured")
     run.add_argument("--only", nargs="+", metavar="SCENARIO")
+    run.add_argument("--behind", action="store_true", help="the window behind the others, with no focus")
     run.set_defaults(function=command_run)
     compare = commands.add_parser("compare")
     compare.add_argument("a")

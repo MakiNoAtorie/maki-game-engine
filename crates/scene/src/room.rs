@@ -1,8 +1,7 @@
 //! Rooms as data: the room file format, and load and unload of a room.
 //!
-//! A room file is RON text (`game/assets/rooms/*.ron`): the size of the room, its
-//! doorways, props, lights, doors, movers, and spawn points. [`RoomDef`] is its
-//! content. The file also holds the events of the room, which this crate does not
+//! A room file is RON text (`game/assets/rooms/*.ron`): the size of the room and its
+//! objects ([`ObjectDef`]). [`RoomDef`] is its content. The file also holds the events of the room, which this crate does not
 //! read: the events crate reads them from [`CurrentRoom::source`].
 //!
 //! To change the room, write a [`RoomRequest`]. `load_requested_room` then removes
@@ -16,7 +15,7 @@
 //! generated mesh that the new room makes from the same numbers: a tool that loads
 //! the room again for each step of a change (an editor) makes one new mesh, not all.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -24,7 +23,7 @@ use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::query::With;
+use bevy_ecs::query::{With, Without};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::{Mut, World};
@@ -60,26 +59,9 @@ pub struct RoomDef {
     /// The same for the walls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walls: Option<TextureDef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub doorways: Vec<Doorway>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub doors: Vec<DoorDef>,
-    /// The things of the room (stage 48). The lists of items around it go into it,
-    /// one kind after the other.
+    /// The things of the room: each a name, a pose, and components.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub props: Vec<PropDef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub movers: Vec<MoverDef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lights: Vec<LightDef>,
-    /// The prefab files that the room shows, each at its pose.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub prefabs: Vec<PrefabUse>,
-    /// Places where the player can enter the room, by name: X, Y, Z.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub spawns: BTreeMap<String, [f32; 3]>,
     /// The events of the room. Not read here: see the module comment.
     #[serde(default, skip_serializing)]
     pub events: IgnoredAny,
@@ -102,53 +84,41 @@ pub struct RoomShell {
 }
 
 impl RoomDef {
-    /// The position of the spawn point `name`: of the old list, or an object with
-    /// the component `spawn`.
+    /// The position of the spawn point `name`: of the object of that name with the
+    /// component `spawn`.
     pub fn spawn(&self, name: &str) -> Option<[f32; 3]> {
-        if let Some(position) = self.spawns.get(name) {
-            return Some(*position);
-        }
         let named = |object: &&ObjectDef| object.is_spawn() && object.name.as_deref() == Some(name);
         Some(self.objects.iter().find(named)?.pose.position)
     }
 
     /// The names of the spawn points, in name order.
     pub fn spawn_names(&self) -> Vec<String> {
-        let of_objects = self.objects.iter().filter(|object| object.is_spawn());
-        let of_objects = of_objects.filter_map(|object| object.name.clone());
-        let names: BTreeSet<String> = self.spawns.keys().cloned().chain(of_objects).collect();
+        let spawns = self.objects.iter().filter(|object| object.is_spawn());
+        let names: BTreeSet<String> = spawns.filter_map(|object| object.name.clone()).collect();
         names.into_iter().collect()
     }
 
-    /// Each prefab use of the room: of the old list, then of the objects with a
-    /// `prefab`, each with the index of its object.
-    pub fn each_prefab(&self) -> Vec<(RoomItem, PrefabUse)> {
-        let old = self.prefabs.iter().enumerate();
-        let old = old.map(|(index, used)| (RoomItem::Prefab(index), used.clone()));
+    /// Each prefab use of the room, with the index of its object. An object whose
+    /// text does not read is not there; so for the two below.
+    pub fn each_prefab(&self) -> Vec<(usize, PrefabUse)> {
         let objects = self.objects.iter().enumerate();
-        let objects = objects
-            .filter_map(|(index, object)| Some((RoomItem::Object(index), object.prefab()?.ok()?)));
-        old.chain(objects).collect()
+        objects
+            .filter_map(|(index, object)| Some((index, object.prefab()?.ok()?)))
+            .collect()
     }
 
-    /// Each doorway of the room: of the old list, then of the objects with a
-    /// `doorway`. An object whose doorway text does not read is not there.
+    /// Each doorway of the room, in the order of the objects.
     pub fn each_doorway(&self) -> Vec<Doorway> {
-        let of_objects = self
-            .objects
-            .iter()
-            .filter_map(|object| object.doorway()?.ok());
-        self.doorways.iter().copied().chain(of_objects).collect()
+        let objects = self.objects.iter();
+        objects
+            .filter_map(|object| object.doorway()?.ok())
+            .collect()
     }
 
-    /// Each light of the room: of the old list and of the objects with a `light`.
-    /// An object whose light text does not read is not there.
+    /// Each light of the room.
     pub fn each_light(&self) -> Vec<LightDef> {
-        let of_objects = self
-            .objects
-            .iter()
-            .filter_map(|object| object.light()?.ok());
-        self.lights.iter().cloned().chain(of_objects).collect()
+        let objects = self.objects.iter();
+        objects.filter_map(|object| object.light()?.ok()).collect()
     }
 
     pub fn shell(&self) -> RoomShell {
@@ -234,16 +204,12 @@ impl PoseDef {
 
 /// A prefab file that a room names. The items of the file show in the room; a
 /// change of the file changes each room that names it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PrefabUse {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// From the directory of the room file.
-    #[field(label = "prefab file", file = "prefab")]
     pub file: PathBuf,
     /// Where the origin of the prefab is in the room, and its turn and scale.
-    #[serde(default, skip_serializing_if = "is_default")]
     pub pose: PoseDef,
 }
 
@@ -488,9 +454,8 @@ impl LookDef {
 }
 
 /// A thing that does not move.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[fields(default)]
 pub struct PropDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -502,14 +467,12 @@ pub struct PropDef {
     pub look: LookDef,
     /// True: the box around the prop blocks the player.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
-    #[field(label = "blocks the player")]
     pub collider: bool,
     /// For a file: the radius of each light of the file, in meters.
     #[serde(
         default = "default_light_radius",
         skip_serializing_if = "is_default_light_radius"
     )]
-    #[field(label = "light radius", range = 0.01..=10.0)]
     pub light_radius: f32,
 }
 
@@ -613,31 +576,25 @@ fn is_default_light_radius(radius: &f32) -> bool {
     *radius == default_light_radius()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LightDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub position: [f32; 3],
     /// Meters.
-    #[field(range = 0.01..=10.0, step = 0.005)]
     pub radius: f32,
     /// Linear RGB.
-    #[field(color)]
     pub color: [f32; 3],
-    #[field(range = 0.0..=10000.0, step = 0.1)]
     pub intensity: f32,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
-    #[field(default = true)]
     pub on: bool,
     /// A cone light: the direction of the middle of the cone. `None`: straight down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[field(label = "direction of the cone (not set: down)", some = [0.0, -1.0, 0.0])]
     pub direction: Option<[f32; 3]>,
     /// A cone light: degrees from `direction` to the edge of the cone. `None`: light
     /// in all directions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[field(label = "cone (degrees to the edge)", range = 1.0..=180.0, step = 0.5, some = 30.0)]
     pub cone: Option<f32>,
     /// A sound that loops at the place of the light: a lamp that hums.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -810,41 +767,6 @@ impl ObjectDef {
     }
 }
 
-/// A door in a doorway of the room. It turns on the side of the opening that is
-/// nearer to the start of the wall, into the room.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
-#[serde(deny_unknown_fields)]
-pub struct DoorDef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Index in `doorways`, from 0.
-    #[field(pick = "doorways")]
-    pub doorway: usize,
-    /// Seconds from closed to open.
-    #[serde(
-        default = "default_door_seconds",
-        skip_serializing_if = "is_default_door_seconds"
-    )]
-    #[field(
-        label = "seconds to open",
-        range = 0.05..=60.0,
-        step = 0.05,
-        default = default_door_seconds()
-    )]
-    pub seconds: f32,
-    /// Linear RGB.
-    #[serde(
-        default = "default_door_color",
-        skip_serializing_if = "is_default_door_color"
-    )]
-    #[field(color)]
-    pub color: [f32; 3],
-    /// True: the door is open when the room loads.
-    #[serde(default, skip_serializing_if = "is_default")]
-    #[field(label = "open at the start", default = false)]
-    pub open: bool,
-}
-
 /// The component of an object that is a door in the doorway of the same object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
@@ -874,17 +796,6 @@ pub struct DoorLeaf {
     pub open: bool,
 }
 
-impl DoorDef {
-    /// The door without its name and its doorway.
-    pub fn leaf(&self) -> DoorLeaf {
-        DoorLeaf {
-            seconds: self.seconds,
-            color: self.color,
-            open: self.open,
-        }
-    }
-}
-
 fn default_door_seconds() -> f32 {
     1.2
 }
@@ -902,21 +813,15 @@ fn is_default_door_color(color: &[f32; 3]) -> bool {
 }
 
 /// A thing that moves between two poses: see [`Mover`]. Its mesh is a generated shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MoverDef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub mesh: MeshDef,
-    #[serde(default, skip_serializing_if = "is_default")]
     pub look: LookDef,
     /// The pose at the start.
-    #[field(label = "pose at the start (a)")]
     pub a: PoseDef,
-    #[field(label = "second pose (b)")]
     pub b: PoseDef,
     /// Seconds from `a` to `b`.
-    #[field(label = "seconds from a to b", range = 0.05..=600.0, step = 0.05)]
     pub seconds: f32,
 }
 
@@ -1049,16 +954,6 @@ pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Resul
             ));
         }
     }
-    for door in &room.doors {
-        if door.doorway >= room.doorways.len() {
-            return Err(anyhow!(
-                "{}: a door names doorway {}, and the room has {}",
-                path.display(),
-                door.doorway,
-                room.doorways.len()
-            ));
-        }
-    }
     let check = RoomCheck {
         path,
         room: &room,
@@ -1110,20 +1005,12 @@ pub struct RoomProblem {
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomEntity;
 
-/// The item of the room file that an entity was made from: the index in its list of
-/// [`RoomDef`]. A tool finds the entity of an item, and the item of an entity, with
-/// it. The entities of a model file all have the item of their prop.
+/// The object of the room file that an entity was made from: its index in
+/// [`RoomDef::objects`]. A tool finds the entities of an object, and the object of an
+/// entity, with it. The entities of a model file and of a prefab file all have the
+/// object that names the file.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RoomItem {
-    Prop(usize),
-    /// An object of [`RoomDef::objects`].
-    Object(usize),
-    Light(usize),
-    Door(usize),
-    Mover(usize),
-    /// Each entity of the items of a prefab file has the item of the prefab.
-    Prefab(usize),
-}
+pub struct RoomItem(pub usize);
 
 /// Ask for a room: write `Some`. `load_requested_room` takes it in the next `Update`.
 #[derive(Resource, Debug, Default)]
@@ -1336,12 +1223,10 @@ pub fn load_requested_room(
     // keeps its meshes on the GPU, and the mesh table of the renderer gets full.
     // ponytail: the models of the props of the room. A model that only a prefab
     // names is read again in the next room that names the prefab.
-    let of_objects = def.objects.iter().filter_map(|object| object.prop()?.ok());
     let named: Vec<PathBuf> = def
-        .props
+        .objects
         .iter()
-        .cloned()
-        .chain(of_objects)
+        .filter_map(|object| object.prop()?.ok())
         .filter_map(|prop| match &prop.mesh {
             MeshDef::File(path) => Some(directory.join(path)),
             _ => None,
@@ -1394,9 +1279,7 @@ pub fn load_requested_room(
     }
     tracing::info!(
         path = %target.path.display(),
-        props = def.props.len(),
         objects = def.objects.len(),
-        lights = def.lights.len(),
         meshes_kept = reused,
         time = ?start.elapsed(),
         "room loaded"
@@ -1490,14 +1373,9 @@ impl Spawner<'_, '_, '_> {
         for collider in room_colliders(width, depth, height, &doorways) {
             self.commands.spawn((RoomEntity, collider));
         }
-        for (index, door) in def.doors.iter().enumerate() {
-            let item = RoomItem::Door(index);
-            let doorway = &def.doorways[door.doorway];
-            self.door(&door.name, &door.leaf(), item, doorway, width, depth);
-        }
         for (index, object) in def.objects.iter().enumerate() {
             // `check_room` read the text of each component of the scene.
-            let item = RoomItem::Object(index);
+            let item = RoomItem(index);
             if let Some(Ok(prop)) = object.prop() {
                 self.prop(&prop, item);
             }
@@ -1510,18 +1388,9 @@ impl Spawner<'_, '_, '_> {
             if let Some(Ok(mover)) = object.mover() {
                 self.mover(&mover, item);
             }
-        }
-        for (index, prop) in def.props.iter().enumerate() {
-            self.prop(prop, RoomItem::Prop(index));
-        }
-        for (index, mover) in def.movers.iter().enumerate() {
-            self.mover(mover, RoomItem::Mover(index));
-        }
-        for (index, light) in def.lights.iter().enumerate() {
-            self.light(light, RoomItem::Light(index));
-        }
-        for (item, used) in def.each_prefab() {
-            self.prefab(&used, item);
+            if let Some(Ok(used)) = object.prefab() {
+                self.prefab(&used, item);
+            }
         }
     }
 
@@ -1731,38 +1600,15 @@ fn collider_around(mesh: &Mesh, transform: &Transform) -> Collider {
 /// mesh is built, and the picture keeps its history. `text` is the room as a text.
 pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     let old = &world.resource::<CurrentRoom>().def;
-    let same_count = old.lights.len() == room.lights.len()
-        && old.props.len() == room.props.len()
-        && old.objects.len() == room.objects.len()
-        && old.movers.len() == room.movers.len();
-    if !same_count {
+    if old.objects.len() != room.objects.len() {
         return false;
     }
     // The old room with the values that a patch can change taken from the new one.
     let mut patched = old.clone();
-    for (light, new) in patched.lights.iter_mut().zip(&room.lights) {
-        // Not the name and not the sound: they are components of their own.
-        let (name, sound) = (light.name.take(), light.sound.take());
-        *light = LightDef {
-            name,
-            sound,
-            ..new.clone()
-        };
-    }
-    for (prop, new) in patched.props.iter_mut().zip(&room.props) {
-        if !matches!(prop.mesh, MeshDef::File(_)) {
-            prop.pose = new.pose;
-        }
-    }
     for (object, new) in patched.objects.iter_mut().zip(&room.objects) {
-        let file = matches!(
-            object.prop(),
-            Some(Ok(PropDef {
-                mesh: MeshDef::File(_),
-                ..
-            }))
-        );
-        if !file {
+        // The meshes of a file and of a prefab are placed when they load.
+        let file = matches!(object.prop(), Some(Ok(prop)) if matches!(prop.mesh, MeshDef::File(_)));
+        if !file && object.prefab().is_none() {
             object.pose = new.pose;
         }
         // A light, but for its sound: a component of its own.
@@ -1781,22 +1627,15 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             });
         }
     }
-    for (mover, new) in patched.movers.iter_mut().zip(&room.movers) {
-        (mover.a, mover.b, mover.seconds) = (new.a, new.b, new.seconds);
-    }
     if patched != *room {
         return false;
     }
 
+    // Not the lights of a model file: they have the object of the file.
     let mut lights = world.query::<(&RoomItem, &mut Light, &mut Interpolated)>();
     for (item, mut light, mut pose) in lights.iter_mut(world) {
-        let def = match *item {
-            RoomItem::Light(index) => room.lights[index].clone(),
-            RoomItem::Object(index) => match room.objects[index].light() {
-                Some(Ok(light)) => light,
-                _ => continue,
-            },
-            _ => continue,
+        let Some(Ok(def)) = room.objects[item.0].light() else {
+            continue;
         };
         // Only a different value is a write: a write is a change for the renderer.
         light.set_if_neq(def.light());
@@ -1804,15 +1643,11 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             pose.snap(Transform::from_translation(def.position.into()));
         }
     }
+    // A door has a `Mover` too: its object has no `mover`, and it is left as it is.
     let mut movers = world.query::<(&RoomItem, &mut Mover, &mut Interpolated)>();
     for (item, mut mover, mut pose) in movers.iter_mut(world) {
-        let def = match *item {
-            RoomItem::Mover(index) => room.movers[index].clone(),
-            RoomItem::Object(index) => match room.objects[index].mover() {
-                Some(Ok(mover)) => mover,
-                _ => continue,
-            },
-            _ => continue,
+        let Some(Ok(def)) = room.objects[item.0].mover() else {
+            continue;
         };
         let new = Mover::new(def.a.transform(), def.b.transform(), def.seconds);
         if mover.set_if_neq(new) {
@@ -1820,18 +1655,22 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         }
     }
     world.resource_scope(|world, meshes: Mut<Assets<Mesh>>| {
-        let mut props = world.query::<(
+        // The mesh of a prop. A door and a mover have their own pose.
+        let mut props = world.query_filtered::<(
             &RoomItem,
             &mut Transform,
             &MeshInstance,
             Option<&mut Collider>,
-        )>();
+        ), Without<Mover>>();
         for (item, mut transform, instance, collider) in props.iter_mut(world) {
-            let new = match *item {
-                RoomItem::Prop(index) => room.props[index].pose.transform(),
-                RoomItem::Object(index) => room.objects[index].pose.transform(),
-                _ => continue,
+            let object = &room.objects[item.0];
+            let Some(Ok(prop)) = object.prop() else {
+                continue;
             };
+            if matches!(prop.mesh, MeshDef::File(_)) {
+                continue;
+            }
+            let new = prop.pose.transform();
             if *transform == new {
                 continue;
             }
@@ -1911,19 +1750,82 @@ mod tests {
 
     use crate::SceneModule;
 
-    /// A room with one of each thing.
+    /// A room with one of each thing: objects 0 crate, 1 ball, 2 lamp, 3 door, 4
+    /// mover, 5 the spawn point "start".
     fn sample() -> RoomDef {
+        let ball = PropDef {
+            name: Some("ball".to_owned()),
+            mesh: MeshDef::Sphere {
+                radius: 0.5,
+                segments: 8,
+                rings: 4,
+            },
+            pose: PoseDef {
+                position: [1.0, 0.5, 0.0],
+                ..PoseDef::default()
+            },
+            look: LookDef {
+                color: Some([1.0, 0.0, 0.0]),
+                material: Some(Material::Glass { ior: 1.5 }),
+                emissive: None,
+                texture: Some(TextureDef {
+                    path: PathBuf::from("ball.png"),
+                    scale: 2.0,
+                    filter: Filter::Nearest,
+                }),
+            },
+            collider: true,
+            light_radius: 0.15,
+        };
+        let lamp = LightDef {
+            name: Some("lamp".to_owned()),
+            position: [0.0, 2.0, 0.0],
+            radius: 0.1,
+            color: [1.0; 3],
+            intensity: 5.0,
+            on: true,
+            direction: None,
+            cone: None,
+            sound: Some(SoundDef {
+                file: PathBuf::from("hum.wav"),
+                volume: 0.5,
+                reach: 6.0,
+                on: false,
+            }),
+        };
+        let mut door = ObjectDef {
+            name: Some("door".to_owned()),
+            ..ObjectDef::default()
+        };
+        let doorway = Doorway {
+            wall: Wall::PosX,
+            offset: -1.0,
+            width: 1.0,
+            height: 2.0,
+            depth: 1.0,
+        };
+        door.set_component("doorway", &doorway);
+        let leaf = DoorLeaf {
+            seconds: 1.0,
+            color: [0.3, 0.2, 0.1],
+            open: false,
+        };
+        door.set_component("door", &leaf);
+        let mover = MoverDef {
+            name: None,
+            mesh: MeshDef::Cube(0.5),
+            look: LookDef::default(),
+            a: PoseDef::default(),
+            b: PoseDef {
+                position: [0.0, 1.0, 0.0],
+                ..PoseDef::default()
+            },
+            seconds: 2.0,
+        };
         RoomDef {
             width: 6.0,
             depth: 5.0,
             height: 3.0,
-            doorways: vec![Doorway {
-                wall: Wall::PosX,
-                offset: -1.0,
-                width: 1.0,
-                height: 2.0,
-                depth: 1.0,
-            }],
             objects: vec![
                 PropDef {
                     name: Some("crate".to_owned()),
@@ -1934,69 +1836,14 @@ mod tests {
                     ..PropDef::default()
                 }
                 .into_object(),
+                ball.into_object(),
+                lamp.into_object(),
+                door,
+                mover.into_object(),
+                ObjectDef::spawn_point("start".to_owned(), [0.0, 0.0, 1.0]),
             ],
-            props: vec![PropDef {
-                name: Some("ball".to_owned()),
-                mesh: MeshDef::Sphere {
-                    radius: 0.5,
-                    segments: 8,
-                    rings: 4,
-                },
-                pose: PoseDef {
-                    position: [1.0, 0.5, 0.0],
-                    ..PoseDef::default()
-                },
-                look: LookDef {
-                    color: Some([1.0, 0.0, 0.0]),
-                    material: Some(Material::Glass { ior: 1.5 }),
-                    emissive: None,
-                    texture: Some(TextureDef {
-                        path: PathBuf::from("ball.png"),
-                        scale: 2.0,
-                        filter: Filter::Nearest,
-                    }),
-                },
-                collider: true,
-                light_radius: 0.15,
-            }],
-            lights: vec![LightDef {
-                name: Some("lamp".to_owned()),
-                position: [0.0, 2.0, 0.0],
-                radius: 0.1,
-                color: [1.0; 3],
-                intensity: 5.0,
-                on: true,
-                direction: None,
-                cone: None,
-                sound: Some(SoundDef {
-                    file: PathBuf::from("hum.wav"),
-                    volume: 0.5,
-                    reach: 6.0,
-                    on: false,
-                }),
-            }],
-            doors: vec![DoorDef {
-                name: Some("door".to_owned()),
-                doorway: 0,
-                seconds: 1.0,
-                color: [0.3, 0.2, 0.1],
-                open: false,
-            }],
-            movers: vec![MoverDef {
-                name: None,
-                mesh: MeshDef::Cube(0.5),
-                look: LookDef::default(),
-                a: PoseDef::default(),
-                b: PoseDef {
-                    position: [0.0, 1.0, 0.0],
-                    ..PoseDef::default()
-                },
-                seconds: 2.0,
-            }],
             floor: None,
             walls: None,
-            prefabs: Vec::new(),
-            spawns: BTreeMap::from([("start".to_owned(), [0.0, 0.0, 1.0])]),
             events: IgnoredAny,
         }
     }
@@ -2024,20 +1871,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "door",
-                "door item",
-                "doorway",
-                "light",
-                "light item",
-                "mover",
-                "mover item",
-                "object",
-                "prefab",
-                "prefab item",
-                "prop",
-                "prop item",
-                "room",
-                "spawn"
+                "door", "doorway", "light", "mover", "object", "prefab", "prop", "room", "spawn"
             ]
         );
         for (name, kind) in types.iter() {
@@ -2049,46 +1883,39 @@ mod tests {
         // A thing with values goes to its tree and back with no change, also a
         // number that is not exact in binary (0.15).
         let room = sample();
-        assert_eq!(
-            read::<PropDef>(room.props[0].tree()).unwrap(),
-            room.props[0]
-        );
-        assert_eq!(
-            read::<LightDef>(room.lights[0].tree()).unwrap(),
-            room.lights[0]
-        );
-        assert_eq!(
-            read::<DoorDef>(room.doors[0].tree()).unwrap(),
-            room.doors[0]
-        );
-        assert_eq!(
-            read::<MoverDef>(room.movers[0].tree()).unwrap(),
-            room.movers[0]
-        );
-        assert_eq!(
-            read::<Doorway>(room.doorways[0].tree()).unwrap(),
-            room.doorways[0]
-        );
+        fn round_trip<T: Fields + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+            object: &ObjectDef,
+            name: &str,
+        ) {
+            let value: T = object.component(name).unwrap().unwrap();
+            assert_eq!(read::<T>(value.tree()).unwrap(), value, "{name}");
+        }
+        round_trip::<Prop>(&room.objects[1], "prop");
+        round_trip::<LightSource>(&room.objects[2], "light");
+        round_trip::<DoorLeaf>(&room.objects[3], "door");
+        round_trip::<Doorway>(&room.objects[3], "doorway");
+        round_trip::<MoverPath>(&room.objects[4], "mover");
         // The room itself: its own fields, and no list of its things.
         let mut shell = room.shell();
         assert_eq!(read::<RoomShell>(shell.tree()).unwrap(), shell);
         shell.width = 9.0;
         let mut changed = room.clone();
         changed.set_shell(shell);
-        assert_eq!((changed.width, &changed.props), (9.0, &room.props));
+        assert_eq!((changed.width, &changed.objects), (9.0, &room.objects));
     }
 
     #[test]
     fn a_short_room_file_gets_the_defaults_and_its_events_are_not_read() {
         let room = parse_room(
             r#"(width: 4, depth: 4, height: 3,
-                props: [(mesh: Cube(1.0), name: "box")],
+                objects: [(name: "box", components: {"prop": (mesh: Cube(1.0))})],
                 events: [(what: "ever", this: (is, 1))])"#,
         )
         .unwrap();
-        assert_eq!(room.props[0].name.as_deref(), Some("box"));
-        assert_eq!(room.props[0].pose, PoseDef::default());
-        assert!(room.props[0].collider);
+        let prop = room.objects[0].prop().unwrap().unwrap();
+        assert_eq!(prop.name.as_deref(), Some("box"));
+        assert_eq!(prop.pose, PoseDef::default());
+        assert!(prop.collider);
     }
 
     #[test]
@@ -2141,8 +1968,10 @@ mod tests {
     #[test]
     fn a_door_turns_into_the_room_on_each_wall() {
         for wall in [Wall::NegX, Wall::PosX, Wall::NegZ, Wall::PosZ] {
-            let mut room = sample();
-            room.doorways[0].wall = wall;
+            let room = sample();
+            let door = &room.objects[3];
+            let mut doorway = door.doorway().unwrap().unwrap();
+            doorway.wall = wall;
             let mut world = bevy_ecs::world::World::new();
             let (mut meshes, mut models) = (Assets::<Mesh>::default(), Assets::<Model>::default());
             let mut cache = RoomModels::default();
@@ -2161,12 +1990,12 @@ mod tests {
                 owned: Vec::new(),
                 made: 0,
             };
-            let item = RoomItem::Door(0);
+            let leaf = door.door().unwrap().unwrap();
             spawner.door(
-                &room.doors[0].name,
-                &room.doors[0].leaf(),
-                item,
-                &room.doorways[0],
+                &door.name,
+                &leaf,
+                RoomItem(3),
+                &doorway,
                 room.width,
                 room.depth,
             );
@@ -2196,7 +2025,7 @@ mod tests {
             width: 3.0,
             depth: 3.0,
             height: 2.0,
-            spawns: BTreeMap::from([("door".to_owned(), [1.0, 0.0, 1.0])]),
+            objects: vec![ObjectDef::spawn_point("door".to_owned(), [1.0, 0.0, 1.0])],
             ..RoomDef::default()
         };
         let room_b = write("b.ron", &small);
@@ -2286,15 +2115,24 @@ mod tests {
         };
         // The shell, the door leaf, the object, the ball, the mover, and a second
         // ball that is made from the same numbers as the first one.
+        // The ball is object 1; a change of a prop is a new text of its object.
+        let change = |room: &mut RoomDef, index: usize, change: &dyn Fn(&mut PropDef)| {
+            let mut prop = room.objects[index].prop().unwrap().unwrap();
+            change(&mut prop);
+            room.objects[index] = prop.into_object();
+        };
         let mut room = sample();
-        room.props[0].look.texture = None;
-        room.props.push(room.props[0].clone());
+        change(&mut room, 1, &|prop| prop.look.texture = None);
+        room.objects.push(room.objects[1].clone());
         let first = load(&room);
         assert_eq!(first.len(), 6);
         // The same room again: the same meshes.
         assert_eq!(load(&room), first);
         // Another color for one ball: one new mesh, and its old one is gone.
-        room.props[1].look.color = Some([0.0, 1.0, 0.0]);
+        let last = room.objects.len() - 1;
+        change(&mut room, last, &|prop| {
+            prop.look.color = Some([0.0, 1.0, 0.0])
+        });
         let colored = load(&room);
         assert_eq!(colored.len(), 6);
         assert_eq!(colored.intersection(&first).count(), 5);
@@ -2303,7 +2141,7 @@ mod tests {
         let wide = load(&room);
         assert_eq!(wide.intersection(&colored).count(), 5);
         // The collider of a mesh that was kept is at the place of its prop.
-        room.props[0].pose.position = [2.0, 0.5, 1.0];
+        change(&mut room, 1, &|prop| prop.pose.position = [2.0, 0.5, 1.0]);
         assert_eq!(load(&room), wide);
         std::fs::remove_dir_all(&directory).unwrap();
     }
@@ -2327,7 +2165,7 @@ mod tests {
             width: 4, depth: 4, height: 3,
             floor: (path: "floor.png"),
             walls: (path: "bricks.png", scale: 2.0, filter: Nearest),
-            props: [(mesh: Cube(1.0), look: (texture: (path: "floor.png", scale: 0.5)))],
+            objects: [(components: {"prop": (mesh: Cube(1.0), look: (texture: (path: "floor.png", scale: 0.5)))})],
         )"#;
         std::fs::write(directory.join("textured.ron"), textured).unwrap();
         std::fs::write(
@@ -2414,8 +2252,11 @@ mod tests {
         let model = directory.join("models/triangle.gltf");
         std::fs::write(&model, TRIANGLE).unwrap();
         let room = r#"(width: 4, depth: 4, height: 3, floor: (path: "floor.png"),
-            spawns: {"start": (1.0, 0.0, 1.0)},
-            props: [(mesh: Cube(1.0)), (mesh: File("models/triangle.gltf"))])"#;
+            objects: [
+                (name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
+                (components: {"prop": (mesh: Cube(1.0))}),
+                (components: {"prop": (mesh: File("models/triangle.gltf"))}),
+            ])"#;
         std::fs::write(directory.join("room.ron"), room).unwrap();
 
         // On the thread of the test: a model is there in the frame of its load.
@@ -2521,11 +2362,17 @@ watch = true",
         let rooms = [
             (
                 "a.ron",
-                r#"props: [(mesh: Cube(1.0)), (mesh: File("models/triangle.gltf"))]"#,
+                r#"objects: [
+                    (components: {"prop": (mesh: Cube(1.0))}),
+                    (components: {"prop": (mesh: File("models/triangle.gltf"))}),
+                ]"#,
             ),
             (
                 "b.ron",
-                r#"props: [(mesh: File("models/triangle.gltf"), pose: (position: (1.0, 0.0, 0.0)))]"#,
+                r#"objects: [(
+                    pose: (position: (1.0, 0.0, 0.0)),
+                    components: {"prop": (mesh: File("models/triangle.gltf"))},
+                )]"#,
             ),
             ("c.ron", ""),
         ];
@@ -2566,11 +2413,11 @@ watch = true",
         };
         let (first, places) = load("a.ron");
         assert_eq!(first.len(), 1);
-        assert_eq!(places, [(Vec3::ZERO, RoomItem::Prop(1))]);
+        assert_eq!(places, [(Vec3::ZERO, RoomItem(1))]);
         // The next room names the file: the same mesh, at the place of its prop.
         let (second, places) = load("b.ron");
         assert_eq!(second, first);
-        assert_eq!(places, [(Vec3::X, RoomItem::Prop(0))]);
+        assert_eq!(places, [(Vec3::X, RoomItem(0))]);
         // A room with no model: the mesh is gone. Then the file is read again.
         assert!(load("c.ron").0.is_empty());
         let (again, _) = load("a.ron");
@@ -2592,17 +2439,25 @@ watch = true",
         )"#;
         let file = directory.join("prefabs/table.prefab");
         std::fs::write(&file, table).unwrap();
-        // Room A has it at a place. Room B has it two times, one with a quarter turn.
+        // Room A has it at a place. Room B has it two times, one with a quarter turn,
+        // and a cube as object 2.
         let rooms = [
             (
                 "a.ron",
-                r#"prefabs: [(file: "prefabs/table.prefab", pose: (position: (1.0, 0.0, -1.0)))]"#,
+                r#"objects: [(
+                    pose: (position: (1.0, 0.0, -1.0)),
+                    components: {"prefab": (file: "prefabs/table.prefab")},
+                )]"#,
             ),
             (
                 "b.ron",
-                r#"props: [(mesh: Cube(1.0))], prefabs: [
-                    (file: "prefabs/table.prefab"),
-                    (file: "prefabs/table.prefab", pose: (position: (2.0, 0.0, 0.0), rotation: (0.0, 90.0, 0.0))),
+                r#"objects: [
+                    (components: {"prefab": (file: "prefabs/table.prefab")}),
+                    (
+                        pose: (position: (2.0, 0.0, 0.0), rotation: (0.0, 90.0, 0.0)),
+                        components: {"prefab": (file: "prefabs/table.prefab")},
+                    ),
+                    (components: {"prop": (mesh: Cube(1.0))}),
                 ]"#,
             ),
         ];
@@ -2638,7 +2493,10 @@ watch = true",
             let mut places: Vec<(usize, [i32; 3])> = meshes
                 .chain(lights)
                 .filter_map(|(item, at)| match item {
-                    RoomItem::Prefab(index) => Some((index, (at * 10.0).round().as_ivec3().into())),
+                    // Objects 0 and 1 are the prefabs.
+                    RoomItem(index) if index < 2 => {
+                        Some((index, (at * 10.0).round().as_ivec3().into()))
+                    }
                     _ => None,
                 })
                 .collect();

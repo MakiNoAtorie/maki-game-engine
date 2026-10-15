@@ -175,6 +175,9 @@ pub struct WindowSettings {
     pub height: u32,
     /// True: each frame waits for the display.
     pub vsync: bool,
+    /// False: the window opens behind the other windows and does not take the
+    /// keyboard focus (a benchmark that runs while the user works).
+    pub focus: bool,
 }
 
 impl Default for WindowSettings {
@@ -184,6 +187,7 @@ impl Default for WindowSettings {
             width: 1280,
             height: 720,
             vsync: true,
+            focus: true,
         }
     }
 }
@@ -319,7 +323,8 @@ impl ApplicationHandler for Runner {
         let attributes = winit::window::Window::default_attributes()
             .with_title(title)
             .with_inner_size(window_size(config, margin))
-            .with_maximized(maximized);
+            .with_maximized(maximized)
+            .with_active(config.focus);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => {
@@ -328,6 +333,12 @@ impl ApplicationHandler for Runner {
                 return;
             }
         };
+
+        // Behind the other windows. Set after the window is shown: at creation the
+        // level does not hold. A hidden window gets no frames.
+        if !config.focus {
+            window.set_window_level(winit::window::WindowLevel::AlwaysOnBottom);
+        }
 
         // The OS can give a size different from the request (display scale, screen limits).
         let size = window.inner_size();

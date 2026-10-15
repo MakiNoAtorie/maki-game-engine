@@ -11,8 +11,8 @@ use maki_core::Fields;
 use maki_core::fields::{Value, read};
 use maki_events::{Area, CommandRegistry, EventDef};
 use maki_scene::{
-    ComponentTypes, DoorDef, LightDef, MoverDef, ObjectDef, PoseDef, PrefabUse, PropDef, RoomDef,
-    RoomValidators, check_room, ron_options,
+    ComponentTypes, LightDef, MoverDef, ObjectDef, PoseDef, PrefabUse, RoomDef, RoomValidators,
+    check_room, ron_options,
 };
 
 use crate::ron_text::{Notes, pretty, read_notes};
@@ -23,26 +23,15 @@ pub enum Item {
     /// The size and the textures of the room.
     #[default]
     Room,
-    Doorway(usize),
-    Door(usize),
     /// An object of the list `objects`.
     Object(usize),
-    Prop(usize),
-    Mover(usize),
-    Light(usize),
-    /// A prefab file that the room names.
-    Prefab(usize),
-    /// By name.
-    Spawn(String),
     Event(usize),
 }
 
 /// The part of an item that tells where it is: what a gizmo changes.
 pub enum Place<'a> {
-    /// A prop, a prefab, or one of the two poses of a mover.
+    /// The pose of an object. The second pose of a mover: [`Document::with_mover_b`].
     Pose(&'a mut PoseDef),
-    /// A light, a spawn point.
-    Point(&'a mut [f32; 3]),
     /// The rectangle of an event on the floor.
     Area(&'a mut Area),
 }
@@ -63,7 +52,7 @@ pub struct Document {
 impl Item {
     /// True: the item has a name that the user gives it.
     pub fn has_name(&self) -> bool {
-        !matches!(self, Item::Room | Item::Doorway(_))
+        !matches!(self, Item::Room)
     }
 }
 
@@ -151,35 +140,23 @@ impl Document {
 
     /// The fields of an item as a tree, and the name of its type for the table of
     /// its fields (`maki_core::FieldTypes`). `None`: the document has no such item,
-    /// or the item has rows of its own (a spawn point, an event).
+    /// or the item has rows of its own (an event).
     pub fn tree(&self, item: &Item) -> Option<(&'static str, Value)> {
         let room = &self.room;
         Some(match item {
             Item::Room => ("room", room.shell().tree()),
-            Item::Doorway(index) => ("doorway", room.doorways.get(*index)?.tree()),
-            Item::Door(index) => ("door item", room.doors.get(*index)?.tree()),
             // Its name, pose, and parent. `component_tree` gives each component.
             Item::Object(index) => ("object", room.objects.get(*index)?.tree()),
-            Item::Prop(index) => ("prop item", room.props.get(*index)?.tree()),
-            Item::Mover(index) => ("mover item", room.movers.get(*index)?.tree()),
-            Item::Light(index) => ("light item", room.lights.get(*index)?.tree()),
-            Item::Prefab(index) => ("prefab", room.prefabs.get(*index)?.tree()),
-            Item::Spawn(_) | Item::Event(_) => return None,
+            Item::Event(_) => return None,
         })
     }
 
     /// Reads a changed tree of [`Document::tree`] back into its item. An error: the
     /// tree is not one of the item, and the item is as before.
     pub fn set_tree(&mut self, item: &Item, tree: Value) -> Result<()> {
-        fn set<T: serde::de::DeserializeOwned>(slot: Option<&mut T>, tree: Value) -> Result<()> {
-            *slot.context("the room has no such item")? = read(tree)?;
-            Ok(())
-        }
         let room = &mut self.room;
         match item {
             Item::Room => room.set_shell(read(tree)?),
-            Item::Doorway(index) => set(room.doorways.get_mut(*index), tree)?,
-            Item::Door(index) => set(room.doors.get_mut(*index), tree)?,
             Item::Object(index) => {
                 let object = room
                     .objects
@@ -192,11 +169,7 @@ impl Document {
                 let new = new?;
                 (object.name, object.pose, object.parent) = (new.name, new.pose, new.parent);
             }
-            Item::Prop(index) => set(room.props.get_mut(*index), tree)?,
-            Item::Mover(index) => set(room.movers.get_mut(*index), tree)?,
-            Item::Light(index) => set(room.lights.get_mut(*index), tree)?,
-            Item::Prefab(index) => set(room.prefabs.get_mut(*index), tree)?,
-            Item::Spawn(_) | Item::Event(_) => return Err(anyhow!("the item has no tree")),
+            Item::Event(_) => return Err(anyhow!("the item has no tree")),
         }
         Ok(())
     }
@@ -243,92 +216,48 @@ impl Document {
         Ok(())
     }
 
-    /// Moves the props and the lights of the old lists into the list of objects,
-    /// each with its notes, behind the objects that the room has. For the migration
-    /// of stage 48.
-    pub fn items_to_objects(&mut self) {
-        // A doorway and its door are one object, with the notes of the two.
-        let doorways = std::mem::take(&mut self.room.doorways);
-        let mut doors = Vec::new();
-        for (index, door) in std::mem::take(&mut self.room.doors).into_iter().enumerate() {
-            doors.push(Some((door, self.notes.of("doors", index).to_vec())));
-            self.notes.set("doors", index, Vec::new());
-        }
-        let mut objects = Vec::new();
-        for (index, doorway) in doorways.into_iter().enumerate() {
-            let mut object = ObjectDef::default();
-            object.set_component("doorway", &doorway);
-            let of_doorway = |door: &&mut Option<(DoorDef, Vec<String>)>| {
-                door.as_ref().is_some_and(|(door, _)| door.doorway == index)
-            };
-            if let Some((door, notes)) = doors.iter_mut().find(of_doorway).and_then(Option::take) {
-                object.name = door.name.clone();
-                object.set_component("door", &door.leaf());
-                let mut all = self.notes.of("doorways", index).to_vec();
-                all.extend(notes);
-                self.notes.set("doorways", index, all);
-            }
-            objects.push(object);
-        }
-        self.move_to_objects("doorways", objects.into_iter());
-        let movers = std::mem::take(&mut self.room.movers);
-        self.move_to_objects("movers", movers.into_iter().map(MoverDef::into_object));
-        let props = std::mem::take(&mut self.room.props);
-        self.move_to_objects("props", props.into_iter().map(PropDef::into_object));
-        let lights = std::mem::take(&mut self.room.lights);
-        self.move_to_objects("lights", lights.into_iter().map(LightDef::into_object));
-        let prefabs = std::mem::take(&mut self.room.prefabs);
-        self.move_to_objects("prefabs", prefabs.into_iter().map(PrefabUse::into_object));
-        // In name order, as the notes of the old map.
-        let spawns = std::mem::take(&mut self.room.spawns).into_iter();
-        let spawns = spawns.map(|(name, position)| ObjectDef::spawn_point(name, position));
-        self.move_to_objects("spawns", spawns);
-    }
-
-    fn move_to_objects(&mut self, list: &str, objects: impl Iterator<Item = ObjectDef>) {
-        for (index, object) in objects.enumerate() {
-            let notes = self.notes.of(list, index).to_vec();
-            self.notes.set(list, index, Vec::new());
-            self.notes.set("objects", self.room.objects.len(), notes);
-            self.room.objects.push(object);
+    /// The object of an item. `None`: not an object, or not in the room.
+    pub fn object(&self, item: &Item) -> Option<&ObjectDef> {
+        match item {
+            Item::Object(index) => self.room.objects.get(*index),
+            _ => None,
         }
     }
 
-    /// The light of an item: a light of the old list, or an object with the
-    /// component `light`.
+    fn object_mut(&mut self, item: &Item) -> Option<&mut ObjectDef> {
+        match item {
+            Item::Object(index) => self.room.objects.get_mut(*index),
+            _ => None,
+        }
+    }
+
+    /// The light of an item: an object with the component `light`.
     pub fn light(&self, item: &Item) -> Option<LightDef> {
-        match item {
-            Item::Light(index) => self.room.lights.get(*index).cloned(),
-            Item::Object(index) => self.room.objects.get(*index)?.light()?.ok(),
-            _ => None,
+        self.object(item)?.light()?.ok()
+    }
+
+    /// Writes the light of an item that [`Document::light`] gave.
+    pub fn set_light(&mut self, item: &Item, light: LightDef) {
+        if let Some(object) = self.object_mut(item) {
+            object.set_light(light);
         }
     }
 
-    /// The doorway of an item: of the old list, or an object with a `doorway`.
+    /// The doorway of an item: an object with the component `doorway`.
     pub fn doorway(&self, item: &Item) -> Option<Doorway> {
-        match item {
-            Item::Doorway(index) => self.room.doorways.get(*index).copied(),
-            Item::Object(index) => self.room.objects.get(*index)?.doorway()?.ok(),
-            _ => None,
-        }
+        self.object(item)?.doorway()?.ok()
     }
 
     /// Writes the doorway of an item that [`Document::doorway`] gave.
     pub fn set_doorway(&mut self, item: &Item, doorway: Doorway) {
-        match item {
-            Item::Doorway(index) => self.room.doorways[*index] = doorway,
-            Item::Object(index) => self.room.objects[*index].set_component("doorway", &doorway),
-            _ => {}
+        if let Some(object) = self.object_mut(item) {
+            object.set_component("doorway", &doorway);
         }
     }
 
-    /// The mover of an item: of the old list, or an object with a `mover`.
+    /// The mover of an item: an object with the component `mover`.
     pub fn mover(&self, item: &Item) -> Option<MoverDef> {
-        match item {
-            Item::Mover(index) => self.room.movers.get(*index).cloned(),
-            Item::Object(index) => self.room.objects.get(*index)?.mover()?.ok(),
-            _ => None,
-        }
+        self.object(item)?.mover()?.ok()
     }
 
     /// Changes the second pose of a mover. False: the item is not a mover.
@@ -337,80 +266,41 @@ impl Document {
             return false;
         };
         change(&mut mover.b);
-        match item {
-            Item::Mover(index) => self.room.movers[*index] = mover,
-            Item::Object(index) => self.room.objects[*index].set_mover(mover),
-            _ => unreachable!("`mover` gives a mover of these two only"),
-        }
+        let object = self.object_mut(item).expect("`mover` found it");
+        object.set_mover(mover);
         true
     }
 
-    /// The prefab use of an item: of the old list, or an object with a `prefab`.
+    /// The prefab use of an item: an object with the component `prefab`.
     pub fn prefab_use(&self, item: &Item) -> Option<PrefabUse> {
-        match item {
-            Item::Prefab(index) => self.room.prefabs.get(*index).cloned(),
-            Item::Object(index) => self.room.objects.get(*index)?.prefab()?.ok(),
-            _ => None,
-        }
+        self.object(item)?.prefab()?.ok()
     }
 
-    /// Writes the light of an item that [`Document::light`] gave.
-    pub fn set_light(&mut self, item: &Item, light: LightDef) {
+    /// Where an item is, to change it. `None`: the item has no place of its own (the
+    /// room, a doorway).
+    pub fn place(&mut self, item: &Item) -> Option<Place<'_>> {
         match item {
-            Item::Light(index) => self.room.lights[*index] = light,
-            Item::Object(index) => self.room.objects[*index].set_light(light),
-            _ => {}
-        }
-    }
-
-    /// Where an item is, to change it. `second`: for a mover, its pose `b`. `None`:
-    /// the item has no place of its own (the room, a doorway, a door).
-    pub fn place(&mut self, item: &Item, second: bool) -> Option<Place<'_>> {
-        let room = &mut self.room;
-        match item {
-            Item::Object(index) => room
+            Item::Object(index) => self
+                .room
                 .objects
                 .get_mut(*index)
                 .filter(|object| !object.components.contains_key("doorway"))
                 .map(|object| Place::Pose(&mut object.pose)),
-            Item::Prop(index) => room
-                .props
-                .get_mut(*index)
-                .map(|prop| Place::Pose(&mut prop.pose)),
-            Item::Mover(index) => {
-                let mover = room.movers.get_mut(*index)?;
-                Some(Place::Pose(if second {
-                    &mut mover.b
-                } else {
-                    &mut mover.a
-                }))
-            }
-            Item::Light(index) => room
-                .lights
-                .get_mut(*index)
-                .map(|light| Place::Point(&mut light.position)),
-            Item::Prefab(index) => room
-                .prefabs
-                .get_mut(*index)
-                .map(|prefab| Place::Pose(&mut prefab.pose)),
-            Item::Spawn(name) => room.spawns.get_mut(name).map(Place::Point),
             Item::Event(index) => {
                 let event = self.events.get_mut(*index)?;
                 event.area.as_mut().map(Place::Area)
             }
-            Item::Room | Item::Doorway(_) | Item::Door(_) => None,
+            Item::Room => None,
         }
     }
 
-    /// The origin and the rotation of an item. `None` as for [`Document::place`], and
-    /// for an event with no area.
+    /// The origin and the rotation of an item. `second`: for a mover, its pose `b`.
+    /// `None` as for [`Document::place`], and for an event with no area.
     pub fn pose_of(&self, item: &Item, second: bool) -> Option<(Vec3, Quat)> {
-        let room = &self.room;
         let of_pose = |pose: &PoseDef| (Vec3::from(pose.position), pose.transform().rotation);
-        let of_point = |point: &[f32; 3]| (Vec3::from(*point), Quat::IDENTITY);
         match item {
             Item::Object(index) => {
-                let object = room.objects.get(*index)?;
+                let object = self.room.objects.get(*index)?;
                 // A doorway has its place in the wall, not a pose.
                 if object.components.contains_key("doorway") {
                     return None;
@@ -420,22 +310,11 @@ impl Document {
                     _ => Some(of_pose(&object.pose)),
                 }
             }
-            Item::Prop(index) => room.props.get(*index).map(|prop| of_pose(&prop.pose)),
-            Item::Mover(index) => {
-                let mover = room.movers.get(*index)?;
-                Some(of_pose(if second { &mover.b } else { &mover.a }))
-            }
-            Item::Light(index) => room
-                .lights
-                .get(*index)
-                .map(|light| of_point(&light.position)),
-            Item::Prefab(index) => room.prefabs.get(*index).map(|prefab| of_pose(&prefab.pose)),
-            Item::Spawn(name) => room.spawns.get(name).map(of_point),
             Item::Event(index) => {
                 let [x, z] = self.events.get(*index)?.area?.center;
                 Some((Vec3::new(x, 0.0, z), Quat::IDENTITY))
             }
-            Item::Room | Item::Doorway(_) | Item::Door(_) => None,
+            Item::Room => None,
         }
     }
 
@@ -444,18 +323,7 @@ impl Document {
     pub fn notes_key(&self, item: &Item) -> Option<(&'static str, usize)> {
         Some(match item {
             Item::Room => return None,
-            Item::Doorway(index) => ("doorways", *index),
-            Item::Door(index) => ("doors", *index),
             Item::Object(index) => ("objects", *index),
-            Item::Prop(index) => ("props", *index),
-            Item::Mover(index) => ("movers", *index),
-            Item::Light(index) => ("lights", *index),
-            Item::Prefab(index) => ("prefabs", *index),
-            // The file has the spawn points in the order of their names.
-            Item::Spawn(name) => (
-                "spawns",
-                self.room.spawns.keys().position(|key| key == name)?,
-            ),
             Item::Event(index) => ("events", *index),
         })
     }
@@ -476,27 +344,6 @@ impl Document {
             None => {}
         }
     }
-
-    /// Gives a spawn point another name. Its notes go with it. False, with no change,
-    /// if the new name is empty or in use.
-    pub fn rename_spawn(&mut self, old: &str, new: &str) -> bool {
-        if new.is_empty() || self.room.spawns.contains_key(new) {
-            return false;
-        }
-        let item = Item::Spawn(old.to_owned());
-        let Some((list, index)) = self.notes_key(&item) else {
-            return false;
-        };
-        let notes = self.notes.of(list, index).to_vec();
-        self.notes.shift(list, index, -1);
-        let position = self.room.spawns.remove(old).expect("the key was found");
-        self.room.spawns.insert(new.to_owned(), position);
-        let item = Item::Spawn(new.to_owned());
-        let (list, index) = self.notes_key(&item).expect("put in above");
-        self.notes.shift(list, index, 1);
-        self.notes.set(list, index, notes);
-        true
-    }
 }
 
 #[cfg(test)]
@@ -516,21 +363,13 @@ mod tests {
             ),
             "{text}"
         );
-        document.room.spawns.insert("b".to_owned(), [1.0, 0.0, 0.0]);
-        document.room.spawns.insert("d".to_owned(), [2.0, 0.0, 0.0]);
-        document.set_notes(
-            &Item::Spawn("d".to_owned()),
-            vec!["At the door.".to_owned()],
-        );
+        // The spawn point of the new room is object 1.
+        document.set_notes(&Item::Object(1), vec!["At the door.".to_owned()]);
         document.set_notes(&Item::Room, vec!["A test room.".to_owned()]);
-
-        // The spawn point is first in the file with its new name.
-        assert!(!document.rename_spawn("d", "b"));
-        assert!(document.rename_spawn("d", "a"));
         let text = document.text();
         assert!(text.starts_with("// A test room.\n("), "{text}");
         assert!(
-            text.contains("        // At the door.\n        \"a\": (2.0, 0.0, 0.0),"),
+            text.contains("        // At the door.\n        (name: \"start\""),
             "{text}"
         );
         assert_eq!(maki_scene::parse_room(&text).unwrap(), document.room);

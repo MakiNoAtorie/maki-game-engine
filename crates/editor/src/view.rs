@@ -205,22 +205,14 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
         let Some(mesh) = meshes.get(instance.0) else {
             continue;
         };
-        let item = item.map(|item| match item {
-            RoomItem::Object(index) => Item::Object(index),
-            RoomItem::Prop(index) => Item::Prop(index),
-            RoomItem::Light(index) => Item::Light(index),
-            RoomItem::Door(index) => Item::Door(index),
-            RoomItem::Mover(index) => Item::Mover(index),
-            RoomItem::Prefab(index) => Item::Prefab(index),
-        });
+        let item = item.map(|item| Item::Object(item.0));
         if let Some(t) = ray.mesh(mesh, matrix) {
             hit(t, item);
         }
     }
 
     // Things with no mesh, or with a very small one, have a pick shape.
-    let lights = (0..document.room.lights.len()).map(Item::Light);
-    for item in lights.chain((0..document.room.objects.len()).map(Item::Object)) {
+    for item in (0..document.room.objects.len()).map(Item::Object) {
         let Some(light) = document.light(&item) else {
             continue;
         };
@@ -229,12 +221,10 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
             hit(t, Some(item));
         }
     }
-    let spawns = document.room.spawns.iter();
-    let spawns = spawns.map(|(name, position)| (Item::Spawn(name.clone()), *position));
     let objects = document.room.objects.iter().enumerate();
-    let objects = objects.filter(|(_, object)| object.is_spawn());
-    let objects = objects.map(|(index, object)| (Item::Object(index), object.pose.position));
-    for (item, position) in spawns.chain(objects) {
+    let spawns = objects.filter(|(_, object)| object.is_spawn());
+    let spawns = spawns.map(|(index, object)| (Item::Object(index), object.pose.position));
+    for (item, position) in spawns {
         let center = Vec3::from(position) + Vec3::Y * MARK_RADIUS;
         if let Some(t) = ray.sphere(center, MARK_RADIUS) {
             hit(t, Some(item));

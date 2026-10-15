@@ -31,21 +31,6 @@ mod tests {
         "../assets/rooms/room_c.ron",
     ];
 
-    /// The migration of stage 48: the items of the old lists of each room file go
-    /// into its list of objects. Run by hand: `cargo test -p maki-game-scripts -- --ignored items_to_objects`.
-    // ponytail: goes with the old lists (stage 48, #5).
-    #[test]
-    #[ignore = "changes the room files of the game"]
-    fn items_to_objects() {
-        let app = game_app();
-        let registry = app.world().resource::<events::CommandRegistry>();
-        for path in ROOMS {
-            let mut document = maki_editor::Document::read(path.as_ref(), registry).unwrap();
-            document.items_to_objects();
-            document.save().unwrap();
-        }
-    }
-
     /// An app with the modules of the game that read a room file.
     fn game_app() -> App {
         // No sound device in a test.
@@ -93,40 +78,13 @@ output = false",
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
             count += document.events.len();
-            // Each item of the old lists is an object (stage 48).
-            let room = &document.room;
-            let old = [
-                room.props.len(),
-                room.lights.len(),
-                room.doorways.len(),
-                room.doors.len(),
-                room.movers.len(),
-                room.prefabs.len(),
-                room.spawns.len(),
-            ];
-            assert_eq!(old, [0; 7], "{path:?}");
-
-            // The inspector reads each item and each component as a tree, and reads
-            // a changed tree back. With no change: the same room, and the same file.
-            let lists = [
-                ("doorway", room.doorways.len()),
-                ("door", room.doors.len()),
-                ("object", room.objects.len()),
-                ("mover", room.movers.len()),
-                ("light", room.lights.len()),
-                ("prefab", room.prefabs.len()),
-            ];
-            let mut items = vec![maki_editor::Item::Room];
-            for (list, length) in lists {
-                items.extend((0..length).map(|index| match list {
-                    "doorway" => maki_editor::Item::Doorway(index),
-                    "door" => maki_editor::Item::Door(index),
-                    "object" => maki_editor::Item::Object(index),
-                    "mover" => maki_editor::Item::Mover(index),
-                    "light" => maki_editor::Item::Light(index),
-                    _ => maki_editor::Item::Prefab(index),
-                }));
-            }
+            // The inspector reads the room, each object, and each component as a tree,
+            // and reads a changed tree back. With no change: the same room, and the
+            // same file.
+            let objects = (0..document.room.objects.len()).map(maki_editor::Item::Object);
+            let items: Vec<_> = std::iter::once(maki_editor::Item::Room)
+                .chain(objects)
+                .collect();
             let mut again = document.clone();
             for item in &items {
                 let (_, tree) = again.tree(item).unwrap();

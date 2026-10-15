@@ -7,7 +7,7 @@ Never pull full logs into context. Filter to errors and failures.
 - Build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`
 - Dynamic build: `cargo build --profile dynamic -p maki-editor-app -p maki-game-dll 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`
 - Clippy: `cargo clippy --workspace --all-targets 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`
-- Tests: `cargo test --workspace -q 2>&1 | rg -e 'FAILED|panicked|^error|test result' | head -40`
+- Tests: `cargo test -q 2>&1 | rg -e 'FAILED|panicked|^error|test result' | head -40` (the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit)
 - Benchmark: `tools/bench.py` writes CSV; read only the summary rows, not the per-frame data.
 - No CI in this repository: the local checks above are the gate.
 
@@ -18,7 +18,7 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - Haiku or Explore: read-only searches.
 
 ## Subagents
-- Implementers work on the checked-out branch (no new branches or worktrees; see the owner's global rules). Two writers never touch the same files.
+- Parallel implementers may each have a worktree and a branch (owner, 2026-10-15); one implementer works on the checked-out branch. Two writers never touch the same files. A parallel branch is merged back when its checks pass, then its worktree and branch go.
 - Implementers run the local checks above, do not edit shared notes, and end their report with at most 10 bullet points of new conventions. The orchestrator folds them into this file.
 - Prompt template:
 

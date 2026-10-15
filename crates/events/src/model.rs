@@ -214,7 +214,7 @@ mod tests {
     fn events_are_read_from_a_room_file_and_the_rest_is_skipped() {
         let text = r#"(
             width: 4, depth: 4, height: 3,
-            props: [(mesh: Cube(1.0))],
+            objects: [(components: {"prop": (mesh: Cube(1.0))})],
             events: [
                 (
                     name: "door",

@@ -16,7 +16,6 @@ use maki_core::fields::Value;
 use maki_core::{App, FieldTypes};
 use maki_events::{EventRunner, Problem};
 use maki_scene::ComponentTypes;
-use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
 use maki_ui::theme::icon;
 use maki_ui::widgets::{
@@ -29,7 +28,7 @@ use maki_ui::{
 };
 
 use crate::event_panel::{ERROR, HINT, NEVER_WRITTEN, event_panel, event_properties};
-use crate::widgets::{drag, vector};
+use crate::widgets::drag;
 use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool};
 
 pub(crate) const OUTLINER: &str = "outliner";
@@ -230,7 +229,7 @@ fn command_row(ui: &mut Ui, world: &World, id: &str) -> bool {
 
 /// Under the commands of the "Edit" menu: the name field of "Make prefab".
 fn prefab_menu(ui: &mut Ui, editor: &mut Editor) {
-    let is_part = |item: &Item| matches!(item, Item::Prop(_) | Item::Light(_) | Item::Object(_));
+    let is_part = |item: &Item| matches!(item, Item::Object(_));
     let parts = !editor.playing() && editor.selection.iter().any(is_part);
     ui.horizontal(|ui| {
         let field = egui::TextEdit::singleline(&mut editor.prefab_name)
@@ -614,24 +613,6 @@ fn sections(document: &Document) -> Vec<Section> {
         Some(name) => name.clone(),
         None => format!("{kind} {index}"),
     };
-    let doorways = room.doorways.iter().enumerate().map(|(index, doorway)| {
-        let label = format!("doorway {index} ({:?})", doorway.wall);
-        (Item::Doorway(index), label)
-    });
-    let doors = room
-        .doors
-        .iter()
-        .enumerate()
-        .map(|(index, door)| (Item::Door(index), named(&door.name, "door", index)));
-    let props = room.props.iter().enumerate().map(|(index, prop)| {
-        let kind = match &prop.mesh {
-            MeshDef::Cube(_) => "cube".to_owned(),
-            MeshDef::Cuboid(..) => "cuboid".to_owned(),
-            MeshDef::Sphere { .. } => "sphere".to_owned(),
-            MeshDef::File(path) => file_name(path),
-        };
-        (Item::Prop(index), named(&prop.name, &kind, index))
-    });
     // An object with no name: the name of its first component.
     let objects = room.objects.iter().enumerate().map(|(index, object)| {
         let kind = object
@@ -641,36 +622,11 @@ fn sections(document: &Document) -> Vec<Section> {
             .map_or("object", String::as_str);
         (Item::Object(index), named(&object.name, kind, index))
     });
-    let movers = room
-        .movers
-        .iter()
-        .enumerate()
-        .map(|(index, mover)| (Item::Mover(index), named(&mover.name, "mover", index)));
-    let lights = room
-        .lights
-        .iter()
-        .enumerate()
-        .map(|(index, light)| (Item::Light(index), named(&light.name, "light", index)));
-    let prefabs = room.prefabs.iter().enumerate().map(|(index, prefab)| {
-        (
-            Item::Prefab(index),
-            named(&prefab.name, &file_name(&prefab.file), index),
-        )
-    });
-    let spawns = room.spawns.keys();
-    let spawns = spawns.map(|name| (Item::Spawn(name.clone()), name.clone()));
     let events = document.events.iter().enumerate();
     let events = events.map(|(index, event)| (Item::Event(index), event.name.clone()));
     vec![
         (None, vec![(Item::Room, "Room".to_owned())]),
-        (Some("Doorways"), doorways.collect()),
-        (Some("Doors"), doors.collect()),
         (Some("Objects"), objects.collect()),
-        (Some("Props"), props.collect()),
-        (Some("Movers"), movers.collect()),
-        (Some("Lights"), lights.collect()),
-        (Some("Prefabs"), prefabs.collect()),
-        (Some("Spawn points"), spawns.collect()),
         (Some("Events"), events.collect()),
     ]
 }
@@ -790,15 +746,6 @@ fn item_properties(
 ) -> Option<bool> {
     // What is not a field of an item kind.
     match item {
-        // A spawn point is a name and a place in a map of the room.
-        Item::Spawn(spawn) => {
-            let mut new = spawn.clone();
-            let renamed =
-                crate::widgets::text(ui, "name", &mut new) && editor.rename_spawn(spawn, &new);
-            let now = if renamed { &new } else { spawn };
-            let position = editor.document.room.spawns.get_mut(now)?;
-            return Some(renamed | vector(ui, "position", position, None, 0.01));
-        }
         // `event_panel` shows an event.
         Item::Event(_) => return None,
         item if editor.document.mover(item).is_some() => {
@@ -817,17 +764,8 @@ fn item_properties(
         return Some(false);
     };
     let name_before = tree.get("name").cloned();
-    // The lists of the room that a field picks from, with the labels of the outliner.
-    let doorways = &editor.document.room.doorways;
-    let lists = |list: &str| -> Vec<String> {
-        let doorways = doorways.iter().enumerate();
-        match list {
-            "doorways" => doorways
-                .map(|(index, doorway)| format!("doorway {index} ({:?})", doorway.wall))
-                .collect(),
-            _ => Vec::new(),
-        }
-    };
+    // No field of the room or of an object picks from a list of the room.
+    let lists = |_: &str| Vec::new();
     let mut changed = false;
     if crate::fields::show(ui, &table.kind, &mut tree, &lists) {
         // The name of an item that events find by its name.

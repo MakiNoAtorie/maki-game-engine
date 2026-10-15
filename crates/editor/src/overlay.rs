@@ -345,19 +345,13 @@ fn marks(
         pen.text(corner(-1.0, -1.0), &event.name, AREA);
     }
 
-    let spawns = room.spawns.iter();
-    let spawns =
-        spawns.map(|(name, position)| (name.as_str(), Item::Spawn(name.clone()), *position));
-    let objects = room
-        .objects
-        .iter()
-        .enumerate()
-        .filter(|(_, object)| object.is_spawn());
-    let objects = objects.map(|(index, object)| {
+    let objects = room.objects.iter().enumerate();
+    let spawns = objects.filter(|(_, object)| object.is_spawn());
+    let spawns = spawns.map(|(index, object)| {
         let name = object.name.as_deref().unwrap_or("");
         (name, Item::Object(index), object.pose.position)
     });
-    for (name, item, position) in spawns.chain(objects) {
+    for (name, item, position) in spawns {
         let at = Vec3::from(position);
         let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         pen.circle(at, Vec3::X, Vec3::Z, MARK_RADIUS, stroke);
@@ -365,17 +359,11 @@ fn marks(
         pen.text(at + Vec3::Y * 2.0 * MARK_RADIUS, name, MARK);
     }
 
-    let doors = room.doors.iter().enumerate();
-    let doors = doors
-        .filter_map(|(index, door)| Some((Item::Door(index), *room.doorways.get(door.doorway)?)));
-    let of_objects = room
-        .objects
-        .iter()
-        .enumerate()
-        .filter(|(_, object)| object.door().is_some());
-    let of_objects = of_objects
-        .filter_map(|(index, object)| Some((Item::Object(index), object.doorway()?.ok()?)));
-    for (item, doorway) in doors.chain(of_objects) {
+    let objects = room.objects.iter().enumerate();
+    let doors = objects.filter(|(_, object)| object.door().is_some());
+    let doors =
+        doors.filter_map(|(index, object)| Some((Item::Object(index), object.doorway()?.ok()?)));
+    for (item, doorway) in doors {
         // The hinge and the way of the free edge of the leaf, as the room loader
         // makes the door: it turns into the room.
         let (start, along, length, inward) = doorway.wall.frame(room.width, room.depth);
@@ -390,8 +378,7 @@ fn marks(
         pen.line(hinge, swing(8), stroke);
     }
 
-    let movers = (0..room.movers.len()).map(Item::Mover);
-    for item in movers.chain((0..room.objects.len()).map(Item::Object)) {
+    for item in (0..room.objects.len()).map(Item::Object) {
         let Some(mover) = editor.document.mover(&item) else {
             continue;
         };
@@ -534,11 +521,7 @@ fn marks(
 /// The meshes of an item in the world, by their mark.
 fn of_mesh(item: &Item) -> Option<RoomItem> {
     match item {
-        Item::Object(index) => Some(RoomItem::Object(*index)),
-        Item::Prop(index) => Some(RoomItem::Prop(*index)),
-        Item::Door(index) => Some(RoomItem::Door(*index)),
-        Item::Mover(index) => Some(RoomItem::Mover(*index)),
-        Item::Prefab(index) => Some(RoomItem::Prefab(*index)),
+        Item::Object(index) => Some(RoomItem(*index)),
         _ => None,
     }
 }

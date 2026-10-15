@@ -218,7 +218,8 @@ mod tests {
             Step::Hold(1, &[UP]),
         ];
         let mut room = RoomDef::default();
-        room.spawns.insert("east".to_owned(), [3.0, 0.0, 0.0]);
+        let east = maki_scene::ObjectDef::spawn_point("east".to_owned(), [3.0, 0.0, 0.0]);
+        room.objects.push(east);
         let events = [EventDef {
             name: "switch".to_owned(),
             area: Some(Area {

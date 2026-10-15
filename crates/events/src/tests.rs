@@ -26,10 +26,10 @@ fn room(events: &str) -> String {
     format!(
         r#"(
             width: 8, depth: 8, height: 3,
-            doorways: [(wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)],
-            doors: [(name: "door", doorway: 0, seconds: 0.1)],
-            lights: [(name: "lamp", position: (0, 2, 0), radius: 0.1, color: (1, 1, 1), intensity: 5.0)],
-            spawns: {{ "start": (0, 0, 0), "east": (2, 0, 0) }},
+            objects: [(name: "door", components: {{"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
+                (name: "lamp", pose: (position: (0, 2, 0)), components: {{"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}}),
+                (name: "start", components: {{"spawn": ()}}),
+                (name: "east", pose: (position: (2, 0, 0)), components: {{"spawn": ()}})],
             events: [{events}],
         )"#
     )

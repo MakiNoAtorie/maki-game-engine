@@ -1,10 +1,9 @@
 //! Changes of the document that are more than one value: add, delete, and duplicate
 //! an item, names and the events that use them, and the history for undo and redo.
 //!
-//! Names: events find a light, a door, and a mover by name, and a `Transfer` names a
-//! spawn point. So a new or changed name is made unique in its group (lights; doors
-//! and movers together, because `OpenDoor` finds the two; events), and a change of a
-//! name changes the built-in commands of this room that use it. A command of another
+//! Names: events find an object (a light, a door, a mover, a spawn point) by name.
+//! So a new or changed name is made unique in its group (the objects; the events),
+//! and a change of a name changes the commands of this room that use it. A command of another
 //! module, and a `Transfer` in another room file, are not changed: see
 //! [`spawn_users`].
 
@@ -95,66 +94,30 @@ fn tidy(pose: PoseDef) -> PoseDef {
 impl Document {
     /// True if the document has the item.
     pub fn has(&self, item: &Item) -> bool {
-        let room = &self.room;
         match item {
             Item::Room => true,
-            Item::Doorway(index) => *index < room.doorways.len(),
-            Item::Door(index) => *index < room.doors.len(),
-            Item::Object(index) => *index < room.objects.len(),
-            Item::Prop(index) => *index < room.props.len(),
-            Item::Mover(index) => *index < room.movers.len(),
-            Item::Light(index) => *index < room.lights.len(),
-            Item::Prefab(index) => *index < room.prefabs.len(),
-            Item::Spawn(name) => room.spawns.contains_key(name),
+            Item::Object(index) => *index < self.room.objects.len(),
             Item::Event(index) => *index < self.events.len(),
         }
     }
 
     /// The names of the group of an item, without the name of the item itself.
-    /// `None`: items of this kind have no name that must be unique.
+    /// `None`: the room, which has no name.
     fn other_names(&self, item: &Item) -> Option<Vec<&str>> {
-        let room = &self.room;
-        fn named<'a>(names: Vec<(Item, &'a Option<String>)>, item: &Item) -> Vec<&'a str> {
-            let others = names.into_iter().filter(|(other, _)| other != item);
-            others.filter_map(|(_, name)| name.as_deref()).collect()
-        }
-        let lights = room.lights.iter().enumerate();
-        let doors = room.doors.iter().enumerate();
-        let movers = room.movers.iter().enumerate();
         Some(match item {
-            // While the old lists are there, an object shares the names of each.
-            Item::Prop(_)
-            | Item::Object(_)
-            | Item::Light(_)
-            | Item::Door(_)
-            | Item::Mover(_)
-            | Item::Prefab(_) => {
-                let props = room.props.iter().enumerate();
-                let props = props.map(|(i, prop)| (Item::Prop(i), &prop.name));
-                let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
-                let doors = doors.map(|(i, door)| (Item::Door(i), &door.name));
-                let movers = movers.map(|(i, mover)| (Item::Mover(i), &mover.name));
-                let prefabs = room.prefabs.iter().enumerate();
-                let prefabs = prefabs.map(|(i, prefab)| (Item::Prefab(i), &prefab.name));
-                let objects = room.objects.iter().enumerate();
-                let objects = objects.map(|(i, object)| (Item::Object(i), &object.name));
-                let old = props
-                    .chain(lights)
-                    .chain(doors)
-                    .chain(movers)
-                    .chain(prefabs);
-                named(old.chain(objects).collect(), item)
+            Item::Object(index) => {
+                let objects = self.room.objects.iter().enumerate();
+                let others = objects.filter(|(other, _)| other != index);
+                others
+                    .filter_map(|(_, object)| object.name.as_deref())
+                    .collect()
             }
             Item::Event(index) => {
                 let events = self.events.iter().enumerate();
                 let others = events.filter(|(other, _)| other != index);
                 others.map(|(_, event)| event.name.as_str()).collect()
             }
-            Item::Spawn(name) => {
-                let names = room.spawns.keys().map(String::as_str);
-                names.filter(|other| other != name).collect()
-            }
-            Item::Room | Item::Doorway(_) => return None,
+            Item::Room => return None,
         })
     }
 
@@ -167,10 +130,9 @@ impl Document {
         }
     }
 
-    /// Call after the name of an object, a light, a door, a mover, or an event was changed
-    /// from `old`. The new name is made unique, and the commands of the events of
-    /// this room that name the item (built-in, and of the audio module) get the new
-    /// name. Returns a text for
+    /// Call after the name of an object or an event was changed from `old`. The new
+    /// name is made unique, and the commands of the events of this room that name the
+    /// object (built-in, and of the audio module) get the new name. Returns a text for
     /// the user if something more than the name itself was changed.
     pub fn renamed(
         &mut self,
@@ -178,11 +140,8 @@ impl Document {
         old: Option<String>,
         registry: &CommandRegistry,
     ) -> String {
-        let name = match item {
-            Item::Light(index) => &mut self.room.lights[*index].name,
-            Item::Object(index) => &mut self.room.objects[*index].name,
-            Item::Door(index) => &mut self.room.doors[*index].name,
-            Item::Mover(index) => &mut self.room.movers[*index].name,
+        let index = match item {
+            Item::Object(index) => *index,
             Item::Event(index) => {
                 let typed = std::mem::take(&mut self.events[*index].name);
                 self.events[*index].name = self.unique_name(item, &typed);
@@ -193,10 +152,10 @@ impl Document {
                     String::new()
                 };
             }
-            _ => return String::new(),
+            Item::Room => return String::new(),
         };
-        let Some(typed) = name.take() else {
-            // Events that still name the item give a warning when they run.
+        let Some(typed) = self.room.objects[index].name.take() else {
+            // Events that still name the object give a warning when they run.
             return String::new();
         };
         let new = self.unique_name(item, &typed);
@@ -204,22 +163,20 @@ impl Document {
         if new != typed {
             status = "The name was in use: a number was added. ".to_owned();
         }
-        // An object can be each kind that events name.
-        let lights = matches!(item, Item::Light(_) | Item::Object(_));
-        let doors = matches!(item, Item::Door(_) | Item::Mover(_) | Item::Object(_));
         let mut users = 0;
-        if let Some(old) = &old
-            && lights
-        {
+        if let Some(old) = &old {
+            // A command names the object by the kind that it wants; an object can
+            // be each kind.
             users += self.rename_in_events(registry, |command: &Builtin| match command {
                 Builtin::LightOn(name) if name == old => Some(Builtin::LightOn(new.clone())),
                 Builtin::LightOff(name) if name == old => Some(Builtin::LightOff(new.clone())),
                 Builtin::LightIntensity(name, value) if name == old => {
                     Some(Builtin::LightIntensity(new.clone(), *value))
                 }
+                Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
+                Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
                 _ => None,
             });
-            // The sound of the light has the name of the light.
             users += self.rename_in_events(registry, |command: &AudioCommand| match command {
                 AudioCommand::SoundOn(name) if name == old => {
                     Some(AudioCommand::SoundOn(new.clone()))
@@ -229,39 +186,22 @@ impl Document {
                 }
                 _ => None,
             });
-        }
-        let spawn = matches!(item, Item::Object(index) if self.room.objects[*index].is_spawn());
-        if let Some(old) = &old
-            && spawn
-        {
-            let file = self.path.file_name().unwrap_or_default();
-            let file = file.to_string_lossy().into_owned();
-            users += self.rename_in_events(registry, |command: &Builtin| match command {
-                Builtin::Transfer(room, to) if *room == file && to == old => {
-                    Some(Builtin::Transfer(room.clone(), new.clone()))
-                }
-                _ => None,
-            });
-        }
-        if let Some(old) = &old
-            && doors
-        {
-            users += self.rename_in_events(registry, |command: &Builtin| match command {
-                Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
-                Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
-                _ => None,
-            });
+            // A `Transfer` of this room to itself names the spawn point.
+            if self.room.objects[index].is_spawn() {
+                let file = self.path.file_name().unwrap_or_default();
+                let file = file.to_string_lossy().into_owned();
+                users += self.rename_in_events(registry, |command: &Builtin| match command {
+                    Builtin::Transfer(room, to) if *room == file && to == old => {
+                        Some(Builtin::Transfer(room.clone(), new.clone()))
+                    }
+                    _ => None,
+                });
+            }
         }
         if users > 0 {
             status += &format!("{users} event commands now name `{new}`");
         }
-        let name = match item {
-            Item::Light(index) => &mut self.room.lights[*index].name,
-            Item::Object(index) => &mut self.room.objects[*index].name,
-            Item::Door(index) => &mut self.room.doors[*index].name,
-            _ => &mut self.room.movers[item_index(item)].name,
-        };
-        *name = Some(new);
+        self.room.objects[index].name = Some(new);
         status
     }
 
@@ -472,57 +412,27 @@ impl Document {
         Ok(item)
     }
 
-    /// Removes items. The room itself is not removed. A doorway takes its door with
-    /// it, and the doors of the doorways behind it get their new index. Returns a
-    /// text for the user if more than the items was changed.
-    pub fn delete(&mut self, items: &[Item]) -> String {
+    /// Removes items. The room itself is not removed.
+    pub fn delete(&mut self, items: &[Item]) {
         // From the last index down: a removal does not move an item that is still
         // to remove.
         let mut items: Vec<&Item> = items.iter().filter(|item| self.has(item)).collect();
         items.sort_by_key(|item| std::cmp::Reverse(item_index(item)));
-        let mut doors_gone = 0;
         for item in items {
             if let Some((list, index)) = self.notes_key(item) {
                 self.notes.shift(list, index, -1);
             }
-            let room = &mut self.room;
             match item {
                 Item::Room => continue,
-                Item::Doorway(index) => {
-                    room.doorways.remove(*index);
-                    let mut kept = 0;
-                    room.doors.retain_mut(|def| {
-                        let keep = def.doorway != *index;
-                        if keep {
-                            def.doorway -= usize::from(def.doorway > *index);
-                            kept += 1;
-                        } else {
-                            // The notes of the doors behind it move up.
-                            self.notes.shift("doors", kept, -1);
-                            doors_gone += 1;
-                        }
-                        keep
-                    });
-                }
-                Item::Door(index) => drop(room.doors.remove(*index)),
-                Item::Object(index) => drop(room.objects.remove(*index)),
-                Item::Prop(index) => drop(room.props.remove(*index)),
-                Item::Mover(index) => drop(room.movers.remove(*index)),
-                Item::Light(index) => drop(room.lights.remove(*index)),
-                Item::Prefab(index) => drop(room.prefabs.remove(*index)),
-                Item::Spawn(name) => drop(room.spawns.remove(name)),
+                Item::Object(index) => drop(self.room.objects.remove(*index)),
                 Item::Event(index) => drop(self.events.remove(*index)),
             }
             self.dirty = true;
         }
-        match doors_gone {
-            0 => String::new(),
-            count => format!("{count} door of a removed doorway was removed too"),
-        }
     }
 
     /// Makes a copy of each item, a little beside it, with a name of its own.
-    /// Returns the copies. The room and a door have no copy (a doorway holds one door).
+    /// Returns the copies. The room has no copy.
     pub fn duplicate(&mut self, items: &[Item]) -> Vec<Item> {
         let source = self.clone();
         self.copy_from(&source, items, DUPLICATE_OFFSET)
@@ -531,7 +441,7 @@ impl Document {
     /// Makes in this document a copy of each of `items` of the document `source`
     /// (another room, or this one), `offset` meters beside its place, with a name
     /// that this room does not have and with its notes. Returns the copies. The
-    /// room and a door have no copy (a doorway holds one door).
+    /// room has no copy.
     pub fn copy_from(&mut self, source: &Document, items: &[Item], offset: f32) -> Vec<Item> {
         let shift = |position: &mut [f32; 3]| {
             position[0] += offset;
@@ -545,66 +455,25 @@ impl Document {
             let notes = source.notes_of(item).to_vec();
             let room = &mut self.room;
             let copy = match item {
-                Item::Room | Item::Door(_) => continue,
-                Item::Doorway(index) => {
-                    let mut doorway = source.room.doorways[*index];
-                    if offset != 0.0 {
-                        doorway.offset += doorway.width + offset;
-                    }
-                    room.doorways.push(doorway);
-                    Item::Doorway(room.doorways.len() - 1)
-                }
+                Item::Room => continue,
                 Item::Object(index) => {
                     let mut object = source.room.objects[*index].clone();
+                    // The place of a light is the pose: it moves with it.
                     shift(&mut object.pose.position);
+                    // A doorway is beside its source in the wall.
+                    if let (Some(Ok(mut doorway)), true) = (object.doorway(), offset != 0.0) {
+                        doorway.offset += doorway.width + offset;
+                        object.set_component("doorway", &doorway);
+                    }
+                    if let Some(Ok(mut mover)) = object.mover() {
+                        shift(&mut mover.b.position);
+                        object.set_mover(mover);
+                    }
                     let copy = Item::Object(room.objects.len());
                     let name = object.name.take();
                     room.objects.push(object);
                     let name = name.map(|name| self.unique_name(&copy, &name));
                     self.room.objects.last_mut().expect("pushed above").name = name;
-                    copy
-                }
-                Item::Prop(index) => {
-                    let mut prop = source.room.props[*index].clone();
-                    shift(&mut prop.pose.position);
-                    room.props.push(prop);
-                    Item::Prop(room.props.len() - 1)
-                }
-                Item::Mover(index) => {
-                    let mut mover = source.room.movers[*index].clone();
-                    shift(&mut mover.a.position);
-                    shift(&mut mover.b.position);
-                    let copy = Item::Mover(room.movers.len());
-                    let name = mover.name.take();
-                    room.movers.push(mover);
-                    let name = name.map(|name| self.unique_name(&copy, &name));
-                    self.room.movers.last_mut().expect("pushed above").name = name;
-                    copy
-                }
-                Item::Light(index) => {
-                    let mut light = source.room.lights[*index].clone();
-                    shift(&mut light.position);
-                    let copy = Item::Light(room.lights.len());
-                    let name = light.name.take();
-                    room.lights.push(light);
-                    let name = name.map(|name| self.unique_name(&copy, &name));
-                    self.room.lights.last_mut().expect("pushed above").name = name;
-                    copy
-                }
-                Item::Prefab(index) => {
-                    let mut prefab = source.room.prefabs[*index].clone();
-                    shift(&mut prefab.pose.position);
-                    room.prefabs.push(prefab);
-                    Item::Prefab(room.prefabs.len() - 1)
-                }
-                Item::Spawn(name) => {
-                    let mut position = source.room.spawns[name];
-                    shift(&mut position);
-                    let new = free_name(name, |name| room.spawns.contains_key(name));
-                    room.spawns.insert(new.clone(), position);
-                    let copy = Item::Spawn(new);
-                    let (list, at) = self.notes_key(&copy).expect("put in above");
-                    self.notes.shift(list, at, 1);
                     copy
                 }
                 Item::Event(index) => {
@@ -643,8 +512,6 @@ impl Document {
     ) -> Result<Item, String> {
         let room = &self.room;
         let is_part = |item: &&Item| match item {
-            Item::Prop(index) => *index < room.props.len(),
-            Item::Light(index) => *index < room.lights.len(),
             // A prefab file has props and lights: an object with another component
             // would lose it.
             Item::Object(index) => room.objects.get(*index).is_some_and(|object| {
@@ -667,16 +534,9 @@ impl Document {
         let space = outer.transform();
         let (mut props, mut lights) = (Vec::new(), Vec::new());
         for item in &parts {
-            match item {
-                Item::Prop(index) => props.push(room.props[*index].clone()),
-                Item::Light(index) => lights.push(room.lights[*index].clone()),
-                Item::Object(index) => {
-                    let object = &room.objects[*index];
-                    props.extend(object.prop().and_then(Result::ok));
-                    lights.extend(object.light().and_then(Result::ok));
-                }
-                _ => unreachable!("`parts` has props, lights, and objects of them"),
-            }
+            let object = self.object(item).expect("`parts` has objects");
+            props.extend(object.prop().and_then(Result::ok));
+            lights.extend(object.light().and_then(Result::ok));
         }
         let mut prefab = PrefabDef::default();
         for mut prop in props {
@@ -782,18 +642,11 @@ impl Document {
     }
 }
 
-/// The index of an item in its list. 0 for the room and for a spawn point.
+/// The index of an item in its list. 0 for the room.
 fn item_index(item: &Item) -> usize {
     match item {
-        Item::Room | Item::Spawn(_) => 0,
-        Item::Doorway(index)
-        | Item::Door(index)
-        | Item::Object(index)
-        | Item::Prop(index)
-        | Item::Mover(index)
-        | Item::Light(index)
-        | Item::Prefab(index)
-        | Item::Event(index) => *index,
+        Item::Room => 0,
+        Item::Object(index) | Item::Event(index) => *index,
     }
 }
 
@@ -957,18 +810,22 @@ mod tests {
     fn document(registry: &CommandRegistry) -> Document {
         let text = r#"(
             width: 8.0, depth: 8.0, height: 3.0,
-            doorways: [
-                (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+            objects: [
+                (name: "door", components: {
+                    "door": (),
+                    "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+                }),
                 // The east one.
-                (wall: PosX, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
-            ],
-            doors: [
-                (name: "door", doorway: 0),
                 // To the east.
-                (name: "east", doorway: 1),
+                (name: "east", components: {
+                    "door": (),
+                    "doorway": (wall: PosX, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+                }),
+                (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {
+                    "light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
+                }),
+                (name: "start", components: {"spawn": ()}),
             ],
-            lights: [(name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)],
-            spawns: {"start": (0.0, 0.0, 0.0)},
             events: [(name: "switch", pages: [(trigger: Interact, commands: [
                 LightOff("lamp"),
                 If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
@@ -982,8 +839,7 @@ mod tests {
     fn a_rename_changes_the_events_and_a_name_stays_unique() {
         let registry = registry();
         let mut document = document(&registry);
-        // The two doorways with their doors, and the light, are objects.
-        document.items_to_objects();
+        // Objects: two doorways with their doors, the light, the spawn point.
         let lamp = Item::Object(2);
 
         document.room.objects[2].name = Some("bulb".to_owned());
@@ -1029,7 +885,6 @@ mod tests {
     fn a_doorway_and_its_door_are_one_object() {
         let registry = registry();
         let mut document = document(&registry);
-        document.items_to_objects();
         // The notes of the doorway, then of its door.
         let notes = ["The east one.", "To the east."];
         assert_eq!(document.notes.of("objects", 1), notes);
@@ -1062,11 +917,11 @@ mod tests {
         history.reset(&document);
         let start = document.text();
         // The selection of each state comes back with the state.
-        let mut selection = vec![Item::Light(0)];
+        let mut selection = vec![Item::Object(2)];
 
         // A drag: many frames with a change, then the button goes up.
         for step in 1..=10 {
-            document.room.lights[0].position[0] = step as f32 * 0.1;
+            document.room.objects[2].pose.position[0] = step as f32 * 0.1;
             history.track(&document, &selection, true);
         }
         history.track(&document, &selection, false);
@@ -1079,7 +934,7 @@ mod tests {
 
         assert!(history.undo(&mut document, &mut selection));
         assert_eq!(document.text(), dragged);
-        assert_eq!(selection, [Item::Light(0)]);
+        assert_eq!(selection, [Item::Object(2)]);
         assert!(history.undo(&mut document, &mut selection));
         assert_eq!(document.text(), start);
         assert!(!history.undo(&mut document, &mut selection));
@@ -1087,17 +942,17 @@ mod tests {
             history.redo(&mut document, &mut selection)
                 && history.redo(&mut document, &mut selection)
         );
-        assert_eq!(document.room.objects.len(), 1);
-        assert_eq!(selection, [Item::Object(0)]);
+        assert_eq!(document.room.objects.len(), 5);
+        assert_eq!(selection, [Item::Object(4)]);
         // A change after an undo drops the steps that were undone.
         history.undo(&mut document, &mut selection);
-        document.delete(&[Item::Light(0)]);
+        document.delete(&[Item::Object(2)]);
         history.track(&document, &selection, false);
         assert_eq!(history.steps(), (2, 0));
         // A change that was not tracked yet is a step of its own before the undo.
         document.room.width = 9.0;
         history.undo(&mut document, &mut selection);
-        assert_eq!((document.room.width, document.room.lights.len()), (8.0, 0));
+        assert_eq!((document.room.width, document.room.objects.len()), (8.0, 3));
     }
 
     #[test]

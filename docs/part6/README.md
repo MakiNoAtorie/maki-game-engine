@@ -275,7 +275,7 @@ The order is data, then behavior, then the way with no code. Each stage leaves t
 | 45 | A changed asset file shows at once (`stage-45-asset-reload.md`) | Done (`stage-45.md`) |
 | 46 | Source files of other programs: `.blend`, `.obj`, `.psd` (`stage-46-source-files.md`) | Done (`stage-46.md`) |
 | 47 | Fields that describe themselves (item 1 of 3.2): the derive, the registry of component types, the properties panel from the table of fields. On the item kinds as they are: no change of the room file (2.14) (`stage-47-fields.md`) | Done (`stage-47.md`) |
-| 48 | The room file is a list of objects (2.1): the new format, the migration of the rooms, the outliner, the pick, and the gizmo for any object | Planned |
+| 48 | The room file is a list of objects (2.1): the new format, the migration of the rooms, the outliner, the pick, and the gizmo for any object (`stage-48-objects.md`) | Done (`stage-48.md`) |
 | 49 | Prefabs: a kind is a prefab file, the player is data, an instance with changes (item 2) | Planned |
 | 50 | Script components with hooks, each command as a function of a script, "New script" with its templates (2.7), the log panel (2.4) | Planned |
 | 51 | The events as components, and the three general commands (2.8) | Planned |

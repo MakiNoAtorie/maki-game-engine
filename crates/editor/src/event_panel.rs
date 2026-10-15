@@ -623,44 +623,27 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
     problems.retain(|problem| problem.event == index);
     let room = &editor.document.room;
-    let named = |names: Vec<&Option<String>>| -> Vec<String> {
-        names.into_iter().flatten().cloned().collect()
-    };
-    let doors = room.doors.iter().map(|door| &door.name);
     let own = (file_name(&editor.document), room.spawn_names());
     let other_rooms = others
         .iter()
         .map(|room| (room.file.clone(), room.spawns.iter().cloned().collect()));
+    // The objects with a component, by name: what a command can name.
+    let with = |kinds: &[&str]| -> Vec<String> {
+        let objects = room.objects.iter();
+        let objects = objects.filter(|object| {
+            kinds
+                .iter()
+                .any(|kind| object.components.contains_key(*kind))
+        });
+        objects.filter_map(|object| object.name.clone()).collect()
+    };
     let lists = Lists {
         flags: used.flags.keys().cloned().collect(),
         variables: used.variables.keys().cloned().collect(),
         unset_flags: Names::never_written(&used.flags),
         unset_variables: Names::never_written(&used.variables),
-        lights: named(
-            room.lights
-                .iter()
-                .map(|light| &light.name)
-                .chain(
-                    room.objects
-                        .iter()
-                        .filter(|o| o.components.contains_key("light"))
-                        .map(|o| &o.name),
-                )
-                .collect(),
-        ),
-        movers: named(
-            doors
-                .chain(room.movers.iter().map(|mover| &mover.name))
-                .chain(
-                    room.objects
-                        .iter()
-                        .filter(|o| {
-                            o.components.contains_key("door") || o.components.contains_key("mover")
-                        })
-                        .map(|o| &o.name),
-                )
-                .collect(),
-        ),
+        lights: with(&["light"]),
+        movers: with(&["door", "mover"]),
         rooms: std::iter::once(own).chain(other_rooms).collect(),
         row_keys: Default::default(),
     };
