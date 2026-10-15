@@ -1,6 +1,6 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 47. For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 48 (2026-10-15). For the session that goes on with part 6.
 
 ## State
 
@@ -14,6 +14,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 45 (a changed asset file shows at once) is done: the watch of the asset files (`maki_assets::AssetWatch`), each store forgets a changed file, the room loads again. Report: `stage-45.md`.
 - Stage 46 (source files of other programs) is done: the table of converters in the editor crate (`sources.rs`), `.blend` and `.obj` to `.glb` by Blender with no window, `.psd` to `.png` by own code, one thread that looks at the folder of the room files. Report: `stage-46.md`.
 - Stage 47 (fields that describe themselves) is done: the derive `Fields` (`crates/macros`), `maki_core::fields` (the table of the fields of a type, its value as a tree of `serde_json::Value`, the registry `FieldTypes`), the derive on the item kinds of a room, and the inspector of the editor from the table (`crates/editor/src/fields.rs`). The room file did not change. Stage file `stage-47-fields.md` (written by the session), report `stage-47.md`.
+- Stage 48 (the room file is a list of objects) is done: GitHub issues #1 to #5, closed. Objects with components as RON text, the registry of component types, the editor on objects only (room, object, event). Report: `stage-48.md`; its sections 3 and 6 list what is open.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
@@ -41,16 +42,39 @@ The owner, 2026-10-12, for part 6: after each stage, always a sanity check, fill
 
 The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short.
 
-## Next: stage 48, the room file is a list of objects
+## Next: issues #6 to #16, and what can run in parallel
 
-The session of 2026-10-12 ended after stage 47, at the word of the owner. Stage 48 starts when the owner says so.
+The rest of the plan (stages 49 to 53) is GitHub issues #6 to #16 of `MakiNoAtorie/maki-game-engine`, each with its "Blocked by". The owner, 2026-10-15: branches and worktrees are allowed for parallel work (global rules and `docs/CONVENTIONS.md`); two writers never touch the same files.
 
-1. Read `README.md` 2.1 and 2.14, and `stage-47.md` (section 6: what stage 48 must decide). Write the stage file `stage-48-objects.md` in the form of the others, then build it.
-2. Two things to decide in the stage file, and to ask the owner if the code does not give the answer:
-   - A component with no code in the file. RON needs the type to read a value: a component of a script DLL that did not build cannot become a tree. Keep its text, or a form of the file that reads with no type.
-   - The symbols of the engine DLL: 57,783 of 65,535 after stage 47, and each type that is read from a tree adds some. Count after the first components; `opt-level = 2` for the engine crates in the profile `dynamic` is the way out that is not measured.
-3. The base of the benchmark is the run `s47` (`tools/bench_history.csv`). The loop of `CLAUDE.md`.
-4. Do not start a program of the owner that has documents (Photoshop) for a check: see `stage-46.md`, section 7. Blender with `--background --factory-startup` is fine.
+The blocking edges:
+
+```
+#6 prefab instances -> #7 player prefab -> #15 who is the player
+#8 script hooks -> #9 commands as functions -> #12 events as components -> #13 general commands -> #14 wires
+#8 -> #10 "New script"      #8 -> #16 states of the game      (#12 needs #8 and #9)
+#11 log panel: no edge
+```
+
+Three lanes can start now, each in its own worktree:
+
+| Lane | Tickets, in order | Files it mostly writes |
+|---|---|---|
+| A: prefabs | #6, #7, #15 | `crates/scene` (prefab files as objects, instance changes: a new `prefab.rs`), the inspector marks in `crates/editor/src/panels.rs`, make and unpack in `ops.rs`, `crates/gameplay` (player), `game/assets/prefabs/` |
+| B: scripts | #8; then #9, #10, #16 in parallel; then #12, #13, #14 | `crates/engine` (loader), a script trait (`crates/scene` or `crates/core`), `game/scripts`; #9 `crates/events`; #10 an editor command and `templates/`; #16 `crates/gameplay` and play/stop of `crates/editor/src/lib.rs` |
+| C: log panel | #11 | the log setup of `crates/engine`, a panel in `crates/devtools` (by `maki_ui::add_tool_panel`, not in the editor crate) |
+
+Where the lanes meet, and what to agree before they start:
+
+- **`crates/scene/src/object.rs`**: #6 (the changes of an instance against its prefab, on the tree) and #8 (an "insert" of a component of `bevy_ecs` in `ComponentType`) both change the registry. Agree the fields of `ComponentType` first, or let #8 merge first; #6 keeps its code in `prefab.rs`.
+- **The room files**: #7 (the player as a prefab object) and #12 (events into objects) both rewrite `game/assets/rooms/*.ron`. Not at the same time: #12 is late in lane B, so the order comes by itself if lane A is not late.
+- **`crates/editor/src/panels.rs`, `lib.rs`**: #6 (marks of changed values), #16 (play and stop). Small, separate places; merge one after the other.
+- **The symbols of the engine DLL**: 57,962 of 65,535 after stage 48. Each lane adds types. Count after each merge (a reader of the export table of the DLL); the way out is `opt-level = 2` for the engine crates in the profile `dynamic`, not measured.
+- **One machine for the GPU**: benchmark and validation runs one at a time, never two lanes at once. `tools/bench.py run --behind` keeps the window behind the owner's work. The base of the next benchmark is `s48`; a step is compared with the commit before, built in the scratchpad and run back to back (the machine drifts up to 20 % in a day).
+- **Reports**: each stage keeps its report (`stage-49.md` ... ). With lanes, a stage is done when its tickets are merged and the stage loop of `CLAUDE.md` passed on the merged branch.
+
+Not parallel: the tickets inside one lane (each needs the one before), and #12 to #14 (one chain).
+
+Open from stage 48 (report, sections 3 and 6): the names of the component types are text (a name constant on each type); the editor keeps the gizmo handles and the "Add" presets of some component types; `test_1080p` 3 % of GPU total between the passes, not explained.
 
 ## Facts that cost time to find
 
