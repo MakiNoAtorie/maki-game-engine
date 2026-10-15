@@ -1758,6 +1758,7 @@ dependencies = [
  "maki-core",
  "ron",
  "serde",
+ "serde_json",
  "tracing",
 ]
 
