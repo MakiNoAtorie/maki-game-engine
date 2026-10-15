@@ -123,25 +123,27 @@ impl Document {
         let movers = room.movers.iter().enumerate();
         Some(match item {
             // While the old lists are there, an object shares the names of each.
-            Item::Prop(_) | Item::Object(_) | Item::Light(_) | Item::Door(_) | Item::Mover(_) => {
+            Item::Prop(_)
+            | Item::Object(_)
+            | Item::Light(_)
+            | Item::Door(_)
+            | Item::Mover(_)
+            | Item::Prefab(_) => {
                 let props = room.props.iter().enumerate();
                 let props = props.map(|(i, prop)| (Item::Prop(i), &prop.name));
                 let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
                 let doors = doors.map(|(i, door)| (Item::Door(i), &door.name));
                 let movers = movers.map(|(i, mover)| (Item::Mover(i), &mover.name));
+                let prefabs = room.prefabs.iter().enumerate();
+                let prefabs = prefabs.map(|(i, prefab)| (Item::Prefab(i), &prefab.name));
                 let objects = room.objects.iter().enumerate();
                 let objects = objects.map(|(i, object)| (Item::Object(i), &object.name));
-                let all = props
+                let old = props
                     .chain(lights)
                     .chain(doors)
                     .chain(movers)
-                    .chain(objects);
-                named(all.collect(), item)
-            }
-            Item::Prefab(_) => {
-                let prefabs = room.prefabs.iter().enumerate();
-                let prefabs = prefabs.map(|(i, prefab)| (Item::Prefab(i), &prefab.name));
-                named(prefabs.collect(), item)
+                    .chain(prefabs);
+                named(old.chain(objects).collect(), item)
             }
             Item::Event(index) => {
                 let events = self.events.iter().enumerate();
@@ -224,6 +226,19 @@ impl Document {
                 }
                 AudioCommand::SoundOff(name) if name == old => {
                     Some(AudioCommand::SoundOff(new.clone()))
+                }
+                _ => None,
+            });
+        }
+        let spawn = matches!(item, Item::Object(index) if self.room.objects[*index].is_spawn());
+        if let Some(old) = &old
+            && spawn
+        {
+            let file = self.path.file_name().unwrap_or_default();
+            let file = file.to_string_lossy().into_owned();
+            users += self.rename_in_events(registry, |command: &Builtin| match command {
+                Builtin::Transfer(room, to) if *room == file && to == old => {
+                    Some(Builtin::Transfer(room.clone(), new.clone()))
                 }
                 _ => None,
             });
@@ -344,16 +359,17 @@ impl Document {
                 item
             }
             Kind::Prefab(file) => {
-                let item = Item::Prefab(room.prefabs.len());
+                let item = Item::Object(room.objects.len());
                 let stem = file.file_stem().unwrap_or_default();
                 let stem = stem.to_string_lossy().into_owned();
-                room.prefabs.push(PrefabUse {
+                let used = PrefabUse {
                     name: None,
                     file,
                     pose: on_floor(0.0),
-                });
+                };
+                room.objects.push(used.into_object());
                 let name = self.unique_name(&item, &stem);
-                self.room.prefabs.last_mut().expect("pushed above").name = Some(name);
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
             Kind::Light => {
@@ -375,12 +391,10 @@ impl Document {
                 item
             }
             Kind::Spawn => {
-                let name = free_name("spawn", |name| room.spawns.contains_key(name));
-                room.spawns.insert(name.clone(), in_floor(at));
-                let item = Item::Spawn(name);
-                // The spawn points are in name order: the notes of those behind it move.
-                let (list, index) = self.notes_key(&item).expect("put in above");
-                self.notes.shift(list, index, 1);
+                let item = Item::Object(room.objects.len());
+                let name = self.unique_name(&item, "spawn");
+                let spawn = ObjectDef::spawn_point(name, in_floor(at));
+                self.room.objects.push(spawn);
                 item
             }
             Kind::Doorway => {
@@ -687,16 +701,17 @@ impl Document {
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
 
         self.delete(&parts);
-        let item = Item::Prefab(self.room.prefabs.len());
+        let item = Item::Object(self.room.objects.len());
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        self.room.prefabs.push(PrefabUse {
+        let used = PrefabUse {
             name: None,
             // Forward slashes: the same room file on each system.
             file: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
             pose: outer,
-        });
+        };
+        self.room.objects.push(used.into_object());
         let name = self.unique_name(&item, &stem);
-        self.room.prefabs.last_mut().expect("pushed above").name = Some(name);
+        self.room.objects.last_mut().expect("pushed above").name = Some(name);
         self.dirty = true;
         Ok(item)
     }
@@ -704,8 +719,8 @@ impl Document {
     /// Puts the props and the lights of a prefab into the room, each at its place,
     /// in place of the prefab: to change them, and to make the prefab again. Returns
     /// the new items, and the file and the pose that the prefab had.
-    pub fn unpack_prefab(&mut self, index: usize) -> Result<(Vec<Item>, PathBuf, PoseDef), String> {
-        let Some(used) = self.room.prefabs.get(index).cloned() else {
+    pub fn unpack_prefab(&mut self, item: &Item) -> Result<(Vec<Item>, PathBuf, PoseDef), String> {
+        let Some(used) = self.prefab_use(item) else {
             return Err("Select a prefab first".to_owned());
         };
         let path = self.path.parent().unwrap_or(Path::new("")).join(&used.file);
@@ -736,7 +751,18 @@ impl Document {
             self.room.objects.last_mut().expect("pushed above").name = name;
             items.push(item);
         }
-        self.delete(&[Item::Prefab(index)]);
+        // The new objects are behind the prefab: their indices go one down if it
+        // was an object.
+        self.delete(std::slice::from_ref(item));
+        if let Item::Object(gone) = item {
+            for new in &mut items {
+                if let Item::Object(index) = new
+                    && *index > *gone
+                {
+                    *index -= 1;
+                }
+            }
+        }
         self.dirty = true;
         Ok((items, used.file, used.pose))
     }
@@ -946,6 +972,7 @@ mod tests {
             events: [(name: "switch", pages: [(trigger: Interact, commands: [
                 LightOff("lamp"),
                 If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
+                Transfer("room.ron", "start"),
             ])])],
         )"#;
         Document::parse(Path::new("room.ron"), text, registry).unwrap()
@@ -981,13 +1008,21 @@ mod tests {
         assert_eq!(document.room.objects[new].name.as_deref(), Some("light"));
         assert!(document.light(&Item::Object(new)).is_some());
         let copies = document.duplicate(&[lamp, Item::Object(new)]);
-        assert_eq!(copies, [Item::Object(4), Item::Object(5)]);
+        assert_eq!(copies, [Item::Object(5), Item::Object(6)]);
         let name = |index: usize| document.room.objects[index].name.clone().unwrap();
         assert_eq!(
-            (name(4), name(5)),
+            (name(5), name(6)),
             ("bulb_2".to_owned(), "light_2".to_owned())
         );
         assert_eq!(free_name("bulb_2", |name| name == "bulb_2"), "bulb_3");
+
+        // A spawn point: the `Transfer` to it in this room follows.
+        let start = Item::Object(3);
+        assert!(document.room.objects[3].is_spawn());
+        document.room.objects[3].name = Some("begin".to_owned());
+        let status = document.renamed(&start, Some("start".to_owned()), &registry);
+        assert!(status.contains("1 event commands"), "{status}");
+        assert!(document.text().contains(r#"Transfer("room.ron", "begin")"#));
     }
 
     #[test]
@@ -1013,10 +1048,10 @@ mod tests {
         let Ok(doorway) = document.add(Kind::Doorway, Vec3::ZERO) else {
             panic!("a doorway");
         };
-        assert_eq!(doorway, Item::Object(2));
-        assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Object(2)));
-        assert!(document.room.objects[2].door().is_some());
-        assert_eq!(document.room.objects[2].name.as_deref(), Some("door"));
+        assert_eq!(doorway, Item::Object(3));
+        assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Object(3)));
+        assert!(document.room.objects[3].door().is_some());
+        assert_eq!(document.room.objects[3].name.as_deref(), Some("door"));
     }
 
     #[test]

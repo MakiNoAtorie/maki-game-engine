@@ -229,10 +229,15 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
             hit(t, Some(item));
         }
     }
-    for (name, position) in &document.room.spawns {
-        let center = Vec3::from(*position) + Vec3::Y * MARK_RADIUS;
+    let spawns = document.room.spawns.iter();
+    let spawns = spawns.map(|(name, position)| (Item::Spawn(name.clone()), *position));
+    let objects = document.room.objects.iter().enumerate();
+    let objects = objects.filter(|(_, object)| object.is_spawn());
+    let objects = objects.map(|(index, object)| (Item::Object(index), object.pose.position));
+    for (item, position) in spawns.chain(objects) {
+        let center = Vec3::from(position) + Vec3::Y * MARK_RADIUS;
         if let Some(t) = ray.sphere(center, MARK_RADIUS) {
-            hit(t, Some(Item::Spawn(name.clone())));
+            hit(t, Some(item));
         }
     }
     for (index, event) in document.events.iter().enumerate() {

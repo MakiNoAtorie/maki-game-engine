@@ -302,7 +302,7 @@ pub fn other_rooms(room: &Path, registry: &CommandRegistry) -> Vec<OtherRoom> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            spawns: def.spawns.into_keys().collect(),
+            spawns: def.spawn_names().into_iter().collect(),
             events,
         });
     }

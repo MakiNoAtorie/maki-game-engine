@@ -220,7 +220,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         // An empty room with its lamp, and the world shows it.
         let world = app.world();
         assert_eq!(world.try_query::<&Light>().unwrap().iter(world).count(), 1);
-        assert_eq!(world.resource::<CurrentRoom>().def.objects.len(), 1);
+        assert_eq!(world.resource::<CurrentRoom>().def.objects.len(), 2);
 
         request(&mut app, Command::SaveAs(directory.join("c.ron")));
         request(&mut app, Command::Open(directory.join("c.ron")));
@@ -453,13 +453,13 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
         request(&mut app, Command::New);
         request(&mut app, Command::Add(Kind::Mover));
         let mut editor = app.resource_mut::<Editor>();
-        // The lamp of the new room is object 0.
-        assert_eq!(editor.selection, [Item::Object(1)]);
+        // The lamp and the spawn point of the new room are objects 0 and 1.
+        assert_eq!(editor.selection, [Item::Object(2)]);
         let registry = editor.registry.clone();
         let command = |command: Builtin| registry.command(command).unwrap();
-        let mut mover = editor.document.mover(&Item::Object(1)).unwrap();
+        let mut mover = editor.document.mover(&Item::Object(2)).unwrap();
         mover.seconds = 0.2;
-        editor.document.room.objects[1].set_mover(mover);
+        editor.document.room.objects[2].set_mover(mover);
         editor.document.events.push(EventDef {
             name: "lift".to_owned(),
             area: Default::default(),
@@ -946,11 +946,11 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
         select(&mut app, &[Item::Object(1), Item::Object(3)]);
         request(&mut app, Command::MakePrefab("pair".to_owned()));
         let (room, selection) = editor(&app);
-        assert_eq!(selection, [Item::Prefab(0)]);
-        // The three lamps are left.
+        // The prefab is an object behind the three lamps.
+        assert_eq!(selection, [Item::Object(3)]);
         assert!(room.objects.iter().all(|object| object.prop().is_none()));
-        assert_eq!(room.objects.len(), 3);
-        assert_eq!(room.prefabs[0].pose.position, [1.0, 0.0, 0.0]);
+        assert_eq!(room.objects.len(), 4);
+        assert_eq!(room.objects[3].pose.position, [1.0, 0.0, 0.0]);
         let file = directory.join("prefabs/pair.prefab");
         let places = |file: &Path| -> Vec<[f32; 3]> {
             let props = read_prefab(file).unwrap().props;
@@ -961,15 +961,15 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
         frames(&mut app, 2);
         let world = app.world();
         let mut shown = world.try_query::<&RoomItem>().unwrap();
-        let of_prefab = |item: &&RoomItem| **item == RoomItem::Prefab(0);
+        let of_prefab = |item: &&RoomItem| **item == RoomItem::Object(3);
         assert_eq!(shown.iter(world).filter(of_prefab).count(), 2);
         select(&mut app, &[]);
         click(&mut app, Vec3::new(1.0, 1.0, 0.0));
-        assert_eq!(editor(&app).1, [Item::Prefab(0)]);
+        assert_eq!(editor(&app).1, [Item::Object(3)]);
 
         // The prefab is turned and moved, and unpacked: the cubes are props again,
         // at the places that the prefab showed them at.
-        app.resource_mut::<Editor>().document.room.prefabs[0].pose = PoseDef {
+        app.resource_mut::<Editor>().document.room.objects[3].pose = PoseDef {
             position: [0.0, 0.0, -1.0],
             rotation: [0.0, 90.0, 0.0],
             ..PoseDef::default()
@@ -977,7 +977,7 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
         request(&mut app, Command::UnpackPrefab);
         let (room, selection) = editor(&app);
         assert_eq!(selection, [Item::Object(3), Item::Object(4)]);
-        assert!(room.prefabs.is_empty());
+        assert!(room.objects.iter().all(|object| object.prefab().is_none()));
         // A quarter turn around Y moves +X to -Z.
         assert_eq!(room.objects[4].pose.position, [0.0, 0.5, -2.0]);
         assert_eq!(room.objects[4].pose.rotation, [0.0, 90.0, 0.0]);
@@ -991,8 +991,8 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
         request(&mut app, Command::MakePrefab("pair".to_owned()));
         assert_eq!(places(&file), [[0.0, 0.5, 0.0], [1.0, 1.5, 0.0]]);
         let (room, _) = editor(&app);
-        assert_eq!(room.prefabs[0].pose.rotation, [0.0, 90.0, 0.0]);
-        assert_eq!(room.prefabs[0].pose.position, [0.0, 0.0, -1.0]);
+        assert_eq!(room.objects[3].pose.rotation, [0.0, 90.0, 0.0]);
+        assert_eq!(room.objects[3].pose.position, [0.0, 0.0, -1.0]);
 
         // The room is saved with its prefab and reads as the document.
         request(&mut app, Command::Save);

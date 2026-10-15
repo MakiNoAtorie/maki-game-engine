@@ -93,7 +93,7 @@ output = false",
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
             count += document.events.len();
-            // The props, lights, doorways, doors, and movers are objects (stage 48).
+            // Each item of the old lists is an object (stage 48).
             let room = &document.room;
             let old = [
                 room.props.len(),
@@ -101,8 +101,10 @@ output = false",
                 room.doorways.len(),
                 room.doors.len(),
                 room.movers.len(),
+                room.prefabs.len(),
+                room.spawns.len(),
             ];
-            assert_eq!(old, [0; 5], "{path:?}");
+            assert_eq!(old, [0; 7], "{path:?}");
 
             // The inspector reads each item and each component as a tree, and reads
             // a changed tree back. With no change: the same room, and the same file.

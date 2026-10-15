@@ -345,8 +345,20 @@ fn marks(
         pen.text(corner(-1.0, -1.0), &event.name, AREA);
     }
 
-    for (name, position) in &room.spawns {
-        let (at, item) = (Vec3::from(*position), Item::Spawn(name.clone()));
+    let spawns = room.spawns.iter();
+    let spawns =
+        spawns.map(|(name, position)| (name.as_str(), Item::Spawn(name.clone()), *position));
+    let objects = room
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.is_spawn());
+    let objects = objects.map(|(index, object)| {
+        let name = object.name.as_deref().unwrap_or("");
+        (name, Item::Object(index), object.pose.position)
+    });
+    for (name, item, position) in spawns.chain(objects) {
+        let at = Vec3::from(position);
         let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         pen.circle(at, Vec3::X, Vec3::Z, MARK_RADIUS, stroke);
         pen.line(at, at + Vec3::Y * 2.0 * MARK_RADIUS, stroke);

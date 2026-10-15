@@ -661,22 +661,16 @@ impl Editor {
                     Err(reason) => self.status = reason,
                 }
             }
-            Command::UnpackPrefab => {
-                let index = match self.primary() {
-                    Item::Prefab(index) => index,
-                    _ => usize::MAX,
-                };
-                match self.document.unpack_prefab(index) {
-                    Ok((items, file, pose)) => {
-                        let stem = file.file_stem().unwrap_or_default();
-                        self.prefab_name = stem.to_string_lossy().into_owned();
-                        self.unpacked = Some((file, pose));
-                        self.selection = items;
-                        self.status = "Unpacked".to_owned();
-                    }
-                    Err(reason) => self.status = reason,
+            Command::UnpackPrefab => match self.document.unpack_prefab(&self.primary()) {
+                Ok((items, file, pose)) => {
+                    let stem = file.file_stem().unwrap_or_default();
+                    self.prefab_name = stem.to_string_lossy().into_owned();
+                    self.unpacked = Some((file, pose));
+                    self.selection = items;
+                    self.status = "Unpacked".to_owned();
                 }
-            }
+                Err(reason) => self.status = reason,
+            },
             Command::Frame => {
                 let at = self.document.pose_of(&self.primary(), self.second_pose);
                 let room = &self.document.room;
@@ -790,9 +784,22 @@ impl Editor {
                 std::mem::replace(slot, (!new.is_empty()).then_some(new))
             }
         };
+        let spawn = match item {
+            Item::Object(index) => self.document.room.objects[*index].is_spawn(),
+            _ => false,
+        };
+        let old_spawn = old.clone().filter(|_| spawn);
         let more = self.document.renamed(item, old, &registry);
         if !more.is_empty() {
             self.status = more;
+        }
+        // The rooms that go to the spawn point by its old name.
+        if let Some(old) = old_spawn {
+            let users = spawn_users(&self.rooms, &self.document.path, &old, &registry);
+            if !users.is_empty() {
+                let users = users.join(", ");
+                self.status = format!("{users}: a Transfer still names `{old}`");
+            }
         }
         self.document.dirty = true;
     }
@@ -852,12 +859,9 @@ impl Editor {
     fn play(&mut self, world: &mut World) {
         self.playing = Some(world.resource::<GameState>().clone());
         reset_play_state(world);
-        let spawns = &self.document.room.spawns;
-        let chosen = self
-            .play_from
-            .as_ref()
-            .filter(|name| spawns.contains_key(*name));
-        let spawn = chosen.or_else(|| spawns.keys().next()).cloned();
+        let spawns = self.document.room.spawn_names();
+        let chosen = self.play_from.as_ref().filter(|name| spawns.contains(name));
+        let spawn = chosen.or_else(|| spawns.first()).cloned();
         if spawn.is_none() {
             // A room with no spawn point: the player starts where the editor looks.
             let mut cameras = world.query::<&EditorCamera>();
@@ -1025,8 +1029,10 @@ fn add_commands(app: &mut App) {
     let can_redo: CanRun =
         |world| editing(world) && world.resource::<Editor>().history_steps().1 > 0;
     let named: CanRun = |world| editing(world) && world.resource::<Editor>().primary().has_name();
-    let prefab: CanRun =
-        |world| editing(world) && matches!(world.resource::<Editor>().primary(), Item::Prefab(_));
+    let prefab: CanRun = |world| {
+        let editor = world.resource::<Editor>();
+        editing(world) && editor.document.prefab_use(&editor.primary()).is_some()
+    };
     // The press of the cancel key that stopped a game is not a cancel.
     let can_cancel: CanRun = |world| editing(world) && !world.resource::<Editor>().ignore_cancel;
     add(

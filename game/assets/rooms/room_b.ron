@@ -54,10 +54,8 @@
         ),
         // In the west wall: the way back to room A.
         (components: {"doorway": (wall: NegX, offset: 0.0, width: 1.2, height: 2.1, depth: 1.5)}),
+        (name: "west", pose: (position: (-2.2, 0.0, 0.0)), components: {"spawn": ()}),
     ],
-    spawns: {
-        "west": (-2.2, 0.0, 0.0),
-    },
     events: [
         // `SavePoint` is a command of the save module (crates/gameplay):
         // the file is written when this event ends.

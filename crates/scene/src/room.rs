@@ -16,7 +16,7 @@
 //! generated mesh that the new room makes from the same numbers: a tool that loads
 //! the room again for each step of a change (an editor) makes one new mesh, not all.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -102,6 +102,35 @@ pub struct RoomShell {
 }
 
 impl RoomDef {
+    /// The position of the spawn point `name`: of the old list, or an object with
+    /// the component `spawn`.
+    pub fn spawn(&self, name: &str) -> Option<[f32; 3]> {
+        if let Some(position) = self.spawns.get(name) {
+            return Some(*position);
+        }
+        let named = |object: &&ObjectDef| object.is_spawn() && object.name.as_deref() == Some(name);
+        Some(self.objects.iter().find(named)?.pose.position)
+    }
+
+    /// The names of the spawn points, in name order.
+    pub fn spawn_names(&self) -> Vec<String> {
+        let of_objects = self.objects.iter().filter(|object| object.is_spawn());
+        let of_objects = of_objects.filter_map(|object| object.name.clone());
+        let names: BTreeSet<String> = self.spawns.keys().cloned().chain(of_objects).collect();
+        names.into_iter().collect()
+    }
+
+    /// Each prefab use of the room: of the old list, then of the objects with a
+    /// `prefab`, each with the index of its object.
+    pub fn each_prefab(&self) -> Vec<(RoomItem, PrefabUse)> {
+        let old = self.prefabs.iter().enumerate();
+        let old = old.map(|(index, used)| (RoomItem::Prefab(index), used.clone()));
+        let objects = self.objects.iter().enumerate();
+        let objects = objects
+            .filter_map(|(index, object)| Some((RoomItem::Object(index), object.prefab()?.ok()?)));
+        old.chain(objects).collect()
+    }
+
     /// Each doorway of the room: of the old list, then of the objects with a
     /// `doorway`. An object whose doorway text does not read is not there.
     pub fn each_doorway(&self) -> Vec<Doorway> {
@@ -216,6 +245,67 @@ pub struct PrefabUse {
     /// Where the origin of the prefab is in the room, and its turn and scale.
     #[serde(default, skip_serializing_if = "is_default")]
     pub pose: PoseDef,
+}
+
+/// The component of an object that shows a prefab file at the pose of the object.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
+#[serde(deny_unknown_fields)]
+pub struct PrefabFile {
+    /// From the directory of the room file.
+    #[field(label = "prefab file", file = "prefab")]
+    pub file: PathBuf,
+}
+
+/// The component of an object that is a place where the player can enter the room:
+/// at the position of the object. Events name it by the name of the object.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, Fields)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnPoint {}
+
+impl PrefabUse {
+    /// The prefab use as an object with the component `prefab`.
+    pub fn into_object(self) -> ObjectDef {
+        let mut object = ObjectDef {
+            name: self.name,
+            pose: self.pose,
+            ..ObjectDef::default()
+        };
+        object.set_component("prefab", &PrefabFile { file: self.file });
+        object
+    }
+}
+
+impl ObjectDef {
+    /// The object as a prefab use, if it has the component `prefab`.
+    pub fn prefab(&self) -> Option<Result<PrefabUse, ron::error::SpannedError>> {
+        Some(
+            self.component::<PrefabFile>("prefab")?
+                .map(|prefab| PrefabUse {
+                    name: self.name.clone(),
+                    file: prefab.file,
+                    pose: self.pose,
+                }),
+        )
+    }
+
+    /// A spawn point at `position`.
+    pub fn spawn_point(name: String, position: [f32; 3]) -> Self {
+        let mut object = ObjectDef {
+            name: Some(name),
+            pose: PoseDef {
+                position,
+                ..PoseDef::default()
+            },
+            ..ObjectDef::default()
+        };
+        object.set_component("spawn", &SpawnPoint {});
+        object
+    }
+
+    /// True: the object has the component `spawn`.
+    pub fn is_spawn(&self) -> bool {
+        self.components.contains_key("spawn")
+    }
 }
 
 /// The content of a prefab file: props and lights around one origin (a table with
@@ -917,7 +1007,7 @@ pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, S
     // Not in `check_room`: a tool opens a room whose prefab file is not there, so
     // that the name can be set right. The loader then shows the room without it.
     let directory = path.parent().unwrap_or(Path::new(""));
-    for prefab in &room.prefabs {
+    for (_, prefab) in room.each_prefab() {
         read_prefab(&directory.join(&prefab.file))
             .with_context(|| format!("{}: a prefab of the room", path.display()))?;
     }
@@ -934,6 +1024,13 @@ pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Resul
             ("doorway", object.doorway().and_then(Result::err)),
             ("door", object.door().and_then(Result::err)),
             ("mover", object.mover().and_then(Result::err)),
+            ("prefab", object.prefab().and_then(Result::err)),
+            (
+                "spawn",
+                object
+                    .component::<SpawnPoint>("spawn")
+                    .and_then(Result::err),
+            ),
         ];
         if let Some((component, Some(error))) = errors.into_iter().find(|(_, e)| e.is_some()) {
             let name = object.name.as_deref().unwrap_or("");
@@ -1216,7 +1313,7 @@ pub fn load_requested_room(
     let loaded = read.and_then(|(def, source)| {
         let spawn =
             match &target.spawn {
-                Some(name) => Some(*def.spawns.get(name).with_context(|| {
+                Some(name) => Some(def.spawn(name).with_context(|| {
                     format!("{}: no spawn point `{name}`", target.path.display())
                 })?),
                 None => None,
@@ -1423,8 +1520,8 @@ impl Spawner<'_, '_, '_> {
         for (index, light) in def.lights.iter().enumerate() {
             self.light(light, RoomItem::Light(index));
         }
-        for (index, used) in def.prefabs.iter().enumerate() {
-            self.prefab(used, RoomItem::Prefab(index));
+        for (item, used) in def.each_prefab() {
+            self.prefab(&used, item);
         }
     }
 
@@ -1936,9 +2033,11 @@ mod tests {
                 "mover item",
                 "object",
                 "prefab",
+                "prefab item",
                 "prop",
                 "prop item",
-                "room"
+                "room",
+                "spawn"
             ]
         );
         for (name, kind) in types.iter() {

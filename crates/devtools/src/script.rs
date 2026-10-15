@@ -93,7 +93,7 @@ impl Place {
                 let [x, z] = event.area?.center;
                 Some(Vec3::new(x, 0.0, z))
             }
-            Place::Spawn(name) => world.room.spawns.get(*name).map(|at| Vec3::from(*at)),
+            Place::Spawn(name) => world.room.spawn(name).map(Vec3::from),
         }
     }
 }

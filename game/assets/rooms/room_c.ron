@@ -94,8 +94,6 @@
                 ),
             },
         ),
+        (name: "start", pose: (position: (-3.2, 0.0, 2.6)), components: {"spawn": ()}),
     ],
-    spawns: {
-        "start": (-3.2, 0.0, 2.6),
-    },
 )

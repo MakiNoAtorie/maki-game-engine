@@ -627,10 +627,7 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
         names.into_iter().flatten().cloned().collect()
     };
     let doors = room.doors.iter().map(|door| &door.name);
-    let own = (
-        file_name(&editor.document),
-        room.spawns.keys().cloned().collect(),
-    );
+    let own = (file_name(&editor.document), room.spawn_names());
     let other_rooms = others
         .iter()
         .map(|room| (room.file.clone(), room.spawns.iter().cloned().collect()));

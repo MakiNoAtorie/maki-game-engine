@@ -287,7 +287,7 @@ fn play_row(ui: &mut Ui, world: &mut World) {
     );
     // Where the game starts.
     let mut editor = world.resource_mut::<Editor>();
-    let spawns: Vec<String> = editor.document.room.spawns.keys().cloned().collect();
+    let spawns = editor.document.room.spawn_names();
     let chosen = editor
         .play_from
         .as_ref()

@@ -132,12 +132,12 @@ fn stage_target(path: &Path, start_spawn: &str) -> RoomTarget {
     let spawns = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| parse_room(&text).ok())
-        .map(|room| room.spawns)
+        .map(|room| room.spawn_names())
         .unwrap_or_default();
-    let spawn = if spawns.contains_key(start_spawn) {
+    let spawn = if spawns.iter().any(|name| name == start_spawn) {
         Some(start_spawn.to_owned())
     } else {
-        spawns.into_keys().next()
+        spawns.into_iter().next()
     };
     RoomTarget {
         path: path.to_owned(),

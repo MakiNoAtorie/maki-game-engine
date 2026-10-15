@@ -34,7 +34,7 @@ impl CheckContext<'_> {
     /// file can be the room itself.
     pub fn has_spawn(&self, file: &str, spawn: &str) -> Option<bool> {
         if file == self.file {
-            return Some(self.room.spawns.contains_key(spawn));
+            return Some(self.room.spawn(spawn).is_some());
         }
         (self.spawn)(file, spawn)
     }
@@ -175,8 +175,8 @@ impl Neighbors {
         let mut files = self.0.lock().expect("no holder panics");
         if files.get(path).is_none_or(|(known, _)| *known != written) {
             let text = std::fs::read_to_string(path).ok()?;
-            let spawns = maki_scene::parse_room(&text).ok()?.spawns;
-            files.insert(path.to_owned(), (written, spawns.into_keys().collect()));
+            let spawns = maki_scene::parse_room(&text).ok()?.spawn_names();
+            files.insert(path.to_owned(), (written, spawns.into_iter().collect()));
         }
         Some(files[path].1.contains(spawn))
     }

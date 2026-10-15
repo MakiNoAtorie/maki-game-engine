@@ -11,7 +11,7 @@ use maki_core::Fields;
 use maki_core::fields::{Value, read};
 use maki_events::{Area, CommandRegistry, EventDef};
 use maki_scene::{
-    ComponentTypes, DoorDef, LightDef, MoverDef, ObjectDef, PoseDef, PropDef, RoomDef,
+    ComponentTypes, DoorDef, LightDef, MoverDef, ObjectDef, PoseDef, PrefabUse, PropDef, RoomDef,
     RoomValidators, check_room, ron_options,
 };
 
@@ -89,8 +89,10 @@ impl Document {
                 width: 8.0,
                 depth: 8.0,
                 height: 3.0,
-                objects: vec![lamp.into_object()],
-                spawns: [("start".to_owned(), [0.0; 3])].into(),
+                objects: vec![
+                    lamp.into_object(),
+                    ObjectDef::spawn_point("start".to_owned(), [0.0; 3]),
+                ],
                 ..RoomDef::default()
             },
             events: Vec::new(),
@@ -275,6 +277,12 @@ impl Document {
         self.move_to_objects("props", props.into_iter().map(PropDef::into_object));
         let lights = std::mem::take(&mut self.room.lights);
         self.move_to_objects("lights", lights.into_iter().map(LightDef::into_object));
+        let prefabs = std::mem::take(&mut self.room.prefabs);
+        self.move_to_objects("prefabs", prefabs.into_iter().map(PrefabUse::into_object));
+        // In name order, as the notes of the old map.
+        let spawns = std::mem::take(&mut self.room.spawns).into_iter();
+        let spawns = spawns.map(|(name, position)| ObjectDef::spawn_point(name, position));
+        self.move_to_objects("spawns", spawns);
     }
 
     fn move_to_objects(&mut self, list: &str, objects: impl Iterator<Item = ObjectDef>) {
@@ -335,6 +343,15 @@ impl Document {
             _ => unreachable!("`mover` gives a mover of these two only"),
         }
         true
+    }
+
+    /// The prefab use of an item: of the old list, or an object with a `prefab`.
+    pub fn prefab_use(&self, item: &Item) -> Option<PrefabUse> {
+        match item {
+            Item::Prefab(index) => self.room.prefabs.get(*index).cloned(),
+            Item::Object(index) => self.room.objects.get(*index)?.prefab()?.ok(),
+            _ => None,
+        }
     }
 
     /// Writes the light of an item that [`Document::light`] gave.
