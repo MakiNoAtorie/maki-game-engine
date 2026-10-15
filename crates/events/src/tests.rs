@@ -8,7 +8,6 @@ use bevy_ecs::query::With;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::World;
-use glam::Vec3;
 use maki_core::{App, ConfigFile, FixedUpdate, Interpolated, Startup, Time, Transform};
 use maki_platform::{Key, PlatformModule, RawInput};
 use maki_scene::{
@@ -251,13 +250,10 @@ fn commands_reach_the_door_the_light_the_fade_and_the_next_room() {
         // request, and the event goes on in the next step, in the new room.
         steps(&mut app, 8);
         assert!(flag(&app, "dark") && flag(&app, "there"));
-        let world = app.world();
-        assert!(world.resource::<CurrentRoom>().path.ends_with("b.ron"));
-        let mut players = world
-            .try_query_filtered::<&Interpolated, With<Player>>()
-            .unwrap();
-        let player = players.single(world).unwrap().current.translation;
-        assert_eq!(player, Vec3::new(2.0, 0.0, 0.0));
+        // The place of the spawn point, for the player module.
+        let current = app.world().resource::<CurrentRoom>();
+        assert!(current.path.ends_with("b.ron"));
+        assert_eq!(current.spawn, Some([2.0, 0.0, 0.0]));
         // The new room has its own door and lamp, as its file says: closed and on.
         assert_eq!(door(&app), MoverState::AtA);
         assert!(lamp(&app).on);

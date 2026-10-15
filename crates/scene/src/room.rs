@@ -39,8 +39,7 @@ use serde::{Deserialize, Serialize};
 use crate::object::{ComponentText, ComponentTypes, ObjectDef};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
-    Collider, Door, Light, MeshInstance, Mover, MoverState, Name, Player, SoundSource,
-    room_colliders,
+    Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
 };
 
 /// The content of a room file.
@@ -277,11 +276,21 @@ pub enum MeshDef {
     /// A glTF file (`.gltf` or `.glb`). A path that is not absolute starts at the
     /// directory of the room file. The point lights of the file become lights.
     File(#[field(label = "glTF file", file = "model")] PathBuf),
+    /// A cylinder with a half sphere at each end, standing on the origin: `height`
+    /// from the bottom to the top.
+    #[field(default = MeshDef::Capsule { radius: 0.3, height: 1.7 })]
+    Capsule {
+        #[field(range = 0.01..=10.0)]
+        radius: f32,
+        #[field(range = 0.02..=20.0)]
+        height: f32,
+    },
 }
 
 impl MeshDef {
     /// The mesh of a generated shape. `None` for a file.
-    fn generate(&self) -> Option<Mesh> {
+    /// The mesh of a shape. `None`: a file.
+    pub fn generate(&self) -> Option<Mesh> {
         Some(match self {
             MeshDef::Cube(size) => Mesh::cube(*size),
             MeshDef::Cuboid(min, max) => Mesh::cuboid((*min).into(), (*max).into()),
@@ -290,6 +299,8 @@ impl MeshDef {
                 segments,
                 rings,
             } => Mesh::sphere(*radius, *segments, *rings),
+            // The segments and rings of the player of before.
+            MeshDef::Capsule { radius, height } => Mesh::capsule(*radius, *height, 24, 8),
             MeshDef::File(_) => return None,
         })
     }
@@ -978,6 +989,9 @@ pub struct CurrentRoom {
     /// The time that the loader took for this room: the file, the generated meshes,
     /// the model files that were not loaded before. Without the upload to the GPU.
     pub load_time: std::time::Duration,
+    /// The place of the spawn point that the load asked for. The player module moves
+    /// the player there.
+    pub spawn: Option<[f32; 3]>,
     /// The generated meshes of the room, each with its key: the numbers that it was
     /// made from, as a text. Removed with the room, but for those that the next
     /// room makes from the same numbers.
@@ -1133,7 +1147,6 @@ pub fn load_requested_room(
     mut loads: ResMut<ModelLoads>,
     types: Res<ComponentTypes>,
     room_entities: Query<Entity, With<RoomEntity>>,
-    mut players: Query<&mut Interpolated, With<Player>>,
 ) {
     // No `take` before this test: a write marks the request as changed in each frame.
     if request.0.is_none() {
@@ -1244,16 +1257,9 @@ pub fn load_requested_room(
         source,
         loads: current.loads + 1,
         load_time: start.elapsed(),
+        spawn,
         meshes: owned,
     };
-    if let Some(position) = spawn {
-        for mut pose in &mut players {
-            let mut at = pose.current;
-            at.translation = position.into();
-            // No blend from the old place.
-            pose.snap(at);
-        }
-    }
 }
 
 /// Spawns the entities of a room.
@@ -1960,7 +1966,7 @@ mod tests {
     }
 
     #[test]
-    fn a_room_change_removes_the_old_room_and_keeps_the_player() {
+    fn a_room_change_removes_the_old_room_and_gives_the_spawn_point() {
         let directory = std::env::temp_dir().join(format!("maki-rooms-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let write = |name: &str, room: &RoomDef| {
@@ -1982,9 +1988,6 @@ mod tests {
         app.add_module(maki_assets::AssetsModule)
             .add_module(SceneModule)
             .add_message::<RequestRoom>()
-            .add_systems(maki_core::Startup, |mut commands: Commands| {
-                commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
-            })
             .add_systems(
                 maki_core::Update,
                 (|mut messages: bevy_ecs::message::MessageReader<RequestRoom>,
@@ -2009,31 +2012,29 @@ mod tests {
             let mut room_entities = world
                 .try_query_filtered::<Entity, With<RoomEntity>>()
                 .unwrap();
-            let mut players = world
-                .try_query_filtered::<&Interpolated, With<Player>>()
-                .unwrap();
+            // The place that the player module moves the player to.
             (
                 count(&mut room_entities),
                 world.resource::<Assets<Mesh>>().iter().count(),
-                players.single(world).unwrap().current.translation,
+                world.resource::<CurrentRoom>().spawn,
             )
         };
         app.run(|mut app| {
             // Room A: the shell, 6 wall boxes, a door, an object, a prop, a mover, a
             // light. Meshes: the shell, the door leaf, the object, the prop, the mover.
-            let (entities, meshes, player) = load(&mut app, &room_a, Some("start"));
+            let (entities, meshes, spawn) = load(&mut app, &room_a, Some("start"));
             assert_eq!((entities, meshes), (12, 5));
-            assert_eq!(player, Vec3::new(0.0, 0.0, 1.0));
+            assert_eq!(spawn, Some([0.0, 0.0, 1.0]));
 
             // Room B: the shell and 4 wall boxes. The meshes of room A are gone.
-            let (entities, meshes, player) = load(&mut app, &room_b, Some("door"));
+            let (entities, meshes, spawn) = load(&mut app, &room_b, Some("door"));
             assert_eq!((entities, meshes), (5, 1));
-            assert_eq!(player, Vec3::new(1.0, 0.0, 1.0));
+            assert_eq!(spawn, Some([1.0, 0.0, 1.0]));
 
-            // A reload with no spawn point: the same room again, the player stays.
-            assert_eq!(load(&mut app, &room_b, None), (5, 1, player));
+            // A reload with no spawn point: the same room again, no place to go to.
+            assert_eq!(load(&mut app, &room_b, None), (5, 1, None));
             // A spawn point that the room does not have: nothing changes.
-            assert_eq!(load(&mut app, &room_a, Some("nowhere")), (5, 1, player));
+            assert_eq!(load(&mut app, &room_a, Some("nowhere")), (5, 1, None));
             assert_eq!(app.world().resource::<CurrentRoom>().path, room_b);
         });
         std::fs::remove_dir_all(&directory).unwrap();

@@ -8,5 +8,7 @@ rooms = "assets/rooms"
 start_room = "room_a.ron"
 start_spawn = "start"
 save = "save.ron"
+# The prefab file of the player, from `rooms`.
+player = "prefabs/player.prefab"
 # The cargo package that the editor builds and loads: the script crate as a DLL.
 scripts = "maki-game-dll"

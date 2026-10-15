@@ -1,0 +1,14 @@
+// The player: its speeds and its size (the component `player` of the gameplay
+// module), and its mesh. A model file in place of the capsule: `mesh: File("...")`,
+// from the folder of the rooms.
+(
+    objects: [
+        (
+            name: "player",
+            components: {
+                "player": (walk_speed: 1.6, run_speed: 3.6, radius: 0.3),
+                "prop": (mesh: Capsule(radius: 0.3, height: 1.7)),
+            },
+        ),
+    ],
+)

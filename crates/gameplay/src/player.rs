@@ -1,25 +1,32 @@
 //! Characters that walk: the [`Walker`] component and the system that moves it, and
 //! the player, a walker that the move actions steer.
+//!
+//! The player is data: a prefab file that the project file names. Its object has the
+//! component `player` ([`PlayerDef`]: the speeds and the radius) and `prop` (its mesh:
+//! a capsule, or a model file).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::query::With;
-use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use bevy_ecs::system::{Commands, EntityCommands, Local, Query, Res, ResMut};
 use glam::{Quat, Vec3};
 use maki_assets::{
     AssetChanged, AssetWatch, Assets, Handle, LoadState, Mesh, Model, Textures, load_gltf,
 };
 use maki_core::{
-    App, FixedUpdate, Interpolated, Module, Settings, Startup, Time, Transform, Update,
+    App, Fields, FixedUpdate, Interpolated, Module, Startup, Time, Transform, Update,
+    interpolate_transforms,
 };
 use maki_events::{EventRunner, run_events};
 use maki_platform::FixedActionState;
-use maki_scene::{ActiveCamera, Camera, Collider, MeshInstance, Player, move_circle};
+use maki_scene::{
+    ActiveCamera, Camera, Collider, CurrentRoom, MeshDef, MeshInstance, ObjectDef, Player,
+    add_component_type, move_circle, read_prefab,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::controls::{MoveCapture, RUN, move_direction};
@@ -37,179 +44,264 @@ pub struct Walker {
     pub speed: f32,
 }
 
-/// The `[player]` table of the config file.
-#[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The component `player` of the player prefab, and of the player entity.
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(default, deny_unknown_fields)]
-pub struct PlayerSettings {
-    /// glTF file of the player (`.gltf` or `.glb`), with the feet at its origin.
-    /// No key: a generated capsule.
-    pub model_path: Option<PathBuf>,
+#[fields(default)]
+pub struct PlayerDef {
     /// Meters per second.
+    #[field(label = "walk speed", range = 0.0..=10.0, step = 0.05)]
     pub walk_speed: f32,
     /// With the run action.
+    #[field(label = "run speed", range = 0.0..=10.0, step = 0.05)]
     pub run_speed: f32,
-    /// The player is a circle of this radius for collisions, in meters. Read when
-    /// the player is spawned.
+    /// The player is a circle of this radius for collisions, in meters.
+    #[field(range = 0.05..=2.0, step = 0.01)]
     pub radius: f32,
-    /// Height of the generated capsule, in meters.
-    pub height: f32,
 }
 
-impl Default for PlayerSettings {
+impl Default for PlayerDef {
     fn default() -> Self {
         Self {
-            model_path: None,
             walk_speed: 1.6,
             run_speed: 3.6,
             radius: 0.3,
-            height: 1.7,
         }
     }
 }
 
-impl Settings for PlayerSettings {
-    const TABLE: &'static str = "player";
-
-    fn check(&self) -> Result<(), String> {
-        let positive = |value: f32| value.is_finite() && value >= 0.0;
-        if !(positive(self.walk_speed) && positive(self.run_speed)) {
-            return Err("walk_speed and run_speed must be zero or positive numbers".to_owned());
-        }
-        if !(self.radius.is_finite() && self.radius > 0.0 && self.height >= 2.0 * self.radius) {
-            return Err("radius must be positive, and height at least two times radius".to_owned());
-        }
-        Ok(())
-    }
-}
+/// The mesh of a player with no prefab file, and of a model that does not load.
+const CAPSULE: MeshDef = MeshDef::Capsule {
+    radius: 0.3,
+    height: 1.7,
+};
 
 /// The model of the player while it loads. `attach_player_model` replaces it with a
 /// `MeshInstance`.
 #[derive(Component)]
 struct PendingPlayerModel(Handle<Model>);
 
-/// The model of the player, from the file of the settings. It stays on the player:
-/// `reload_player_model` removes it when the file changes.
+/// The model of the player and its file. It stays on the player:
+/// `reload_player` removes it when the file changes.
 #[derive(Component)]
-struct PlayerModel(Handle<Model>);
+struct PlayerModel(Handle<Model>, PathBuf);
 
-/// Spawns the player, steers it with the move actions, and moves each [`Walker`].
-/// Needs `ControlsModule` (the move actions) and `maki_events::EventsModule`.
-pub struct PlayerModule;
+/// The prefab file of the player, and the folder that its file names start at.
+#[derive(bevy_ecs::resource::Resource, Clone)]
+pub(crate) struct PlayerFile {
+    rooms: PathBuf,
+    prefab: Option<PathBuf>,
+}
+
+/// Spawns the player from its prefab file, steers it with the move actions, moves it
+/// to the spawn point of a room that loads, and moves each [`Walker`]. Needs
+/// `ControlsModule` (the move actions) and `maki_events::EventsModule`.
+#[derive(Debug, Clone, Default)]
+pub struct PlayerModule {
+    /// The folder of the room files: a file name in the prefab starts there, as in
+    /// a prefab that a room names.
+    pub rooms: PathBuf,
+    /// The prefab file, from `rooms`. `None`: a capsule with the values of
+    /// [`PlayerDef::default`].
+    pub prefab: Option<PathBuf>,
+}
 
 impl Module for PlayerModule {
     fn build(&self, app: &mut App) {
-        app.add_settings::<PlayerSettings>()
+        add_component_type::<PlayerDef>(app, "player");
+        let file = PlayerFile {
+            rooms: self.rooms.clone(),
+            prefab: self.prefab.clone(),
+        };
+        app.insert_resource(file.clone())
             .init_resource::<Textures>()
             .init_resource::<MoveCapture>()
             .add_systems(Startup, spawn_player)
             // After the events: a transfer command and the player then agree in each step
             // on who moves the player.
             .add_systems(FixedUpdate, (steer_player, walk).chain().after(run_events))
+            // Before the interpolation: the player shows at the spawn point in the
+            // frame of the load.
+            .add_systems(
+                Update,
+                place_player
+                    .after(maki_scene::load_requested_room)
+                    .before(interpolate_transforms),
+            )
             .add_systems(Update, attach_player_model)
-            // The watch of the asset files, if `AssetsModule` is there: the model
-            // of the player has no room that loads it again.
+            // The watch of the asset files, if `AssetsModule` is there: the player
+            // has no room that loads it again.
             .add_message::<AssetChanged>()
             .add_systems(
                 Update,
-                reload_player_model
+                reload_player
                     .after(maki_assets::forget_changed)
                     .before(attach_player_model),
             );
-        let model = app.world().resource::<PlayerSettings>().model_path.clone();
-        if let Some(model) = model {
+        let Some(prefab) = file.prefab_path() else {
+            return;
+        };
+        let check_prefab: maki_assets::Check = |path| read_prefab(path).map(drop);
+        let mut files = vec![(prefab, check_prefab)];
+        if let Ok((_, MeshDef::File(model))) = file.read() {
             let check: maki_assets::Check = maki_assets::check_model;
-            app.init_resource::<AssetWatch>();
-            app.resource_mut::<AssetWatch>()
-                .set("player", vec![(model, check)]);
+            files.push((file.rooms.join(model), check));
         }
+        app.init_resource::<AssetWatch>();
+        app.resource_mut::<AssetWatch>().set("player", files);
+    }
+}
+
+impl PlayerFile {
+    fn prefab_path(&self) -> Option<PathBuf> {
+        Some(self.rooms.join(self.prefab.as_ref()?))
+    }
+
+    /// The values and the mesh of the player. An error: the prefab file does not
+    /// read, or it has no object with a `player`.
+    fn read(&self) -> anyhow::Result<(PlayerDef, MeshDef)> {
+        let Some(path) = self.prefab_path() else {
+            return Ok((PlayerDef::default(), CAPSULE));
+        };
+        let prefab = read_prefab(&path)?;
+        let is_player = |object: &&ObjectDef| object.components.contains_key("player");
+        let object = prefab.objects.iter().find(is_player);
+        let object = object.ok_or_else(|| {
+            anyhow::anyhow!("{}: no object has the component `player`", path.display())
+        })?;
+        let def: PlayerDef = object.component("player").expect("found above")?;
+        let mesh = match object.prop() {
+            Some(prop) => prop?.mesh,
+            None => CAPSULE,
+        };
+        Ok((def, mesh))
+    }
+
+    /// As [`PlayerFile::read`]; an error is logged, and the player is the capsule.
+    fn read_or_default(&self) -> (PlayerDef, MeshDef) {
+        self.read().unwrap_or_else(|error| {
+            tracing::error!("the player is a capsule: {error:#}");
+            (PlayerDef::default(), CAPSULE)
+        })
     }
 }
 
 pub(crate) fn spawn_player(
     mut commands: Commands,
-    settings: Res<PlayerSettings>,
+    file: Res<PlayerFile>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
 ) {
-    // The room loader moves the player to a spawn point.
-    let pose = Interpolated::at(Transform::IDENTITY);
+    let (def, mesh) = file.read_or_default();
+    // `place_player` moves the player to a spawn point.
     let walker = Walker {
-        radius: settings.radius,
+        radius: def.radius,
         direction: Vec3::ZERO,
         speed: 0.0,
     };
-    match &settings.model_path {
-        Some(path) => {
-            let model = load_gltf(path, &mut models, &mut meshes, &mut textures);
-            let parts = (PendingPlayerModel(model), PlayerModel(model));
-            commands.spawn((Player, walker, pose, parts));
+    let mut entity = commands.spawn((Player, walker, def, Interpolated::at(Transform::IDENTITY)));
+    let stores = (&mut *meshes, &mut *models, &mut *textures);
+    give_mesh(&mut entity, &mesh, &file.rooms, stores);
+}
+
+/// Gives the player its mesh: a generated one, or a model file that loads.
+fn give_mesh(
+    entity: &mut EntityCommands,
+    mesh: &MeshDef,
+    rooms: &Path,
+    (meshes, models, textures): (&mut Assets<Mesh>, &mut Assets<Model>, &mut Textures),
+) {
+    match mesh {
+        MeshDef::File(path) => {
+            let path = rooms.join(path);
+            let model = load_gltf(&path, models, meshes, textures);
+            entity.insert((PendingPlayerModel(model), PlayerModel(model, path)));
         }
-        None => {
-            let mesh = meshes.add(capsule(&settings));
-            commands.spawn((Player, walker, pose, MeshInstance(mesh)));
-        }
+        mesh => drop(entity.insert(MeshInstance(meshes.add(generated(mesh))))),
     }
 }
 
-fn capsule(settings: &PlayerSettings) -> Mesh {
-    Mesh::capsule(settings.radius, settings.height, 24, 8)
+/// The mesh of a generated shape; the capsule for a file.
+fn generated(mesh: &MeshDef) -> Mesh {
+    let capsule = || CAPSULE.generate().expect("a capsule is a shape");
+    mesh.generate().unwrap_or_else(capsule)
 }
 
-/// Runs in `Update`: the model file of the player, or an image file of it, changed
-/// on the disk (`maki_assets::AssetChanged`). The file is read again, and the player
-/// gets the new model.
-fn reload_player_model(
+/// Runs in `Update`: the prefab file of the player, its model file, or an image file
+/// of the model changed on the disk (`maki_assets::AssetChanged`). The player gets the
+/// values and the mesh of the files as they are now.
+#[allow(clippy::type_complexity)]
+fn reload_player(
     mut changed: MessageReader<AssetChanged>,
     mut commands: Commands,
-    settings: Res<PlayerSettings>,
-    mut players: Query<(Entity, &mut PlayerModel)>,
+    file: Res<PlayerFile>,
+    mut players: Query<
+        (
+            Entity,
+            &mut Walker,
+            Option<&PlayerModel>,
+            Option<&MeshInstance>,
+        ),
+        With<Player>,
+    >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
 ) {
-    let files: Vec<&AssetChanged> = changed.read().collect();
-    let Some(path) = settings.model_path.as_ref().filter(|_| !files.is_empty()) else {
+    let files: Vec<PathBuf> = changed.read().map(|changed| changed.0.clone()).collect();
+    if files.is_empty() {
         return;
-    };
-    for (entity, mut model) in &mut players {
+    }
+    let prefab = file.prefab_path();
+    let prefab_changed = files.iter().any(|path| Some(path) == prefab.as_ref());
+    for (entity, mut walker, model, instance) in &mut players {
         // A texture of an image file has the name of the file.
-        let image = |texture: Option<maki_assets::TextureRef>| {
-            let texture = texture.and_then(|texture| textures.get(texture.texture));
-            texture.is_some_and(|texture| {
-                files
-                    .iter()
-                    .any(|file| file.0.as_os_str() == &*texture.name)
-            })
-        };
-        let uses = |mesh: &Handle<Mesh>| {
-            let mesh = meshes.get(*mesh);
-            mesh.is_some_and(|mesh| {
-                image(mesh.base_color_texture()) || image(mesh.emissive_texture())
-            })
-        };
-        let own = models
-            .get(model.0)
-            .is_some_and(|model| model.meshes.iter().any(uses));
-        if !(own || files.iter().any(|file| file.0 == *path)) {
+        let model_changed = model.is_some_and(|PlayerModel(handle, path)| {
+            let image = |texture: Option<maki_assets::TextureRef>| {
+                let texture = texture.and_then(|texture| textures.get(texture.texture));
+                texture.is_some_and(|texture| {
+                    files.iter().any(|file| file.as_os_str() == &*texture.name)
+                })
+            };
+            let uses = |mesh: &Handle<Mesh>| {
+                meshes.get(*mesh).is_some_and(|mesh| {
+                    image(mesh.base_color_texture()) || image(mesh.emissive_texture())
+                })
+            };
+            let own = models
+                .get(*handle)
+                .is_some_and(|model| model.meshes.iter().any(uses));
+            own || files.contains(path)
+        });
+        if !(prefab_changed || model_changed) {
             continue;
         }
-        let old = models.remove(model.0);
-        for mesh in old.map_or(Vec::new(), |model| model.meshes) {
-            meshes.remove(mesh);
+        // The old mesh, or the old model with its meshes, goes.
+        match (model, instance) {
+            (Some(PlayerModel(handle, _)), _) => {
+                let old = models.remove(*handle);
+                for mesh in old.map_or(Vec::new(), |model| model.meshes) {
+                    meshes.remove(mesh);
+                }
+            }
+            (None, Some(instance)) => drop(meshes.remove(instance.0)),
+            (None, None) => {}
         }
-        model.0 = load_gltf(path, &mut models, &mut meshes, &mut textures);
-        commands
-            .entity(entity)
-            .remove::<MeshInstance>()
-            .insert(PendingPlayerModel(model.0));
+        let (def, mesh) = file.read_or_default();
+        walker.radius = def.radius;
+        let mut entity = commands.entity(entity);
+        entity
+            .remove::<(MeshInstance, PendingPlayerModel, PlayerModel)>()
+            .insert(def);
+        let stores = (&mut *meshes, &mut *models, &mut *textures);
+        give_mesh(&mut entity, &mesh, &file.rooms, stores);
     }
 }
 
 /// Polls the model of the player, as `spawn_loaded_models` of the scene does.
 fn attach_player_model(
     mut commands: Commands,
-    settings: Res<PlayerSettings>,
     pending: Query<(Entity, &PendingPlayerModel)>,
     models: Res<Assets<Model>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -227,11 +319,33 @@ fn attach_player_model(
         // The loader logged a failure. The player then is the capsule.
         let mesh = mesh
             .copied()
-            .unwrap_or_else(|| meshes.add(capsule(&settings)));
+            .unwrap_or_else(|| meshes.add(generated(&CAPSULE)));
         commands
             .entity(entity)
             .remove::<PendingPlayerModel>()
             .insert(MeshInstance(mesh));
+    }
+}
+
+/// Runs in `Update`, after the room loader: the player goes to the spawn point that
+/// the load asked for, once for each load.
+fn place_player(
+    current: Res<CurrentRoom>,
+    mut seen: Local<u64>,
+    mut players: Query<&mut Interpolated, With<Player>>,
+) {
+    if current.loads == *seen {
+        return;
+    }
+    *seen = current.loads;
+    let Some(position) = current.spawn else {
+        return;
+    };
+    for mut pose in &mut players {
+        let mut at = pose.current;
+        at.translation = position.into();
+        // No blend from the old place.
+        pose.snap(at);
     }
 }
 
@@ -240,9 +354,8 @@ pub fn steer_player(
     actions: Res<FixedActionState>,
     capture: Res<MoveCapture>,
     events: Res<EventRunner>,
-    settings: Res<PlayerSettings>,
     cameras: Query<&Camera, With<ActiveCamera>>,
-    mut players: Query<&mut Walker, With<Player>>,
+    mut players: Query<(&mut Walker, &PlayerDef), With<Player>>,
 ) {
     // An event that runs has the control: the player reads a message, or a fade runs.
     let direction = if capture.0 || events.blocks_player() {
@@ -250,12 +363,12 @@ pub fn steer_player(
     } else {
         move_direction(&actions, cameras.iter().next())
     };
-    let speed = if actions.pressed(RUN) {
-        settings.run_speed
-    } else {
-        settings.walk_speed
-    };
-    for mut walker in &mut players {
+    for (mut walker, def) in &mut players {
+        let speed = if actions.pressed(RUN) {
+            def.run_speed
+        } else {
+            def.walk_speed
+        };
         (walker.direction, walker.speed) = (direction, speed);
     }
 }
@@ -301,54 +414,73 @@ mod tests {
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]}"#;
 
     #[test]
-    fn the_model_of_the_player_is_read_again_when_its_file_changed() {
+    fn the_player_is_made_from_its_prefab_and_follows_its_files() {
         let directory = std::env::temp_dir().join(format!("maki-player-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let file = directory.join("player.gltf");
-        std::fs::write(&file, TRIANGLE).unwrap();
-        // A path in a TOML text: no backslash.
-        let path = file.to_string_lossy().replace('\\', "/");
-        let config = format!("[player]\nmodel_path = \"{path}\"");
-        let mut app = App::new(ConfigFile::from_text(&config)).unwrap();
+        let model = directory.join("player.gltf");
+        std::fs::write(&model, TRIANGLE).unwrap();
+        let prefab = directory.join("player.prefab");
+        let player = |speed: f32, mesh: &str| {
+            format!(
+                r#"(objects: [(components: {{"player": (walk_speed: {speed:?}, run_speed: 3.0, radius: 0.25), "prop": (mesh: {mesh})}})])"#
+            )
+        };
+        std::fs::write(&prefab, player(1.5, r#"File("player.gltf")"#)).unwrap();
+        let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(PlatformModule)
             .add_module(maki_assets::AssetsModule)
             .add_module(SceneModule)
             .add_module(EventsModule)
             .add_module(ControlsModule)
-            .add_module(PlayerModule);
-        // The watch knows the file, also while it is off.
+            .add_module(PlayerModule {
+                rooms: directory.clone(),
+                prefab: Some(PathBuf::from("player.prefab")),
+            });
+        // The watch knows the two files, also while it is off.
         let watched: Vec<PathBuf> = {
             let watch = app.world().resource::<AssetWatch>();
             watch.files().map(|file| file.to_owned()).collect()
         };
-        assert_eq!(watched, [PathBuf::from(&path)]);
+        assert_eq!(watched, [prefab.clone(), model.clone()]);
 
         app.run(|mut app| {
-            // The mesh that shows the player, and the number of meshes in the store.
+            // The mesh that shows the player, its values, and the number of meshes
+            // in the store.
             let state = |app: &App| {
                 let world = app.world();
                 let mut players = world
-                    .try_query_filtered::<&MeshInstance, With<Player>>()
+                    .try_query_filtered::<(Option<&MeshInstance>, &PlayerDef, &Walker), With<Player>>()
                     .unwrap();
-                let mesh = players.iter(world).next().map(|instance| instance.0);
-                (mesh, world.resource::<Assets<Mesh>>().iter().count())
+                let (mesh, def, walker) = players.single(world).unwrap();
+                let speeds = (def.walk_speed, walker.radius);
+                (mesh.map(|instance| instance.0), speeds, world.resource::<Assets<Mesh>>().iter().count())
             };
             app.advance(Duration::from_millis(16));
             app.advance(Duration::from_millis(16));
-            let (first, count) = state(&app);
+            let (first, speeds, count) = state(&app);
             assert!(first.is_some() && count == 1);
+            assert_eq!(speeds, (1.5, 0.25));
 
             // Another file changed: nothing. The model file: a new mesh, and the
             // old one is gone from the store.
             app.write_message(AssetChanged(directory.join("other.png")));
             app.advance(Duration::from_millis(16));
             app.advance(Duration::from_millis(16));
-            assert_eq!(state(&app), (first, 1));
-            app.write_message(AssetChanged(PathBuf::from(&path)));
+            assert_eq!(state(&app), (first, speeds, 1));
+            app.write_message(AssetChanged(model.clone()));
             app.advance(Duration::from_millis(16));
             app.advance(Duration::from_millis(16));
-            let (second, count) = state(&app);
+            let (second, _, count) = state(&app);
             assert!(second.is_some() && second != first && count == 1);
+
+            // The prefab file: the new values, and a capsule in place of the model.
+            std::fs::write(&prefab, player(2.0, "Capsule(radius: 0.25, height: 1.6)")).unwrap();
+            app.write_message(AssetChanged(prefab.clone()));
+            app.advance(Duration::from_millis(16));
+            app.advance(Duration::from_millis(16));
+            let (third, speeds, count) = state(&app);
+            assert!(third.is_some() && third != second && count == 1);
+            assert_eq!(speeds, (2.0, 0.25));
         });
         std::fs::remove_dir_all(&directory).unwrap();
     }

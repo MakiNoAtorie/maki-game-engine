@@ -2,7 +2,7 @@
 //! a run. Nothing is written to the config file.
 
 use maki_core::{App, Module};
-use maki_gameplay::{CameraSettings, PlayerSettings};
+use maki_gameplay::{CameraSettings, PlayerDef};
 use maki_ui::{add_panel, egui};
 
 /// Adds the "Gameplay" panel. Needs `UiModule` to show it. A section shows only if
@@ -44,7 +44,9 @@ impl Module for GameplayPanelModule {
                     *world.resource_mut::<CameraSettings>() = camera;
                 }
             }
-            if let Some(old) = world.get_resource::<PlayerSettings>() {
+            // The values of the player entity (from its prefab file), not of a file.
+            let mut players = world.query::<&mut PlayerDef>();
+            if let Some(old) = players.iter(world).next().cloned() {
                 let mut player = old.clone();
                 ui.collapsing("Player", |ui| {
                     ui.add(
@@ -55,8 +57,10 @@ impl Module for GameplayPanelModule {
                         egui::Slider::new(&mut player.run_speed, 0.0..=10.0).text("run speed, m/s"),
                     );
                 });
-                if player != *old {
-                    *world.resource_mut::<PlayerSettings>() = player;
+                if player != old {
+                    for mut def in players.iter_mut(world) {
+                        *def = player.clone();
+                    }
                 }
             }
         });

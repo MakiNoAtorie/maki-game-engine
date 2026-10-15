@@ -82,8 +82,8 @@ impl Module for SceneModule {
             .add_systems(
                 Update,
                 (
-                    // Before the interpolation: a player that the loader moved to a
-                    // spawn point shows there in this frame.
+                    // Before the interpolation: a player that is moved to the spawn
+                    // point of the load (the player module) shows there in this frame.
                     room::load_requested_room.before(interpolate_transforms),
                     room::spawn_loaded_models.after(interpolate_transforms),
                     // After the stores forgot a changed file: the loader reads it.

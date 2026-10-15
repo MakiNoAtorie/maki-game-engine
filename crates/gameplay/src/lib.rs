@@ -26,6 +26,6 @@ pub use light_control::{
     LIGHT_DOWN, LIGHT_INTENSITY_DOWN, LIGHT_INTENSITY_UP, LIGHT_UP, LightControlModule,
     TOGGLE_LIGHT_CONTROL, clamp_to_room,
 };
-pub use player::{PlayerModule, PlayerSettings, Walker, steer_player, walk};
+pub use player::{PlayerDef, PlayerModule, Walker, steer_player, walk};
 pub use rooms::{RELOAD_ROOM, RoomSettings, RoomsModule, StartRoom, check_start_room};
 pub use save::{LOAD_GAME, SaveCommand, SaveData, SaveFile, SaveModule, SaveSettings};

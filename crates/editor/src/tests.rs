@@ -75,7 +75,7 @@ output = false",
         .add_module(EventsModule)
         .add_module(maki_audio::AudioModule)
         .add_module(ControlsModule)
-        .add_module(PlayerModule)
+        .add_module(PlayerModule::default())
         .add_module(CameraModule)
         .add_module(RoomsModule {
             start_room: directory.join("a.ron"),

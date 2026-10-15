@@ -19,6 +19,9 @@ struct ProjectFile {
     start_spawn: String,
     save: PathBuf,
     scripts: String,
+    /// The prefab file of the player, from `rooms`. No key: a capsule.
+    #[serde(default)]
+    player: Option<PathBuf>,
 }
 
 /// A project: a folder with `project.toml`, the assets, and the script crate. The
@@ -41,6 +44,9 @@ pub struct Project {
     /// The cargo package that the editor builds and loads: the script crate of the
     /// project as a DLL.
     pub scripts: String,
+    /// The prefab file of the player, from `rooms` (a file name in it starts there,
+    /// as in a prefab that a room names). `None`: a capsule.
+    pub player: Option<PathBuf>,
 }
 
 impl Project {
@@ -68,6 +74,7 @@ impl Project {
             start_spawn: file.start_spawn,
             save: below(&file.save),
             scripts: file.scripts,
+            player: file.player,
             dir: slashes(dir.to_owned()),
         })
     }

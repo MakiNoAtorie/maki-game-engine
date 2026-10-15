@@ -288,6 +288,7 @@ impl Document {
                     MeshDef::Cube(_) => "cube".to_owned(),
                     MeshDef::Cuboid(..) => "cuboid".to_owned(),
                     MeshDef::Sphere { .. } => "sphere".to_owned(),
+                    MeshDef::Capsule { .. } => "capsule".to_owned(),
                     MeshDef::File(path) => {
                         let stem = path.file_stem().unwrap_or_default();
                         stem.to_string_lossy().into_owned()
