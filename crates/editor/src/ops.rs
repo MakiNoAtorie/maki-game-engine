@@ -122,17 +122,14 @@ impl Document {
         let doors = room.doors.iter().enumerate();
         let movers = room.movers.iter().enumerate();
         Some(match item {
-            // While the old list is there, an object and a prop share the names.
-            Item::Prop(_) | Item::Object(_) => {
+            // While the old lists are there, an object shares the names of each.
+            Item::Prop(_) | Item::Object(_) | Item::Light(_) => {
                 let props = room.props.iter().enumerate();
                 let props = props.map(|(i, prop)| (Item::Prop(i), &prop.name));
+                let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
                 let objects = room.objects.iter().enumerate();
                 let objects = objects.map(|(i, object)| (Item::Object(i), &object.name));
-                named(props.chain(objects).collect(), item)
-            }
-            Item::Light(_) => {
-                let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
-                named(lights.collect(), item)
+                named(props.chain(lights).chain(objects).collect(), item)
             }
             Item::Prefab(_) => {
                 let prefabs = room.prefabs.iter().enumerate();
@@ -166,7 +163,7 @@ impl Document {
         }
     }
 
-    /// Call after the name of a light, a door, a mover, or an event was changed
+    /// Call after the name of an object, a light, a door, a mover, or an event was changed
     /// from `old`. The new name is made unique, and the commands of the events of
     /// this room that name the item (built-in, and of the audio module) get the new
     /// name. Returns a text for
@@ -179,6 +176,7 @@ impl Document {
     ) -> String {
         let name = match item {
             Item::Light(index) => &mut self.room.lights[*index].name,
+            Item::Object(index) => &mut self.room.objects[*index].name,
             Item::Door(index) => &mut self.room.doors[*index].name,
             Item::Mover(index) => &mut self.room.movers[*index].name,
             Item::Event(index) => {
@@ -202,40 +200,47 @@ impl Document {
         if new != typed {
             status = "The name was in use: a number was added. ".to_owned();
         }
-        let users = match (&old, item) {
-            (Some(old), Item::Light(_)) => {
-                let light = self.rename_in_events(registry, |command: &Builtin| match command {
-                    Builtin::LightOn(name) if name == old => Some(Builtin::LightOn(new.clone())),
-                    Builtin::LightOff(name) if name == old => Some(Builtin::LightOff(new.clone())),
-                    Builtin::LightIntensity(name, value) if name == old => {
-                        Some(Builtin::LightIntensity(new.clone(), *value))
-                    }
-                    _ => None,
-                });
-                // The sound of the light has the name of the light.
-                let sound = |command: &AudioCommand| match command {
-                    AudioCommand::SoundOn(name) if name == old => {
-                        Some(AudioCommand::SoundOn(new.clone()))
-                    }
-                    AudioCommand::SoundOff(name) if name == old => {
-                        Some(AudioCommand::SoundOff(new.clone()))
-                    }
-                    _ => None,
-                };
-                light + self.rename_in_events(registry, sound)
-            }
-            (Some(old), _) => self.rename_in_events(registry, |command: &Builtin| match command {
+        // An object can be each kind that events name.
+        let lights = matches!(item, Item::Light(_) | Item::Object(_));
+        let doors = matches!(item, Item::Door(_) | Item::Mover(_) | Item::Object(_));
+        let mut users = 0;
+        if let Some(old) = &old
+            && lights
+        {
+            users += self.rename_in_events(registry, |command: &Builtin| match command {
+                Builtin::LightOn(name) if name == old => Some(Builtin::LightOn(new.clone())),
+                Builtin::LightOff(name) if name == old => Some(Builtin::LightOff(new.clone())),
+                Builtin::LightIntensity(name, value) if name == old => {
+                    Some(Builtin::LightIntensity(new.clone(), *value))
+                }
+                _ => None,
+            });
+            // The sound of the light has the name of the light.
+            users += self.rename_in_events(registry, |command: &AudioCommand| match command {
+                AudioCommand::SoundOn(name) if name == old => {
+                    Some(AudioCommand::SoundOn(new.clone()))
+                }
+                AudioCommand::SoundOff(name) if name == old => {
+                    Some(AudioCommand::SoundOff(new.clone()))
+                }
+                _ => None,
+            });
+        }
+        if let Some(old) = &old
+            && doors
+        {
+            users += self.rename_in_events(registry, |command: &Builtin| match command {
                 Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
                 Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
                 _ => None,
-            }),
-            (None, _) => 0,
-        };
+            });
+        }
         if users > 0 {
             status += &format!("{users} event commands now name `{new}`");
         }
         let name = match item {
             Item::Light(index) => &mut self.room.lights[*index].name,
+            Item::Object(index) => &mut self.room.objects[*index].name,
             Item::Door(index) => &mut self.room.doors[*index].name,
             _ => &mut self.room.movers[item_index(item)].name,
         };
@@ -350,8 +355,7 @@ impl Document {
                 item
             }
             Kind::Light => {
-                let item = Item::Light(room.lights.len());
-                room.lights.push(LightDef {
+                let light = LightDef {
                     name: None,
                     position: [at.x, (room.height - 0.6).max(0.5), at.z],
                     radius: 0.15,
@@ -361,9 +365,11 @@ impl Document {
                     direction: None,
                     cone: None,
                     sound: None,
-                });
+                };
+                let item = Item::Object(room.objects.len());
+                room.objects.push(light.into_object());
                 let name = self.unique_name(&item, "light");
-                self.room.lights.last_mut().expect("pushed above").name = Some(name);
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
             Kind::Spawn => {
@@ -614,6 +620,12 @@ impl Document {
         let is_part = |item: &&Item| match item {
             Item::Prop(index) => *index < room.props.len(),
             Item::Light(index) => *index < room.lights.len(),
+            // A prefab file has props and lights: an object with another component
+            // would lose it.
+            Item::Object(index) => room.objects.get(*index).is_some_and(|object| {
+                let mut names = object.components.keys();
+                !object.components.is_empty() && names.all(|name| name == "prop" || name == "light")
+            }),
             _ => false,
         };
         let parts: Vec<Item> = items.iter().filter(is_part).cloned().collect();
@@ -628,29 +640,35 @@ impl Document {
             }
         });
         let space = outer.transform();
-        let mut prefab = PrefabDef::default();
+        let (mut props, mut lights) = (Vec::new(), Vec::new());
         for item in &parts {
             match item {
-                Item::Prop(index) => {
-                    let mut prop = room.props[*index].clone();
-                    prop.pose = tidy(PoseDef::of(&pose_out(&space, &prop.pose.transform())));
-                    prefab.props.push(prop);
+                Item::Prop(index) => props.push(room.props[*index].clone()),
+                Item::Light(index) => lights.push(room.lights[*index].clone()),
+                Item::Object(index) => {
+                    let object = &room.objects[*index];
+                    props.extend(object.prop().and_then(Result::ok));
+                    lights.extend(object.light().and_then(Result::ok));
                 }
-                Item::Light(index) => {
-                    let mut light = room.lights[*index].clone();
-                    let at = PoseDef {
-                        position: light.position,
-                        ..PoseDef::default()
-                    };
-                    light.position = tidy(PoseDef::of(&pose_out(&space, &at.transform()))).position;
-                    let back = space.rotation.inverse();
-                    light.direction = light
-                        .direction
-                        .map(|direction| (back * Vec3::from(direction)).into());
-                    prefab.lights.push(light);
-                }
-                _ => unreachable!("`parts` has props and lights"),
+                _ => unreachable!("`parts` has props, lights, and objects of them"),
             }
+        }
+        let mut prefab = PrefabDef::default();
+        for mut prop in props {
+            prop.pose = tidy(PoseDef::of(&pose_out(&space, &prop.pose.transform())));
+            prefab.props.push(prop);
+        }
+        for mut light in lights {
+            let at = PoseDef {
+                position: light.position,
+                ..PoseDef::default()
+            };
+            light.position = tidy(PoseDef::of(&pose_out(&space, &at.transform()))).position;
+            let back = space.rotation.inverse();
+            light.direction = light
+                .direction
+                .map(|direction| (back * Vec3::from(direction)).into());
+            prefab.lights.push(light);
         }
         let path = self.path.parent().unwrap_or(Path::new("")).join(file);
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))
@@ -682,11 +700,10 @@ impl Document {
         let path = self.path.parent().unwrap_or(Path::new("")).join(&used.file);
         let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
         let space = used.pose.transform();
-        let mut items = Vec::new();
+        let mut objects = Vec::new();
         for mut prop in prefab.props {
             prop.pose = tidy(PoseDef::of(&pose_in(&space, &prop.pose.transform())));
-            items.push(Item::Prop(self.room.props.len()));
-            self.room.props.push(prop);
+            objects.push(prop.into_object());
         }
         for mut light in prefab.lights {
             let at = PoseDef {
@@ -697,11 +714,15 @@ impl Document {
             light.direction = light
                 .direction
                 .map(|direction| (space.rotation * Vec3::from(direction)).into());
-            let item = Item::Light(self.room.lights.len());
-            let name = light.name.take();
-            self.room.lights.push(light);
+            objects.push(light.into_object());
+        }
+        let mut items = Vec::new();
+        for mut object in objects {
+            let item = Item::Object(self.room.objects.len());
+            let name = object.name.take();
+            self.room.objects.push(object);
             let name = name.map(|name| self.unique_name(&item, &name));
-            self.room.lights.last_mut().expect("pushed above").name = name;
+            self.room.objects.last_mut().expect("pushed above").name = name;
             items.push(item);
         }
         self.delete(&[Item::Prefab(index)]);
@@ -923,9 +944,11 @@ mod tests {
     fn a_rename_changes_the_events_and_a_name_stays_unique() {
         let registry = registry();
         let mut document = document(&registry);
-        let lamp = Item::Light(0);
+        // The light is an object.
+        document.items_to_objects();
+        let lamp = Item::Object(0);
 
-        document.room.lights[0].name = Some("bulb".to_owned());
+        document.room.objects[0].name = Some("bulb".to_owned());
         let status = document.renamed(&lamp, Some("lamp".to_owned()), &registry);
         assert!(status.contains("2 event commands"), "{status}");
         let text = document.text();
@@ -941,13 +964,14 @@ mod tests {
         assert!(text.contains(r#"OpenDoor("door_2")"#) && text.contains(r#"CloseDoor("door")"#));
 
         // A new light and a copy of a light have names of their own.
-        let Ok(Item::Light(new)) = document.add(Kind::Light, Vec3::ZERO) else {
+        let Ok(Item::Object(new)) = document.add(Kind::Light, Vec3::ZERO) else {
             panic!("a light");
         };
-        assert_eq!(document.room.lights[new].name.as_deref(), Some("light"));
-        let copies = document.duplicate(&[lamp, Item::Light(new)]);
-        assert_eq!(copies, [Item::Light(2), Item::Light(3)]);
-        let name = |index: usize| document.room.lights[index].name.clone().unwrap();
+        assert_eq!(document.room.objects[new].name.as_deref(), Some("light"));
+        assert!(document.light(&Item::Object(new)).is_some());
+        let copies = document.duplicate(&[lamp, Item::Object(new)]);
+        assert_eq!(copies, [Item::Object(2), Item::Object(3)]);
+        let name = |index: usize| document.room.objects[index].name.clone().unwrap();
         assert_eq!(
             (name(2), name(3)),
             ("bulb_2".to_owned(), "light_2".to_owned())

@@ -29,8 +29,9 @@ pub enum AudioCommand {
 /// The names of the things of a room that have a sound: what `SoundOn` and
 /// `SoundOff` can name.
 pub fn sound_names(room: &RoomDef) -> Vec<String> {
-    let with_sound = room.lights.iter().filter(|light| light.sound.is_some());
-    with_sound.filter_map(|light| light.name.clone()).collect()
+    let lights = room.each_light().into_iter();
+    let with_sound = lights.filter(|light| light.sound.is_some());
+    with_sound.filter_map(|light| light.name).collect()
 }
 
 pub(crate) fn add(registry: &CommandRegistry) {

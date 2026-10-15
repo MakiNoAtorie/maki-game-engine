@@ -10,7 +10,7 @@ use maki_core::Fields;
 use maki_core::fields::{Value, read};
 use maki_events::{Area, CommandRegistry, EventDef};
 use maki_scene::{
-    ComponentTypes, LightDef, ObjectDef, PoseDef, RoomDef, RoomValidators, check_room,
+    ComponentTypes, LightDef, ObjectDef, PoseDef, PropDef, RoomDef, RoomValidators, check_room,
     ron_options,
 };
 
@@ -88,7 +88,7 @@ impl Document {
                 width: 8.0,
                 depth: 8.0,
                 height: 3.0,
-                lights: vec![lamp],
+                objects: vec![lamp.into_object()],
                 spawns: [("start".to_owned(), [0.0; 3])].into(),
                 ..RoomDef::default()
             },
@@ -159,7 +159,7 @@ impl Document {
             Item::Object(index) => ("object", room.objects.get(*index)?.tree()),
             Item::Prop(index) => ("prop item", room.props.get(*index)?.tree()),
             Item::Mover(index) => ("mover", room.movers.get(*index)?.tree()),
-            Item::Light(index) => ("light", room.lights.get(*index)?.tree()),
+            Item::Light(index) => ("light item", room.lights.get(*index)?.tree()),
             Item::Prefab(index) => ("prefab", room.prefabs.get(*index)?.tree()),
             Item::Spawn(_) | Item::Event(_) => return None,
         })
@@ -230,16 +230,41 @@ impl Document {
         Ok(())
     }
 
-    /// Moves the props of the old list into the list of objects, each with its
-    /// notes, behind the objects that the room has. For the migration of stage 48.
-    pub fn props_to_objects(&mut self) {
+    /// Moves the props and the lights of the old lists into the list of objects,
+    /// each with its notes, behind the objects that the room has. For the migration
+    /// of stage 48.
+    pub fn items_to_objects(&mut self) {
         let props = std::mem::take(&mut self.room.props);
-        let start = self.room.objects.len();
-        for (index, prop) in props.into_iter().enumerate() {
-            let notes = self.notes.of("props", index).to_vec();
-            self.notes.set("props", index, Vec::new());
-            self.notes.set("objects", start + index, notes);
-            self.room.objects.push(prop.into_object());
+        self.move_to_objects("props", props.into_iter().map(PropDef::into_object));
+        let lights = std::mem::take(&mut self.room.lights);
+        self.move_to_objects("lights", lights.into_iter().map(LightDef::into_object));
+    }
+
+    fn move_to_objects(&mut self, list: &str, objects: impl Iterator<Item = ObjectDef>) {
+        for (index, object) in objects.enumerate() {
+            let notes = self.notes.of(list, index).to_vec();
+            self.notes.set(list, index, Vec::new());
+            self.notes.set("objects", self.room.objects.len(), notes);
+            self.room.objects.push(object);
+        }
+    }
+
+    /// The light of an item: a light of the old list, or an object with the
+    /// component `light`.
+    pub fn light(&self, item: &Item) -> Option<LightDef> {
+        match item {
+            Item::Light(index) => self.room.lights.get(*index).cloned(),
+            Item::Object(index) => self.room.objects.get(*index)?.light()?.ok(),
+            _ => None,
+        }
+    }
+
+    /// Writes the light of an item that [`Document::light`] gave.
+    pub fn set_light(&mut self, item: &Item, light: LightDef) {
+        match item {
+            Item::Light(index) => self.room.lights[*index] = light,
+            Item::Object(index) => self.room.objects[*index].set_light(light),
+            _ => {}
         }
     }
 

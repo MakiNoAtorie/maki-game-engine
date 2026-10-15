@@ -279,7 +279,7 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
     let named = |name: &Option<String>, wanted: &str| name.as_deref() == Some(wanted);
     match command {
         Builtin::LightOn(name) | Builtin::LightOff(name) | Builtin::LightIntensity(name, _) => {
-            let found = room.lights.iter().any(|light| named(&light.name, name));
+            let found = room.each_light().iter().any(|light| named(&light.name, name));
             (!found).then(|| Finding::error(format!("the room has no light `{name}`")))
         }
         Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {

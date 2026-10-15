@@ -102,6 +102,13 @@ pub struct RoomShell {
 }
 
 impl RoomDef {
+    /// Each light of the room: of the old list and of the objects with a `light`.
+    /// An object whose light text does not read is not there.
+    pub fn each_light(&self) -> Vec<LightDef> {
+        let of_objects = self.objects.iter().filter_map(|object| object.light()?.ok());
+        self.lights.iter().cloned().chain(of_objects).collect()
+    }
+
     pub fn shell(&self) -> RoomShell {
         RoomShell {
             width: self.width,
@@ -606,6 +613,99 @@ impl LightDef {
     }
 }
 
+/// The component of an object that gives light at the place of the object: the
+/// fields of [`LightDef`] without its name and its place, which are of the object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(deny_unknown_fields)]
+pub struct LightSource {
+    /// Meters.
+    #[field(range = 0.01..=10.0, step = 0.005)]
+    pub radius: f32,
+    /// Linear RGB.
+    #[field(color)]
+    pub color: [f32; 3],
+    #[field(range = 0.0..=10000.0, step = 0.1)]
+    pub intensity: f32,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    #[field(default = true)]
+    pub on: bool,
+    /// A cone light: the direction of the middle of the cone. `None`: straight down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[field(label = "direction of the cone (not set: down)", some = [0.0, -1.0, 0.0])]
+    pub direction: Option<[f32; 3]>,
+    /// A cone light: degrees from `direction` to the edge of the cone. `None`: light
+    /// in all directions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[field(label = "cone (degrees to the edge)", range = 1.0..=180.0, step = 0.5, some = 30.0)]
+    pub cone: Option<f32>,
+    /// A sound that loops at the place of the light: a lamp that hums.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<SoundDef>,
+}
+
+impl LightDef {
+    /// The light as an object with the component `light`.
+    pub fn into_object(self) -> ObjectDef {
+        let LightDef {
+            name,
+            position,
+            radius,
+            color,
+            intensity,
+            on,
+            direction,
+            cone,
+            sound,
+        } = self;
+        let light = LightSource {
+            radius,
+            color,
+            intensity,
+            on,
+            direction,
+            cone,
+            sound,
+        };
+        ObjectDef {
+            name,
+            pose: PoseDef {
+                position,
+                ..PoseDef::default()
+            },
+            parent: None,
+            components: [("light".to_owned(), ComponentText::of(&light))].into(),
+        }
+    }
+}
+
+impl ObjectDef {
+    /// The object as a light, if it has the component `light`. Its place is the
+    /// position of the object. `Err`: its text is not a light.
+    pub fn light(&self) -> Option<Result<LightDef, ron::error::SpannedError>> {
+        let text = self.components.get("light")?;
+        Some(text.read::<LightSource>().map(|light| LightDef {
+            name: self.name.clone(),
+            position: self.pose.position,
+            radius: light.radius,
+            color: light.color,
+            intensity: light.intensity,
+            on: light.on,
+            direction: light.direction,
+            cone: light.cone,
+            sound: light.sound,
+        }))
+    }
+
+    /// Writes `light` as the component `light`, and its place as the position of the
+    /// object. Its name is not taken.
+    pub fn set_light(&mut self, light: LightDef) {
+        self.pose.position = light.position;
+        let mut object = light.into_object();
+        let text = object.components.remove("light").expect("made above");
+        self.components.insert("light".to_owned(), text);
+    }
+}
+
 /// A door in a doorway of the room. It turns on the side of the opening that is
 /// nearer to the start of the wall, into the room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
@@ -707,10 +807,14 @@ pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, S
 pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Result<RoomDef> {
     let room = parse_room(text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
     for (index, object) in room.objects.iter().enumerate() {
-        if let Some(Err(error)) = object.prop() {
+        let errors = [
+            ("prop", object.prop().and_then(Result::err)),
+            ("light", object.light().and_then(Result::err)),
+        ];
+        if let Some((component, Some(error))) = errors.into_iter().find(|(_, e)| e.is_some()) {
             let name = object.name.as_deref().unwrap_or("");
             return Err(anyhow!(
-                "{}: object {index} {name}: component prop: {error}",
+                "{}: object {index} {name}: component {component}: {error}",
                 path.display()
             ));
         }
@@ -1164,6 +1268,9 @@ impl Spawner<'_, '_, '_> {
             if let Some(Ok(prop)) = object.prop() {
                 self.prop(&prop, RoomItem::Object(index));
             }
+            if let Some(Ok(light)) = object.light() {
+                self.light(&light, RoomItem::Object(index));
+            }
         }
         for (index, prop) in def.props.iter().enumerate() {
             self.prop(prop, RoomItem::Prop(index));
@@ -1405,6 +1512,13 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         if !file {
             object.pose = new.pose;
         }
+        // A light, but for its sound: a component of its own.
+        if let (Some(Ok(light)), Some(Ok(new))) = (object.light(), new.light()) {
+            object.set_light(LightDef {
+                sound: light.sound,
+                ..new
+            });
+        }
     }
     for (mover, new) in patched.movers.iter_mut().zip(&room.movers) {
         (mover.a, mover.b, mover.seconds) = (new.a, new.b, new.seconds);
@@ -1415,10 +1529,14 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
 
     let mut lights = world.query::<(&RoomItem, &mut Light, &mut Interpolated)>();
     for (item, mut light, mut pose) in lights.iter_mut(world) {
-        let RoomItem::Light(index) = *item else {
-            continue;
+        let def = match *item {
+            RoomItem::Light(index) => room.lights[index].clone(),
+            RoomItem::Object(index) => match room.objects[index].light() {
+                Some(Ok(light)) => light,
+                _ => continue,
+            },
+            _ => continue,
         };
-        let def = &room.lights[index];
         // Only a different value is a write: a write is a change for the renderer.
         light.set_if_neq(def.light());
         if pose.current.translation != Vec3::from(def.position) {
@@ -1641,7 +1759,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "door", "doorway", "light", "mover", "object", "prefab", "prop", "prop item", "room"
+                "door", "doorway", "light", "light item", "mover", "object", "prefab", "prop", "prop item",
+                "room"
             ]
         );
         for (name, kind) in types.iter() {

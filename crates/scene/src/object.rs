@@ -187,7 +187,7 @@ mod tests {
     use maki_core::ConfigFile;
 
     use super::*;
-    use crate::room::{MeshDef, Prop, parse_room};
+    use crate::room::{LightDef, MeshDef, Prop, parse_room};
 
     const ROOM: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [
         (name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
@@ -227,6 +227,32 @@ mod tests {
         let again = parse_room(&text).unwrap();
         assert_eq!(again, room);
         assert_eq!(ron_options().to_string(&again).unwrap(), text);
+    }
+
+    #[test]
+    fn a_light_is_an_object_and_back() {
+        let light = LightDef {
+            name: Some("lamp".to_owned()),
+            position: [1.0, 2.0, 3.0],
+            radius: 0.1,
+            color: [1.0, 0.5, 0.0],
+            intensity: 4.0,
+            on: false,
+            direction: Some([0.0, -1.0, 0.0]),
+            cone: Some(30.0),
+            sound: None,
+        };
+        let mut object = light.clone().into_object();
+        assert_eq!(object.pose.position, light.position);
+        assert_eq!(object.light().unwrap().unwrap(), light);
+        let moved = LightDef {
+            position: [0.0; 3],
+            intensity: 1.0,
+            ..light
+        };
+        object.set_light(moved.clone());
+        assert_eq!(object.light().unwrap().unwrap(), moved);
+        assert_eq!(object.components.len(), 1);
     }
 
     #[test]

@@ -27,9 +27,11 @@ const ROOM_A: &str = r#"// The test room.
     objects: [
         // The cube.
         (name: "cube", pose: (position: (1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(1.0))}),
-    ],
-    lights: [
-        (name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 0.9, 0.8), intensity: 5.0),
+        (
+            name: "lamp",
+            pose: (position: (0.0, 2.0, 0.0)),
+            components: {"light": (radius: 0.1, color: (1.0, 0.9, 0.8), intensity: 5.0)},
+        ),
     ],
     spawns: {
         "start": (0.0, 0.0, 2.0),
@@ -143,7 +145,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
 
         // The property panel shows each item for some frames: a look is no change.
         for item in [
-            Item::Light(0),
+            Item::Object(1),
             Item::Object(0),
             Item::Spawn("start".to_owned()),
             Item::Event(0),
@@ -157,8 +159,9 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
 
         // A light and the pose of a prop: the entities change, the room is not loaded.
         let mut editor = app.resource_mut::<Editor>();
-        editor.document.room.lights[0].intensity = 9.0;
-        editor.document.room.lights[0].position = [1.0, 2.5, 0.0];
+        let mut light = editor.document.light(&Item::Object(1)).unwrap();
+        (light.intensity, light.position) = (9.0, [1.0, 2.5, 0.0]);
+        editor.document.set_light(&Item::Object(1), light);
         editor.document.room.objects[0].pose.position = [-1.0, 0.5, 0.0];
         editor.document.dirty = true;
         frames(&mut app, 2);
@@ -215,7 +218,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         // An empty room with its lamp, and the world shows it.
         let world = app.world();
         assert_eq!(world.try_query::<&Light>().unwrap().iter(world).count(), 1);
-        assert!(world.resource::<CurrentRoom>().def.objects.is_empty());
+        assert_eq!(world.resource::<CurrentRoom>().def.objects.len(), 1);
 
         request(&mut app, Command::SaveAs(directory.join("c.ron")));
         request(&mut app, Command::Open(directory.join("c.ron")));
@@ -331,7 +334,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         app.write_message(RawInput::KeyDown(Key::Shift));
         click(&mut app, Vec3::new(0.0, 2.0, 0.0));
         app.write_message(RawInput::KeyUp(Key::Shift));
-        assert_eq!(selection(&app), [Item::Object(0), Item::Light(0)]);
+        assert_eq!(selection(&app), [Item::Object(0), Item::Object(1)]);
 
         // The cube alone, and a drag of the square of its gizmo over the floor: 30
         // frames with the button down.
@@ -401,7 +404,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         click(&mut app, Vec3::new(-1.25, 1.0, 1.5));
         assert_eq!(selection(&app), [Item::Object(0)]);
         click(&mut app, Vec3::new(0.0, 2.0, 0.0));
-        assert_eq!(selection(&app), [Item::Light(0)]);
+        assert_eq!(selection(&app), [Item::Object(1)]);
 
         // A press and a move in the same frame: the click is at the press place.
         click(&mut app, Vec3::new(-2.0, 0.0, -2.0));
@@ -419,12 +422,12 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
 
         // A copy, then the copy is removed: the selection follows.
         request(&mut app, Command::Duplicate);
-        assert_eq!(selection(&app), [Item::Object(1)]);
+        assert_eq!(selection(&app), [Item::Object(2)]);
         request(&mut app, Command::Delete);
         assert_eq!(selection(&app), []);
         assert_eq!(
             app.world().resource::<Editor>().document.room.objects.len(),
-            1
+            2
         );
         // The comment of the cube is still the comment of the cube.
         assert!(
@@ -655,11 +658,11 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         // The key comes in a later frame than the click.
         frames(&mut app, 1);
         request(&mut app, Command::Delete);
-        assert_eq!(editor(&app).document.room.objects.len(), 0);
+        assert_eq!(editor(&app).document.room.objects.len(), 1);
         assert_eq!((commands(&app), editor(&app).selection.len()), (6, 0));
         request(&mut app, Command::Undo);
         assert_eq!(editor(&app).selection, [Item::Object(0)]);
-        assert_eq!(editor(&app).document.room.objects.len(), 1);
+        assert_eq!(editor(&app).document.room.objects.len(), 2);
 
         // Play with changes: no question. The game goes to room B (the event of
         // room A), and a load of room A gets the room of the editor, not the file.
@@ -914,40 +917,34 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
             editor.event_ui.focused = false;
         };
         let editor = |app: &App| app.world().resource::<Editor>().clone_parts();
-        // A prefab is made of props until the ops take objects (stage 48, #4).
-        {
-            let mut editor = app.resource_mut::<Editor>();
-            let room = &mut editor.document.room;
-            let cube = room.objects.remove(0).prop().unwrap().unwrap();
-            room.props.push(cube);
-        }
-
         // The cube and the lamp of room A go into room B by the buffer. The lamp of
         // room B is a second lamp: the name gets a number.
         request(&mut app, Command::Add(Kind::Light));
-        select(&mut app, &[Item::Prop(0), Item::Light(0)]);
+        select(&mut app, &[Item::Object(0), Item::Object(1)]);
         request(&mut app, Command::Copy);
         request(&mut app, Command::Save);
         request(&mut app, Command::Open(directory.join("b.ron")));
         request(&mut app, Command::Add(Kind::Light));
-        app.resource_mut::<Editor>().document.room.lights[0].name = Some("lamp".to_owned());
+        app.resource_mut::<Editor>().document.room.objects[0].name = Some("lamp".to_owned());
         request(&mut app, Command::Paste);
         let (room, selection) = editor(&app);
-        assert_eq!(selection, [Item::Prop(0), Item::Light(1)]);
-        assert_eq!(room.props[0].pose.position, [1.0, 0.5, 0.0]);
-        assert_eq!(room.lights[1].name.as_deref(), Some("lamp_2"));
+        assert_eq!(selection, [Item::Object(1), Item::Object(2)]);
+        assert_eq!(room.objects[1].pose.position, [1.0, 0.5, 0.0]);
+        assert_eq!(room.objects[2].name.as_deref(), Some("lamp_2"));
 
-        // A second cube, 1 m beside the first, and the two as a prefab: its origin is
-        // the floor point of the first.
+        // A second cube (and lamp), 1 m beside the first, and the two cubes as a
+        // prefab: its origin is the floor point of the first.
         request(&mut app, Command::Duplicate);
-        app.resource_mut::<Editor>().document.room.props[1]
+        app.resource_mut::<Editor>().document.room.objects[3]
             .pose
             .position = [2.0, 0.5, 0.0];
-        select(&mut app, &[Item::Prop(0), Item::Prop(1)]);
+        select(&mut app, &[Item::Object(1), Item::Object(3)]);
         request(&mut app, Command::MakePrefab("pair".to_owned()));
         let (room, selection) = editor(&app);
         assert_eq!(selection, [Item::Prefab(0)]);
-        assert!(room.props.is_empty());
+        // The three lamps are left.
+        assert!(room.objects.iter().all(|object| object.prop().is_none()));
+        assert_eq!(room.objects.len(), 3);
         assert_eq!(room.prefabs[0].pose.position, [1.0, 0.0, 0.0]);
         let file = directory.join("prefabs/pair.prefab");
         let places = |file: &Path| -> Vec<[f32; 3]> {
@@ -974,15 +971,15 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
         };
         request(&mut app, Command::UnpackPrefab);
         let (room, selection) = editor(&app);
-        assert_eq!(selection, [Item::Prop(0), Item::Prop(1)]);
+        assert_eq!(selection, [Item::Object(3), Item::Object(4)]);
         assert!(room.prefabs.is_empty());
         // A quarter turn around Y moves +X to -Z.
-        assert_eq!(room.props[1].pose.position, [0.0, 0.5, -2.0]);
-        assert_eq!(room.props[1].pose.rotation, [0.0, 90.0, 0.0]);
+        assert_eq!(room.objects[4].pose.position, [0.0, 0.5, -2.0]);
+        assert_eq!(room.objects[4].pose.rotation, [0.0, 90.0, 0.0]);
 
         // One cube goes up, and the prefab is made again with its name: the file has
         // the change in the space of the prefab, and the prefab has its pose again.
-        app.resource_mut::<Editor>().document.room.props[1]
+        app.resource_mut::<Editor>().document.room.objects[4]
             .pose
             .position[1] = 1.5;
         assert_eq!(app.world().resource::<Editor>().prefab_name, "pair");
@@ -1028,15 +1025,15 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
 
         // The key of "Rename": the row of the lamp in the outliner is a text field
         // in the next frame. Its end gives the name, and the event follows.
-        app.resource_mut::<Editor>().select(Item::Light(0), false);
+        app.resource_mut::<Editor>().select(Item::Object(1), false);
         app.write_message(maki_platform::RawInput::KeyDown(Key::F2));
         app.advance(Duration::from_millis(20));
         app.write_message(maki_platform::RawInput::KeyUp(Key::F2));
         app.resource_mut::<Editor>()
-            .rename(&Item::Light(0), "bulb".to_owned());
+            .rename(&Item::Object(1), "bulb".to_owned());
         frames(&mut app, 2);
         let editor = app.world().resource::<Editor>();
-        assert_eq!(editor.document.room.lights[0].name.as_deref(), Some("bulb"));
+        assert_eq!(editor.document.room.objects[1].name.as_deref(), Some("bulb"));
         assert!(editor.document.text().contains(r#"LightOff("bulb")"#));
         assert!(editor.document.dirty);
 
@@ -1072,7 +1069,9 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
     let (session, room) = app.run(|mut app| {
         frames(&mut app, 2);
         let mut editor = app.resource_mut::<Editor>();
-        editor.document.room.lights[0].intensity = 2.5;
+        let mut light = editor.document.light(&Item::Object(1)).unwrap();
+        light.intensity = 2.5;
+        editor.document.set_light(&Item::Object(1), light);
         editor.document.dirty = true;
         editor.play_from = Some("other".to_owned());
         editor.select(Item::Event(0), false);
@@ -1094,7 +1093,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         let world = app.world();
         let editor = world.resource::<Editor>();
         assert_eq!(editor.document.room, room);
-        assert_eq!(editor.document.room.lights[0].intensity, 2.5);
+        assert_eq!(editor.document.light(&Item::Object(1)).unwrap().intensity, 2.5);
         assert!(editor.document.dirty);
         assert_eq!(editor.document.path, directory.join("a.ron"));
         assert_eq!(editor.play_from.as_deref(), Some("other"));
@@ -1167,7 +1166,7 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
         Item::Door(0),
         Item::Prop(0),
         Item::Mover(0),
-        Item::Light(0),
+        Item::Object(0),
         Item::Prefab(0),
     ];
 
@@ -1217,13 +1216,13 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
         (&prop.mesh, &prop.name),
         (&sphere, &before.room.props[0].name)
     );
-    assert_eq!(document.room.lights, before.room.lights);
+    assert_eq!(document.room.objects, before.room.objects);
 
     // A tree that is not one of the item, an item that is not there, an item with
     // rows of its own: an error or `None`, and the document stays.
     let was = document.clone();
-    assert!(document.set_tree(&Item::Light(0), Value::Null).is_err());
-    assert!(document.set_tree(&Item::Light(0), tree.clone()).is_err());
+    assert!(document.set_tree(&Item::Object(0), Value::Null).is_err());
+    assert!(document.set_tree(&Item::Object(0), tree.clone()).is_err());
     assert!(document.set_tree(&Item::Prop(9), tree).is_err());
     assert!(document.tree(&Item::Prop(9)).is_none());
     assert!(document.tree(&Item::Spawn("start".to_owned())).is_none());
@@ -1313,7 +1312,7 @@ fn the_props_of_a_room_become_objects_with_their_notes() {
     ])"#;
     let mut document = Document::parse(Path::new("room.ron"), text, &registry).unwrap();
     let props = document.room.props.clone();
-    document.props_to_objects();
+    document.items_to_objects();
     assert!(document.room.props.is_empty());
     let objects = &document.room.objects;
     let back: Vec<_> = objects.iter().map(|object| object.prop().unwrap().unwrap()).collect();

@@ -18,7 +18,7 @@ pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{ComponentText, ComponentType, ComponentTypes, ObjectDef, add_component_type};
 pub use room::{
-    CurrentRoom, DoorDef, Filter, LightDef, LookDef, MeshDef, MoverDef, PoseDef, PrefabDef,
+    CurrentRoom, DoorDef, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef, PoseDef, PrefabDef,
     PrefabUse, Prop, PropDef, RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride,
     RoomProblem, RoomRequest, RoomShell, RoomTarget, RoomValidator, RoomValidators, SoundDef,
     TextureDef, check_room, load_requested_room, parse_room, patch_room, pose_in, pose_out,
@@ -39,8 +39,9 @@ impl Module for SceneModule {
         maki_core::add_field_type::<ObjectDef>(app, "object");
         // The types of components of the scene.
         add_component_type::<Prop>(app, "prop");
+        add_component_type::<LightSource>(app, "light");
         maki_core::add_field_type::<MoverDef>(app, "mover");
-        maki_core::add_field_type::<LightDef>(app, "light");
+        maki_core::add_field_type::<LightDef>(app, "light item");
         maki_core::add_field_type::<PrefabUse>(app, "prefab");
         // The stores normally come from `AssetsModule`. This keeps the loader
         // independent of the order in which the modules are added.

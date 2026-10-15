@@ -24,9 +24,6 @@ mod tests {
 
     use super::*;
 
-    /// The editor writes the room files of the game with all that they hold: the
-    /// room, the events (also the commands of the audio module and of this game),
-    /// and the comments. The loader finds nothing wrong in them.
     /// The rooms of the game: from the directory of this package, where a test runs.
     const ROOMS: [&str; 3] = [
         "../assets/rooms/room_a.ron",
@@ -34,17 +31,17 @@ mod tests {
         "../assets/rooms/room_c.ron",
     ];
 
-    /// The migration of stage 48: the props of each room file go into its list of
-    /// objects. Run by hand: `cargo test -p maki-game-scripts -- --ignored props_to_objects`.
+    /// The migration of stage 48: the items of the old lists of each room file go
+    /// into its list of objects. Run by hand: `cargo test -p maki-game-scripts -- --ignored items_to_objects`.
     // ponytail: goes with the old lists (stage 48, #5).
     #[test]
     #[ignore = "changes the room files of the game"]
-    fn props_to_objects() {
+    fn items_to_objects() {
         let app = game_app();
         let registry = app.world().resource::<events::CommandRegistry>();
         for path in ROOMS {
             let mut document = maki_editor::Document::read(path.as_ref(), registry).unwrap();
-            document.props_to_objects();
+            document.items_to_objects();
             document.save().unwrap();
         }
     }
@@ -92,9 +89,9 @@ output = false",
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
             count += document.events.len();
-            // The props are objects (stage 48).
+            // The props and the lights are objects (stage 48).
             let room = &document.room;
-            assert!(room.props.is_empty() && !room.objects.is_empty(), "{path:?}");
+            assert!(room.props.is_empty() && room.lights.is_empty(), "{path:?}");
 
             // The inspector reads each item and each component as a tree, and reads
             // a changed tree back. With no change: the same room, and the same file.

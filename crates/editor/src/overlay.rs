@@ -398,9 +398,7 @@ fn marks(
         for (matrix, low, high) in of_mesh.map_or(Vec::new(), |item| mesh_boxes(world, item)) {
             pen.cuboid(matrix, low, high, Stroke::new(1.0, Color32::WHITE));
         }
-        if let Item::Light(index) = item
-            && let Some(light) = room.lights.get(*index)
-        {
+        if let Some(light) = editor.document.light(item) {
             let (at, white) = (Vec3::from(light.position), Stroke::new(1.0, Color32::WHITE));
             pen.circle(at, Vec3::X, Vec3::Y, light.radius.max(0.1), white);
         }
@@ -420,8 +418,8 @@ fn marks(
             pen.cuboid(matrix, low, high, mark);
         }
         match item {
-            Item::Light(index) => {
-                let Some(light) = room.lights.get(*index) else {
+            Item::Light(_) | Item::Object(_) => {
+                let Some(light) = editor.document.light(item) else {
                     continue;
                 };
                 let at = Vec3::from(light.position);

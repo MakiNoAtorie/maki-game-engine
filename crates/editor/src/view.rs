@@ -219,10 +219,14 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
     }
 
     // Things with no mesh, or with a very small one, have a pick shape.
-    for (index, light) in document.room.lights.iter().enumerate() {
+    let lights = (0..document.room.lights.len()).map(Item::Light);
+    for item in lights.chain((0..document.room.objects.len()).map(Item::Object)) {
+        let Some(light) = document.light(&item) else {
+            continue;
+        };
         let radius = light.radius.max(MARK_RADIUS);
         if let Some(t) = ray.sphere(light.position.into(), radius) {
-            hit(t, Some(Item::Light(index)));
+            hit(t, Some(item));
         }
     }
     for (name, position) in &document.room.spawns {

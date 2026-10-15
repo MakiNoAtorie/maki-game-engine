@@ -639,7 +639,13 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
         variables: used.variables.keys().cloned().collect(),
         unset_flags: Names::never_written(&used.flags),
         unset_variables: Names::never_written(&used.variables),
-        lights: named(room.lights.iter().map(|light| &light.name).collect()),
+        lights: named(
+            room.lights
+                .iter()
+                .map(|light| &light.name)
+                .chain(room.objects.iter().filter(|o| o.components.contains_key("light")).map(|o| &o.name))
+                .collect(),
+        ),
         movers: named(
             doors
                 .chain(room.movers.iter().map(|mover| &mover.name))

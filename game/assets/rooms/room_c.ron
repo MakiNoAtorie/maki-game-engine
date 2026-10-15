@@ -75,18 +75,24 @@
                 ),
             },
         ),
-    ],
-    lights: [
-        (name: "lamp", position: (0.5, 2.3, 1.8), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0),
+        (
+            name: "lamp",
+            pose: (position: (0.5, 2.3, 1.8)),
+            components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0)},
+        ),
         // A cone light from above the right wall, down to the two plastic spheres.
         (
             name: "spot",
-            position: (3.4, 2.7, -2.6),
-            radius: 0.06,
-            color: (1.0, 0.95, 0.85),
-            intensity: 30.0,
-            direction: (-0.35, -1.0, 0.75),
-            cone: 22.0,
+            pose: (position: (3.4, 2.7, -2.6)),
+            components: {
+                "light": (
+                    radius: 0.06,
+                    color: (1.0, 0.95, 0.85),
+                    intensity: 30.0,
+                    direction: (-0.35, -1.0, 0.75),
+                    cone: 22.0,
+                ),
+            },
         ),
     ],
     spawns: {

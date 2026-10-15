@@ -69,8 +69,8 @@ impl Extra {
     fn of(document: &Document, item: &Item) -> Self {
         let room = &document.room;
         match item {
-            Item::Light(index) => {
-                let Some(light) = room.lights.get(*index) else {
+            Item::Light(_) | Item::Object(_) => {
+                let Some(light) = document.light(item) else {
                     return Self::None;
                 };
                 if light.cone.is_none_or(|degrees| degrees >= 180.0) {
@@ -336,11 +336,11 @@ impl Drag {
         match (tool, self.handle) {
             // The handles of the item itself: of the item that has the gizmo.
             (_, Handle::Aim) => {
-                let Some(Item::Light(index)) = selection.last() else {
+                let Some(item) = selection.last() else {
                     return;
                 };
-                let (light, floor) = (document.room.lights.get_mut(*index), ray.height(0.0));
-                let (Some(light), Some((floor, _))) = (light, floor) else {
+                let (light, floor) = (document.light(item), ray.height(0.0));
+                let (Some(mut light), Some((floor, _))) = (light, floor) else {
                     return;
                 };
                 let target = Vec3::new(snap(floor.x, grid), 0.0, snap(floor.z, grid));
@@ -348,6 +348,7 @@ impl Drag {
                 if let Some(to) = to {
                     // Thousandths: the direction is made to length 1 when it is read.
                     light.direction = Some(to.to_array().map(|part| (part * 1e3).round() / 1e3));
+                    document.set_light(item, light);
                 }
             }
             (_, Handle::Corner(corner)) => match selection.last() {
@@ -615,8 +616,13 @@ mod tests {
     fn a_drag_of_the_aim_handle_points_a_cone_light_at_the_floor() {
         let (_, mut document, _) = scene();
         // The lamp of a new room, at (0, 2.4, 0), as a cone that points down.
-        document.room.lights[0].cone = Some(30.0);
-        let lamp = Item::Light(0);
+        let lamp = Item::Object(0);
+        let cone = |document: &mut Document, cone| {
+            let mut light = document.light(&lamp).unwrap();
+            light.cone = cone;
+            document.set_light(&lamp, light);
+        };
+        cone(&mut document, Some(30.0));
         let (view, ..) = scene();
         let gizmo = Gizmo::of(&document, &lamp, false, false, Tool::Move, &view).unwrap();
         assert_eq!(gizmo.points(), [(Handle::Aim, Vec3::ZERO)]);
@@ -628,12 +634,12 @@ mod tests {
             Handle::Aim,
             Vec3::new(2.4, 0.0, 0.0),
         );
-        assert_eq!(aimed.room.lights[0].direction, Some([0.721, -0.693, 0.0]));
+        assert_eq!(aimed.light(&lamp).unwrap().direction, Some([0.721, -0.693, 0.0]));
         // The handle is where the light points now.
         let gizmo = Gizmo::of(&aimed, &lamp, false, false, Tool::Move, &view).unwrap();
         assert!(gizmo.points()[0].1.distance(Vec3::new(2.5, 0.0, 0.0)) < 0.01);
         // A light with no cone has no such handle.
-        document.room.lights[0].cone = None;
+        cone(&mut document, None);
         let gizmo = Gizmo::of(&document, &lamp, false, false, Tool::Move, &view).unwrap();
         assert!(gizmo.points().is_empty());
     }

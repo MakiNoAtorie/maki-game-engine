@@ -51,17 +51,19 @@
             pose: (position: (-3.2, 0.0, -3.7)),
             components: {"prop": (mesh: File("models/cabinet.glb"))},
         ),
-    ],
-    lights: [
         // In front of the objects, so their shadows fall to the back. It hums while
         // the power is on. The file is a placeholder of tools/gen_sounds.py.
         (
             name: "lamp",
-            position: (0.0, 2.0, 2.0),
-            radius: 0.15,
-            color: (1.0, 0.9, 0.8),
-            intensity: 12.0,
-            sound: (file: "sounds/hum.wav", volume: 0.5),
+            pose: (position: (0.0, 2.0, 2.0)),
+            components: {
+                "light": (
+                    radius: 0.15,
+                    color: (1.0, 0.9, 0.8),
+                    intensity: 12.0,
+                    sound: (file: "sounds/hum.wav", volume: 0.5),
+                ),
+            },
         ),
     ],
     spawns: {

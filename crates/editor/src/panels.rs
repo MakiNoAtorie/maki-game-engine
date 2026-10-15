@@ -230,7 +230,7 @@ fn command_row(ui: &mut Ui, world: &World, id: &str) -> bool {
 
 /// Under the commands of the "Edit" menu: the name field of "Make prefab".
 fn prefab_menu(ui: &mut Ui, editor: &mut Editor) {
-    let is_part = |item: &Item| matches!(item, Item::Prop(_) | Item::Light(_));
+    let is_part = |item: &Item| matches!(item, Item::Prop(_) | Item::Light(_) | Item::Object(_));
     let parts = !editor.playing() && editor.selection.iter().any(is_part);
     ui.horizontal(|ui| {
         let field = egui::TextEdit::singleline(&mut editor.prefab_name)
