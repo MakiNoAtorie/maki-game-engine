@@ -289,7 +289,6 @@ pub enum MeshDef {
 
 impl MeshDef {
     /// The mesh of a generated shape. `None` for a file.
-    /// The mesh of a shape. `None`: a file.
     pub fn generate(&self) -> Option<Mesh> {
         Some(match self {
             MeshDef::Cube(size) => Mesh::cube(*size),
@@ -1378,11 +1377,11 @@ impl Spawner<'_, '_, '_> {
 
     /// The items of a prefab file, each at its pose in the room. A file that does
     /// not read: an error in the log, and the room shows without it.
-    // ponytail: the file is read at each load of the room. A store by path when a
-    // room names many prefabs.
     /// The objects of a prefab file, each at its place in the room, with the changes
     /// of the instance. A file that does not read: an error in the log, and the room
     /// shows without it.
+    // ponytail: the file is read at each load of the room. A store by path when a
+    // room names many prefabs.
     fn prefab(&mut self, used: &PrefabUse, item: RoomItem, width: f32, depth: f32) {
         let prefab = match read_prefab(&self.directory.join(&used.file)) {
             Ok(prefab) => prefab,

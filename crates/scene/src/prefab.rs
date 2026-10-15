@@ -184,6 +184,8 @@ fn place(object: &mut ObjectDef, outer: &Transform) {
 /// Merges `change` into `tree`. A map whose keys are all in the map of the tree goes
 /// field by field; another value (a number, a variant of another name) takes the
 /// place of the old one.
+// ponytail: a field that is itself a map (no component has one) cannot lose a key by
+// a change: the key of the file comes back. A mark for a whole value when one needs it.
 pub fn merge(tree: &mut Value, change: &Value) {
     match (tree, change) {
         (Value::Object(fields), Value::Object(changed))

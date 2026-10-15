@@ -27,9 +27,6 @@ MOVED = {
     "camera_fov_degrees": ("camera", "fov_degrees"),
     "camera_follow_time": ("camera", "follow_time"),
     "camera_margin": ("camera", "margin"),
-    "player_model_path": ("player", "model_path"),
-    "player_walk_speed": ("player", "walk_speed"),
-    "player_run_speed": ("player", "run_speed"),
     "fixed_hz": ("time", "fixed_hz"),
     "max_fixed_steps": ("time", "max_fixed_steps"),
 }

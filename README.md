@@ -47,7 +47,7 @@ The picture has a fixed size (`width` and `height` of `[window]`) and is at the 
 | Frame counter | Not a section: green text in the top left corner of the picture. The frame rate and the frame time that the game would have with no limit: the time of a frame without the wait for the display (vsync) or the GPU, and not less than the GPU time of the passes. A mean over some frames |
 | Stats | Frame time (mean) and FPS as the display shows them, sample count, internal resolution, player position, position and intensity of each light, GPU memory, GPU time of each frame graph pass |
 | Debug | The resolution (the picture size, from 640 x 360 to 2560 x 1440: the window follows). The view (final, one raw frame, motion vectors, depth, normals, surface color, history length, variance, direct light, indirect light before and after its filter, specular light) and the settings of `[window]` and `[render]` that have an effect during a run: vsync, render scale, exposure, look, path tracer, denoiser. Not saved to the config file |
-| Gameplay | The settings of `[camera]` and `[player]` that have an effect during a run: field of view, follow time, wall margin, view direction, speeds. Not saved to the config file |
+| Gameplay | The settings of `[camera]` and the values of the player that have an effect during a run: field of view, follow time, wall margin, view direction, speeds. Not saved to the config file or the prefab file |
 | Bench | Starts a benchmark run (frames, script, light, picture dump) in the game that runs. Writes `bench.csv`; the game goes on. For numbers to compare between runs, use the command line |
 | Stages | Each room file that the game can show: the files in the directory of the start room, and `target/bench/<scenario>/room.ron` (the generated scenes; `python tools/bench.py run` makes them). A click loads the room. The config stays: set the render size or the sample count of a scenario in the Debug panel |
 | Game state | Flags and variables of the events, with a field to add one; the events that run |
@@ -223,14 +223,7 @@ The config file is TOML, with one table for each module. A module declares its t
 | `follow_time` | 0.25 | The camera target moves most of the way to the player in this time, in seconds. 0: no delay |
 | `margin` | 3.0 | The camera target stays this far from the walls of the room, in meters |
 
-`[player]` (`crates/gameplay`, `PlayerModule`):
-
-| Key | Default | Meaning |
-|---|---|---|
-| `model_path` | not set | glTF file of the player, with the feet at its origin. Not set: a capsule |
-| `walk_speed`, `run_speed` | 1.6, 3.6 | Speed of the player, in meters per second |
-| `radius` | 0.3 | The player is a circle of this radius for collisions, in meters. Read when the player is spawned |
-| `height` | 1.7 | Height of the generated capsule, in meters |
+The player (`crates/gameplay`, `PlayerModule`) is a prefab file that the project file names (`player = "prefabs/player.prefab"`, from the folder of the rooms). Its object has the component `player` (`walk_speed`, `run_speed`: meters per second; `radius`: the circle for collisions, in meters) and `prop` (the mesh: `Capsule(radius, height)`, or `File("...")`, a glTF file with the feet at its origin, from the folder of the rooms).
 
 `[rooms]` (`crates/gameplay`, `RoomsModule`):
 

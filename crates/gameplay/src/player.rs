@@ -60,6 +60,27 @@ pub struct PlayerDef {
     pub radius: f32,
 }
 
+impl PlayerDef {
+    /// `Err`: why the values cannot be those of a player.
+    fn check(&self, mesh: &MeshDef) -> Result<(), String> {
+        let speed = |value: f32| value.is_finite() && value >= 0.0;
+        if !(speed(self.walk_speed) && speed(self.run_speed)) {
+            return Err("walk_speed and run_speed must be zero or positive numbers".to_owned());
+        }
+        if !(self.radius.is_finite() && self.radius > 0.0) {
+            return Err("radius must be a positive number".to_owned());
+        }
+        if let MeshDef::Capsule { radius, height } = mesh
+            && !(*radius > 0.0 && *height >= 2.0 * radius)
+        {
+            return Err(
+                "a capsule needs a positive radius, and a height of two radii or more".to_owned(),
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Default for PlayerDef {
     fn default() -> Self {
         Self {
@@ -138,17 +159,12 @@ impl Module for PlayerModule {
                     .after(maki_assets::forget_changed)
                     .before(attach_player_model),
             );
-        let Some(prefab) = file.prefab_path() else {
-            return;
-        };
-        let check_prefab: maki_assets::Check = |path| read_prefab(path).map(drop);
-        let mut files = vec![(prefab, check_prefab)];
-        if let Ok((_, MeshDef::File(model))) = file.read() {
-            let check: maki_assets::Check = maki_assets::check_model;
-            files.push((file.rooms.join(model), check));
+        if file.prefab.is_some() {
+            let mesh = file.read().map_or(CAPSULE, |(_, mesh)| mesh);
+            app.init_resource::<AssetWatch>();
+            app.resource_mut::<AssetWatch>()
+                .set("player", file.watched(&mesh));
         }
-        app.init_resource::<AssetWatch>();
-        app.resource_mut::<AssetWatch>().set("player", files);
     }
 }
 
@@ -174,7 +190,24 @@ impl PlayerFile {
             Some(prop) => prop?.mesh,
             None => CAPSULE,
         };
+        def.check(&mesh)
+            .map_err(|reason| anyhow::anyhow!("{}: {reason}", path.display()))?;
         Ok((def, mesh))
+    }
+
+    /// The files that the watch looks at: the prefab file, and its model file.
+    fn watched(&self, mesh: &MeshDef) -> Vec<(PathBuf, maki_assets::Check)> {
+        let check_prefab: maki_assets::Check = |path| read_prefab(path).map(drop);
+        let mut files: Vec<_> = self
+            .prefab_path()
+            .map(|path| (path, check_prefab))
+            .into_iter()
+            .collect();
+        if let MeshDef::File(model) = mesh {
+            let check: maki_assets::Check = maki_assets::check_model;
+            files.push((self.rooms.join(model), check));
+        }
+        files
     }
 
     /// As [`PlayerFile::read`]; an error is logged, and the player is the capsule.
@@ -231,7 +264,7 @@ fn generated(mesh: &MeshDef) -> Mesh {
 /// Runs in `Update`: the prefab file of the player, its model file, or an image file
 /// of the model changed on the disk (`maki_assets::AssetChanged`). The player gets the
 /// values and the mesh of the files as they are now.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn reload_player(
     mut changed: MessageReader<AssetChanged>,
     mut commands: Commands,
@@ -248,6 +281,7 @@ fn reload_player(
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
+    watch: Option<ResMut<AssetWatch>>,
 ) {
     let files: Vec<PathBuf> = changed.read().map(|changed| changed.0.clone()).collect();
     if files.is_empty() {
@@ -255,6 +289,11 @@ fn reload_player(
     }
     let prefab = file.prefab_path();
     let prefab_changed = files.iter().any(|path| Some(path) == prefab.as_ref());
+    // The prefab can name another model file: the watch follows it.
+    if let (true, Some(mut watch)) = (prefab_changed, watch) {
+        let mesh = file.read().map_or(CAPSULE, |(_, mesh)| mesh);
+        watch.set("player", file.watched(&mesh));
+    }
     for (entity, mut walker, model, instance) in &mut players {
         // A texture of an image file has the name of the file.
         let model_changed = model.is_some_and(|PlayerModel(handle, path)| {

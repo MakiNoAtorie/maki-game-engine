@@ -1,6 +1,6 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 48 (2026-10-15). For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 49 (2026-10-15). For the session that goes on with part 6.
 
 ## State
 
@@ -15,6 +15,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 46 (source files of other programs) is done: the table of converters in the editor crate (`sources.rs`), `.blend` and `.obj` to `.glb` by Blender with no window, `.psd` to `.png` by own code, one thread that looks at the folder of the room files. Report: `stage-46.md`.
 - Stage 47 (fields that describe themselves) is done: the derive `Fields` (`crates/macros`), `maki_core::fields` (the table of the fields of a type, its value as a tree of `serde_json::Value`, the registry `FieldTypes`), the derive on the item kinds of a room, and the inspector of the editor from the table (`crates/editor/src/fields.rs`). The room file did not change. Stage file `stage-47-fields.md` (written by the session), report `stage-47.md`.
 - Stage 48 (the room file is a list of objects) is done: GitHub issues #1 to #5, closed. Objects with components as RON text, the registry of component types, the editor on objects only (room, object, event). Report: `stage-48.md`; its sections 3 and 6 list what is open.
+- Stage 49 (prefabs with changes, the player as data) is done: issues #6 and #7, closed. Report: `stage-49.md`. The benchmark base is now `s49`.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
@@ -55,11 +56,11 @@ The blocking edges:
 #11 log panel: no edge
 ```
 
-Three lanes can start now, each in its own worktree:
+After stage 49, lane A has #15 left (it needs #7, done). Three lanes can start now, each in its own worktree:
 
 | Lane | Tickets, in order | Files it mostly writes |
 |---|---|---|
-| A: prefabs | #6, #7, #15 | `crates/scene` (prefab files as objects, instance changes: a new `prefab.rs`), the inspector marks in `crates/editor/src/panels.rs`, make and unpack in `ops.rs`, `crates/gameplay` (player), `game/assets/prefabs/` |
+| A: prefabs | #15 (#6 and #7 done) | `crates/scene` (prefab files as objects, instance changes: a new `prefab.rs`), the inspector marks in `crates/editor/src/panels.rs`, make and unpack in `ops.rs`, `crates/gameplay` (player), `game/assets/prefabs/` |
 | B: scripts | #8; then #9, #10, #16 in parallel; then #12, #13, #14 | `crates/engine` (loader), a script trait (`crates/scene` or `crates/core`), `game/scripts`; #9 `crates/events`; #10 an editor command and `templates/`; #16 `crates/gameplay` and play/stop of `crates/editor/src/lib.rs` |
 | C: log panel | #11 | the log setup of `crates/engine`, a panel in `crates/devtools` (by `maki_ui::add_tool_panel`, not in the editor crate) |
 
@@ -69,7 +70,7 @@ Where the lanes meet, and what to agree before they start:
 - **The room files**: #7 (the player as a prefab object) and #12 (events into objects) both rewrite `game/assets/rooms/*.ron`. Not at the same time: #12 is late in lane B, so the order comes by itself if lane A is not late.
 - **`crates/editor/src/panels.rs`, `lib.rs`**: #6 (marks of changed values), #16 (play and stop). Small, separate places; merge one after the other.
 - **The symbols of the engine DLL**: 57,962 of 65,535 after stage 48. Each lane adds types. Count after each merge (a reader of the export table of the DLL); the way out is `opt-level = 2` for the engine crates in the profile `dynamic`, not measured.
-- **One machine for the GPU**: benchmark and validation runs one at a time, never two lanes at once. `tools/bench.py run --behind` keeps the window behind the owner's work. The base of the next benchmark is `s48`; a step is compared with the commit before, built in the scratchpad and run back to back (the machine drifts up to 20 % in a day).
+- **One machine for the GPU**: benchmark and validation runs one at a time, never two lanes at once. `tools/bench.py run --behind` keeps the window behind the owner's work. The base of the next benchmark is `s49`; a step is compared with the commit before, built in the scratchpad and run back to back (the machine drifts up to 20 % in a day).
 - **Reports**: each stage keeps its report (`stage-49.md` ... ). With lanes, a stage is done when its tickets are merged and the stage loop of `CLAUDE.md` passed on the merged branch.
 
 Not parallel: the tickets inside one lane (each needs the one before), and #12 to #14 (one chain).

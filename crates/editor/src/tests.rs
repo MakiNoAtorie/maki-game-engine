@@ -1394,6 +1394,24 @@ fn an_instance_shows_its_prefab_with_its_changes() {
             .map(|(light, _)| light.intensity)
             .collect();
         assert_eq!(of_instance, [3.0]);
+
+        // A change of the instance is one step of undo.
+        let index = before.room.objects.len() - 1;
+        let mut editor = app.resource_mut::<Editor>();
+        let mut used = editor.document.room.objects[index]
+            .prefab()
+            .unwrap()
+            .unwrap();
+        used.changes.clear();
+        let prefab = maki_scene::PrefabFile {
+            file: used.file,
+            changes: used.changes,
+        };
+        editor.document.room.objects[index].set_component("prefab", &prefab);
+        editor.document.dirty = true;
+        frames(&mut app, 2);
+        request(&mut app, Command::Undo);
+        assert_eq!(app.world().resource::<Editor>().document.room, before.room);
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
