@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use bevy_ecs::world::{Mut, World};
 use maki_core::fields::Value;
 use maki_core::{App, FieldTypes};
+use maki_scene::ComponentTypes;
 use maki_events::{EventRunner, Problem};
 use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
@@ -631,6 +632,11 @@ fn sections(document: &Document) -> Vec<Section> {
         };
         (Item::Prop(index), named(&prop.name, &kind, index))
     });
+    // An object with no name: the name of its first component.
+    let objects = room.objects.iter().enumerate().map(|(index, object)| {
+        let kind = object.components.keys().next().map_or("object", String::as_str);
+        (Item::Object(index), named(&object.name, kind, index))
+    });
     let movers = room
         .movers
         .iter()
@@ -655,6 +661,7 @@ fn sections(document: &Document) -> Vec<Section> {
         (None, vec![(Item::Room, "Room".to_owned())]),
         (Some("Doorways"), doorways.collect()),
         (Some("Doors"), doors.collect()),
+        (Some("Objects"), objects.collect()),
         (Some("Props"), props.collect()),
         (Some("Movers"), movers.collect()),
         (Some("Lights"), lights.collect()),
@@ -817,17 +824,59 @@ fn item_properties(
             _ => Vec::new(),
         }
     };
-    if !crate::fields::show(ui, &table.kind, &mut tree, &lists) {
-        return Some(false);
+    let mut changed = false;
+    if crate::fields::show(ui, &table.kind, &mut tree, &lists) {
+        // The name of an item that events find by its name.
+        if tree.get("name") != name_before.as_ref() {
+            let old = name_before.as_ref().and_then(Value::as_str);
+            *old_name = Some(old.map(str::to_owned));
+        }
+        match editor.document.set_tree(item, tree) {
+            Ok(()) => changed = true,
+            Err(error) => editor.status = format!("The change was not taken: {error:#}"),
+        }
     }
-    // The name of an item that events find by its name.
-    if tree.get("name") != name_before.as_ref() {
-        let old = name_before.as_ref().and_then(Value::as_str);
-        *old_name = Some(old.map(str::to_owned));
+    if let Item::Object(index) = item {
+        changed |= components(ui, world, editor, *index);
     }
-    if let Err(error) = editor.document.set_tree(item, tree) {
-        editor.status = format!("The change was not taken: {error:#}");
-        return Some(false);
+    Some(changed)
+}
+
+/// A group of rows for each component of an object, from the table of its type. A
+/// component with no type shows its text, and stays as it is. True: a value was
+/// changed.
+fn components(ui: &mut Ui, world: &World, editor: &mut Editor, index: usize) -> bool {
+    let no_types = ComponentTypes::default();
+    let types = world.get_resource::<ComponentTypes>().unwrap_or(&no_types);
+    let tables = world.get_resource::<FieldTypes>();
+    let names: Vec<String> = match editor.document.room.objects.get(index) {
+        Some(object) => object.components.keys().cloned().collect(),
+        None => return false,
+    };
+    let mut changed = false;
+    for name in names {
+        ui.separator();
+        ui.strong(&name);
+        let tree = editor.document.component_tree(index, &name, types);
+        let table = tables.and_then(|tables| tables.get(&name));
+        let (Some(Ok(mut tree)), Some(table)) = (tree, table) else {
+            ui.weak("No module registered this type: the text is kept as it is.");
+            let object = &editor.document.room.objects[index];
+            ui.monospace(object.components[&name].as_str());
+            continue;
+        };
+        // An id of its own: egui makes the id of a widget from its label, and two
+        // components can have a field of the same name.
+        let shown = ui.push_id(&name, |ui| {
+            crate::fields::show(ui, &table.kind, &mut tree, &|_| Vec::new())
+        });
+        if !shown.inner {
+            continue;
+        }
+        match editor.document.set_component_tree(index, &name, &tree, types) {
+            Ok(()) => changed = true,
+            Err(error) => editor.status = format!("The change was not taken: {error:#}"),
+        }
     }
-    Some(true)
+    changed
 }

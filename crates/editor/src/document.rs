@@ -9,7 +9,10 @@ use glam::{Quat, Vec3};
 use maki_core::Fields;
 use maki_core::fields::{Value, read};
 use maki_events::{Area, CommandRegistry, EventDef};
-use maki_scene::{LightDef, PoseDef, RoomDef, RoomValidators, check_room, ron_options};
+use maki_scene::{
+    ComponentTypes, LightDef, ObjectDef, PoseDef, RoomDef, RoomValidators, check_room,
+    ron_options,
+};
 
 use crate::ron_text::{Notes, pretty, read_notes};
 
@@ -21,6 +24,8 @@ pub enum Item {
     Room,
     Doorway(usize),
     Door(usize),
+    /// An object of the list `objects`.
+    Object(usize),
     Prop(usize),
     Mover(usize),
     Light(usize),
@@ -150,7 +155,9 @@ impl Document {
             Item::Room => ("room", room.shell().tree()),
             Item::Doorway(index) => ("doorway", room.doorways.get(*index)?.tree()),
             Item::Door(index) => ("door", room.doors.get(*index)?.tree()),
-            Item::Prop(index) => ("prop", room.props.get(*index)?.tree()),
+            // Its name, pose, and parent. `component_tree` gives each component.
+            Item::Object(index) => ("object", room.objects.get(*index)?.tree()),
+            Item::Prop(index) => ("prop item", room.props.get(*index)?.tree()),
             Item::Mover(index) => ("mover", room.movers.get(*index)?.tree()),
             Item::Light(index) => ("light", room.lights.get(*index)?.tree()),
             Item::Prefab(index) => ("prefab", room.prefabs.get(*index)?.tree()),
@@ -170,6 +177,15 @@ impl Document {
             Item::Room => room.set_shell(read(tree)?),
             Item::Doorway(index) => set(room.doorways.get_mut(*index), tree)?,
             Item::Door(index) => set(room.doors.get_mut(*index), tree)?,
+            Item::Object(index) => {
+                let object = room.objects.get_mut(*index).context("the room has no such item")?;
+                // The tree has no components: they stay.
+                let components = std::mem::take(&mut object.components);
+                let new: Result<ObjectDef> = read(tree);
+                object.components = components;
+                let new = new?;
+                (object.name, object.pose, object.parent) = (new.name, new.pose, new.parent);
+            }
             Item::Prop(index) => set(room.props.get_mut(*index), tree)?,
             Item::Mover(index) => set(room.movers.get_mut(*index), tree)?,
             Item::Light(index) => set(room.lights.get_mut(*index), tree)?,
@@ -179,11 +195,63 @@ impl Document {
         Ok(())
     }
 
+    /// The tree of the component `name` of object `index`, from its text through
+    /// the registry. `None`: no such component. `Err`: no type of the name, or the
+    /// type does not read the text.
+    pub fn component_tree(
+        &self,
+        index: usize,
+        name: &str,
+        types: &ComponentTypes,
+    ) -> Option<Result<Value, String>> {
+        let text = self.room.objects.get(index)?.components.get(name)?;
+        let Some(component_type) = types.get(name) else {
+            return Some(Err(format!("no module registered the type \"{name}\"")));
+        };
+        Some((component_type.tree)(text))
+    }
+
+    /// Writes a changed tree of [`Document::component_tree`] back as the text of its
+    /// component. An error: the component is as before.
+    pub fn set_component_tree(
+        &mut self,
+        index: usize,
+        name: &str,
+        tree: &Value,
+        types: &ComponentTypes,
+    ) -> Result<()> {
+        let component_type = types
+            .get(name)
+            .with_context(|| format!("no module registered the type \"{name}\""))?;
+        let text = (component_type.text)(tree).map_err(|error| anyhow!(error))?;
+        let object = self.room.objects.get_mut(index).context("the room has no such object")?;
+        let slot = object.components.get_mut(name).context("the object has no such component")?;
+        *slot = text;
+        Ok(())
+    }
+
+    /// Moves the props of the old list into the list of objects, each with its
+    /// notes, behind the objects that the room has. For the migration of stage 48.
+    pub fn props_to_objects(&mut self) {
+        let props = std::mem::take(&mut self.room.props);
+        let start = self.room.objects.len();
+        for (index, prop) in props.into_iter().enumerate() {
+            let notes = self.notes.of("props", index).to_vec();
+            self.notes.set("props", index, Vec::new());
+            self.notes.set("objects", start + index, notes);
+            self.room.objects.push(prop.into_object());
+        }
+    }
+
     /// Where an item is, to change it. `second`: for a mover, its pose `b`. `None`:
     /// the item has no place of its own (the room, a doorway, a door).
     pub fn place(&mut self, item: &Item, second: bool) -> Option<Place<'_>> {
         let room = &mut self.room;
         match item {
+            Item::Object(index) => room
+                .objects
+                .get_mut(*index)
+                .map(|object| Place::Pose(&mut object.pose)),
             Item::Prop(index) => room
                 .props
                 .get_mut(*index)
@@ -220,6 +288,7 @@ impl Document {
         let of_pose = |pose: &PoseDef| (Vec3::from(pose.position), pose.transform().rotation);
         let of_point = |point: &[f32; 3]| (Vec3::from(*point), Quat::IDENTITY);
         match item {
+            Item::Object(index) => room.objects.get(*index).map(|object| of_pose(&object.pose)),
             Item::Prop(index) => room.props.get(*index).map(|prop| of_pose(&prop.pose)),
             Item::Mover(index) => {
                 let mover = room.movers.get(*index)?;
@@ -246,6 +315,7 @@ impl Document {
             Item::Room => return None,
             Item::Doorway(index) => ("doorways", *index),
             Item::Door(index) => ("doors", *index),
+            Item::Object(index) => ("objects", *index),
             Item::Prop(index) => ("props", *index),
             Item::Mover(index) => ("movers", *index),
             Item::Light(index) => ("lights", *index),

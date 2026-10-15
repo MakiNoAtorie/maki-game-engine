@@ -100,6 +100,7 @@ impl Document {
             Item::Room => true,
             Item::Doorway(index) => *index < room.doorways.len(),
             Item::Door(index) => *index < room.doors.len(),
+            Item::Object(index) => *index < room.objects.len(),
             Item::Prop(index) => *index < room.props.len(),
             Item::Mover(index) => *index < room.movers.len(),
             Item::Light(index) => *index < room.lights.len(),
@@ -121,10 +122,13 @@ impl Document {
         let doors = room.doors.iter().enumerate();
         let movers = room.movers.iter().enumerate();
         Some(match item {
-            Item::Prop(_) => {
+            // While the old list is there, an object and a prop share the names.
+            Item::Prop(_) | Item::Object(_) => {
                 let props = room.props.iter().enumerate();
                 let props = props.map(|(i, prop)| (Item::Prop(i), &prop.name));
-                named(props.collect(), item)
+                let objects = room.objects.iter().enumerate();
+                let objects = objects.map(|(i, object)| (Item::Object(i), &object.name));
+                named(props.chain(objects).collect(), item)
             }
             Item::Light(_) => {
                 let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
@@ -295,7 +299,7 @@ impl Document {
         };
         let item = match kind {
             Kind::Cube | Kind::Cuboid | Kind::Sphere | Kind::Model(_) => {
-                room.props.push(match kind {
+                let prop = match kind {
                     Kind::Cube => prop(MeshDef::Cube(1.0), on_floor(0.5)),
                     Kind::Cuboid => prop(
                         MeshDef::Cuboid([-0.5, 0.0, -0.5], [0.5, 1.0, 0.5]),
@@ -314,11 +318,10 @@ impl Document {
                     }
                     Kind::Model(path) => prop(MeshDef::File(path), on_floor(0.0)),
                     _ => unreachable!("the outer arm has the four kinds of a prop"),
-                });
-                // A name of its own: the outliner lists the prop by it, and a
+                };
+                // A name of its own: the outliner lists the object by it, and a
                 // label by the index would change with each delete before it.
-                let item = Item::Prop(room.props.len() - 1);
-                let kind = match &self.room.props.last().expect("pushed above").mesh {
+                let kind = match &prop.mesh {
                     MeshDef::Cube(_) => "cube".to_owned(),
                     MeshDef::Cuboid(..) => "cuboid".to_owned(),
                     MeshDef::Sphere { .. } => "sphere".to_owned(),
@@ -327,8 +330,10 @@ impl Document {
                         stem.to_string_lossy().into_owned()
                     }
                 };
+                room.objects.push(prop.into_object());
+                let item = Item::Object(room.objects.len() - 1);
                 let name = self.unique_name(&item, &kind);
-                self.room.props.last_mut().expect("pushed above").name = Some(name);
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
             Kind::Prefab(file) => {
@@ -469,6 +474,7 @@ impl Document {
                     });
                 }
                 Item::Door(index) => drop(room.doors.remove(*index)),
+                Item::Object(index) => drop(room.objects.remove(*index)),
                 Item::Prop(index) => drop(room.props.remove(*index)),
                 Item::Mover(index) => drop(room.movers.remove(*index)),
                 Item::Light(index) => drop(room.lights.remove(*index)),
@@ -516,6 +522,16 @@ impl Document {
                     }
                     room.doorways.push(doorway);
                     Item::Doorway(room.doorways.len() - 1)
+                }
+                Item::Object(index) => {
+                    let mut object = source.room.objects[*index].clone();
+                    shift(&mut object.pose.position);
+                    let copy = Item::Object(room.objects.len());
+                    let name = object.name.take();
+                    room.objects.push(object);
+                    let name = name.map(|name| self.unique_name(&copy, &name));
+                    self.room.objects.last_mut().expect("pushed above").name = name;
+                    copy
                 }
                 Item::Prop(index) => {
                     let mut prop = source.room.props[*index].clone();
@@ -714,6 +730,7 @@ fn item_index(item: &Item) -> usize {
         Item::Room | Item::Spawn(_) => 0,
         Item::Doorway(index)
         | Item::Door(index)
+        | Item::Object(index)
         | Item::Prop(index)
         | Item::Mover(index)
         | Item::Light(index)
@@ -1001,8 +1018,8 @@ mod tests {
             history.redo(&mut document, &mut selection)
                 && history.redo(&mut document, &mut selection)
         );
-        assert_eq!(document.room.props.len(), 1);
-        assert_eq!(selection, [Item::Prop(0)]);
+        assert_eq!(document.room.objects.len(), 1);
+        assert_eq!(selection, [Item::Object(0)]);
         // A change after an undo drops the steps that were undone.
         history.undo(&mut document, &mut selection);
         document.delete(&[Item::Light(0)]);

@@ -5,54 +5,89 @@
     width: 8.0,
     depth: 8.0,
     height: 3.0,
-    props: [
+    objects: [
         // Metal: from almost a mirror to dull.
         (
-            mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
             pose: (position: (-2.4, 0.5, -0.6)),
-            look: (color: (1.0, 0.78, 0.34), material: Metal(roughness: 0.15)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
+                    look: (color: (1.0, 0.78, 0.34), material: Metal(roughness: 0.15)),
+                ),
+            },
         ),
         (
-            mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
             pose: (position: (-1.1, 0.5, -0.6)),
-            look: (color: (1.0, 0.78, 0.34), material: Metal(roughness: 0.35)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
+                    look: (color: (1.0, 0.78, 0.34), material: Metal(roughness: 0.35)),
+                ),
+            },
         ),
         (
-            mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
             pose: (position: (0.2, 0.5, -0.6)),
-            look: (color: (0.9, 0.9, 0.92), material: Metal(roughness: 0.6)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
+                    look: (color: (0.9, 0.9, 0.92), material: Metal(roughness: 0.6)),
+                ),
+            },
         ),
         // Plastic: a smooth and a rough coat.
         (
-            mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
             pose: (position: (1.5, 0.5, -0.6)),
-            look: (color: (0.7, 0.08, 0.06), material: Plastic(roughness: 0.12)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
+                    look: (color: (0.7, 0.08, 0.06), material: Plastic(roughness: 0.12)),
+                ),
+            },
         ),
         (
-            mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
             pose: (position: (2.8, 0.5, -0.6)),
-            look: (color: (0.1, 0.25, 0.6), material: Plastic(roughness: 0.45)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.5, segments: 48, rings: 24),
+                    look: (color: (0.1, 0.25, 0.6), material: Plastic(roughness: 0.45)),
+                ),
+            },
         ),
         // A plastic floor plate in front of the spheres: it shows the reflections.
         (
-            mesh: Cube(1.0),
             pose: (position: (0.2, 0.02, 1.2), scale: (6.4, 0.04, 1.6)),
-            look: (color: (0.05, 0.05, 0.055), material: Plastic(roughness: 0.2)),
-            collider: false,
+            components: {
+                "prop": (
+                    mesh: Cube(1.0),
+                    look: (color: (0.05, 0.05, 0.055), material: Plastic(roughness: 0.2)),
+                    collider: false,
+                ),
+            },
         ),
         // A panel with a light of its own, on the back wall.
         (
-            mesh: Cube(1.0),
             pose: (position: (-2.2, 1.6, -3.9), scale: (1.6, 0.5, 0.05)),
-            look: (color: (0.0, 0.0, 0.0), emissive: (0.3, 1.6, 2.0)),
-            collider: false,
+            components: {
+                "prop": (
+                    mesh: Cube(1.0),
+                    look: (color: (0.0, 0.0, 0.0), emissive: (0.3, 1.6, 2.0)),
+                    collider: false,
+                ),
+            },
         ),
     ],
     lights: [
         (name: "lamp", position: (0.5, 2.3, 1.8), radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0),
         // A cone light from above the right wall, down to the two plastic spheres.
-        (name: "spot", position: (3.4, 2.7, -2.6), radius: 0.06, color: (1.0, 0.95, 0.85), intensity: 30.0,
-            direction: (-0.35, -1.0, 0.75), cone: 22.0),
+        (
+            name: "spot",
+            position: (3.4, 2.7, -2.6),
+            radius: 0.06,
+            color: (1.0, 0.95, 0.85),
+            intensity: 30.0,
+            direction: (-0.35, -1.0, 0.75),
+            cone: 22.0,
+        ),
     ],
     spawns: {
         "start": (-3.2, 0.0, 2.6),

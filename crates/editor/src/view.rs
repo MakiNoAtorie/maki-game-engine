@@ -206,6 +206,7 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
             continue;
         };
         let item = item.map(|item| match item {
+            RoomItem::Object(index) => Item::Object(index),
             RoomItem::Prop(index) => Item::Prop(index),
             RoomItem::Light(index) => Item::Light(index),
             RoomItem::Door(index) => Item::Door(index),

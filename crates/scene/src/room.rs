@@ -37,6 +37,7 @@ use maki_core::{Fields, Interpolated, Transform};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
+use crate::object::{ComponentText, ObjectDef};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, Player, SoundSource,
     room_colliders,
@@ -63,6 +64,10 @@ pub struct RoomDef {
     pub doorways: Vec<Doorway>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doors: Vec<DoorDef>,
+    /// The things of the room (stage 48). The lists of items around it go into it,
+    /// one kind after the other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<ObjectDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<PropDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -412,6 +417,81 @@ impl Default for PropDef {
     }
 }
 
+impl PropDef {
+    /// The prop as an object with the component `prop`.
+    pub fn into_object(self) -> ObjectDef {
+        let prop = Prop {
+            mesh: self.mesh,
+            look: self.look,
+            collider: self.collider,
+            light_radius: self.light_radius,
+        };
+        ObjectDef {
+            name: self.name,
+            pose: self.pose,
+            parent: None,
+            components: [("prop".to_owned(), ComponentText::of(&prop))].into(),
+        }
+    }
+}
+
+/// The component of an object that shows a mesh: a generated shape or a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(deny_unknown_fields)]
+#[fields(default)]
+pub struct Prop {
+    pub mesh: MeshDef,
+    /// How a generated mesh looks. A file has its own colors and materials.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub look: LookDef,
+    /// True: the box around the prop blocks the player.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    #[field(label = "blocks the player")]
+    pub collider: bool,
+    /// For a file: the radius of each light of the file, in meters.
+    #[serde(
+        default = "default_light_radius",
+        skip_serializing_if = "is_default_light_radius"
+    )]
+    #[field(label = "light radius", range = 0.01..=10.0)]
+    pub light_radius: f32,
+}
+
+impl Default for Prop {
+    /// A cube of 1 m.
+    fn default() -> Self {
+        let PropDef {
+            mesh,
+            look,
+            collider,
+            light_radius,
+            ..
+        } = PropDef::default();
+        Self {
+            mesh,
+            look,
+            collider,
+            light_radius,
+        }
+    }
+}
+
+impl ObjectDef {
+    /// The object as a prop, if it has the component `prop`. `Err`: its text is not
+    /// a prop.
+    pub fn prop(&self) -> Option<Result<PropDef, ron::error::SpannedError>> {
+        let text = self.components.get("prop")?;
+        Some(text.read::<Prop>().map(|prop| PropDef {
+            name: self.name.clone(),
+            mesh: prop.mesh,
+            pose: self.pose,
+            look: prop.look,
+            collider: prop.collider,
+            light_radius: prop.light_radius,
+        }))
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -626,6 +706,15 @@ pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, S
 /// Reads and checks the text of a room file. `path` is for the error text.
 pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Result<RoomDef> {
     let room = parse_room(text).map_err(|error| anyhow!("{}:{error}", path.display()))?;
+    for (index, object) in room.objects.iter().enumerate() {
+        if let Some(Err(error)) = object.prop() {
+            let name = object.name.as_deref().unwrap_or("");
+            return Err(anyhow!(
+                "{}: object {index} {name}: component prop: {error}",
+                path.display()
+            ));
+        }
+    }
     for door in &room.doors {
         if door.doorway >= room.doorways.len() {
             return Err(anyhow!(
@@ -693,6 +782,8 @@ pub struct RoomEntity;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoomItem {
     Prop(usize),
+    /// An object of [`RoomDef::objects`].
+    Object(usize),
     Light(usize),
     Door(usize),
     Mover(usize),
@@ -911,9 +1002,12 @@ pub fn load_requested_room(
     // keeps its meshes on the GPU, and the mesh table of the renderer gets full.
     // ponytail: the models of the props of the room. A model that only a prefab
     // names is read again in the next room that names the prefab.
+    let of_objects = def.objects.iter().filter_map(|object| object.prop()?.ok());
     let named: Vec<PathBuf> = def
         .props
         .iter()
+        .cloned()
+        .chain(of_objects)
         .filter_map(|prop| match &prop.mesh {
             MeshDef::File(path) => Some(directory.join(path)),
             _ => None,
@@ -967,6 +1061,7 @@ pub fn load_requested_room(
     tracing::info!(
         path = %target.path.display(),
         props = def.props.len(),
+        objects = def.objects.len(),
         lights = def.lights.len(),
         meshes_kept = reused,
         time = ?start.elapsed(),
@@ -1063,6 +1158,12 @@ impl Spawner<'_, '_, '_> {
         for (index, door) in def.doors.iter().enumerate() {
             let item = RoomItem::Door(index);
             self.door(door, item, &def.doorways[door.doorway], width, depth);
+        }
+        for (index, object) in def.objects.iter().enumerate() {
+            // `check_room` read the text of each prop.
+            if let Some(Ok(prop)) = object.prop() {
+                self.prop(&prop, RoomItem::Object(index));
+            }
         }
         for (index, prop) in def.props.iter().enumerate() {
             self.prop(prop, RoomItem::Prop(index));
@@ -1278,6 +1379,7 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     let old = &world.resource::<CurrentRoom>().def;
     let same_count = old.lights.len() == room.lights.len()
         && old.props.len() == room.props.len()
+        && old.objects.len() == room.objects.len()
         && old.movers.len() == room.movers.len();
     if !same_count {
         return false;
@@ -1296,6 +1398,12 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     for (prop, new) in patched.props.iter_mut().zip(&room.props) {
         if !matches!(prop.mesh, MeshDef::File(_)) {
             prop.pose = new.pose;
+        }
+    }
+    for (object, new) in patched.objects.iter_mut().zip(&room.objects) {
+        let file = matches!(object.prop(), Some(Ok(PropDef { mesh: MeshDef::File(_), .. })));
+        if !file {
+            object.pose = new.pose;
         }
     }
     for (mover, new) in patched.movers.iter_mut().zip(&room.movers) {
@@ -1336,10 +1444,11 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             Option<&mut Collider>,
         )>();
         for (item, mut transform, instance, collider) in props.iter_mut(world) {
-            let RoomItem::Prop(index) = *item else {
-                continue;
+            let new = match *item {
+                RoomItem::Prop(index) => room.props[index].pose.transform(),
+                RoomItem::Object(index) => room.objects[index].pose.transform(),
+                _ => continue,
             };
-            let new = room.props[index].pose.transform();
             if *transform == new {
                 continue;
             }
@@ -1432,6 +1541,17 @@ mod tests {
                 height: 2.0,
                 depth: 1.0,
             }],
+            objects: vec![
+                PropDef {
+                    name: Some("crate".to_owned()),
+                    pose: PoseDef {
+                        position: [-1.0, 0.5, 0.0],
+                        ..PoseDef::default()
+                    },
+                    ..PropDef::default()
+                }
+                .into_object(),
+            ],
             props: vec![PropDef {
                 name: Some("ball".to_owned()),
                 mesh: MeshDef::Sphere {
@@ -1521,7 +1641,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "door", "doorway", "light", "mover", "prefab", "prop", "room"
+                "door", "doorway", "light", "mover", "object", "prefab", "prop", "prop item", "room"
             ]
         );
         for (name, kind) in types.iter() {
@@ -1725,10 +1845,10 @@ mod tests {
             )
         };
         app.run(|mut app| {
-            // Room A: the shell, 6 wall boxes, a door, a prop, a mover, a light.
-            // Meshes: the shell, the door leaf, the prop, the mover.
+            // Room A: the shell, 6 wall boxes, a door, an object, a prop, a mover, a
+            // light. Meshes: the shell, the door leaf, the object, the prop, the mover.
             let (entities, meshes, player) = load(&mut app, &room_a, Some("start"));
-            assert_eq!((entities, meshes), (11, 4));
+            assert_eq!((entities, meshes), (12, 5));
             assert_eq!(player, Vec3::new(0.0, 0.0, 1.0));
 
             // Room B: the shell and 4 wall boxes. The meshes of room A are gone.
@@ -1767,24 +1887,24 @@ mod tests {
             let meshes = app.world().resource::<Assets<Mesh>>();
             meshes.iter().map(|(handle, _)| handle).collect()
         };
-        // The shell, the door leaf, the ball, the mover, and a second ball that
-        // is made from the same numbers as the first one.
+        // The shell, the door leaf, the object, the ball, the mover, and a second
+        // ball that is made from the same numbers as the first one.
         let mut room = sample();
         room.props[0].look.texture = None;
         room.props.push(room.props[0].clone());
         let first = load(&room);
-        assert_eq!(first.len(), 5);
+        assert_eq!(first.len(), 6);
         // The same room again: the same meshes.
         assert_eq!(load(&room), first);
         // Another color for one ball: one new mesh, and its old one is gone.
         room.props[1].look.color = Some([0.0, 1.0, 0.0]);
         let colored = load(&room);
-        assert_eq!(colored.len(), 5);
-        assert_eq!(colored.intersection(&first).count(), 4);
+        assert_eq!(colored.len(), 6);
+        assert_eq!(colored.intersection(&first).count(), 5);
         // A wider room: the shell is new, the things in it are not.
         room.width += 1.0;
         let wide = load(&room);
-        assert_eq!(wide.intersection(&colored).count(), 4);
+        assert_eq!(wide.intersection(&colored).count(), 5);
         // The collider of a mesh that was kept is at the place of its prop.
         room.props[0].pose.position = [2.0, 0.5, 1.0];
         assert_eq!(load(&room), wide);

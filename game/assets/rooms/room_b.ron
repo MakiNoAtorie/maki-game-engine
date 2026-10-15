@@ -9,14 +9,42 @@
         // In the west wall: the way back to room A.
         (wall: NegX, offset: 0.0, width: 1.2, height: 2.1, depth: 1.5),
     ],
-    props: [
+    objects: [
         // The switch: a red button on a post.
-        (name: "post", mesh: Cuboid((-0.15, 0.0, -0.15), (0.15, 0.9, 0.15)), pose: (position: (2.2, 0.0, -1.5)), look: (color: (0.3, 0.3, 0.32))),
-        (name: "button", mesh: Cube(0.16), pose: (position: (2.2, 0.98, -1.5)), look: (color: (0.8, 0.05, 0.05)), collider: false),
-        (mesh: Sphere(radius: 0.4, segments: 32, rings: 16), pose: (position: (-1.2, 0.4, -1.4)), look: (color: (0.85, 0.85, 0.85), material: Mirror)),
-        (mesh: Cube(0.8), pose: (position: (0.6, 0.4, 1.3), rotation: (0.0, 30.0, 0.0)), look: (color: (0.25, 0.5, 0.3))),
+        (
+            name: "post",
+            pose: (position: (2.2, 0.0, -1.5)),
+            components: {
+                "prop": (
+                    mesh: Cuboid((-0.15, 0.0, -0.15), (0.15, 0.9, 0.15)),
+                    look: (color: (0.3, 0.3, 0.32)),
+                ),
+            },
+        ),
+        (
+            name: "button",
+            pose: (position: (2.2, 0.98, -1.5)),
+            components: {"prop": (mesh: Cube(0.16), look: (color: (0.8, 0.05, 0.05)), collider: false)},
+        ),
+        (
+            pose: (position: (-1.2, 0.4, -1.4)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.4, segments: 32, rings: 16),
+                    look: (color: (0.85, 0.85, 0.85), material: Mirror),
+                ),
+            },
+        ),
+        (
+            pose: (position: (0.6, 0.4, 1.3), rotation: (0.0, 30.0, 0.0)),
+            components: {"prop": (mesh: Cube(0.8), look: (color: (0.25, 0.5, 0.3)))},
+        ),
         // The cabinet of room A, at the back wall.
-        (name: "cabinet", mesh: File("models/cabinet.glb"), pose: (position: (-2.3, 0.0, -2.2))),
+        (
+            name: "cabinet",
+            pose: (position: (-2.3, 0.0, -2.2)),
+            components: {"prop": (mesh: File("models/cabinet.glb"))},
+        ),
     ],
     lights: [
         (name: "lamp_b", position: (0.0, 2.3, 0.2), radius: 0.15, color: (0.9, 0.95, 1.0), intensity: 9.0),
@@ -27,6 +55,8 @@
         "west": (-2.2, 0.0, 0.0),
     },
     events: [
+        // `SavePoint` is a command of the save module (crates/gameplay):
+        // the file is written when this event ends.
         (
             name: "switch",
             area: (center: (2.2, -1.5), size: (0.6, 0.6)),
@@ -38,8 +68,6 @@
                         SetFlag("power_off", true),
                         LightOff("lamp_b"),
                         Message("Click. The lamp dies. Far away, a lock lets go."),
-                        // `SavePoint` is a command of the save module (crates/gameplay):
-                        // the file is written when this event ends.
                         SavePoint,
                     ],
                 ),
@@ -53,9 +81,7 @@
         // The lamp stays off when the player comes back: the room file says "on".
         (
             name: "lamp is dead",
-            pages: [
-                (conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")]),
-            ],
+            pages: [(conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")])],
         ),
         // `ShakeCamera` is a command of the game (game/scripts/src/shake.rs): seconds, meters.
         // Not on the way of the trip script (game/scripts/src/bench.rs): a shake in its
@@ -64,15 +90,19 @@
             name: "mirror ball",
             area: (center: (-1.2, -1.4), size: (0.8, 0.8)),
             pages: [
-                (trigger: Interact, commands: [ShakeCamera(0.6, 0.06), Message("The ball rings. Something under the floor answers.")]),
+                (
+                    trigger: Interact,
+                    commands: [
+                        ShakeCamera(0.6, 0.06),
+                        Message("The ball rings. Something under the floor answers."),
+                    ],
+                ),
             ],
         ),
         (
             name: "to room a",
             area: (center: (-3.9, 0.0), size: (0.8, 1.2)),
-            pages: [
-                (trigger: Touch, commands: [FadeOut(0.4), Transfer("room_a.ron", "east"), FadeIn(0.4)]),
-            ],
+            pages: [(trigger: Touch, commands: [FadeOut(0.4), Transfer("room_a.ron", "east"), FadeIn(0.4)])],
         ),
     ],
 )

@@ -388,6 +388,7 @@ fn marks(
         && !selected(item)
     {
         let of_mesh = match item {
+            Item::Object(index) => Some(RoomItem::Object(*index)),
             Item::Prop(index) => Some(RoomItem::Prop(*index)),
             Item::Door(index) => Some(RoomItem::Door(*index)),
             Item::Mover(index) => Some(RoomItem::Mover(*index)),
@@ -408,6 +409,7 @@ fn marks(
     let mark = Stroke::new(2.0, SELECTED);
     for item in &editor.selection {
         let of_mesh = match item {
+            Item::Object(index) => Some(RoomItem::Object(*index)),
             Item::Prop(index) => Some(RoomItem::Prop(*index)),
             Item::Door(index) => Some(RoomItem::Door(*index)),
             Item::Mover(index) => Some(RoomItem::Mover(*index)),

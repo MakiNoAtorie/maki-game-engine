@@ -27,8 +27,30 @@ mod tests {
     /// The editor writes the room files of the game with all that they hold: the
     /// room, the events (also the commands of the audio module and of this game),
     /// and the comments. The loader finds nothing wrong in them.
+    /// The rooms of the game: from the directory of this package, where a test runs.
+    const ROOMS: [&str; 3] = [
+        "../assets/rooms/room_a.ron",
+        "../assets/rooms/room_b.ron",
+        "../assets/rooms/room_c.ron",
+    ];
+
+    /// The migration of stage 48: the props of each room file go into its list of
+    /// objects. Run by hand: `cargo test -p maki-game-scripts -- --ignored props_to_objects`.
+    // ponytail: goes with the old lists (stage 48, #5).
     #[test]
-    fn the_editor_writes_each_room_file_with_the_same_content() {
+    #[ignore = "changes the room files of the game"]
+    fn props_to_objects() {
+        let app = game_app();
+        let registry = app.world().resource::<events::CommandRegistry>();
+        for path in ROOMS {
+            let mut document = maki_editor::Document::read(path.as_ref(), registry).unwrap();
+            document.props_to_objects();
+            document.save().unwrap();
+        }
+    }
+
+    /// An app with the modules of the game that read a room file.
+    fn game_app() -> App {
         // No sound device in a test.
         let mut app = App::new(ConfigFile::from_text(
             "[audio]
@@ -45,28 +67,41 @@ output = false",
                 active: false,
             });
         add_modules(&mut app);
+        app
+    }
+
+    /// The editor writes the room files of the game with all that they hold: the
+    /// room, its objects, the events (also the commands of the audio module and of
+    /// this game), and the comments. A load and a save give the same file. The
+    /// loader finds nothing wrong in them.
+    #[test]
+    fn the_editor_writes_each_room_file_with_the_same_content() {
+        let app = game_app();
         let registry = app.world().resource::<events::CommandRegistry>();
+        let types = app.world().resource::<scene::ComponentTypes>();
         let mut count = 0;
-        for name in ["room_a.ron", "room_b.ron", "room_c.ron"] {
-            // A test runs in the directory of its package.
-            let path = PathBuf::from("../assets/rooms").join(name);
+        for path in ROOMS {
+            let path = PathBuf::from(path);
             let validators = app.world().resource::<scene::RoomValidators>();
             scene::read_room(&path, validators).unwrap();
             let document = maki_editor::Document::read(&path, registry).unwrap();
             let text = document.text();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{path:?}");
             assert_eq!(scene::parse_room(&text).unwrap(), document.room);
             assert_eq!(registry.parse_events(&text).unwrap(), document.events);
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
             count += document.events.len();
-
-            // The inspector reads each item as a tree of its fields, and reads a
-            // changed tree back. With no change: the same room, and the same file.
+            // The props are objects (stage 48).
             let room = &document.room;
+            assert!(room.props.is_empty() && !room.objects.is_empty(), "{path:?}");
+
+            // The inspector reads each item and each component as a tree, and reads
+            // a changed tree back. With no change: the same room, and the same file.
             let lists = [
                 ("doorway", room.doorways.len()),
                 ("door", room.doors.len()),
-                ("prop", room.props.len()),
+                ("object", room.objects.len()),
                 ("mover", room.movers.len()),
                 ("light", room.lights.len()),
                 ("prefab", room.prefabs.len()),
@@ -76,7 +111,7 @@ output = false",
                 items.extend((0..length).map(|index| match list {
                     "doorway" => maki_editor::Item::Doorway(index),
                     "door" => maki_editor::Item::Door(index),
-                    "prop" => maki_editor::Item::Prop(index),
+                    "object" => maki_editor::Item::Object(index),
                     "mover" => maki_editor::Item::Mover(index),
                     "light" => maki_editor::Item::Light(index),
                     _ => maki_editor::Item::Prefab(index),
@@ -87,8 +122,14 @@ output = false",
                 let (_, tree) = again.tree(item).unwrap();
                 again.set_tree(item, tree).unwrap();
             }
-            assert_eq!(again.room, document.room, "{name}");
-            assert_eq!(again.text(), text, "{name}");
+            for (index, object) in document.room.objects.iter().enumerate() {
+                for name in object.components.keys() {
+                    let tree = again.component_tree(index, name, types).unwrap().unwrap();
+                    again.set_component_tree(index, name, &tree, types).unwrap();
+                }
+            }
+            assert_eq!(again.room, document.room, "{path:?}");
+            assert_eq!(again.text(), text, "{path:?}");
         }
         assert_eq!(count, 7);
     }

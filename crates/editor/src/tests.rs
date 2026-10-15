@@ -24,9 +24,9 @@ const ROOM_A: &str = r#"// The test room.
     width: 6.0,
     depth: 6.0,
     height: 3.0,
-    props: [
+    objects: [
         // The cube.
-        (name: "cube", mesh: Cube(1.0), pose: (position: (1.0, 0.5, 0.0))),
+        (name: "cube", pose: (position: (1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(1.0))}),
     ],
     lights: [
         (name: "lamp", position: (0.0, 2.0, 0.0), radius: 0.1, color: (1.0, 0.9, 0.8), intensity: 5.0),
@@ -144,7 +144,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         // The property panel shows each item for some frames: a look is no change.
         for item in [
             Item::Light(0),
-            Item::Prop(0),
+            Item::Object(0),
             Item::Spawn("start".to_owned()),
             Item::Event(0),
         ] {
@@ -159,7 +159,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         let mut editor = app.resource_mut::<Editor>();
         editor.document.room.lights[0].intensity = 9.0;
         editor.document.room.lights[0].position = [1.0, 2.5, 0.0];
-        editor.document.room.props[0].pose.position = [-1.0, 0.5, 0.0];
+        editor.document.room.objects[0].pose.position = [-1.0, 0.5, 0.0];
         editor.document.dirty = true;
         frames(&mut app, 2);
         let (light, at, _) = lamp(&app);
@@ -171,7 +171,15 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         );
 
         // Another mesh: the room is loaded again, from the document.
-        app.resource_mut::<Editor>().document.room.props[0].mesh = MeshDef::Cube(0.5);
+        {
+            let cube = maki_scene::Prop {
+                mesh: MeshDef::Cube(0.5),
+                ..maki_scene::Prop::default()
+            };
+            let text = maki_scene::ComponentText::of(&cube);
+            let mut editor = app.resource_mut::<Editor>();
+            editor.document.room.objects[0].components.insert("prop".to_owned(), text);
+        }
         frames(&mut app, 2);
         assert_eq!(app.world().resource::<CurrentRoom>().loads, loads + 1);
         // The file did not change up to here.
@@ -207,7 +215,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         // An empty room with its lamp, and the world shows it.
         let world = app.world();
         assert_eq!(world.try_query::<&Light>().unwrap().iter(world).count(), 1);
-        assert!(world.resource::<CurrentRoom>().def.props.is_empty());
+        assert!(world.resource::<CurrentRoom>().def.objects.is_empty());
 
         request(&mut app, Command::SaveAs(directory.join("c.ron")));
         request(&mut app, Command::Open(directory.join("c.ron")));
@@ -313,7 +321,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
 
         // The cube, then the spawn point (a mark, no mesh), then the floor.
         click(&mut app, Vec3::new(1.0, 1.0, 0.0));
-        assert_eq!(selection(&app), [Item::Prop(0)]);
+        assert_eq!(selection(&app), [Item::Object(0)]);
         click(&mut app, Vec3::new(0.0, 0.1, 2.0));
         assert_eq!(selection(&app), [Item::Spawn("start".to_owned())]);
         click(&mut app, Vec3::new(-2.0, 0.0, -2.0));
@@ -323,7 +331,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         app.write_message(RawInput::KeyDown(Key::Shift));
         click(&mut app, Vec3::new(0.0, 2.0, 0.0));
         app.write_message(RawInput::KeyUp(Key::Shift));
-        assert_eq!(selection(&app), [Item::Prop(0), Item::Light(0)]);
+        assert_eq!(selection(&app), [Item::Object(0), Item::Light(0)]);
 
         // The cube alone, and a drag of the square of its gizmo over the floor: 30
         // frames with the button down.
@@ -344,7 +352,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         frames(&mut app, 2);
         // On the grid of 0.25 m, and the room was not loaded again.
         let cube = |app: &App| {
-            app.world().resource::<Editor>().document.room.props[0]
+            app.world().resource::<Editor>().document.room.objects[0]
                 .pose
                 .position
         };
@@ -391,7 +399,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
             (before.width, before.height)
         );
         click(&mut app, Vec3::new(-1.25, 1.0, 1.5));
-        assert_eq!(selection(&app), [Item::Prop(0)]);
+        assert_eq!(selection(&app), [Item::Object(0)]);
         click(&mut app, Vec3::new(0.0, 2.0, 0.0));
         assert_eq!(selection(&app), [Item::Light(0)]);
 
@@ -407,15 +415,15 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
             .write_message(RawInput::KeyUp(Key::MouseLeft))
             .write_message(RawInput::PointerMoved(floor_pixel));
         frames(&mut app, 2);
-        assert_eq!(selection(&app), [Item::Prop(0)]);
+        assert_eq!(selection(&app), [Item::Object(0)]);
 
         // A copy, then the copy is removed: the selection follows.
         request(&mut app, Command::Duplicate);
-        assert_eq!(selection(&app), [Item::Prop(1)]);
+        assert_eq!(selection(&app), [Item::Object(1)]);
         request(&mut app, Command::Delete);
         assert_eq!(selection(&app), []);
         assert_eq!(
-            app.world().resource::<Editor>().document.room.props.len(),
+            app.world().resource::<Editor>().document.room.objects.len(),
             1
         );
         // The comment of the cube is still the comment of the cube.
@@ -582,7 +590,7 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         fn editor(app: &App) -> &Editor {
             app.world().resource::<Editor>()
         }
-        let cube = |app: &App| editor(app).document.room.props[0].pose.position;
+        let cube = |app: &App| editor(app).document.room.objects[0].pose.position;
         let commands = |app: &App| editor(app).document.events[0].pages[0].commands.len();
         let row = |index| Row {
             list: Vec::new(),
@@ -592,7 +600,7 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
 
         // Esc in a drag: the values of its start, and no step of the history.
         click(&mut app, Vec3::new(1.0, 1.0, 0.0));
-        assert_eq!(editor(&app).selection, [Item::Prop(0)]);
+        assert_eq!(editor(&app).selection, [Item::Object(0)]);
         let steps = editor(&app).history_steps();
         let (from, to) = (Vec3::new(1.0, 0.5, 0.0), Vec3::new(-1.0, 0.5, 1.0));
         app.write_message(RawInput::PointerMoved(window_pixel(&app, from)));
@@ -643,15 +651,15 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
 
         // A click on an item: the same key deletes the item, and the rows stay. The
         // undo of it selects the item again.
-        app.resource_mut::<Editor>().select(Item::Prop(0), false);
+        app.resource_mut::<Editor>().select(Item::Object(0), false);
         // The key comes in a later frame than the click.
         frames(&mut app, 1);
         request(&mut app, Command::Delete);
-        assert_eq!(editor(&app).document.room.props.len(), 0);
+        assert_eq!(editor(&app).document.room.objects.len(), 0);
         assert_eq!((commands(&app), editor(&app).selection.len()), (6, 0));
         request(&mut app, Command::Undo);
-        assert_eq!(editor(&app).selection, [Item::Prop(0)]);
-        assert_eq!(editor(&app).document.room.props.len(), 1);
+        assert_eq!(editor(&app).selection, [Item::Object(0)]);
+        assert_eq!(editor(&app).document.room.objects.len(), 1);
 
         // Play with changes: no question. The game goes to room B (the event of
         // room A), and a load of room A gets the room of the editor, not the file.
@@ -906,6 +914,13 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
             editor.event_ui.focused = false;
         };
         let editor = |app: &App| app.world().resource::<Editor>().clone_parts();
+        // A prefab is made of props until the ops take objects (stage 48, #4).
+        {
+            let mut editor = app.resource_mut::<Editor>();
+            let room = &mut editor.document.room;
+            let cube = room.objects.remove(0).prop().unwrap().unwrap();
+            room.props.push(cube);
+        }
 
         // The cube and the lamp of room A go into room B by the buffer. The lamp of
         // room B is a second lamp: the name gets a number.
@@ -1213,4 +1228,104 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
     assert!(document.tree(&Item::Prop(9)).is_none());
     assert!(document.tree(&Item::Spawn("start".to_owned())).is_none());
     assert_eq!(document, was);
+}
+
+/// An object shows its own rows and a group for each component. A component with
+/// no type keeps its text; one with a type goes to its tree and back.
+#[test]
+fn an_object_shows_each_component_and_keeps_one_with_no_type() {
+    use maki_scene::ComponentTypes;
+
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(SceneModule);
+    let types = app.world().resource::<ComponentTypes>();
+    let text = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [
+        // A note of the object.
+        (name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
+            "prop": (mesh: Sphere(radius: 0.15, segments: 8, rings: 4), look: (color: (0.15, 0.3, 0.45))),
+            "swing": (angle: 12.5, axis: Y),
+        }),
+    ])"#;
+    let registry = maki_events::CommandRegistry::default();
+    let mut document = Document::parse(Path::new("room.ron"), text, &registry).unwrap();
+    let before = document.clone();
+
+    // The rows of the object, and the tree of each component read back: no change.
+    let (name, tree) = document.tree(&Item::Object(0)).unwrap();
+    assert_eq!(name, "object");
+    assert!(tree.get("components").is_none());
+    document.set_tree(&Item::Object(0), tree).unwrap();
+    let prop = document.component_tree(0, "prop", types).unwrap().unwrap();
+    document.set_component_tree(0, "prop", &prop, types).unwrap();
+    assert_eq!(document, before);
+    // No type reads "swing": an error, and the text stays.
+    assert!(document.component_tree(0, "swing", types).unwrap().is_err());
+    assert!(document.set_component_tree(0, "swing", &prop, types).is_err());
+    assert!(document.component_tree(0, "none", types).is_none());
+
+    // A change of the pose and of a field of the prop.
+    let (_, mut tree) = document.tree(&Item::Object(0)).unwrap();
+    tree["pose"]["position"] = maki_core::fields::Value::from(vec![2.0, 0.5, 0.0]);
+    document.set_tree(&Item::Object(0), tree).unwrap();
+    let mut prop = prop;
+    prop["collider"] = false.into();
+    document.set_component_tree(0, "prop", &prop, types).unwrap();
+
+    // Saved and read again: the note, the text of "swing", the changes.
+    let saved = document.text();
+    assert_eq!(
+        saved,
+        r#"(
+    width: 4.0,
+    depth: 4.0,
+    height: 3.0,
+    objects: [
+        // A note of the object.
+        (
+            name: "ball",
+            pose: (position: (2.0, 0.5, 0.0)),
+            components: {
+                "prop": (
+                    mesh: Sphere(radius: 0.15, segments: 8, rings: 4),
+                    look: (color: (0.15, 0.3, 0.45)),
+                    collider: false,
+                ),
+                "swing": (angle: 12.5, axis: Y),
+            },
+        ),
+    ],
+)
+"#
+    );
+    let again = Document::parse(Path::new("room.ron"), &saved, &registry).unwrap();
+    assert_eq!(again.text(), saved);
+}
+
+/// The migration of stage 48: the props go into the list of objects with their
+/// notes, and the room shows the same things.
+#[test]
+fn the_props_of_a_room_become_objects_with_their_notes() {
+    let registry = maki_events::CommandRegistry::default();
+    let text = r#"(width: 4.0, depth: 4.0, height: 3.0, props: [
+        // The cube.
+        (name: "cube", mesh: Cube(1.0), pose: (position: (1.0, 0.5, 0.0))),
+        (mesh: File("models/cabinet.glb"), collider: false),
+    ])"#;
+    let mut document = Document::parse(Path::new("room.ron"), text, &registry).unwrap();
+    let props = document.room.props.clone();
+    document.props_to_objects();
+    assert!(document.room.props.is_empty());
+    let objects = &document.room.objects;
+    let back: Vec<_> = objects.iter().map(|object| object.prop().unwrap().unwrap()).collect();
+    assert_eq!(back, props);
+    assert_eq!(document.notes_of(&Item::Object(0)), ["The cube."]);
+    assert!(document.notes_of(&Item::Object(1)).is_empty());
+    let saved = document.text();
+    assert!(
+        saved.contains(
+            "    objects: [\n        // The cube.\n        (name: \"cube\", pose: (position: (1.0, 0.5, 0.0)), components: {\"prop\": (mesh: Cube(1.0))}),\n"
+        ),
+        "{saved}"
+    );
+    assert_eq!(Document::parse(Path::new("room.ron"), &saved, &registry).unwrap().text(), saved);
 }

@@ -775,6 +775,9 @@ impl Editor {
                 let room = &mut self.document.room;
                 let slot = match item {
                     Item::Door(index) => room.doors.get_mut(*index).map(|door| &mut door.name),
+                    Item::Object(index) => {
+                        room.objects.get_mut(*index).map(|object| &mut object.name)
+                    }
                     Item::Prop(index) => room.props.get_mut(*index).map(|prop| &mut prop.name),
                     Item::Mover(index) => room.movers.get_mut(*index).map(|mover| &mut mover.name),
                     Item::Light(index) => room.lights.get_mut(*index).map(|light| &mut light.name),
