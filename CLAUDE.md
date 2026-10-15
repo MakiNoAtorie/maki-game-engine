@@ -74,3 +74,17 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - A next stage with no stage file: write the file first, in the form of the others, from the plan and the code as it is then. A proposal of a stage file that the owner did not change is taken as given.
 - Stop and ask: a gate that cannot be met; a decision of the plan that the code shows to be wrong; a regression of GPU time or picture that is the code; a dependency that the plan does not name; a stage that the plan marks "in discussion".
 - Where the spec is silent, choose the simplest option that respects the rules, and list it in the report.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues of MakiNoAtorie/maki-game-engine, through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
