@@ -83,15 +83,26 @@ output = false",
             scene::read_room(&path, validators).unwrap();
             let document = maki_editor::Document::read(&path, registry).unwrap();
             let text = document.text();
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{path:?}");
+            // Git on Windows can give the file CRLF line ends.
+            let file = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("\r\n", "\n");
+            assert_eq!(file, text, "{path:?}");
             assert_eq!(scene::parse_room(&text).unwrap(), document.room);
             assert_eq!(registry.parse_events(&text).unwrap(), document.events);
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
             count += document.events.len();
-            // The props and the lights are objects (stage 48).
+            // The props, lights, doorways, doors, and movers are objects (stage 48).
             let room = &document.room;
-            assert!(room.props.is_empty() && room.lights.is_empty(), "{path:?}");
+            let old = [
+                room.props.len(),
+                room.lights.len(),
+                room.doorways.len(),
+                room.doors.len(),
+                room.movers.len(),
+            ];
+            assert_eq!(old, [0; 5], "{path:?}");
 
             // The inspector reads each item and each component as a tree, and reads
             // a changed tree back. With no change: the same room, and the same file.

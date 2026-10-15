@@ -643,12 +643,25 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
             room.lights
                 .iter()
                 .map(|light| &light.name)
-                .chain(room.objects.iter().filter(|o| o.components.contains_key("light")).map(|o| &o.name))
+                .chain(
+                    room.objects
+                        .iter()
+                        .filter(|o| o.components.contains_key("light"))
+                        .map(|o| &o.name),
+                )
                 .collect(),
         ),
         movers: named(
             doors
                 .chain(room.movers.iter().map(|mover| &mover.name))
+                .chain(
+                    room.objects
+                        .iter()
+                        .filter(|o| {
+                            o.components.contains_key("door") || o.components.contains_key("mover")
+                        })
+                        .map(|o| &o.name),
+                )
                 .collect(),
         ),
         rooms: std::iter::once(own).chain(other_rooms).collect(),

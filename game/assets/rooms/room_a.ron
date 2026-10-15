@@ -7,15 +7,6 @@
     width: 8.0,
     depth: 8.0,
     height: 3.0,
-    doorways: [
-        // In the back wall, at the right. The passage behind it leads nowhere.
-        (wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2),
-        // In the east wall: the way to room B.
-        (wall: PosX, offset: -1.0, width: 1.2, height: 2.1, depth: 1.5),
-    ],
-    doors: [
-        (name: "door", doorway: 0),
-    ],
     objects: [
         (pose: (position: (-1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(1.0))}),
         (
@@ -65,6 +56,16 @@
                 ),
             },
         ),
+        // In the back wall, at the right. The passage behind it leads nowhere.
+        (
+            name: "door",
+            components: {
+                "door": (),
+                "doorway": (wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2),
+            },
+        ),
+        // In the east wall: the way to room B.
+        (components: {"doorway": (wall: PosX, offset: -1.0, width: 1.2, height: 2.1, depth: 1.5)}),
     ],
     spawns: {
         "east": (3.2, 0.0, -1.0),

@@ -353,15 +353,22 @@ fn marks(
         pen.text(at + Vec3::Y * 2.0 * MARK_RADIUS, name, MARK);
     }
 
-    for (index, door) in room.doors.iter().enumerate() {
-        let Some(doorway) = room.doorways.get(door.doorway) else {
-            continue;
-        };
+    let doors = room.doors.iter().enumerate();
+    let doors = doors
+        .filter_map(|(index, door)| Some((Item::Door(index), *room.doorways.get(door.doorway)?)));
+    let of_objects = room
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.door().is_some());
+    let of_objects = of_objects
+        .filter_map(|(index, object)| Some((Item::Object(index), object.doorway()?.ok()?)));
+    for (item, doorway) in doors.chain(of_objects) {
         // The hinge and the way of the free edge of the leaf, as the room loader
         // makes the door: it turns into the room.
         let (start, along, length, inward) = doorway.wall.frame(room.width, room.depth);
         let hinge = start + along * doorway.span(length).0;
-        let (stroke, pen) = (stroke(&Item::Door(index), MARK), pen_of(&Item::Door(index)));
+        let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         let swing = |part: usize| {
             let (sin, cos) = (part as f32 / 8.0 * 85f32.to_radians()).sin_cos();
             hinge + (along * cos + inward * sin) * doorway.width
@@ -371,14 +378,16 @@ fn marks(
         pen.line(hinge, swing(8), stroke);
     }
 
-    for (index, mover) in room.movers.iter().enumerate() {
+    let movers = (0..room.movers.len()).map(Item::Mover);
+    for item in movers.chain((0..room.objects.len()).map(Item::Object)) {
+        let Some(mover) = editor.document.mover(&item) else {
+            continue;
+        };
         // The mesh shows at pose `a`: the box of the mesh at pose `b`, and the way.
-        let (stroke, pen) = (
-            stroke(&Item::Mover(index), MARK),
-            pen_of(&Item::Mover(index)),
-        );
+        let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         pen.line(mover.a.position.into(), mover.b.position.into(), stroke);
-        for (_, low, high) in mesh_boxes(world, RoomItem::Mover(index)) {
+        let boxes = of_mesh(&item).map_or(Vec::new(), |item| mesh_boxes(world, item));
+        for (_, low, high) in boxes {
             pen.cuboid(mover.b.transform().matrix(), low, high, stroke);
         }
     }
@@ -387,15 +396,8 @@ fn marks(
     if let Some(crate::Hover::Item(item)) = &editor.hover
         && !selected(item)
     {
-        let of_mesh = match item {
-            Item::Object(index) => Some(RoomItem::Object(*index)),
-            Item::Prop(index) => Some(RoomItem::Prop(*index)),
-            Item::Door(index) => Some(RoomItem::Door(*index)),
-            Item::Mover(index) => Some(RoomItem::Mover(*index)),
-            Item::Prefab(index) => Some(RoomItem::Prefab(*index)),
-            _ => None,
-        };
-        for (matrix, low, high) in of_mesh.map_or(Vec::new(), |item| mesh_boxes(world, item)) {
+        for (matrix, low, high) in of_mesh(item).map_or(Vec::new(), |item| mesh_boxes(world, item))
+        {
             pen.cuboid(matrix, low, high, Stroke::new(1.0, Color32::WHITE));
         }
         if let Some(light) = editor.document.light(item) {
@@ -406,51 +408,35 @@ fn marks(
 
     let mark = Stroke::new(2.0, SELECTED);
     for item in &editor.selection {
-        let of_mesh = match item {
-            Item::Object(index) => Some(RoomItem::Object(*index)),
-            Item::Prop(index) => Some(RoomItem::Prop(*index)),
-            Item::Door(index) => Some(RoomItem::Door(*index)),
-            Item::Mover(index) => Some(RoomItem::Mover(*index)),
-            Item::Prefab(index) => Some(RoomItem::Prefab(*index)),
-            _ => None,
-        };
-        for (matrix, low, high) in of_mesh.map_or(Vec::new(), |item| mesh_boxes(world, item)) {
+        for (matrix, low, high) in of_mesh(item).map_or(Vec::new(), |item| mesh_boxes(world, item))
+        {
             pen.cuboid(matrix, low, high, mark);
         }
-        match item {
-            Item::Light(_) | Item::Object(_) => {
-                let Some(light) = editor.document.light(item) else {
-                    continue;
-                };
-                let at = Vec3::from(light.position);
-                for (u, v) in [(Vec3::X, Vec3::Y), (Vec3::Y, Vec3::Z), (Vec3::Z, Vec3::X)] {
-                    pen.circle(at, u, v, light.radius, mark);
-                }
-                // The edge of the cone, 2 m long.
-                if let Some(degrees) = light.cone.filter(|degrees| *degrees < 180.0) {
-                    let direction = light.direction.map_or(Vec3::NEG_Y, Vec3::from);
-                    let direction = direction.try_normalize().unwrap_or(Vec3::NEG_Y);
-                    let u = direction.any_orthonormal_vector();
-                    let v = direction.cross(u);
-                    let (sin, cos) = degrees.to_radians().sin_cos();
-                    let center = at + direction * 2.0 * cos;
-                    pen.circle(center, u, v, 2.0 * sin, mark);
-                    for side in [u, -u, v, -v] {
-                        pen.line(at, center + side * 2.0 * sin, mark);
-                    }
+        if let Some(light) = editor.document.light(item) {
+            let at = Vec3::from(light.position);
+            for (u, v) in [(Vec3::X, Vec3::Y), (Vec3::Y, Vec3::Z), (Vec3::Z, Vec3::X)] {
+                pen.circle(at, u, v, light.radius, mark);
+            }
+            // The edge of the cone, 2 m long.
+            if let Some(degrees) = light.cone.filter(|degrees| *degrees < 180.0) {
+                let direction = light.direction.map_or(Vec3::NEG_Y, Vec3::from);
+                let direction = direction.try_normalize().unwrap_or(Vec3::NEG_Y);
+                let u = direction.any_orthonormal_vector();
+                let v = direction.cross(u);
+                let (sin, cos) = degrees.to_radians().sin_cos();
+                let center = at + direction * 2.0 * cos;
+                pen.circle(center, u, v, 2.0 * sin, mark);
+                for side in [u, -u, v, -v] {
+                    pen.line(at, center + side * 2.0 * sin, mark);
                 }
             }
-            Item::Doorway(index) => {
-                let Some(doorway) = room.doorways.get(*index) else {
-                    continue;
-                };
-                let (start, along, length, _) = doorway.wall.frame(room.width, room.depth);
-                let (from, to) = doorway.span(length);
-                let (left, right) = (start + along * from, start + along * to);
-                let up = Vec3::Y * doorway.height;
-                pen.path(&[left, left + up, right + up, right], mark);
-            }
-            _ => {}
+        }
+        if let Some(doorway) = editor.document.doorway(item) {
+            let (start, along, length, _) = doorway.wall.frame(room.width, room.depth);
+            let (from, to) = doorway.span(length);
+            let (left, right) = (start + along * from, start + along * to);
+            let up = Vec3::Y * doorway.height;
+            pen.path(&[left, left + up, right + up, right], mark);
         }
     }
 
@@ -530,6 +516,18 @@ fn marks(
             Stroke::new(width, color),
             egui::StrokeKind::Middle,
         );
+    }
+}
+
+/// The meshes of an item in the world, by their mark.
+fn of_mesh(item: &Item) -> Option<RoomItem> {
+    match item {
+        Item::Object(index) => Some(RoomItem::Object(*index)),
+        Item::Prop(index) => Some(RoomItem::Prop(*index)),
+        Item::Door(index) => Some(RoomItem::Door(*index)),
+        Item::Mover(index) => Some(RoomItem::Mover(*index)),
+        Item::Prefab(index) => Some(RoomItem::Prefab(*index)),
+        _ => None,
     }
 }
 

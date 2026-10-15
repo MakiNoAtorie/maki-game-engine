@@ -102,10 +102,23 @@ pub struct RoomShell {
 }
 
 impl RoomDef {
+    /// Each doorway of the room: of the old list, then of the objects with a
+    /// `doorway`. An object whose doorway text does not read is not there.
+    pub fn each_doorway(&self) -> Vec<Doorway> {
+        let of_objects = self
+            .objects
+            .iter()
+            .filter_map(|object| object.doorway()?.ok());
+        self.doorways.iter().copied().chain(of_objects).collect()
+    }
+
     /// Each light of the room: of the old list and of the objects with a `light`.
     /// An object whose light text does not read is not there.
     pub fn each_light(&self) -> Vec<LightDef> {
-        let of_objects = self.objects.iter().filter_map(|object| object.light()?.ok());
+        let of_objects = self
+            .objects
+            .iter()
+            .filter_map(|object| object.light()?.ok());
         self.lights.iter().cloned().chain(of_objects).collect()
     }
 
@@ -487,8 +500,7 @@ impl ObjectDef {
     /// The object as a prop, if it has the component `prop`. `Err`: its text is not
     /// a prop.
     pub fn prop(&self) -> Option<Result<PropDef, ron::error::SpannedError>> {
-        let text = self.components.get("prop")?;
-        Some(text.read::<Prop>().map(|prop| PropDef {
+        Some(self.component::<Prop>("prop")?.map(|prop| PropDef {
             name: self.name.clone(),
             mesh: prop.mesh,
             pose: self.pose,
@@ -682,26 +694,28 @@ impl ObjectDef {
     /// The object as a light, if it has the component `light`. Its place is the
     /// position of the object. `Err`: its text is not a light.
     pub fn light(&self) -> Option<Result<LightDef, ron::error::SpannedError>> {
-        let text = self.components.get("light")?;
-        Some(text.read::<LightSource>().map(|light| LightDef {
-            name: self.name.clone(),
-            position: self.pose.position,
-            radius: light.radius,
-            color: light.color,
-            intensity: light.intensity,
-            on: light.on,
-            direction: light.direction,
-            cone: light.cone,
-            sound: light.sound,
-        }))
+        Some(
+            self.component::<LightSource>("light")?
+                .map(|light| LightDef {
+                    name: self.name.clone(),
+                    position: self.pose.position,
+                    radius: light.radius,
+                    color: light.color,
+                    intensity: light.intensity,
+                    on: light.on,
+                    direction: light.direction,
+                    cone: light.cone,
+                    sound: light.sound,
+                }),
+        )
     }
 
     /// Writes `light` as the component `light`, and its place as the position of the
     /// object. Its name is not taken.
     pub fn set_light(&mut self, light: LightDef) {
         self.pose.position = light.position;
-        let mut object = light.into_object();
-        let text = object.components.remove("light").expect("made above");
+        let object = light.into_object();
+        let text = object.components["light"].clone();
         self.components.insert("light".to_owned(), text);
     }
 }
@@ -741,6 +755,46 @@ pub struct DoorDef {
     pub open: bool,
 }
 
+/// The component of an object that is a door in the doorway of the same object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(deny_unknown_fields)]
+pub struct DoorLeaf {
+    /// Seconds from closed to open.
+    #[serde(
+        default = "default_door_seconds",
+        skip_serializing_if = "is_default_door_seconds"
+    )]
+    #[field(
+        label = "seconds to open",
+        range = 0.05..=60.0,
+        step = 0.05,
+        default = default_door_seconds()
+    )]
+    pub seconds: f32,
+    /// Linear RGB.
+    #[serde(
+        default = "default_door_color",
+        skip_serializing_if = "is_default_door_color"
+    )]
+    #[field(color)]
+    pub color: [f32; 3],
+    /// True: the door is open when the room loads.
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[field(label = "open at the start", default = false)]
+    pub open: bool,
+}
+
+impl DoorDef {
+    /// The door without its name and its doorway.
+    pub fn leaf(&self) -> DoorLeaf {
+        DoorLeaf {
+            seconds: self.seconds,
+            color: self.color,
+            open: self.open,
+        }
+    }
+}
+
 fn default_door_seconds() -> f32 {
     1.2
 }
@@ -774,6 +828,73 @@ pub struct MoverDef {
     /// Seconds from `a` to `b`.
     #[field(label = "seconds from a to b", range = 0.05..=600.0, step = 0.05)]
     pub seconds: f32,
+}
+
+/// The component of an object that moves between the pose of the object (`a` of
+/// [`MoverDef`]) and a second pose.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(deny_unknown_fields)]
+pub struct MoverPath {
+    pub mesh: MeshDef,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub look: LookDef,
+    /// In the space of the room, as the pose of the object.
+    #[field(label = "second pose (b)")]
+    pub b: PoseDef,
+    /// Seconds from the pose of the object to `b`.
+    #[field(label = "seconds from a to b", range = 0.05..=600.0, step = 0.05)]
+    pub seconds: f32,
+}
+
+impl MoverDef {
+    /// The mover as an object with the component `mover`. Pose `a` is the pose of
+    /// the object.
+    pub fn into_object(self) -> ObjectDef {
+        let mut object = ObjectDef {
+            name: self.name.clone(),
+            ..ObjectDef::default()
+        };
+        object.set_mover(self);
+        object
+    }
+}
+
+impl ObjectDef {
+    /// The opening of the object in a wall, if it has the component `doorway`.
+    pub fn doorway(&self) -> Option<Result<Doorway, ron::error::SpannedError>> {
+        self.component("doorway")
+    }
+
+    /// The door of the object, if it has the component `door`. It is in the doorway
+    /// of the object.
+    pub fn door(&self) -> Option<Result<DoorLeaf, ron::error::SpannedError>> {
+        self.component("door")
+    }
+
+    /// The object as a mover, if it has the component `mover`.
+    pub fn mover(&self) -> Option<Result<MoverDef, ron::error::SpannedError>> {
+        Some(self.component::<MoverPath>("mover")?.map(|path| MoverDef {
+            name: self.name.clone(),
+            mesh: path.mesh,
+            look: path.look,
+            a: self.pose,
+            b: path.b,
+            seconds: path.seconds,
+        }))
+    }
+
+    /// Writes `mover` as the component `mover`, and its pose `a` as the pose of the
+    /// object. Its name is not taken.
+    pub fn set_mover(&mut self, mover: MoverDef) {
+        self.pose = mover.a;
+        let path = MoverPath {
+            mesh: mover.mesh,
+            look: mover.look,
+            b: mover.b,
+            seconds: mover.seconds,
+        };
+        self.set_component("mover", &path);
+    }
 }
 
 /// The RON dialect of the room files. The events crate reads the same files with it.
@@ -810,11 +931,23 @@ pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Resul
         let errors = [
             ("prop", object.prop().and_then(Result::err)),
             ("light", object.light().and_then(Result::err)),
+            ("doorway", object.doorway().and_then(Result::err)),
+            ("door", object.door().and_then(Result::err)),
+            ("mover", object.mover().and_then(Result::err)),
         ];
         if let Some((component, Some(error))) = errors.into_iter().find(|(_, e)| e.is_some()) {
             let name = object.name.as_deref().unwrap_or("");
             return Err(anyhow!(
                 "{}: object {index} {name}: component {component}: {error}",
+                path.display()
+            ));
+        }
+    }
+    for (index, object) in room.objects.iter().enumerate() {
+        if object.door().is_some() && object.doorway().is_none() {
+            let name = object.name.as_deref().unwrap_or("");
+            return Err(anyhow!(
+                "{}: object {index} {name}: a door needs a doorway in the same object",
                 path.display()
             ));
         }
@@ -1232,17 +1365,18 @@ impl Spawner<'_, '_, '_> {
 
     fn room(&mut self, def: &RoomDef) {
         let (width, depth, height) = (def.width, def.depth, def.height);
-        let size = format!("room {width} {depth} {height} {:?}", def.doorways);
+        let doorways = def.each_doorway();
+        let size = format!("room {width} {depth} {height} {doorways:?}");
         let shell = if def.floor.is_none() && def.walls.is_none() {
             vec![self.mesh(size, |_| {
-                Mesh::room_with_doorways(width, depth, height, &def.doorways)
+                Mesh::room_with_doorways(width, depth, height, &doorways)
             })]
         } else {
             // A mesh has one material: the floor and the walls are two meshes.
             let parts = [(0, "floor", &def.floor), (1, "walls", &def.walls)];
             let part = |(index, name, texture): (usize, &str, &Option<TextureDef>)| {
                 self.mesh(format!("{size} {name} {texture:?}"), |spawner| {
-                    let parts = Mesh::room_parts(width, depth, height, &def.doorways);
+                    let parts = Mesh::room_parts(width, depth, height, &doorways);
                     let mesh = if index == 0 { parts.0 } else { parts.1 };
                     match texture {
                         Some(texture) => texture.apply(mesh, spawner.directory, spawner.textures),
@@ -1256,20 +1390,28 @@ impl Spawner<'_, '_, '_> {
             self.commands
                 .spawn((RoomEntity, Transform::IDENTITY, MeshInstance(mesh)));
         }
-        for collider in room_colliders(width, depth, height, &def.doorways) {
+        for collider in room_colliders(width, depth, height, &doorways) {
             self.commands.spawn((RoomEntity, collider));
         }
         for (index, door) in def.doors.iter().enumerate() {
             let item = RoomItem::Door(index);
-            self.door(door, item, &def.doorways[door.doorway], width, depth);
+            let doorway = &def.doorways[door.doorway];
+            self.door(&door.name, &door.leaf(), item, doorway, width, depth);
         }
         for (index, object) in def.objects.iter().enumerate() {
-            // `check_room` read the text of each prop.
+            // `check_room` read the text of each component of the scene.
+            let item = RoomItem::Object(index);
             if let Some(Ok(prop)) = object.prop() {
-                self.prop(&prop, RoomItem::Object(index));
+                self.prop(&prop, item);
             }
             if let Some(Ok(light)) = object.light() {
-                self.light(&light, RoomItem::Object(index));
+                self.light(&light, item);
+            }
+            if let (Some(Ok(door)), Some(Ok(doorway))) = (object.door(), object.doorway()) {
+                self.door(&object.name, &door, item, &doorway, width, depth);
+            }
+            if let Some(Ok(mover)) = object.mover() {
+                self.mover(&mover, item);
             }
         }
         for (index, prop) in def.props.iter().enumerate() {
@@ -1403,7 +1545,15 @@ impl Spawner<'_, '_, '_> {
     }
 
     /// The door leaf: a thin box that fills the doorway when it is closed.
-    fn door(&mut self, door: &DoorDef, item: RoomItem, doorway: &Doorway, width: f32, depth: f32) {
+    fn door(
+        &mut self,
+        name: &Option<String>,
+        door: &DoorLeaf,
+        item: RoomItem,
+        doorway: &Doorway,
+        width: f32,
+        depth: f32,
+    ) {
         const THICKNESS: f32 = 0.06;
         // The open door stands at this angle to the wall, in degrees. Not a quarter
         // turn: the open door then does not lie in the side of the passage.
@@ -1459,7 +1609,7 @@ impl Spawner<'_, '_, '_> {
             mover,
             Door { blocker },
         ));
-        if let Some(name) = &door.name {
+        if let Some(name) = name {
             entity.insert(Name(name.clone()));
         }
     }
@@ -1508,7 +1658,13 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         }
     }
     for (object, new) in patched.objects.iter_mut().zip(&room.objects) {
-        let file = matches!(object.prop(), Some(Ok(PropDef { mesh: MeshDef::File(_), .. })));
+        let file = matches!(
+            object.prop(),
+            Some(Ok(PropDef {
+                mesh: MeshDef::File(_),
+                ..
+            }))
+        );
         if !file {
             object.pose = new.pose;
         }
@@ -1517,6 +1673,14 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             object.set_light(LightDef {
                 sound: light.sound,
                 ..new
+            });
+        }
+        // The second pose and the time of a mover.
+        if let (Some(Ok(mover)), Some(Ok(new))) = (object.mover(), new.mover()) {
+            object.set_mover(MoverDef {
+                b: new.b,
+                seconds: new.seconds,
+                ..mover
             });
         }
     }
@@ -1545,10 +1709,14 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     }
     let mut movers = world.query::<(&RoomItem, &mut Mover, &mut Interpolated)>();
     for (item, mut mover, mut pose) in movers.iter_mut(world) {
-        let RoomItem::Mover(index) = *item else {
-            continue;
+        let def = match *item {
+            RoomItem::Mover(index) => room.movers[index].clone(),
+            RoomItem::Object(index) => match room.objects[index].mover() {
+                Some(Ok(mover)) => mover,
+                _ => continue,
+            },
+            _ => continue,
         };
-        let def = &room.movers[index];
         let new = Mover::new(def.a.transform(), def.b.transform(), def.seconds);
         if mover.set_if_neq(new) {
             pose.snap(new.a);
@@ -1759,7 +1927,17 @@ mod tests {
         assert_eq!(
             names,
             [
-                "door", "doorway", "light", "light item", "mover", "object", "prefab", "prop", "prop item",
+                "door",
+                "door item",
+                "doorway",
+                "light",
+                "light item",
+                "mover",
+                "mover item",
+                "object",
+                "prefab",
+                "prop",
+                "prop item",
                 "room"
             ]
         );
@@ -1886,7 +2064,8 @@ mod tests {
             };
             let item = RoomItem::Door(0);
             spawner.door(
-                &room.doors[0],
+                &room.doors[0].name,
+                &room.doors[0].leaf(),
                 item,
                 &room.doorways[0],
                 room.width,

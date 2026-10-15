@@ -15,8 +15,8 @@ use maki_assets::{Doorway, Wall};
 use maki_audio::AudioCommand;
 use maki_events::{Area, Builtin, Command, CommandRegistry, CommandSet, EventDef, Page, Trigger};
 use maki_scene::{
-    DoorDef, LightDef, MeshDef, MoverDef, PoseDef, PrefabDef, PrefabUse, PropDef, RoomDef, pose_in,
-    pose_out, prefab_text, read_prefab,
+    DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef, PrefabDef, PrefabUse, PropDef,
+    RoomDef, pose_in, pose_out, prefab_text, read_prefab,
 };
 
 use crate::ron_text::Notes;
@@ -123,23 +123,25 @@ impl Document {
         let movers = room.movers.iter().enumerate();
         Some(match item {
             // While the old lists are there, an object shares the names of each.
-            Item::Prop(_) | Item::Object(_) | Item::Light(_) => {
+            Item::Prop(_) | Item::Object(_) | Item::Light(_) | Item::Door(_) | Item::Mover(_) => {
                 let props = room.props.iter().enumerate();
                 let props = props.map(|(i, prop)| (Item::Prop(i), &prop.name));
                 let lights = lights.map(|(i, light)| (Item::Light(i), &light.name));
+                let doors = doors.map(|(i, door)| (Item::Door(i), &door.name));
+                let movers = movers.map(|(i, mover)| (Item::Mover(i), &mover.name));
                 let objects = room.objects.iter().enumerate();
                 let objects = objects.map(|(i, object)| (Item::Object(i), &object.name));
-                named(props.chain(lights).chain(objects).collect(), item)
+                let all = props
+                    .chain(lights)
+                    .chain(doors)
+                    .chain(movers)
+                    .chain(objects);
+                named(all.collect(), item)
             }
             Item::Prefab(_) => {
                 let prefabs = room.prefabs.iter().enumerate();
                 let prefabs = prefabs.map(|(i, prefab)| (Item::Prefab(i), &prefab.name));
                 named(prefabs.collect(), item)
-            }
-            Item::Door(_) | Item::Mover(_) => {
-                let doors = doors.map(|(i, door)| (Item::Door(i), &door.name));
-                let movers = movers.map(|(i, mover)| (Item::Mover(i), &mover.name));
-                named(doors.chain(movers).collect(), item)
             }
             Item::Event(index) => {
                 let events = self.events.iter().enumerate();
@@ -382,46 +384,55 @@ impl Document {
                 item
             }
             Kind::Doorway => {
-                room.doorways.push(Doorway {
-                    wall: Wall::NegZ,
-                    offset: at.x.clamp(-room.width / 2.0 + 1.0, room.width / 2.0 - 1.0),
-                    width: 1.0,
-                    height: 2.1,
-                    depth: 1.0,
-                });
-                Item::Doorway(room.doorways.len() - 1)
+                let mut object = ObjectDef::default();
+                object.set_component(
+                    "doorway",
+                    &Doorway {
+                        wall: Wall::NegZ,
+                        offset: at.x.clamp(-room.width / 2.0 + 1.0, room.width / 2.0 - 1.0),
+                        width: 1.0,
+                        height: 2.1,
+                        depth: 1.0,
+                    },
+                );
+                room.objects.push(object);
+                Item::Object(room.objects.len() - 1)
             }
             Kind::Door => {
-                let used = |doorway: &usize| room.doors.iter().any(|door| door.doorway == *doorway);
-                let Some(doorway) = (0..room.doorways.len()).find(|doorway| !used(doorway)) else {
+                // A door is in the doorway of its object.
+                let free =
+                    |object: &ObjectDef| object.doorway().is_some() && object.door().is_none();
+                let Some(index) = room.objects.iter().position(free) else {
                     return Err("Each doorway has a door: add a doorway first".to_owned());
                 };
-                let item = Item::Door(room.doors.len());
-                room.doors.push(DoorDef {
-                    name: None,
-                    doorway,
+                let door = DoorLeaf {
                     seconds: 1.2,
                     color: [0.35, 0.2, 0.1],
                     open: false,
-                });
-                let name = self.unique_name(&item, "door");
-                self.room.doors.last_mut().expect("pushed above").name = Some(name);
+                };
+                room.objects[index].set_component("door", &door);
+                let item = Item::Object(index);
+                if room.objects[index].name.is_none() {
+                    let name = self.unique_name(&item, "door");
+                    self.room.objects[index].name = Some(name);
+                }
                 item
             }
             Kind::Mover => {
-                let item = Item::Mover(room.movers.len());
                 let (a, mut b) = (on_floor(0.5), on_floor(0.5));
                 b.position[1] += 1.0;
-                room.movers.push(MoverDef {
+                let mover = MoverDef {
                     name: None,
                     mesh: MeshDef::Cube(1.0),
                     look: Default::default(),
                     a,
                     b,
                     seconds: 2.0,
-                });
+                };
+                let item = Item::Object(room.objects.len());
+                room.objects.push(mover.into_object());
                 let name = self.unique_name(&item, "mover");
-                self.room.movers.last_mut().expect("pushed above").name = Some(name);
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
             Kind::Event => {
@@ -944,11 +955,11 @@ mod tests {
     fn a_rename_changes_the_events_and_a_name_stays_unique() {
         let registry = registry();
         let mut document = document(&registry);
-        // The light is an object.
+        // The two doorways with their doors, and the light, are objects.
         document.items_to_objects();
-        let lamp = Item::Object(0);
+        let lamp = Item::Object(2);
 
-        document.room.objects[0].name = Some("bulb".to_owned());
+        document.room.objects[2].name = Some("bulb".to_owned());
         let status = document.renamed(&lamp, Some("lamp".to_owned()), &registry);
         assert!(status.contains("2 event commands"), "{status}");
         let text = document.text();
@@ -957,9 +968,9 @@ mod tests {
 
         // A door with the name of the other door gets a number, and the events
         // follow the door that was renamed.
-        document.room.doors[1].name = Some("door".to_owned());
-        document.renamed(&Item::Door(1), Some("east".to_owned()), &registry);
-        assert_eq!(document.room.doors[1].name.as_deref(), Some("door_2"));
+        document.room.objects[1].name = Some("door".to_owned());
+        document.renamed(&Item::Object(1), Some("east".to_owned()), &registry);
+        assert_eq!(document.room.objects[1].name.as_deref(), Some("door_2"));
         let text = document.text();
         assert!(text.contains(r#"OpenDoor("door_2")"#) && text.contains(r#"CloseDoor("door")"#));
 
@@ -970,32 +981,31 @@ mod tests {
         assert_eq!(document.room.objects[new].name.as_deref(), Some("light"));
         assert!(document.light(&Item::Object(new)).is_some());
         let copies = document.duplicate(&[lamp, Item::Object(new)]);
-        assert_eq!(copies, [Item::Object(2), Item::Object(3)]);
+        assert_eq!(copies, [Item::Object(4), Item::Object(5)]);
         let name = |index: usize| document.room.objects[index].name.clone().unwrap();
         assert_eq!(
-            (name(2), name(3)),
+            (name(4), name(5)),
             ("bulb_2".to_owned(), "light_2".to_owned())
         );
         assert_eq!(free_name("bulb_2", |name| name == "bulb_2"), "bulb_3");
     }
 
     #[test]
-    fn a_removed_doorway_takes_its_door_and_the_other_doors_keep_their_doorway() {
+    fn a_doorway_and_its_door_are_one_object() {
         let registry = registry();
         let mut document = document(&registry);
-        let east = document.room.doorways[1];
-        assert_eq!(document.notes.of("doors", 1), ["To the east."]);
+        document.items_to_objects();
+        // The notes of the doorway, then of its door.
+        let notes = ["The east one.", "To the east."];
+        assert_eq!(document.notes.of("objects", 1), notes);
+        let east = document.room.objects[1].clone();
+        assert_eq!(east.name.as_deref(), Some("east"));
+        assert!(east.door().is_some() && east.doorway().is_some());
 
-        let status = document.delete(&[Item::Doorway(0)]);
-        assert!(status.contains("1 door"), "{status}");
-        assert_eq!(document.room.doorways, [east]);
-        // The door of the east doorway is the one door, in doorway 0 now, with its
-        // notes; the notes of the doorway moved too.
-        assert_eq!(document.room.doors.len(), 1);
-        assert_eq!(document.room.doors[0].name.as_deref(), Some("east"));
-        assert_eq!(document.room.doors[0].doorway, 0);
-        assert_eq!(document.notes.of("doors", 0), ["To the east."]);
-        assert_eq!(document.notes.of("doorways", 0), ["The east one."]);
+        // A doorway goes with its door, and the other keeps its notes.
+        document.delete(&[Item::Object(0)]);
+        assert_eq!(document.room.objects[0], east);
+        assert_eq!(document.notes.of("objects", 0), notes);
         assert!(maki_scene::parse_room(&document.text()).is_ok());
 
         // A door goes into the first doorway with no door; with none: an error.
@@ -1003,10 +1013,10 @@ mod tests {
         let Ok(doorway) = document.add(Kind::Doorway, Vec3::ZERO) else {
             panic!("a doorway");
         };
-        assert_eq!(doorway, Item::Doorway(1));
-        assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Door(1)));
-        assert_eq!(document.room.doors[1].doorway, 1);
-        assert_eq!(document.room.doors[1].name.as_deref(), Some("door"));
+        assert_eq!(doorway, Item::Object(2));
+        assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Object(2)));
+        assert!(document.room.objects[2].door().is_some());
+        assert_eq!(document.room.objects[2].name.as_deref(), Some("door"));
     }
 
     #[test]

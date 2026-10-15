@@ -68,20 +68,23 @@ const AIM_LENGTH: f32 = 2.0;
 impl Extra {
     fn of(document: &Document, item: &Item) -> Self {
         let room = &document.room;
-        match item {
-            Item::Light(_) | Item::Object(_) => {
-                let Some(light) = document.light(item) else {
-                    return Self::None;
-                };
-                if light.cone.is_none_or(|degrees| degrees >= 180.0) {
-                    return Self::None;
-                }
-                let (at, to) = (Vec3::from(light.position), light.light().direction);
-                // Where the middle of the cone meets the floor, if it does near by.
-                let on_floor = (to.y < -1e-3).then(|| at + to * (at.y / -to.y));
-                let near = on_floor.filter(|point| point.distance(at) < 50.0);
-                Self::Aim(near.unwrap_or(at + to * AIM_LENGTH))
+        if let Some(light) = document.light(item) {
+            if light.cone.is_none_or(|degrees| degrees >= 180.0) {
+                return Self::None;
             }
+            let (at, to) = (Vec3::from(light.position), light.light().direction);
+            // Where the middle of the cone meets the floor, if it does near by.
+            let on_floor = (to.y < -1e-3).then(|| at + to * (at.y / -to.y));
+            let near = on_floor.filter(|point| point.distance(at) < 50.0);
+            return Self::Aim(near.unwrap_or(at + to * AIM_LENGTH));
+        }
+        if let Some(doorway) = document.doorway(item) {
+            let (start, along, length, _) = doorway.wall.frame(room.width, room.depth);
+            let (from, to) = doorway.span(length);
+            let top = |along_wall: f32| start + along * along_wall + Vec3::Y * doorway.height;
+            return Self::Corners([top(from), top(to), Vec3::ZERO, Vec3::ZERO], 2);
+        }
+        match item {
             Item::Event(index) => {
                 let area = document.events.get(*index).and_then(|event| event.area);
                 let Some(area) = area else {
@@ -93,15 +96,6 @@ impl Extra {
                     Vec3::new(center_x + x * half_x, 0.0, center_z + z * half_z)
                 };
                 Self::Corners(AREA_CORNERS.map(corner), 4)
-            }
-            Item::Doorway(index) => {
-                let Some(doorway) = room.doorways.get(*index) else {
-                    return Self::None;
-                };
-                let (start, along, length, _) = doorway.wall.frame(room.width, room.depth);
-                let (from, to) = doorway.span(length);
-                let top = |along_wall: f32| start + along * along_wall + Vec3::Y * doorway.height;
-                Self::Corners([top(from), top(to), Vec3::ZERO, Vec3::ZERO], 2)
             }
             _ => Self::None,
         }
@@ -367,10 +361,10 @@ impl Drag {
                         area.size[axis] = round((to[axis] - fixed).abs().max(SMALLEST));
                     }
                 }
-                Some(Item::Doorway(index)) => {
-                    let room = &mut document.room;
+                Some(item @ (Item::Doorway(_) | Item::Object(_))) => {
+                    let room = &document.room;
                     let (width, depth, height) = (room.width, room.depth, room.height);
-                    let Some(doorway) = room.doorways.get_mut(*index) else {
+                    let Some(mut doorway) = document.doorway(item) else {
                         return;
                     };
                     let (start, along, length, inward) = doorway.wall.frame(width, depth);
@@ -393,6 +387,7 @@ impl Drag {
                     doorway.width = round(to - from);
                     doorway.offset = round((from + to) / 2.0 - length / 2.0);
                     doorway.height = round(snap(hit.y, grid).clamp(SMALLEST, height));
+                    document.set_doorway(item, doorway);
                 }
                 _ => {}
             },
@@ -422,10 +417,9 @@ impl Drag {
                 };
                 for item in selection {
                     // A mover moves as a whole: its second pose goes with the first.
-                    if let (Item::Mover(index), false) = (item, second)
-                        && let Some(mover) = document.room.movers.get_mut(*index)
-                    {
-                        moved_point(&mut mover.b.position);
+                    let b_only = second && document.mover(item).is_some();
+                    if document.with_mover_b(item, |b| moved_point(&mut b.position)) && b_only {
+                        continue;
                     }
                     match document.place(item, second) {
                         Some(Place::Pose(pose)) => moved_point(&mut pose.position),
@@ -469,10 +463,9 @@ impl Drag {
                 };
                 for item in selection {
                     // A mover turns as a whole, as it moves.
-                    if let (Item::Mover(index), false) = (item, second)
-                        && let Some(mover) = document.room.movers.get_mut(*index)
-                    {
-                        turned(&mut mover.b);
+                    let b_only = second && document.mover(item).is_some();
+                    if document.with_mover_b(item, |pose| turned(pose)) && b_only {
+                        continue;
                     }
                     match document.place(item, second) {
                         Some(Place::Pose(pose)) => turned(pose),
@@ -484,10 +477,16 @@ impl Drag {
             }
             (Tool::Scale, Handle::Axis(axis)) => {
                 let factor = ray.along(origin, axes[axis]) / self.grab.max(1e-3);
+                let step = if steps.is_some() { SCALE_STEP } else { 0.0 };
+                let scaled = |pose: &mut PoseDef| {
+                    pose.scale[axis] = snap(pose.scale[axis] * factor, step).max(0.01);
+                };
                 for item in selection {
+                    if second && document.with_mover_b(item, |pose| scaled(pose)) {
+                        continue;
+                    }
                     if let Some(Place::Pose(pose)) = document.place(item, second) {
-                        let step = if steps.is_some() { SCALE_STEP } else { 0.0 };
-                        pose.scale[axis] = snap(pose.scale[axis] * factor, step).max(0.01);
+                        scaled(pose);
                     }
                 }
             }
@@ -634,7 +633,10 @@ mod tests {
             Handle::Aim,
             Vec3::new(2.4, 0.0, 0.0),
         );
-        assert_eq!(aimed.light(&lamp).unwrap().direction, Some([0.721, -0.693, 0.0]));
+        assert_eq!(
+            aimed.light(&lamp).unwrap().direction,
+            Some([0.721, -0.693, 0.0])
+        );
         // The handle is where the light points now.
         let gizmo = Gizmo::of(&aimed, &lamp, false, false, Tool::Move, &view).unwrap();
         assert!(gizmo.points()[0].1.distance(Vec3::new(2.5, 0.0, 0.0)) < 0.01);

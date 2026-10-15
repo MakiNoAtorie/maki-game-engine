@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use bevy_ecs::world::{Mut, World};
 use maki_core::fields::Value;
 use maki_core::{App, FieldTypes};
-use maki_scene::ComponentTypes;
 use maki_events::{EventRunner, Problem};
+use maki_scene::ComponentTypes;
 use maki_scene::MeshDef;
 use maki_ui::egui::{self, Ui};
 use maki_ui::theme::icon;
@@ -634,7 +634,11 @@ fn sections(document: &Document) -> Vec<Section> {
     });
     // An object with no name: the name of its first component.
     let objects = room.objects.iter().enumerate().map(|(index, object)| {
-        let kind = object.components.keys().next().map_or("object", String::as_str);
+        let kind = object
+            .components
+            .keys()
+            .next()
+            .map_or("object", String::as_str);
         (Item::Object(index), named(&object.name, kind, index))
     });
     let movers = room
@@ -797,7 +801,7 @@ fn item_properties(
         }
         // `event_panel` shows an event.
         Item::Event(_) => return None,
-        Item::Mover(_) => {
+        item if editor.document.mover(item).is_some() => {
             let label = "the gizmo changes the second pose (b) only";
             ui.checkbox(&mut editor.second_pose, label);
         }
@@ -873,7 +877,10 @@ fn components(ui: &mut Ui, world: &World, editor: &mut Editor, index: usize) -> 
         if !shown.inner {
             continue;
         }
-        match editor.document.set_component_tree(index, &name, &tree, types) {
+        match editor
+            .document
+            .set_component_tree(index, &name, &tree, types)
+        {
             Ok(()) => changed = true,
             Err(error) => editor.status = format!("The change was not taken: {error:#}"),
         }

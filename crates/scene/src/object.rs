@@ -45,6 +45,23 @@ pub struct ObjectDef {
     pub components: BTreeMap<String, ComponentText>,
 }
 
+impl ObjectDef {
+    /// The component `name` read as its type. `None`: the object has no such
+    /// component. `Err`: the text is not of that type.
+    pub fn component<T: DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Option<Result<T, ron::error::SpannedError>> {
+        Some(self.components.get(name)?.read())
+    }
+
+    /// Writes `value` as the component `name`.
+    pub fn set_component<T: Serialize>(&mut self, name: &str, value: &T) {
+        self.components
+            .insert(name.to_owned(), ComponentText::of(value));
+    }
+}
+
 fn is_default_pose(pose: &PoseDef) -> bool {
     *pose == PoseDef::default()
 }
@@ -223,7 +240,10 @@ mod tests {
 
         // Written and read again: the same room, and the same text.
         let text = ron_options().to_string(&room).unwrap();
-        assert!(text.contains(r#""swing":(angle:12.5,axis:Y,label:"a \"b\" // c")"#), "{text}");
+        assert!(
+            text.contains(r#""swing":(angle:12.5,axis:Y,label:"a \"b\" // c")"#),
+            "{text}"
+        );
         let again = parse_room(&text).unwrap();
         assert_eq!(again, room);
         assert_eq!(ron_options().to_string(&again).unwrap(), text);

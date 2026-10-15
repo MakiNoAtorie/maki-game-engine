@@ -181,7 +181,9 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
             };
             let text = maki_scene::ComponentText::of(&cube);
             let mut editor = app.resource_mut::<Editor>();
-            editor.document.room.objects[0].components.insert("prop".to_owned(), text);
+            editor.document.room.objects[0]
+                .components
+                .insert("prop".to_owned(), text);
         }
         frames(&mut app, 2);
         assert_eq!(app.world().resource::<CurrentRoom>().loads, loads + 1);
@@ -451,10 +453,13 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
         request(&mut app, Command::New);
         request(&mut app, Command::Add(Kind::Mover));
         let mut editor = app.resource_mut::<Editor>();
-        assert_eq!(editor.selection, [Item::Mover(0)]);
+        // The lamp of the new room is object 0.
+        assert_eq!(editor.selection, [Item::Object(1)]);
         let registry = editor.registry.clone();
         let command = |command: Builtin| registry.command(command).unwrap();
-        editor.document.room.movers[0].seconds = 0.2;
+        let mut mover = editor.document.mover(&Item::Object(1)).unwrap();
+        mover.seconds = 0.2;
+        editor.document.room.objects[1].set_mover(mover);
         editor.document.events.push(EventDef {
             name: "lift".to_owned(),
             area: Default::default(),
@@ -1033,7 +1038,10 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
             .rename(&Item::Object(1), "bulb".to_owned());
         frames(&mut app, 2);
         let editor = app.world().resource::<Editor>();
-        assert_eq!(editor.document.room.objects[1].name.as_deref(), Some("bulb"));
+        assert_eq!(
+            editor.document.room.objects[1].name.as_deref(),
+            Some("bulb")
+        );
         assert!(editor.document.text().contains(r#"LightOff("bulb")"#));
         assert!(editor.document.dirty);
 
@@ -1093,7 +1101,10 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         let world = app.world();
         let editor = world.resource::<Editor>();
         assert_eq!(editor.document.room, room);
-        assert_eq!(editor.document.light(&Item::Object(1)).unwrap().intensity, 2.5);
+        assert_eq!(
+            editor.document.light(&Item::Object(1)).unwrap().intensity,
+            2.5
+        );
         assert!(editor.document.dirty);
         assert_eq!(editor.document.path, directory.join("a.ron"));
         assert_eq!(editor.play_from.as_deref(), Some("other"));
@@ -1255,11 +1266,17 @@ fn an_object_shows_each_component_and_keeps_one_with_no_type() {
     assert!(tree.get("components").is_none());
     document.set_tree(&Item::Object(0), tree).unwrap();
     let prop = document.component_tree(0, "prop", types).unwrap().unwrap();
-    document.set_component_tree(0, "prop", &prop, types).unwrap();
+    document
+        .set_component_tree(0, "prop", &prop, types)
+        .unwrap();
     assert_eq!(document, before);
     // No type reads "swing": an error, and the text stays.
     assert!(document.component_tree(0, "swing", types).unwrap().is_err());
-    assert!(document.set_component_tree(0, "swing", &prop, types).is_err());
+    assert!(
+        document
+            .set_component_tree(0, "swing", &prop, types)
+            .is_err()
+    );
     assert!(document.component_tree(0, "none", types).is_none());
 
     // A change of the pose and of a field of the prop.
@@ -1268,7 +1285,9 @@ fn an_object_shows_each_component_and_keeps_one_with_no_type() {
     document.set_tree(&Item::Object(0), tree).unwrap();
     let mut prop = prop;
     prop["collider"] = false.into();
-    document.set_component_tree(0, "prop", &prop, types).unwrap();
+    document
+        .set_component_tree(0, "prop", &prop, types)
+        .unwrap();
 
     // Saved and read again: the note, the text of "swing", the changes.
     let saved = document.text();
@@ -1315,7 +1334,10 @@ fn the_props_of_a_room_become_objects_with_their_notes() {
     document.items_to_objects();
     assert!(document.room.props.is_empty());
     let objects = &document.room.objects;
-    let back: Vec<_> = objects.iter().map(|object| object.prop().unwrap().unwrap()).collect();
+    let back: Vec<_> = objects
+        .iter()
+        .map(|object| object.prop().unwrap().unwrap())
+        .collect();
     assert_eq!(back, props);
     assert_eq!(document.notes_of(&Item::Object(0)), ["The cube."]);
     assert!(document.notes_of(&Item::Object(1)).is_empty());
@@ -1326,5 +1348,10 @@ fn the_props_of_a_room_become_objects_with_their_notes() {
         ),
         "{saved}"
     );
-    assert_eq!(Document::parse(Path::new("room.ron"), &saved, &registry).unwrap().text(), saved);
+    assert_eq!(
+        Document::parse(Path::new("room.ron"), &saved, &registry)
+            .unwrap()
+            .text(),
+        saved
+    );
 }

@@ -18,11 +18,11 @@ pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{ComponentText, ComponentType, ComponentTypes, ObjectDef, add_component_type};
 pub use room::{
-    CurrentRoom, DoorDef, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef, PoseDef, PrefabDef,
-    PrefabUse, Prop, PropDef, RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride,
-    RoomProblem, RoomRequest, RoomShell, RoomTarget, RoomValidator, RoomValidators, SoundDef,
-    TextureDef, check_room, load_requested_room, parse_room, patch_room, pose_in, pose_out,
-    prefab_text, read_prefab, read_room, ron_options,
+    CurrentRoom, DoorDef, DoorLeaf, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef,
+    MoverPath, PoseDef, PrefabDef, PrefabUse, Prop, PropDef, RoomCheck, RoomDef, RoomEntity,
+    RoomItem, RoomModels, RoomOverride, RoomProblem, RoomRequest, RoomShell, RoomTarget,
+    RoomValidator, RoomValidators, SoundDef, TextureDef, check_room, load_requested_room,
+    parse_room, patch_room, pose_in, pose_out, prefab_text, read_prefab, read_room, ron_options,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
@@ -32,15 +32,17 @@ impl Module for SceneModule {
     fn build(&self, app: &mut App) {
         // The item kinds of a room file, for the tools.
         maki_core::add_field_type::<RoomShell>(app, "room");
-        maki_core::add_field_type::<maki_assets::Doorway>(app, "doorway");
-        maki_core::add_field_type::<DoorDef>(app, "door");
+        maki_core::add_field_type::<DoorDef>(app, "door item");
         maki_core::add_field_type::<PropDef>(app, "prop item");
         // The fields of an object but its components.
         maki_core::add_field_type::<ObjectDef>(app, "object");
         // The types of components of the scene.
         add_component_type::<Prop>(app, "prop");
         add_component_type::<LightSource>(app, "light");
-        maki_core::add_field_type::<MoverDef>(app, "mover");
+        add_component_type::<maki_assets::Doorway>(app, "doorway");
+        add_component_type::<DoorLeaf>(app, "door");
+        add_component_type::<MoverPath>(app, "mover");
+        maki_core::add_field_type::<MoverDef>(app, "mover item");
         maki_core::add_field_type::<LightDef>(app, "light item");
         maki_core::add_field_type::<PrefabUse>(app, "prefab");
         // The stores normally come from `AssetsModule`. This keeps the loader
