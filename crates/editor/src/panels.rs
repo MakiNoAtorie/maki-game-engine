@@ -801,11 +801,20 @@ fn components(ui: &mut Ui, world: &World, editor: &mut Editor, index: usize) -> 
         ui.strong(&name);
         let tree = editor.document.component_tree(index, &name, types);
         let table = tables.and_then(|tables| tables.get(&name));
-        let (Some(Ok(mut tree)), Some(table)) = (tree, table) else {
-            ui.weak("No module registered this type: the text is kept as it is.");
-            let object = &editor.document.room.objects[index];
-            ui.monospace(object.components[&name].as_str());
-            continue;
+        // No type of the name, or a text that the type does not read: the reason.
+        let readable = match (tree, table) {
+            (Some(Ok(tree)), Some(table)) => Ok((tree, table)),
+            (Some(Err(reason)), _) => Err(reason),
+            _ => Err(format!("no module gave the type \"{name}\" its fields")),
+        };
+        let (mut tree, table) = match readable {
+            Ok(readable) => readable,
+            Err(reason) => {
+                ui.weak(format!("{reason}: the text is kept as it is."));
+                let object = &editor.document.room.objects[index];
+                ui.monospace(object.components[&name].as_str());
+                continue;
+            }
         };
         // An id of its own: egui makes the id of a widget from its label, and two
         // components can have a field of the same name.

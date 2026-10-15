@@ -36,6 +36,8 @@ State: done. Stage file: [stage-48-objects.md](stage-48-objects.md) (written by 
 - **`RoomItem` is the index of the object** (`RoomItem(usize)`), not an enum with one variant.
 - **A prefab file keeps its lists** (`props`, `lights` of `PrefabDef`): prefab files as objects are stage 49 (#6). `PropDef`, `LightDef`, `MoverDef`, `PrefabUse` stay as the typed view of a component with its object (name, pose); they lost their table of fields.
 - **The events stay a list of the room**: events as components are stage 51 (#12).
+- **The editor keeps code of its own for some component types** (#5 asked for no fixed item-kind lists and no panel code by hand for a kind): the "Add" menu (`Kind`: cube, light, doorway, door, mover, spawn point, ...) makes an object with preset components; the gizmo has the handles of a cone light, a doorway, and the second pose of a mover; the inspector has the check box "the gizmo changes the second pose (b) only" for a mover; "make prefab" takes objects of `prop` and `light` only (the components that a prefab file holds). The rows of each component come from its table. The menu goes to prefab files of kinds in stage 49 (#6); the handles need a registry of gizmo handles of a component, which no stage plans yet.
+- **"Add door" puts the door into the first doorway with no door**, as before, not into the selected one.
 
 ## 4. Decisions where the stage file was silent
 
@@ -47,6 +49,8 @@ State: done. Stage file: [stage-48-objects.md](stage-48-objects.md) (written by 
 - **The outliner label of an object with no name**: the name of its first component and the index.
 - **`patch_room`** (a change that needs no load) copies the pose of an object but of a file model or a prefab, the values of a light but its sound, and `b` and the time of a mover. Its loop of mesh poses skips doors and movers (they have their own poses) and the meshes of files and prefabs.
 - **The order of the migrated objects**: doorways with their doors, movers, props, lights, prefab uses, spawn points; the notes of each item went to its object.
+
+Code review (`/code-review` since `526d6da`): the inspector named each component that it could not read "not registered", also a registered one with a bad text; it now shows the reason. Other points of the review are in 3 and 6.
 
 Bugs found and fixed in the stage: `patch_room` set the pose of the object on the leaf of a door and on each mesh of a prefab (after #3 and #4: a slider in the editor moved them); a copy of a light object moved its light two times; the test of the same file failed on a checkout with CRLF line ends.
 
@@ -74,6 +78,7 @@ Bugs found and fixed in the stage: `patch_room` set the pose of the object on th
 
 - **An object with two components that each make an entity** (a prop and a light): two entities with one `RoomItem`. It works for the loader and the pick; a light of a model file in an object that also has a `light` would take that light's values in a patch. No room has that.
 - **Raw strings** (`r#"..."#`) in a component text are not known to the compactor: a `"` in one ends the string there (`ponytail` note in `object.rs`).
+- **The names of the component types are text** (`"prop"`, `"light"`, ...) in the scene, events, audio, and editor crates: a wrong name compiles. A name constant on each type (for `add_component_type` and the users) is the fix; not done in this stage.
 - **The symbol limit**: 7,573 are left. Stages 49 and 50 add the prefab instance and the script types.
 - **The parent of an object** is written and read, and nothing uses it yet (stage 49).
 - **`test_1080p`: GPU total 0.14 ms (3 %) above the commit before**, in two rounds back to back (4.96 and 4.96 ms before, 5.10 and 5.12 ms now). Each pass has the same time within 0.01 ms and the picture is byte-equal: the difference is between the passes, not in their work. Not explained; the other five scenarios show none.
