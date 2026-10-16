@@ -8,7 +8,7 @@ Never pull full logs into context. Filter to errors and failures.
 - One build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`. Tests: `cargo test -q` runs the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit.
 - Benchmark: `tools/bench.py` writes CSV. `compare A B --total` gives one row per scenario.
 - A step of the GPU time with equal pictures: `bench.py confirm COMMIT SCENARIO...` runs the build of the commit before and this tree back to back (two rounds) and drops its runs. Equal within a few percent: the machine.
-- Picture gate first: after a change of a room file or of the renderer, `bench.py run --label X --only trip_720p walk_720p test_1080p materials_720p` and `bench.py same SCENARIO sNN X` for each (2 minutes), before the full run (20 minutes). `bench.py drop X` removes a side run.
+- Picture gate: `bench.py gate` runs the build of the merge-base with `origin/main` and this tree back to back and compares the pictures (`equal`, `noise`, or `CHANGED`); it drops its runs. A label such as `s52` is a base for the GPU time only: `main` can have other pictures than the run of a label. Run the gate after a change of a room file or of the renderer, and in each stage loop, before the full run (20 minutes). `bench.py drop X` removes a side run.
 
 ## Editing files
 - A room file in the form of the editor (a test compares them): `MAKI_WRITE_ROOMS=1 cargo test -q -p maki-game-scripts the_editor_writes`, then `git diff game/assets/rooms`.
@@ -23,6 +23,9 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 
 ## Subagents
 - Parallel implementers may each have a worktree and a branch from the stage branch (owner, 2026-10-15); one implementer works on the stage branch. Two writers never touch the same files. A parallel branch is merged into the stage branch when its checks pass, then its worktree and branch go. Each lane is reviewed (`/code-review`) before or after its merge, in the same stage.
+- A lane keeps the stage branch green: it fixes a test outside its scope that its own change breaks.
+- A lane in a worktree builds into a warm slot: `CARGO_TARGET_DIR=<repo>/../maki-target/slotK`, K from 1 to 3, one slot for each running lane. GPU tools and `tools/reload_test.py` run in the main checkout (they read `target/`).
+- A session or subagent whose work ends in its own branch or pull request gets its own worktree (`use_worktree: true`): the main checkout stays on the branch of the orchestrator.
 - Implementers run the local checks above, do not edit shared notes, and end their report with at most 10 bullet points of new conventions. The orchestrator folds them into this file.
 - Prompt template:
 

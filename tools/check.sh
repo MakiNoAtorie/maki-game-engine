@@ -12,7 +12,8 @@ step() {
     shift
     out=$("$@" 2>&1)
     status=$?
-    errors=$(printf '%s\n' "$out" | rg -e '^(error|warning)|FAILED|panicked|^Diff in|Error:|^FAIL ' -A 5 | head -40)
+    # A crash of rustc (STATUS_STACK_BUFFER_OVERRUN and others) is a fail, also when cargo ends with 0.
+    errors=$(printf '%s\n' "$out" | rg -e '^(error|warning)|FAILED|panicked|^Diff in|Error:|^FAIL |STATUS_[A-Z_]+|exit code: 0xc' -A 5 | head -40)
     if [ $status -ne 0 ] || [ -n "$errors" ]; then
         echo "FAIL $name"
         printf '%s\n' "$errors"
@@ -27,9 +28,12 @@ step "format" cargo fmt --all -- --check
 # self-test of the benchmark statistics.
 tools() {
     python -B -c 'import ast, glob; [ast.parse(open(p, encoding="utf-8").read(), p) for p in glob.glob("tools/*.py")]' &&
-        python -B tools/bench.py selftest
+        python -B tools/bench.py selftest &&
+        python -B tools/comment_lint.py selftest
 }
 step "tools" tools
+# One-line comments, in the lines that this branch adds (CODING_STANDARDS.md).
+step "comments" python -B tools/comment_lint.py
 step "clippy static" cargo clippy -q --workspace --all-targets
 if [ "$1" != "fast" ]; then
     step "test static" cargo test -q
