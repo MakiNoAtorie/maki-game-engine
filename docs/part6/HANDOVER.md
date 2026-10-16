@@ -102,4 +102,4 @@ Open from stage 48 (report, sections 3 and 6): the names of the component types 
 - A GPU time or picture regression that is the code and not the machine (build the commit before in the scratchpad and run the two back to back).
 - A new dependency that the stage file does not name.
 - The symbol limit of the engine DLL: a split into two DLLs changes 2.3.
-- A stage that the plan marks "in discussion", and an action that is not a commit and a push on `main`.
+- A stage that the plan marks "in discussion", and an action outside the stage branch, its pull request, and its merge into `main` (`CLAUDE.md`, working agreement).

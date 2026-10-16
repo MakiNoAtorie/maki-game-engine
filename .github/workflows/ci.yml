@@ -1,0 +1,48 @@
+# The checks of `tools/check.sh` (format, clippy and tests of the static and the
+# dynamic build) on each push to main and each pull request. The GPU checks (the
+# validation run, the trip run, the benchmark) need the GPU of the owner: they stay
+# local, in the stage loop of CLAUDE.md.
+name: Checks
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: Windows
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      # `glslc` compiles the shaders in crates/render/build.rs; the action sets
+      # VULKAN_SDK.
+      - name: Install the Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1.7.0
+        with:
+          cache: true
+
+      # tools/check.sh filters the output with ripgrep.
+      - name: Install ripgrep
+        run: choco install ripgrep --no-progress -y
+
+      - name: Checks
+        run: sh tools/check.sh

@@ -353,6 +353,27 @@ def command_base(args):
     print(f"base {args.commit}: run `{args.label}` is in {HISTORY.name}")
 
 
+def command_confirm(args):
+    """Is a step of the GPU time the code or the machine? The build of `commit` and
+    this tree, back to back, `rounds` times; the runs are dropped after."""
+    labels = []
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(["round", "name", "median_ms base", "median_ms this", "change_percent"])
+    for round in range(1, args.rounds + 1):
+        base, this = f"confirmbase{round}", f"confirmthis{round}"
+        labels += [base, this]
+        common = {"only": args.scenarios, "behind": True}
+        command_base(argparse.Namespace(commit=args.commit, label=base, **common))
+        command_run(argparse.Namespace(label=this, frames=700, warmup=100, **common))
+        (_, a), (_, b) = stored_run(base), stored_run(this)
+        for name in a:
+            if name in b and name.endswith("/gpu_total"):
+                change = (b[name] - a[name]) / a[name] * 100 if a[name] else float("nan")
+                writer.writerow([round, name, a[name], b[name], f"{change:+.1f}"])
+    for label in labels:
+        command_drop(argparse.Namespace(label=label))
+
+
 def build():
     result = subprocess.run(
         ["cargo", "build", "--release", "-p", "maki-game"], cwd=ROOT, capture_output=True, text=True
@@ -618,6 +639,11 @@ if __name__ == "__main__":
     same.add_argument("a")
     same.add_argument("b")
     same.set_defaults(function=command_same)
+    confirm = commands.add_parser("confirm", help="the build of a commit and this tree back to back; the runs are dropped")
+    confirm.add_argument("commit")
+    confirm.add_argument("scenarios", nargs="+", metavar="SCENARIO")
+    confirm.add_argument("--rounds", type=int, default=2)
+    confirm.set_defaults(function=command_confirm)
     commands.add_parser("selftest").set_defaults(function=command_selftest)
     arguments = parser.parse_args()
     arguments.function(arguments)

@@ -74,6 +74,10 @@ output = false",
             scene::read_room(&path, validators).unwrap();
             let document = maki_editor::Document::read(&path, registry).unwrap();
             let text = document.text();
+            // The formatter of the room files: the text of the editor in the file.
+            if std::env::var_os("MAKI_WRITE_ROOMS").is_some() {
+                std::fs::write(&path, &text).unwrap();
+            }
             // Git on Windows can give the file CRLF line ends.
             let file = std::fs::read_to_string(&path)
                 .unwrap()
