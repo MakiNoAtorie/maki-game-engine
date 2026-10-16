@@ -92,16 +92,52 @@ macro_rules! export_project {
 /// Log filter variable, same syntax as `RUST_LOG` (for example `debug` or `maki_core=trace`).
 const LOG_ENV: &str = "MAKI_LOG";
 
-/// The log setup of a program: text to the terminal, with the filter of `MAKI_LOG`.
+/// The log setup of a program: text to the terminal and to the log panel
+/// (`maki_devtools::LOG`), with the filter of `MAKI_LOG`.
 pub fn init_logging() {
-    let filter = EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = || EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
     // The filter is on the text output only. The profiler gets the spans of the
     // schedules and passes (trace level) at each log level.
-    let subscriber =
-        tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_filter(filter));
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter()))
+        .with(LogPanelLayer.with_filter(filter()));
     #[cfg(feature = "profile")]
     let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
     subscriber.init();
+}
+
+/// Writes each log line into the store of the log panel.
+struct LogPanelLayer;
+
+impl<S: tracing::Subscriber> Layer<S> for LogPanelLayer {
+    fn on_event(&self, event: &tracing::Event, _context: tracing_subscriber::layer::Context<S>) {
+        let meta = event.metadata();
+        let mut text = Text(String::new());
+        event.record(&mut text);
+        let place = meta.file().zip(meta.line());
+        maki_devtools::LOG.push(maki_devtools::LogLine {
+            level: *meta.level(),
+            target: meta.target().to_owned(),
+            text: text.0.trim_end().to_owned(),
+            place: place.map(|(file, line)| (PathBuf::from(file), line)),
+            count: 1,
+        });
+    }
+}
+
+/// The message of a log line, then its other fields as `name=value`.
+struct Text(String);
+
+impl tracing::field::Visit for Text {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        if field.name() == "message" {
+            // The message goes first.
+            self.0.insert_str(0, &format!("{value:?} "));
+        } else {
+            let _ = write!(self.0, "{}={value:?} ", field.name());
+        }
+    }
 }
 
 /// The config path of a command line, after the options were taken out of it.

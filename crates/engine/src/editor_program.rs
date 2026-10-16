@@ -7,12 +7,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, bail};
-use maki_core::{App, ConfigFile};
+use bevy_ecs::system::{Local, Res};
+use maki_core::{App, ConfigFile, Update};
 use maki_editor::Session;
 use maki_ui::{NoticeLevel, Notices};
 
 use crate::new_script::NewScriptModule;
-use crate::reload::{BuildReport, ProjectModule, build};
+use crate::reload::{BuildReport, ProjectModule, build, open_in_code_editor};
 use crate::{Project, Result, add_modules, config_path, init_logging, load_project};
 
 /// The build command of the editor and of the script DLL of a project: the arguments
@@ -98,7 +99,20 @@ pub(crate) fn editor_app(
         })
         .add_module(NewScriptModule {
             project: project.dir.clone(),
-        });
+        })
+        .add_module(maki_devtools::LogPanelModule {
+            open: open_in_code_editor,
+        })
+        // The log panel shows the lines of one game: it is empty at "Play".
+        .add_systems(
+            Update,
+            |editor: Res<maki_editor::Editor>, mut played: Local<bool>| {
+                if editor.playing() && !*played {
+                    maki_devtools::LOG.clear();
+                }
+                *played = editor.playing();
+            },
+        );
     app.check_config()?;
     Ok((app, failure))
 }
