@@ -20,7 +20,7 @@ use crate::CommandRegistry;
 use crate::check::{CheckContext, Finding};
 use crate::command::{Command, Step};
 use crate::interpreter::{ChoiceBox, Choices};
-use crate::model::{Compare, Condition, all_hold};
+use crate::model::{Compare, Condition, EventPages, all_hold};
 use crate::script::ScriptContext;
 use crate::{CHOICE_DOWN, CHOICE_UP, GameState, INTERACT, MessageBox};
 
@@ -61,6 +61,9 @@ pub enum Builtin {
     /// Calls a function of the script crate (`add_script_function`) with the object
     /// of the event.
     CallScript(String),
+    /// Sends an output of an object: the object, the output. Its wires start in the
+    /// next step.
+    Signal(String, String),
 }
 
 /// One step of a built-in command. False: the command waits.
@@ -192,6 +195,14 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
         Builtin::SetField(object, component, field, value) => {
             set_field(world, [object, component, field], value);
         }
+        Builtin::Signal(object, output) => {
+            let mut events = world.query::<(Entity, &Name, &EventPages)>();
+            let found = events.iter(world).find(|(_, name, _)| name.0 == *object);
+            match found.map(|(entity, ..)| entity) {
+                Some(entity) => crate::interpreter::Signals::send(world, entity, output),
+                None => tracing::warn!(event = step.event, object, "Signal: no object with wires"),
+            }
+        }
         Builtin::CallScript(name) => {
             let function = world.resource::<CommandRegistry>().function(name);
             match (function, step.entity) {
@@ -321,6 +332,7 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
             format!("Set {object}: {component}.{field} = {value}")
         }
         Builtin::CallScript(name) => format!("Call the script function {name}"),
+        Builtin::Signal(object, output) => format!("Signal {output} of {object}"),
     })
 }
 
@@ -344,6 +356,7 @@ pub(crate) fn help(name: &str) -> Option<&'static str> {
         "Transfer" => "Goes to a spawn point of a room. The event goes on there.",
         "SetField" => "Changes a field of a component of an object.",
         "CallScript" => "Calls a function of the script crate, with the object of the event.",
+        "Signal" => "Sends an output of an object: its wires start.",
         _ => return None,
     })
 }
@@ -392,7 +405,13 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
                 Some(_) => None,
             }
         }
-        Builtin::CallScript(name) => (!context.functions.contains(&name.as_str()))
+        Builtin::Signal(object, output) => {
+            context.output_problem(object, output).map(Finding::error)
+        }
+        Builtin::CallScript(name) => context
+            .registry
+            .function(name)
+            .is_none()
             .then(|| Finding::error(format!("no module added the script function `{name}`"))),
         _ => None,
     }

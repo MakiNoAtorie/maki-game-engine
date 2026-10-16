@@ -27,8 +27,21 @@ pub struct CheckContext<'a> {
     /// For another room file in the directory of the room, and a name: true if the
     /// file has a spawn point of that name. `None`: no such room file.
     pub spawn: &'a dyn Fn(&str, &str) -> Option<bool>,
-    /// The names of the script functions (`CommandRegistry::functions`).
-    pub functions: &'a [&'static str],
+    /// The script functions and the outputs of the component types.
+    pub registry: &'a CommandRegistry,
+}
+
+impl CheckContext<'_> {
+    /// What is wrong with an output of an object of the room. `None`: the object has
+    /// it.
+    pub fn output_problem(&self, object: &str, output: &str) -> Option<String> {
+        let named = |found: &&maki_scene::ObjectDef| found.name.as_deref() == Some(object);
+        let Some(found) = self.room.objects.iter().find(named) else {
+            return Some(format!("the room has no object `{object}`"));
+        };
+        let has = self.registry.outputs_of(found).contains(&output);
+        (!has).then(|| format!("the object `{object}` has no output `{output}`"))
+    }
 }
 
 impl CheckContext<'_> {
@@ -99,11 +112,26 @@ impl CommandRegistry {
                     text: format!("another event has the name `{}`", event.name),
                 });
             }
-            for (page, list) in event.pages.iter().enumerate() {
+            // A wire joins an output that a component of its object has.
+            for wire in &event.wires {
+                if let Some(text) = context.output_problem(&event.name, &wire.output) {
+                    problems.push(Problem {
+                        event: index,
+                        object: event.object,
+                        command: None,
+                        warning: false,
+                        text,
+                    });
+                }
+            }
+            // The command lists: the pages, then the wires.
+            let pages = event.pages.iter().map(|page| &page.commands);
+            let lists = pages.chain(event.wires.iter().map(|wire| &wire.commands));
+            for (page, commands) in lists.enumerate() {
                 // The commands after a `Transfer` run in another room: its names
                 // are not known here.
                 let mut left = false;
-                self.each_command(&list.commands, &mut |command| {
+                self.each_command(commands, &mut |command| {
                     if left {
                         return;
                     }
@@ -146,7 +174,7 @@ impl CommandRegistry {
                 file: &file.to_string_lossy(),
                 directory,
                 spawn: &spawn,
-                functions: &registry.functions(),
+                registry: &registry,
             };
             let problems = registry.check_events(&events, &context);
             let with_line = |problem: Problem| {

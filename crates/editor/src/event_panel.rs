@@ -14,8 +14,8 @@ use bevy_ecs::world::World;
 use maki_core::fields::{Field, Kind, Value};
 use maki_core::{App, FieldTypes};
 use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, GameState, Page, Problem,
-    Trigger, active_page,
+    Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, EventPages, GameState, Page,
+    Problem, Trigger, Wire, active_page,
 };
 use maki_scene::{ComponentTypes, RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
@@ -233,6 +233,11 @@ struct Lists {
     fields: BTreeMap<String, Vec<Field>>,
     /// The script functions that `CallScript` calls.
     functions: Vec<String>,
+    /// The objects with a name and outputs, each with its outputs: what `Signal`
+    /// sends.
+    outputs: Vec<(String, Vec<String>)>,
+    /// The outputs of the object of the event: what its wires join.
+    own_outputs: Vec<String>,
     /// The keys of delete, duplicate, copy, and paste, for the hover texts.
     row_keys: [String; 4],
 }
@@ -513,6 +518,20 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
             ui.label("script function");
             pick(ui, "function", name, &lists.functions)
         }
+        Builtin::Signal(object, output) => {
+            let objects: Vec<String> = lists.outputs.iter().map(|found| found.0.clone()).collect();
+            ui.label("object");
+            let picked = pick(ui, "object", object, &objects);
+            let of_object = lists.outputs.iter().find(|found| found.0 == *object);
+            let outputs = of_object.map_or(&[][..], |found| &found.1);
+            // Another object picked: its first output, if it has not the one of before.
+            if let (true, false, Some(first)) = (picked, outputs.contains(output), outputs.first())
+            {
+                output.clone_from(first);
+            }
+            ui.label("output");
+            picked | pick(ui, "output", output, outputs)
+        }
         Builtin::Choice(question, answers) => {
             ui.label("question");
             let field = egui::TextEdit::multiline(question)
@@ -597,6 +616,10 @@ fn new_command(
             Builtin::SetField(object, component, field, value)
         }
         "CallScript" => Builtin::CallScript(first(&lists.functions, "")),
+        "Signal" => {
+            let (object, outputs) = lists.outputs.first().cloned().unwrap_or_default();
+            Builtin::Signal(object, first(&outputs, ""))
+        }
         // A command of another module: what the module gives for the name, or the
         // name alone for a command with no argument.
         other => {
@@ -728,6 +751,19 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        outputs: room
+            .objects
+            .iter()
+            .filter_map(|object| {
+                let outputs = registry.outputs_of(object);
+                let outputs = outputs.into_iter().map(str::to_owned).collect::<Vec<_>>();
+                (!outputs.is_empty()).then(|| Some((object.name.clone()?, outputs)))?
+            })
+            .collect(),
+        own_outputs: room.objects.get(index).map_or_else(Vec::new, |object| {
+            let outputs = registry.outputs_of(object).into_iter();
+            outputs.map(str::to_owned).collect()
+        }),
         row_keys: Default::default(),
     };
     (lists, problems)
@@ -815,10 +851,13 @@ pub(crate) fn event_panel(
         .unwrap_or_default();
     let room = &document.room;
     let mut changed = false;
-    if event.pages.is_empty() {
+    if event.pages.is_empty() && event.wires.is_empty() {
         event.pages.push(empty_page());
         changed = true;
     }
+    // Another event: a page or a wire that it has.
+    let lists_count = event.pages.len() + event.wires.len();
+    event_ui.page = event_ui.page.min(lists_count - 1);
     let scroll = |salt: &'static str| egui::ScrollArea::both().id_salt(salt).auto_shrink(false);
 
     let frame = egui::Frame::NONE.inner_margin(6);
@@ -832,6 +871,8 @@ pub(crate) fn event_panel(
     part(egui::Panel::left("event pages")).show(ui, |ui| {
         scroll("pages").show(ui, |ui| {
             changed |= pages(ui, &mut event.pages, &name, event_ui, &state, &lists, queue);
+            ui.separator();
+            changed |= wires(ui, &mut event, event_ui, &lists);
         });
     });
     let at = event_ui.page;
@@ -840,17 +881,20 @@ pub(crate) fn event_panel(
         event_ui.row = None;
         event_ui.draft = None;
     }
-    let page = &mut event.pages[at];
+    // A page, or a wire: its commands.
+    let Some(list) = event.list_mut(at) else {
+        return Some(changed);
+    };
     part(egui::Panel::right("event arguments")).show(ui, |ui| {
         scroll("arguments").show(ui, |ui| {
             let places = (&lists, &registry, &editors, room);
-            changed |= command_arguments(ui, page, event_ui, places);
+            changed |= command_arguments(ui, list, event_ui, places);
         });
     });
     egui::Frame::NONE.inner_margin(6).show(ui, |ui| {
         scroll("commands").show(ui, |ui| {
             let places = (&lists, &registry, room);
-            changed |= command_rows(ui, page, event_ui, places, &problems, at);
+            changed |= command_rows(ui, list, event_ui, places, &problems, at);
         });
     });
     if changed {
@@ -874,9 +918,16 @@ fn pages(
     queue: &mut Vec<EditorCommand>,
 ) -> bool {
     let mut changed = false;
+    if pages.is_empty() {
+        if ui.button("Add a page").clicked() {
+            pages.push(empty_page());
+            (event_ui.page, event_ui.row) = (0, None);
+            changed = true;
+        }
+        return changed;
+    }
     // The pages, as tabs. The one that the game would run now has a star.
     let count = pages.len();
-    event_ui.page = event_ui.page.min(count - 1);
     let active = active_page(pages, state);
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
@@ -894,6 +945,10 @@ fn pages(
             }
         }
     });
+    // A wire is shown: no page part.
+    if event_ui.page >= count {
+        return changed;
+    }
     let at = event_ui.page;
     ui.horizontal(|ui| {
         let before = (pages.clone(), at);
@@ -973,6 +1028,52 @@ fn pages(
     changed
 }
 
+/// The wires of the object, as tabs under the pages: the output of the wire that
+/// shows, and buttons to add and delete one. The index of a wire in
+/// `EventUi::page` is after the pages.
+fn wires(ui: &mut Ui, event: &mut EventPages, event_ui: &mut EventUi, lists: &Lists) -> bool {
+    let first = event.pages.len();
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Wires");
+        for (index, wire) in event.wires.iter().enumerate() {
+            let tab = ui.selectable_label(event_ui.page == first + index, &wire.output);
+            if tab.clicked() {
+                (event_ui.page, event_ui.row) = (first + index, None);
+            }
+        }
+    });
+    let add = ui
+        .button("Add a wire")
+        .on_hover_text("When an output of this object is sent, the commands of the wire run");
+    if add.clicked() {
+        let output = lists.own_outputs.first().cloned().unwrap_or_default();
+        event.wires.push(Wire {
+            output,
+            commands: Vec::new(),
+        });
+        (event_ui.page, event_ui.row) = (first + event.wires.len() - 1, None);
+        changed = true;
+    }
+    let shown = event_ui.page.checked_sub(first);
+    let Some(at) = shown.filter(|at| *at < event.wires.len()) else {
+        return changed;
+    };
+    ui.label("output");
+    changed |= pick(
+        ui,
+        "output",
+        &mut event.wires[at].output,
+        &lists.own_outputs,
+    );
+    if ui.button("Delete the wire").clicked() {
+        event.wires.remove(at);
+        (event_ui.page, event_ui.row) = (event_ui.page.saturating_sub(1), None);
+        changed = true;
+    }
+    changed
+}
+
 /// Red for an error of a check (the game does not load the room), else yellow.
 fn color(problem: &Problem) -> Color32 {
     if problem.warning { HINT } else { ERROR }
@@ -989,13 +1090,12 @@ fn empty_page() -> Page {
 /// The middle part of the event panel: the command rows of a page.
 fn command_rows(
     ui: &mut Ui,
-    page: &mut Page,
+    list: &mut Vec<Command>,
     event_ui: &mut EventUi,
     (lists, registry, room): (&Lists, &CommandRegistry, &RoomDef),
     problems: &[&Problem],
     page_index: usize,
 ) -> bool {
-    let list = &mut page.commands;
     let all = rows(list, registry);
     // A row that is not there after a change of the list is not selected.
     if event_ui
@@ -1173,11 +1273,10 @@ fn command_rows(
 /// the text of a command that is typed.
 fn command_arguments(
     ui: &mut Ui,
-    page: &mut Page,
+    list: &mut Vec<Command>,
     event_ui: &mut EventUi,
     (lists, registry, editors, room): (&Lists, &CommandRegistry, &ArgumentEditors, &RoomDef),
 ) -> bool {
-    let list = &mut page.commands;
     let mut changed = false;
     ui.label("Arguments");
     // The arguments of the selected command.
@@ -1299,6 +1398,8 @@ mod tests {
             objects: objects(&[("lamp", &["light"]), ("sign", &["area", "event", "light"])]),
             fields: BTreeMap::new(),
             functions: Vec::new(),
+            outputs: Vec::new(),
+            own_outputs: Vec::new(),
             row_keys: Default::default(),
         };
         live_lists(app.world(), &mut lists);

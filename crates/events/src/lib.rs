@@ -32,14 +32,16 @@ pub use builtin::Builtin;
 pub use check::{CheckContext, Finding, Problem};
 pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, ScriptFunction, Step};
 pub use interpreter::{
-    ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, load_room_events, run_events,
-    start_event,
+    ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, Signals, load_room_events,
+    run_events, start_event,
 };
 pub use model::{
-    Area, Compare, Condition, EventDef, EventPages, Page, Trigger, active_page, all_hold,
+    Area, Compare, Condition, EventDef, EventPages, Page, Trigger, Wire, active_page, all_hold,
     short_events,
 };
-pub use script::{Script, ScriptContext, TriggerArea, add_script, add_script_function};
+pub use script::{
+    Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
+};
 
 /// Starts the event that the player faces, closes a message, and takes the marked
 /// answer of a question.
@@ -100,12 +102,14 @@ impl Module for EventsModule {
         );
         app.init_resource::<GameState>()
             .init_resource::<EventRunner>()
+            .init_resource::<interpreter::Signals>()
             .init_resource::<MessageBox>()
             .init_resource::<ChoiceBox>()
             .init_resource::<RoomValidators>()
             .init_resource::<script::ScriptRunners>();
         // The area of an object, for the hooks of its scripts and for its event.
         maki_scene::add_object_component::<TriggerArea>(app, "area");
+        registry.add_outputs("area", &["used", "entered", "left"]);
         // The pages of an event: commands of all modules, read with the registry.
         maki_scene::add_component_reader(app, "event", interpreter::insert_event);
         // A room with a bad event is not loaded. The check has the registry, with

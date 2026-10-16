@@ -489,7 +489,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         file: "a.ron",
         directory: std::path::Path::new(""),
         spawn: &|_, _| None,
-        functions: &[],
+        registry: &registry,
     };
     let problems = registry.check_events(&registry.parse_events(&text).unwrap(), &context);
     let found: Vec<_> = problems
@@ -515,7 +515,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
             file: "a.ron",
             directory: std::path::Path::new(""),
             spawn,
-            functions: &[],
+            registry: &registry,
         };
         let events = registry.parse_events(&room(transfer)).unwrap();
         let problems = registry.check_events(&events, &context);
@@ -881,7 +881,7 @@ fn the_check_finds_a_wrong_object_component_or_function_of_a_general_command() {
         file: "a.ron",
         directory: std::path::Path::new(""),
         spawn: &|_, _| None,
-        functions: &registry.functions(),
+        registry: &registry,
     };
     let events = registry.parse_events(&text).unwrap();
     let problems = registry.check_events(&events, &context);
@@ -916,4 +916,113 @@ fn interact_starts_nothing_outside_the_state_play() {
         steps(&mut app, 1);
         assert!(flag(&app, "read"));
     });
+}
+
+/// A button: an area with a wire on each of its outputs.
+fn button_room(wires: &str) -> String {
+    room("").replacen(
+        "objects: [",
+        &format!(
+            r#"objects: [(name: "button", pose: (position: (0, 0, 1.4)), components: {{"area": (width: 1.0, depth: 1.0), "event": (wires: [{wires}])}}),"#
+        ),
+        1,
+    )
+}
+
+#[test]
+fn the_area_sends_its_outputs_to_the_wires_of_its_object() {
+    let wires = r#"(output: "used", commands: [AddVariable("used", 1)]),
+        (output: "entered", commands: [AddVariable("entered", 1)]),
+        (output: "left", commands: [AddVariable("left", 1)]),
+        (output: "used", commands: [OpenDoor("door")])"#;
+    let app = counter_game("outputs", &button_room(wires));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        // The player faces the area from 0.9 m and presses interact: each wire of
+        // `used`, in the order of the list.
+        interact(&mut app);
+        steps(&mut app, 10);
+        assert_eq!(variable(&app, "used"), 1);
+        let world = app.world();
+        let mut doors = world.try_query::<(&Name, &Mover)>().unwrap();
+        let (_, door) = doors.single(world).unwrap();
+        assert_eq!(door.state, MoverState::AtB);
+        // Into the area and out.
+        place_player(&mut app, [0.0, 0.0, 1.4]);
+        steps(&mut app, 2);
+        place_player(&mut app, [0.0, 0.0, -2.0]);
+        steps(&mut app, 2);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 1));
+    });
+}
+
+/// A script that sends its output `ping` in its first step.
+#[derive(
+    bevy_ecs::component::Component,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    maki_core::Fields,
+)]
+struct Pinger {}
+
+impl Script for Pinger {
+    fn start(&mut self, context: &mut ScriptContext) {
+        context.signal("ping");
+    }
+}
+
+#[test]
+fn a_signal_row_and_a_script_send_outputs_to_wires() {
+    let room = button_room(r#"(output: "used", commands: [AddVariable("used", 1)])"#).replacen(
+        "objects: [",
+        r#"objects: [
+            (name: "pinger", components: {"pinger": (), "event": (wires: [(output: "ping", commands: [AddVariable("pinged", 1)])])}),
+            (name: "pad", components: {"event": (pages: [(trigger: Autorun, commands: [Signal("button", "used")])])}),"#,
+        1,
+    );
+    let mut app = counter_game("signal", &room);
+    add_script::<Pinger>(&mut app, "pinger");
+    add_outputs(&mut app, "pinger", &["ping"]);
+    app.run(|mut app| {
+        steps(&mut app, 6);
+        // The row sent `used` of the button; the script sent its own `ping`.
+        assert_eq!((variable(&app, "used"), variable(&app, "pinged")), (1, 1));
+    });
+}
+
+#[test]
+fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    let text = button_room(
+        r#"(output: "used", commands: [Signal("button", "entered")]),
+        (output: "pressed", commands: [Signal("button", "pushed"), Signal("knob", "used")])"#,
+    );
+    let def = maki_scene::parse_room(&text).unwrap();
+    let context = CheckContext {
+        room: &def,
+        file: "a.ron",
+        directory: std::path::Path::new(""),
+        spawn: &|_, _| None,
+        registry: &registry,
+    };
+    let events = registry.parse_events(&text).unwrap();
+    let problems = registry.check_events(&events, &context);
+    let texts: Vec<&str> = problems
+        .iter()
+        .map(|problem| problem.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "the object `button` has no output `pressed`",
+            "the object `button` has no output `pushed`",
+            "the room has no object `knob`",
+        ]
+    );
 }

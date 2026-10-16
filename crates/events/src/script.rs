@@ -120,6 +120,12 @@ impl ScriptContext<'_> {
         self.world.get_mut::<C>(entity)
     }
 
+    /// Sends an output of the object (named with `add_outputs`): its wires start in
+    /// the next step.
+    pub fn signal(&mut self, output: &str) {
+        crate::interpreter::Signals::send(self.world, self.entity, output);
+    }
+
     /// A command of the registry (`maki_events::Builtin`, or the commands of any
     /// module) from a value of its enum: for a list, or a branch of a `Choice`.
     /// `None`: no module added the enum; the log has an error.
@@ -198,6 +204,14 @@ pub(crate) struct ScriptRunners(pub(crate) Vec<RunScripts>);
 /// Runs the hooks of the entities of one type. The second argument: the position and
 /// the view direction of the player.
 type RunScripts = fn(&mut World, Option<(Vec3, Vec3)>);
+
+/// Names the outputs of a component type: what a wire of an object with the
+/// component can join, and what a row `Signal` can send. Needs `EventsModule`.
+pub fn add_outputs(app: &mut App, component: &'static str, outputs: &'static [&'static str]) {
+    app.world()
+        .resource::<CommandRegistry>()
+        .add_outputs(component, outputs);
+}
 
 /// Registers a function of the script crate that the row `CallScript` calls by its
 /// name, with the object of the event. Needs `EventsModule`.

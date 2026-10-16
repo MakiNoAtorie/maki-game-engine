@@ -29,7 +29,7 @@ use std::sync::{Arc, RwLock};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
-use maki_scene::{ComponentText, RoomDef};
+use maki_scene::{ComponentText, ObjectDef, RoomDef};
 use serde::de::value::EnumAccessDeserializer;
 use serde::de::{
     DeserializeOwned, DeserializeSeed, EnumAccess, Error as _, IntoDeserializer, VariantAccess,
@@ -219,6 +219,8 @@ pub type ScriptFunction = fn(&mut ScriptContext);
 pub struct CommandRegistry {
     sets: Arc<RwLock<Vec<Set>>>,
     functions: Arc<RwLock<BTreeMap<&'static str, ScriptFunction>>>,
+    /// The outputs of each component type, by its name: what a wire joins.
+    outputs: Arc<RwLock<BTreeMap<&'static str, &'static [&'static str]>>>,
 }
 
 impl CommandRegistry {
@@ -451,6 +453,22 @@ impl CommandRegistry {
             .expect("no writer panics")
             .keys()
             .copied()
+            .collect()
+    }
+
+    /// Names the outputs of a component type (`add_outputs`).
+    pub fn add_outputs(&self, component: &'static str, outputs: &'static [&'static str]) {
+        let mut all = self.outputs.write().expect("no writer panics");
+        all.insert(component, outputs);
+    }
+
+    /// The outputs of an object: those of each of its components.
+    pub fn outputs_of(&self, object: &ObjectDef) -> Vec<&'static str> {
+        let all = self.outputs.read().expect("no writer panics");
+        let names = object.components.keys();
+        let outputs = names.filter_map(|name| all.get(name.as_str()));
+        outputs
+            .flat_map(|outputs| outputs.iter().copied())
             .collect()
     }
 

@@ -228,13 +228,14 @@ impl Document {
     pub fn events(&self, registry: &CommandRegistry) -> Vec<EventDef> {
         let objects = self.room.objects.iter().enumerate();
         let event = |(index, object): (usize, &ObjectDef)| {
-            let pages = registry.parse_pages(object.components.get("event")?).ok()?;
+            let event = registry.parse_pages(object.components.get("event")?).ok()?;
             let area = object.component::<TriggerArea>("area").and_then(Result::ok);
             Some(EventDef {
                 name: object.name.clone().unwrap_or_default(),
                 object: index,
                 area: area.map(|area| EventDef::area_at(&area, object.pose.position)),
-                pages: pages.pages,
+                pages: event.pages,
+                wires: event.wires,
             })
         };
         objects.filter_map(event).collect()

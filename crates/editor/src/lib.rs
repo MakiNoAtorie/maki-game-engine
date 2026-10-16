@@ -482,15 +482,10 @@ impl Editor {
         let Some(Ok(mut event)) = self.document.event(index, &self.registry) else {
             return;
         };
-        let Some(page) = event.pages.get_mut(self.event_ui.page) else {
+        let Some(commands) = event.list_mut(self.event_ui.page) else {
             return;
         };
-        if row_command(
-            &mut page.commands,
-            &mut self.event_ui,
-            &self.registry,
-            command,
-        ) {
+        if row_command(commands, &mut self.event_ui, &self.registry, command) {
             self.document.set_event(index, &event);
             self.document.dirty = true;
         }

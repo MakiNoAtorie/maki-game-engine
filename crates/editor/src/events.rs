@@ -346,7 +346,7 @@ pub fn problems(
         file: &file_name(document),
         directory: document.path.parent().unwrap_or(Path::new("")),
         spawn: &spawn,
-        functions: &registry.functions(),
+        registry,
     };
     registry.check_events(&document.events(registry), &context)
 }

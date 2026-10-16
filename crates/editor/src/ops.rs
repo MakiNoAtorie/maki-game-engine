@@ -17,8 +17,8 @@ use maki_events::{
     Builtin, Command, CommandRegistry, CommandSet, EventPages, Page, Trigger, TriggerArea,
 };
 use maki_scene::{
-    ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef, PrefabDef,
-    PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
+    ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef,
+    PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
 };
 
 use crate::ron_text::Notes;
@@ -42,11 +42,14 @@ pub enum Kind {
     Mover,
     /// An event with an area on the floor and one empty page.
     Event,
+    /// A small cube with an area, and a wire on its output `used` that opens the
+    /// first door or mover.
+    Button,
 }
 
 impl Kind {
     /// The kinds with no file, with the text of the menu.
-    pub const MENU: [(&'static str, Kind); 9] = [
+    pub const MENU: [(&'static str, Kind); 10] = [
         ("Cube", Kind::Cube),
         ("Cuboid", Kind::Cuboid),
         ("Sphere", Kind::Sphere),
@@ -56,6 +59,7 @@ impl Kind {
         ("Door", Kind::Door),
         ("Mover", Kind::Mover),
         ("Event area", Kind::Event),
+        ("Button", Kind::Button),
     ];
 }
 
@@ -162,6 +166,9 @@ impl Document {
                 }
                 Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
                 Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
+                Builtin::Signal(name, output) if name == old => {
+                    Some(Builtin::Signal(new.clone(), output.clone()))
+                }
                 Builtin::SetField(name, component, field, value) if name == old => Some(
                     Builtin::SetField(new.clone(), component.clone(), field.clone(), value.clone()),
                 ),
@@ -405,10 +412,50 @@ impl Document {
                     trigger: Trigger::Interact,
                     commands: Vec::new(),
                 };
-                let pages = EventPages { pages: vec![page] };
+                let pages = EventPages {
+                    pages: vec![page],
+                    wires: Vec::new(),
+                };
                 object.set_component("event", &pages);
                 room.objects.push(object);
                 let name = self.unique_name(&item, "event");
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
+                item
+            }
+            Kind::Button => {
+                let moves = |object: &&ObjectDef| {
+                    object.components.contains_key("door")
+                        || object.components.contains_key("mover")
+                };
+                let door = room
+                    .objects
+                    .iter()
+                    .find(moves)
+                    .and_then(|object| object.name.clone());
+                let mut pose = on_floor(0.15);
+                pose.scale = [0.3; 3];
+                let mut object = PropDef {
+                    mesh: MeshDef::Cube(1.0),
+                    pose,
+                    ..PropDef::default()
+                }
+                .into_object();
+                object.set_component(
+                    "area",
+                    &TriggerArea {
+                        width: 0.8,
+                        depth: 0.8,
+                    },
+                );
+                // The text of the event: the commands of a wire need the registry to be
+                // made as values.
+                let door = door.unwrap_or_default();
+                let wire = format!("(wires: [(output: \"used\", commands: [OpenDoor({door:?})])])");
+                let wire = ComponentText::parse(&wire).expect("the text is RON");
+                object.components.insert("event".to_owned(), wire);
+                let item = Item::Object(room.objects.len());
+                room.objects.push(object);
+                let name = self.unique_name(&item, "button");
                 self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
@@ -761,11 +808,13 @@ pub fn spawn_users(
             .ok()
             .filter(|_| other && path.extension().is_some_and(|extension| extension == "ron"))
             .and_then(|text| registry.parse_events(&text).ok());
-        let pages = events.iter().flatten().flat_map(|event| &event.pages);
-        if pages
-            .into_iter()
-            .any(|page| names(&page.commands, (room_name, spawn)))
-        {
+        // The command lists of the pages and of the wires.
+        let events = events.iter().flatten();
+        let mut lists = events.flat_map(|event| {
+            let pages = event.pages.iter().map(|page| &page.commands);
+            pages.chain(event.wires.iter().map(|wire| &wire.commands))
+        });
+        if lists.any(|commands| names(commands, (room_name, spawn))) {
             users.push(
                 path.file_name()
                     .unwrap_or_default()
@@ -974,5 +1023,47 @@ mod tests {
         let users = spawn_users(&directory, &directory.join("b.ron"), "west", &registry);
         assert_eq!(users, ["a.ron", "c.ron"]);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_button_has_a_wire_and_a_change_of_a_wire_is_one_step_of_the_history() {
+        let registry = registry();
+        let mut document = document(&registry);
+        let mut history = History::default();
+        history.reset(&document);
+        let mut selection = Vec::new();
+
+        // "Add > Button": a wire on `used` that opens the first door of the room.
+        let item = document.add(Kind::Button, Vec3::ZERO).unwrap();
+        history.track(&document, &selection, false);
+        let Item::Object(index) = item else {
+            panic!("an object");
+        };
+        let mut event = document.event(index, &registry).unwrap().unwrap();
+        let texts: Vec<String> = event.wires[0]
+            .commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect();
+        assert_eq!(
+            (event.wires[0].output.as_str(), texts),
+            ("used", vec![r#"OpenDoor("door")"#.to_owned()])
+        );
+
+        // A change of the output, then a delete: each a step of the history.
+        event.wires[0].output = "entered".to_owned();
+        document.set_event(index, &event);
+        history.track(&document, &selection, false);
+        event.wires.clear();
+        document.set_event(index, &event);
+        history.track(&document, &selection, false);
+        assert!(history.undo(&mut document, &mut selection));
+        let output = |document: &Document| {
+            let event = document.event(index, &registry).unwrap().unwrap();
+            event.wires.first().map(|wire| wire.output.clone())
+        };
+        assert_eq!(output(&document).as_deref(), Some("entered"));
+        assert!(history.undo(&mut document, &mut selection));
+        assert_eq!(output(&document).as_deref(), Some("used"));
     }
 }

@@ -480,7 +480,11 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
                 command(Builtin::SetFlag("up".to_owned(), true)),
             ],
         }];
-        editor.document.set_event(3, &EventPages { pages });
+        let event = EventPages {
+            pages,
+            wires: Vec::new(),
+        };
+        editor.document.set_event(3, &event);
         let height = |app: &App| {
             let world = app.world();
             let mut movers = world

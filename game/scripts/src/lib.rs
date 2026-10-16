@@ -28,10 +28,11 @@ mod tests {
     use super::*;
 
     /// The rooms of the game: from the directory of this package, where a test runs.
-    const ROOMS: [&str; 3] = [
+    const ROOMS: [&str; 4] = [
         "../assets/rooms/room_a.ron",
         "../assets/rooms/room_b.ron",
         "../assets/rooms/room_c.ron",
+        "../assets/rooms/room_d.ron",
     ];
 
     /// An app with the modules of the game that read a room file.
@@ -107,7 +108,50 @@ output = false",
             assert_eq!(again.room, document.room, "{path:?}");
             assert_eq!(again.text(), text, "{path:?}");
         }
-        assert_eq!((count, pages), (8, 10));
+        // Room D: the button (wires only) and the pad.
+        assert_eq!((count, pages), (10, 11));
+    }
+
+    /// Room D: the button opens the door by a wire, with no code.
+    #[test]
+    fn the_button_of_room_d_opens_the_door_by_a_wire() {
+        use std::time::Duration;
+
+        use maki_engine::core::{Interpolated, Startup, Transform};
+        use maki_engine::platform::{Key, RawInput};
+        use maki_engine::scene::{Mover, MoverState, Player, RoomRequest, RoomTarget};
+
+        let mut app = game_app();
+        app.add_systems(
+            Startup,
+            |mut commands: bevy_ecs::system::Commands,
+             mut request: bevy_ecs::system::ResMut<RoomRequest>| {
+                commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
+                request.0 = Some(RoomTarget {
+                    path: "../assets/rooms/room_d.ron".into(),
+                    spawn: Some("start".to_owned()),
+                    text: None,
+                });
+            },
+        );
+        app.run(|mut app| {
+            let step = Duration::from_millis(20);
+            let door = |app: &App| {
+                let mut doors = app.world().try_query::<&Mover>().unwrap();
+                doors.single(app.world()).unwrap().state
+            };
+            for _ in 0..3 {
+                app.advance(step);
+            }
+            assert_eq!(door(&app), MoverState::AtA);
+            // The player at the start faces the button and presses interact.
+            app.write_message(RawInput::KeyDown(Key::Z))
+                .write_message(RawInput::KeyUp(Key::Z));
+            for _ in 0..200 {
+                app.advance(step);
+            }
+            assert_eq!(door(&app), MoverState::AtB);
+        });
     }
 
     /// A component of this game says what its fields are with the derive of the

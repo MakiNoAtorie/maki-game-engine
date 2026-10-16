@@ -21,12 +21,36 @@ use crate::GameState;
 use crate::command::Command;
 use crate::script::TriggerArea;
 
-/// The component `event` of an object: the pages of its event. The commands are an
-/// open set: read the text with `CommandRegistry::parse_pages`.
+/// The component `event` of an object: the pages of its event, and its wires. The
+/// commands are an open set: read the text with `CommandRegistry::parse_pages`.
 #[derive(Component, Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventPages {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wires: Vec<Wire>,
+}
+
+impl EventPages {
+    /// A command list by its index: the pages, then the wires. The index of a
+    /// command list in the problems (`Problem::command`) and in a tool.
+    pub fn list_mut(&mut self, index: usize) -> Option<&mut Vec<Command>> {
+        let pages = self.pages.iter_mut().map(|page| &mut page.commands);
+        let mut lists = pages.chain(self.wires.iter_mut().map(|wire| &mut wire.commands));
+        lists.nth(index)
+    }
+}
+
+/// A wire, as in Source: when an output of the object is sent (the area: `used`,
+/// `entered`, `left`; a script or the row `Signal`: its own), the commands run. A
+/// command is the input: `OpenDoor("door")`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Wire {
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<Command>,
 }
 
 /// One event of a room, as the checks and the tools see it: the component `event` of
@@ -41,6 +65,7 @@ pub struct EventDef {
     /// has no `area`, and no player starts the event (`Autorun`, `Parallel`).
     pub area: Option<Area>,
     pub pages: Vec<Page>,
+    pub wires: Vec<Wire>,
 }
 
 impl EventDef {
@@ -231,13 +256,14 @@ impl RoomFile {
     pub(crate) fn events(self) -> Vec<EventDef> {
         let objects = self.objects.into_iter().enumerate();
         let event = |(index, object): (usize, RoomObject)| {
-            let pages = object.components.event?.pages;
+            let EventPages { pages, wires } = object.components.event?;
             let area = object.components.area;
             Some(EventDef {
                 name: object.name.unwrap_or_default(),
                 object: index,
                 area: area.map(|area| EventDef::area_at(&area, object.pose.position)),
                 pages,
+                wires,
             })
         };
         objects.filter_map(event).collect()
@@ -409,6 +435,7 @@ mod tests {
         // writes it.
         let pages = EventPages {
             pages: events[0].pages.clone(),
+            wires: Vec::new(),
         };
         let component = maki_scene::ComponentText::of(&pages);
         assert_eq!(registry.parse_pages(&component).unwrap(), pages);

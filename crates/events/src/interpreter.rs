@@ -166,6 +166,23 @@ pub struct EventRunner {
     steps: Option<u32>,
 }
 
+/// The outputs that a row or a script sent: their wires start in the next step. So a
+/// wire that sends its own output runs one time in each step, not in a loop. Not a
+/// part of the runner: a command runs while the runner is out of the world.
+#[derive(Resource, Debug, Default)]
+pub struct Signals(pub(crate) Vec<(Entity, String)>);
+
+impl Signals {
+    pub(crate) fn send(world: &mut World, entity: Entity, output: &str) {
+        use bevy_ecs::change_detection::DetectChangesMut;
+
+        let mut signals = world.resource_mut::<Signals>();
+        // No reader of the change.
+        let signals = signals.bypass_change_detection();
+        signals.0.push((entity, output.to_owned()));
+    }
+}
+
 impl EventRunner {
     /// True while an event runs that the player started or that runs by itself one
     /// time (all triggers but `Parallel`): the player has no control.
@@ -227,6 +244,7 @@ impl EventRunner {
         }
         blocked |= self.blocks_player();
 
+        let mut signals = std::mem::take(&mut world.resource_mut::<Signals>().0);
         // In the order of the objects in the file: on one press, the first event wins.
         let mut events = world.query::<(
             Entity,
@@ -292,6 +310,45 @@ impl EventRunner {
                 running.entity = Some(entity);
                 self.running.push(running);
             }
+
+            // The outputs of the area, with the rules of the triggers, and the outputs
+            // that were sent to the object.
+            let mut outputs: Vec<String> = Vec::new();
+            if area.is_some() {
+                let used = interact
+                    && !blocked
+                    && player
+                        .zip(area)
+                        .is_some_and(|(player, area)| faces(player, area));
+                let used = used && pages.wires.iter().any(|wire| wire.output == "used");
+                if used {
+                    interact = false;
+                    outputs.push("used".to_owned());
+                }
+                if entered && !blocked {
+                    outputs.push("entered".to_owned());
+                }
+                if before.0 && !inside {
+                    outputs.push("left".to_owned());
+                }
+            }
+            signals.retain(|(to, output)| {
+                let of_this = *to == entity;
+                if of_this {
+                    outputs.push(output.clone());
+                }
+                !of_this
+            });
+            for output in &outputs {
+                for wire in pages.wires.iter().filter(|wire| wire.output == *output) {
+                    tracing::debug!(event = name, output, "wire starts");
+                    let mut running = RunningEvent::new(name, Trigger::Interact, &wire.commands);
+                    running.entity = Some(entity);
+                    self.running.push(running);
+                    blocked = true;
+                }
+            }
+
             if memory.is_none_or(|memory| (memory.inside, memory.autorun) != (inside, autorun)) {
                 memories.push((entity, EventMemory { inside, autorun }));
             }
@@ -334,7 +391,11 @@ pub(crate) fn faces((position, facing): (Vec3, Vec3), area: crate::Area) -> bool
 }
 
 /// Runs in `Update` after the room loader: a new room.
-pub fn load_room_events(room: Res<CurrentRoom>, mut runner: ResMut<EventRunner>) {
+pub fn load_room_events(
+    room: Res<CurrentRoom>,
+    mut runner: ResMut<EventRunner>,
+    mut signals: ResMut<Signals>,
+) {
     use bevy_ecs::change_detection::DetectChanges;
 
     // The resource also counts as changed before the first room.
@@ -342,6 +403,8 @@ pub fn load_room_events(room: Res<CurrentRoom>, mut runner: ResMut<EventRunner>)
         return;
     }
     runner.room_changed();
+    // The objects of the outputs are gone.
+    signals.0.clear();
 }
 
 /// Reads the text of a component `event` into its entity. The commands are read with
