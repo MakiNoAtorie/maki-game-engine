@@ -28,7 +28,8 @@ pub const BUILD: [&str; 5] = ["build", "--profile", "dynamic", "-p", "maki-edito
 /// The project folder if the command line names none.
 const DEFAULT_PROJECT: &str = "game";
 
-const USAGE: &str = "usage: maki-editor [PROJECT [CONFIG]] [--resave ROOM]...";
+const USAGE: &str = "usage: maki-editor [PROJECT [CONFIG]] [--resave ROOM]...     [--input-script FILE [--input-shots DIR]]
+    --input-script: a file of input steps (keys, text, clicks, commands, shots),     one on each line; see `maki_devtools::InputScriptModule`. Shots go to DIR     (default: the working directory).";
 
 /// What each app of one run of the editor is made from.
 #[derive(Debug, Clone)]
@@ -123,15 +124,25 @@ pub(crate) fn editor_app(
 
 /// Runs the editor. The command line: the project folder (not given: `game`), the
 /// config file, and `--resave ROOM` (one or more times): each room file is read and
-/// written again as the editor saves it, and the program ends.
+/// written again as the editor saves it, and the program ends. `--input-script FILE`
+/// feeds the steps of the file to the editor (`maki_devtools::InputScriptModule`).
 pub fn run_editor() -> Result {
     init_logging();
     let (mut resave, mut rest) = (Vec::new(), Vec::new());
+    let (mut script, mut shots) = (None, PathBuf::from("."));
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--resave" {
             let path = args.next().context("--resave needs a room file");
             resave.push(PathBuf::from(path.context(USAGE)?));
+        } else if arg == "--input-script" {
+            let path = args.next().context("--input-script needs a file");
+            script = Some(maki_devtools::read_input_script(
+                path.context(USAGE)?.as_ref(),
+            )?);
+        } else if arg == "--input-shots" {
+            let dir = args.next().context("--input-shots needs a folder");
+            shots = PathBuf::from(dir.context(USAGE)?);
         } else {
             rest.push(arg);
         }
@@ -160,6 +171,10 @@ pub fn run_editor() -> Result {
     }
     if !resave.is_empty() {
         return maki_editor::resave(&app, &resave);
+    }
+    // The first app only: an app after a new build of the scripts starts with no script.
+    if let Some(steps) = script {
+        app.add_module(maki_devtools::InputScriptModule { steps, shots });
     }
     let (project, config) = (&setup.project.name, setup.config_path.display());
     tracing::info!(%project, %config, "config loaded");
