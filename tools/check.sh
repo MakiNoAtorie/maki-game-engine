@@ -12,7 +12,7 @@ step() {
     shift
     out=$("$@" 2>&1)
     status=$?
-    errors=$(printf '%s\n' "$out" | rg -e '^(error|warning)|FAILED|panicked|^Diff in' -A 5 | head -40)
+    errors=$(printf '%s\n' "$out" | rg -e '^(error|warning)|FAILED|panicked|^Diff in|Error:|^FAIL ' -A 5 | head -40)
     if [ $status -ne 0 ] || [ -n "$errors" ]; then
         echo "FAIL $name"
         printf '%s\n' "$errors"
@@ -23,6 +23,13 @@ step() {
 }
 
 step "format" cargo fmt --all -- --check
+# The Python tools: a syntax error (a parse writes no cache files), and the
+# self-test of the benchmark statistics.
+tools() {
+    python -B -c 'import ast, glob; [ast.parse(open(p, encoding="utf-8").read(), p) for p in glob.glob("tools/*.py")]' &&
+        python -B tools/bench.py selftest
+}
+step "tools" tools
 step "clippy static" cargo clippy -q --workspace --all-targets
 if [ "$1" != "fast" ]; then
     step "test static" cargo test -q

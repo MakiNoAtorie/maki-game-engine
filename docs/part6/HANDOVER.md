@@ -98,8 +98,7 @@ Open from stage 48 (report, sections 3 and 6): the names of the component types 
 
 ## When to stop and ask
 
-- A gate that cannot be met, or a decision of `README.md` section 2 that the code shows to be wrong.
-- A GPU time or picture regression that is the code and not the machine (build the commit before in the scratchpad and run the two back to back).
-- A new dependency that the stage file does not name.
+The list is in `CLAUDE.md` (working agreement, "Stop and ask"). Of part 6 only:
+
 - The symbol limit of the engine DLL: a split into two DLLs changes 2.3.
-- A stage that the plan marks "in discussion", and an action outside the stage branch, its pull request, and its merge into `main` (`CLAUDE.md`, working agreement).
+- A GPU time step with equal pictures: `bench.py confirm` first (`docs/CONVENTIONS.md`); ask only if it stays.
