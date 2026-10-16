@@ -54,6 +54,17 @@ pub struct EventUi {
     /// The event and the page that the panel showed in the frame before: the row
     /// and the typed command are of that page.
     shown: (usize, usize),
+    /// The `SetField` lists and the room and directory they are of: a prefab file is
+    /// read again only when the document changes.
+    live: Option<(RoomDef, std::path::PathBuf, LiveLists)>,
+}
+
+/// The parts of [`Lists`] that `live_lists` fills.
+#[derive(Clone, Default)]
+struct LiveLists {
+    objects: Vec<(String, Vec<String>)>,
+    fields: BTreeMap<String, Vec<Field>>,
+    current: BTreeMap<(String, String, String), Value>,
 }
 
 impl EventUi {
@@ -773,44 +784,55 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     (lists, problems)
 }
 
-/// Fills the objects that `SetField` can change (`RoomDef::live_objects`, prefab
-/// instances too) with their live components, the fields of their types, and the
-/// value that each field has now. `directory`: of the room file.
-fn live_lists(world: &World, room: &RoomDef, directory: &std::path::Path, lists: &mut Lists) {
+/// Fills `lists` from the cache, made again when the room or its directory changed.
+fn cached_live_lists(
+    world: &World,
+    room: &RoomDef,
+    directory: &std::path::Path,
+    cache: &mut Option<(RoomDef, std::path::PathBuf, LiveLists)>,
+    lists: &mut Lists,
+) {
+    let same =
+        |(old, at, _): &(RoomDef, std::path::PathBuf, LiveLists)| old == room && at == directory;
+    if !cache.as_ref().is_some_and(same) {
+        let live = live_lists(world, room, directory);
+        *cache = Some((room.clone(), directory.to_owned(), live));
+    }
+    let Some((.., live)) = cache else { return };
+    let live = live.clone();
+    (lists.objects, lists.fields, lists.current) = (live.objects, live.fields, live.current);
+}
+
+/// The objects that `SetField` can change (`RoomDef::live_objects`, prefab
+/// instances too) with their live components, the fields of their types that change
+/// in the game, and the value that each field has now. `directory`: of the room file.
+fn live_lists(world: &World, room: &RoomDef, directory: &std::path::Path) -> LiveLists {
+    let mut lists = LiveLists::default();
     let (Some(types), tables) = (
         world.get_resource::<ComponentTypes>(),
         world.get_resource::<FieldTypes>(),
     ) else {
-        return;
+        return lists;
     };
-    let names = room.live_objects(directory, types);
-    for object in room
-        .objects
-        .iter()
-        .filter(|o| o.name.as_ref().is_some_and(|n| names.contains(n)))
-    {
-        let name = object.name.clone().unwrap_or_default();
-        let reached = object.reached_components(directory, types);
-        let live: Vec<String> = reached
-            .keys()
-            .filter(|c| types.is_live(c))
-            .cloned()
-            .collect();
-        for component in &live {
+    for (name, live) in room.live_objects(directory, types) {
+        for (component, text) in &live {
             let table = tables.and_then(|tables| tables.get(component));
-            if let Some(Kind::Group(fields)) = table.map(|table| &table.kind) {
-                lists.fields.insert(component.clone(), fields.clone());
-                for field in fields {
-                    let now = types.field(component, &reached[component], field.name);
-                    if let Some(now) = now {
-                        let key = (name.clone(), component.clone(), field.name.to_owned());
-                        lists.current.insert(key, now);
-                    }
+            let Some(Kind::Group(fields)) = table.map(|table| &table.kind) else {
+                continue;
+            };
+            let changes = |field: &&Field| types.is_live_field(component, field.name);
+            let fields: Vec<Field> = fields.iter().filter(changes).cloned().collect();
+            for field in &fields {
+                if let Some(now) = types.field(component, text, field.name) {
+                    let key = (name.clone(), component.clone(), field.name.to_owned());
+                    lists.current.insert(key, now);
                 }
             }
+            lists.fields.insert(component.clone(), fields);
         }
-        lists.objects.push((name, live));
+        lists.objects.push((name, live.into_keys().collect()));
     }
+    lists
 }
 
 /// The value of a new `SetField` row or of another field: the value that the field
@@ -853,7 +875,8 @@ pub(crate) fn event_panel(
         .path
         .parent()
         .unwrap_or(std::path::Path::new(""));
-    live_lists(world, &editor.document.room, room_directory, &mut lists);
+    let (room, cache) = (&editor.document.room, &mut editor.event_ui.live);
+    cached_live_lists(world, room, room_directory, cache, &mut lists);
     let actions = [crate::DELETE, crate::DUPLICATE, crate::COPY, crate::PASTE];
     lists.row_keys = actions.map(|action| maki_ui::key_label(world, action));
     let problems: Vec<&Problem> = problems.iter().collect();
@@ -913,8 +936,7 @@ pub(crate) fn event_panel(
     let Some(list) = event.list_mut(at) else {
         return Some(changed);
     };
-    // The rows have a panel of their own and the arguments fill the rest: at any
-    // width of the window the arguments are next to their rows.
+    // The rows have a panel of their own: at any width the arguments are next to their rows.
     part(egui::Panel::left("event commands")).show(ui, |ui| {
         scroll("commands").show(ui, |ui| {
             let places = (&lists, &registry, room);
@@ -1058,20 +1080,6 @@ fn pages(
     changed
 }
 
-/// The tab of wire `index`: its output; with the index too if another wire has the
-/// same output ("used 1", "used 2").
-pub(crate) fn wire_tab_label(wires: &[Wire], index: usize) -> String {
-    let output = &wires[index].output;
-    if wires.iter().filter(|wire| wire.output == *output).count() < 2 {
-        return output.clone();
-    }
-    let nth = wires[..index]
-        .iter()
-        .filter(|wire| wire.output == *output)
-        .count();
-    format!("{output} {}", nth + 1)
-}
-
 /// The wires of the object, as tabs under the pages: the output of the wire that
 /// shows, and buttons to add and delete one. The index of a wire in
 /// `EventUi::page` is after the pages.
@@ -1081,7 +1089,7 @@ fn wires(ui: &mut Ui, event: &mut EventPages, event_ui: &mut EventUi, lists: &Li
     ui.horizontal_wrapped(|ui| {
         ui.label("Wires");
         for index in 0..event.wires.len() {
-            let text = wire_tab_label(&event.wires, index);
+            let text = Wire::label(&event.wires, index);
             let tab = ui.selectable_label(event_ui.page == first + index, text);
             if tab.clicked() {
                 (event_ui.page, event_ui.row) = (first + index, None);
@@ -1417,8 +1425,8 @@ mod tests {
     use super::*;
 
     /// The pickers of `SetField`: the objects with a component that has a value in
-    /// the game (the light), the fields of its table, and a new row
-    /// that starts with the value the field has now.
+    /// the game (a light, a prop, a door), the fields that change in the game, and a
+    /// new row that starts with the value the field has now.
     #[test]
     fn the_set_field_pickers_offer_the_live_components_and_their_fields() {
         let mut app = App::new(ConfigFile::default()).unwrap();
@@ -1453,13 +1461,27 @@ mod tests {
             own_outputs: Vec::new(),
             row_keys: Default::default(),
         };
-        live_lists(app.world(), &room, std::path::Path::new(""), &mut lists);
+        let mut cache = None;
+        cached_live_lists(
+            app.world(),
+            &room,
+            std::path::Path::new(""),
+            &mut cache,
+            &mut lists,
+        );
         let names: Vec<&str> = lists.objects.iter().map(|found| found.0.as_str()).collect();
-        // Only the light has a live form so far; a prop and a door join when they get one.
-        assert_eq!(names, ["lamp"]);
+        assert_eq!(names, ["lamp", "crate", "gate"]);
         assert_eq!(lists.objects[0].1, ["light"]);
-        let fields: Vec<&str> = lists.fields["light"].iter().map(|f| f.name).collect();
-        assert!(fields.contains(&"intensity"), "{fields:?}");
+        let fields = |component: &str| -> Vec<&str> {
+            lists.fields[component].iter().map(|f| f.name).collect()
+        };
+        let light = fields("light");
+        assert!(
+            light.contains(&"intensity") && !light.contains(&"sound"),
+            "{light:?}"
+        );
+        assert_eq!(fields("prop"), ["collider"]);
+        assert_eq!(fields("door"), ["seconds", "open"]);
         // A new row: the first field of the first object, with the value it has now.
         let registry = app.world().resource::<CommandRegistry>().clone();
         let new = new_command("SetField", &lists, &registry, &room).unwrap();

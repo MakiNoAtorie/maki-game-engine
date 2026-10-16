@@ -221,33 +221,32 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
 /// that has the component. A name that the game does not have is a warning.
 fn set_field(world: &mut World, [object, component, field]: [&String; 3], value: &Value) {
     let types = world.resource::<ComponentTypes>();
-    let Some(Live { get, set }) = types.get(component).and_then(|found| found.live) else {
+    let live = types
+        .get(component)
+        .and_then(|component_type| component_type.live);
+    let Some(Live { get, set, .. }) = live else {
         tracing::warn!(
             component,
             "SetField: the component has no value in the game"
         );
         return;
     };
-    // The entities of the name, then those of the item of the object: the objects of
-    // a prefab instance have the item of the instance and names of the prefab.
+    // The entities of the name first: a prefab instance has its item, and names of the prefab.
     let def = &world.resource::<CurrentRoom>().def;
-    let item = def
-        .objects
-        .iter()
-        .position(|found| found.name.as_deref() == Some(object.as_str()));
-    let mut all = world.query::<(Entity, Option<&Name>, Option<&RoomItem>)>();
+    let item = def.object_named(object).map(|(index, _)| index);
+    let mut entities = world.query::<(Entity, Option<&Name>, Option<&RoomItem>)>();
     let mut named = Vec::new();
     let mut of_item = Vec::new();
-    for (entity, name, found) in all.iter(world) {
+    for (entity, name, room_item) in entities.iter(world) {
         if name.is_some_and(|name| name.0 == *object) {
             named.push(entity);
-        } else if item.is_some() && found.map(|found| found.0) == item {
+        } else if item.is_some() && room_item.map(|room_item| room_item.0) == item {
             of_item.push(entity);
         }
     }
-    let mut entities = named.into_iter().chain(of_item);
-    let found = entities.find_map(|entity| Some((entity, get(world, entity)?)));
-    let Some((entity, mut tree)) = found else {
+    let mut candidates = named.into_iter().chain(of_item);
+    let target = candidates.find_map(|entity| Some((entity, get(world, entity)?)));
+    let Some((entity, mut tree)) = target else {
         tracing::warn!(
             object,
             component,

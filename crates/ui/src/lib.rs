@@ -289,6 +289,8 @@ impl Panels {
     }
 
     /// Does what a row of the command search stands for, as a click on it does.
+    // For the tests of other crates only: no tool calls it.
+    #[doc(hidden)]
     pub fn run_row(&mut self, world: &mut World, row: &SearchRow) {
         if let Some(shell) = &mut self.tool {
             shell::run_search_row(shell, &mut self.panels, world, row);

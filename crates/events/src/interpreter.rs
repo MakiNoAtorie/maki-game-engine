@@ -356,7 +356,7 @@ impl EventRunner {
                 }
                 !of_this
             });
-            // Outside play no wire starts; the outputs of this step are dropped.
+            // As no event runs in a title or a pause, no wire runs: the outputs are dropped.
             if !playing {
                 outputs.clear();
             }

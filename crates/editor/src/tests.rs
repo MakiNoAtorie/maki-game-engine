@@ -1557,6 +1557,17 @@ fn f5_is_the_play_key_of_the_editor_and_the_reload_key_of_the_game() {
         frames(&mut app, 2);
         // The editor: F5 plays and stops only.
         assert_eq!(keys(&app), (true, false));
+        // The key as a hand presses it: a game starts, and no frame asks for a reload.
+        use maki_platform::RawInput;
+        app.write_message(RawInput::KeyDown(Key::F5));
+        for _ in 0..4 {
+            frames(&mut app, 1);
+            let actions = app.world().resource::<maki_platform::ActionState>();
+            assert!(!actions.pressed(maki_gameplay::RELOAD_ROOM));
+        }
+        app.write_message(RawInput::KeyUp(Key::F5));
+        frames(&mut app, 2);
+        assert!(app.world().resource::<Editor>().playing());
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
@@ -1595,7 +1606,7 @@ fn two_wires_on_one_output_have_two_tab_labels() {
         commands: Vec::new(),
     };
     let wires = [wire("used"), wire("hit"), wire("used")];
-    let label = |i| crate::event_panel::wire_tab_label(&wires, i);
+    let label = |i| maki_events::Wire::label(&wires, i);
     assert_eq!(label(0), "used 1");
     assert_eq!(label(1), "hit");
     assert_eq!(label(2), "used 2");

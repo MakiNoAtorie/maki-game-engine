@@ -135,15 +135,20 @@ impl ObjectDef {
 }
 
 impl crate::RoomDef {
-    /// The names of the objects with a component that has a live form: the objects
-    /// that `SetField` can change in the game. `directory`: of the room file.
-    pub fn live_objects(&self, directory: &Path, types: &ComponentTypes) -> Vec<String> {
-        let live = |object: &&ObjectDef| {
-            let components = object.reached_components(directory, types);
-            components.keys().any(|name| types.is_live(name))
+    /// The objects that `SetField` can change in the game: each named object with its
+    /// reached components that have a live form. `directory`: of the room file.
+    pub fn live_objects(
+        &self,
+        directory: &Path,
+        types: &ComponentTypes,
+    ) -> Vec<(String, BTreeMap<String, ComponentText>)> {
+        let live = |object: &ObjectDef| {
+            let name = object.name.clone()?;
+            let mut components = object.reached_components(directory, types);
+            components.retain(|component, _| types.is_live(component));
+            (!components.is_empty()).then_some((name, components))
         };
-        let objects = self.objects.iter().filter(live);
-        objects.filter_map(|object| object.name.clone()).collect()
+        self.objects.iter().filter_map(live).collect()
     }
 }
 

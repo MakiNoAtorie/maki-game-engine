@@ -202,16 +202,29 @@ struct ProjectBuild {
     loaded: Option<SystemTime>,
     /// A new DLL waits for its load: a game runs.
     load: bool,
-    /// A new script: its file opens in the code editor when a build passes.
-    open_when_ok: Option<PathBuf>,
+    /// The count of the builds that started.
+    started: u64,
+    /// A new script: its file opens in the code editor when a build passes that
+    /// started after the request (the count then).
+    open_when_ok: Option<(PathBuf, u64)>,
 }
 
 /// Asks for a build, and opens `file` in the code editor when it passes. A failed
 /// build opens the panel "Build" instead.
 pub(crate) fn open_after_build(world: &mut World, file: PathBuf) {
     let mut build = world.resource_mut::<ProjectBuild>();
-    build.open_when_ok = Some(file);
+    build.open_when_ok = Some((file, build.started));
     build.request = true;
+}
+
+/// The file to open at the end of build `number`. A build that started before the
+/// request does not have the new file: it ends no wait.
+fn to_open(wait: &mut Option<(PathBuf, u64)>, number: u64, ok: bool) -> Option<PathBuf> {
+    if wait.as_ref().is_none_or(|(_, after)| number <= *after) {
+        return None;
+    }
+    let (file, _) = wait.take()?;
+    ok.then_some(file)
 }
 
 /// The watch, the build, and the load of the script crate of the project, and the
@@ -234,6 +247,7 @@ impl Module for ProjectModule {
             report: self.report.clone(),
             loaded: dll.as_deref().and_then(written),
             load: false,
+            started: 0,
             open_when_ok: None,
         })
         .init_resource::<Jobs>()
@@ -285,6 +299,7 @@ fn watch_build_load(world: &mut World) {
         // One build at a time: a change in a build starts the next one after it.
         if build.request && build.running.is_none() {
             build.request = false;
+            build.started += 1;
             let (sender, receiver) = std::sync::mpsc::channel();
             let setup = build.setup.clone();
             std::thread::spawn(move || sender.send(self::build(&setup)));
@@ -304,6 +319,8 @@ fn watch_build_load(world: &mut World) {
         });
         if let Some(report) = ended {
             build.running = None;
+            let number = build.started;
+            open = to_open(&mut build.open_when_ok, number, report.ok);
             world.resource_mut::<Jobs>().0.retain(|job| job != JOB);
             tracing::info!(
                 ok = report.ok,
@@ -314,9 +331,7 @@ fn watch_build_load(world: &mut World) {
                 // A change of another file of the project writes no new DLL.
                 let dll = script_dll(&build.setup.project).ok();
                 build.load = dll.as_deref().and_then(written) != build.loaded;
-                open = build.open_when_ok.take();
             } else {
-                build.open_when_ok = None;
                 world.resource_mut::<Panels>().show(PANEL);
                 let text = "The build of the script crate failed: see the panel \"Build\"";
                 notify(world, NoticeLevel::Warning, text);
@@ -480,6 +495,22 @@ fn build_panel(ui: &mut egui::Ui, world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_script_opens_only_after_a_build_that_started_after_the_request() {
+        let file = PathBuf::from("gate.rs");
+        // Asked while build 3 runs: its end opens nothing, and the wait stays.
+        let mut wait = Some((file.clone(), 3));
+        assert_eq!(to_open(&mut wait, 3, true), None);
+        assert!(wait.is_some());
+        // Build 4 passes: the file opens, once.
+        assert_eq!(to_open(&mut wait, 4, true), Some(file.clone()));
+        assert_eq!(to_open(&mut wait, 5, true), None);
+        // Build 4 fails: nothing opens, and the wait ends.
+        let mut wait = Some((file, 3));
+        assert_eq!(to_open(&mut wait, 4, false), None);
+        assert!(wait.is_none());
+    }
 
     #[test]
     fn the_rows_of_a_build_have_the_file_and_the_line_of_each_error_and_warning() {

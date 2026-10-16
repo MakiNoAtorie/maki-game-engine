@@ -378,7 +378,7 @@ pub fn tool_button(
         .add_enabled((command.can_run)(world), button)
         .on_hover_text(command.hover(world));
     if response.clicked() {
-        (command.run)(world);
+        crate::queue_command(world, command.id);
     }
     response
 }

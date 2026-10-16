@@ -193,6 +193,8 @@ pub struct Live {
     /// Writes a tree into the component of the entity. `Err`: why the type does not
     /// read the tree.
     pub set: fn(&mut World, Entity, Value) -> Result<(), String>,
+    /// The fields that change in the game. `None`: all fields of the table.
+    pub fields: Option<&'static [&'static str]>,
 }
 
 /// The types of components by name. [`add_component_type`] adds one.
@@ -207,6 +209,12 @@ impl ComponentTypes {
     /// True if the type has a value in the game that `SetField` changes.
     pub fn is_live(&self, name: &str) -> bool {
         self.get(name).is_some_and(|found| found.live.is_some())
+    }
+
+    /// True if `SetField` changes the field of the type in the game.
+    pub fn is_live_field(&self, name: &str, field: &str) -> bool {
+        let live = self.get(name).and_then(|found| found.live);
+        live.is_some_and(|live| live.fields.is_none_or(|fields| fields.contains(&field)))
     }
 
     /// The value of a field in the text of a component. `None`: no such type, a text
@@ -281,6 +289,7 @@ pub fn add_object_component<T: Component + Fields + Serialize + DeserializeOwned
             entity.insert(value);
             Ok(())
         },
+        fields: None,
     };
     register::<T>(app, name, Some(insert), Some(live));
 }

@@ -855,11 +855,46 @@ fn a_row_sets_the_strength_color_and_radius_of_a_light_in_play() {
 }
 
 #[test]
+fn a_row_opens_a_door_and_takes_the_collider_from_a_prop_in_play() {
+    let directory = directory("set-door-prop");
+    let events = r#"(name: "open", pages: [(trigger: Autorun, commands: [
+        SetField("door", "door", "open", true),
+        SetField("door", "door", "seconds", 0.5),
+        SetField("crate", "prop", "collider", false),
+    ])])"#;
+    let text = room(events).replacen(
+        "objects: [",
+        r#"objects: [(name: "crate", pose: (position: (2, 0, 2)), components: {"prop": (mesh: Cube(1.0))}),"#,
+        1,
+    );
+    std::fs::write(directory.join("a.ron"), text).unwrap();
+    game(&directory).run(|mut app| {
+        let crate_collider = |app: &mut App| {
+            let world = app.world();
+            let query = world.try_query::<(&Name, bevy_ecs::query::Has<maki_scene::Collider>)>();
+            let mut props = query.unwrap();
+            let found = props.iter(world).find(|(name, _)| name.0 == "crate");
+            found.unwrap().1
+        };
+        steps(&mut app, 1);
+        assert!(crate_collider(&mut app));
+        steps(&mut app, 2);
+        let mut doors = app.world().try_query::<&maki_scene::Mover>().unwrap();
+        let door = *doors.single(app.world()).unwrap();
+        assert_ne!(door.state, maki_scene::MoverState::AtA);
+        assert_eq!(door.duration, 0.5);
+        assert!(!crate_collider(&mut app));
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
 fn the_check_finds_a_field_that_the_component_does_not_have_and_a_value_of_a_wrong_kind() {
     let events = r#"(name: "e", pages: [(trigger: Autorun, commands: [
         SetField("lamp", "light", "intensity", 2),
         SetField("lamp", "light", "strength", 2.0),
         SetField("lamp", "light", "intensity", "bright"),
+        SetField("door", "door", "color", (1.0, 0.0, 0.0)),
     ])])"#;
     let directory = directory("check-field");
     let path = directory.join("a.ron");
@@ -878,7 +913,11 @@ fn the_check_finds_a_field_that_the_component_does_not_have_and_a_value_of_a_wro
         text.contains("\"bright\" is not a value of the field `light.intensity`"),
         "{text}"
     );
-    assert_eq!(text.matches("event `e`").count(), 2, "{text}");
+    assert!(
+        text.contains("the field `door.color` does not change in the game"),
+        "{text}"
+    );
+    assert_eq!(text.matches("event `e`").count(), 3, "{text}");
 }
 
 #[test]

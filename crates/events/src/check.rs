@@ -37,8 +37,7 @@ impl CheckContext<'_> {
     /// What is wrong with an output of an object of the room. `None`: the object has
     /// it.
     pub fn output_problem(&self, object: &str, output: &str) -> Option<String> {
-        let named = |found: &&maki_scene::ObjectDef| found.name.as_deref() == Some(object);
-        let Some(found) = self.room.objects.iter().find(named) else {
+        let Some((_, found)) = self.room.object_named(object) else {
             return Some(format!("the room has no object `{object}`"));
         };
         let has = self.registry.outputs_of(found).contains(&output);
@@ -69,8 +68,7 @@ impl CheckContext<'_> {
         field: &str,
         value: &Value,
     ) -> Option<String> {
-        let named = |found: &&maki_scene::ObjectDef| found.name.as_deref() == Some(object);
-        let Some(found) = self.room.objects.iter().find(named) else {
+        let Some((_, found)) = self.room.object_named(object) else {
             return Some(format!("the room has no object `{object}`"));
         };
         let types = self
@@ -84,7 +82,11 @@ impl CheckContext<'_> {
                 "the object `{object}` has no component `{component}`"
             ));
         };
-        types.field_problem(component, text, field, value)
+        let problem = types.field_problem(component, text, field, value);
+        let fixed = types.is_live(component) && !types.is_live_field(component, field);
+        problem.or_else(|| {
+            fixed.then(|| format!("the field `{component}.{field}` does not change in the game"))
+        })
     }
 }
 
