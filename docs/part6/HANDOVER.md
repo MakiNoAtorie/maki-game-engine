@@ -16,7 +16,10 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 47 (fields that describe themselves) is done: the derive `Fields` (`crates/macros`), `maki_core::fields` (the table of the fields of a type, its value as a tree of `serde_json::Value`, the registry `FieldTypes`), the derive on the item kinds of a room, and the inspector of the editor from the table (`crates/editor/src/fields.rs`). The room file did not change. Stage file `stage-47-fields.md` (written by the session), report `stage-47.md`.
 - Stage 48 (the room file is a list of objects) is done: GitHub issues #1 to #5, closed. Objects with components as RON text, the registry of component types, the editor on objects only (room, object, event). Report: `stage-48.md`; its sections 3 and 6 list what is open.
 - Stage 49 (prefabs with changes, the player as data) is done: issues #6 and #7, closed. Report: `stage-49.md`.
-- Stage 50 (script components with hooks, commands as functions, "New script", the log panel) is done: issues #8 to #11. Report: `stage-50.md`. The benchmark base is now `s50`.
+- Stage 50 (script components with hooks, commands as functions, "New script", the log panel) is done: issues #8 to #11. Report: `stage-50.md`.
+- Stage 51 (events as components, "Set a field", "Call a script function"): issues #12, #13. Report: `stage-51.md`.
+- Stage 53 (who is the player, the states of the game) ran as a parallel lane and was merged before stage 52: issues #15, #16. Report: `stage-53.md`.
+- Stage 52 (wires, "Send a signal"): issue #14. Report: `stage-52.md`. The benchmark base is now `s52`. The object model (stages 47 to 53) is done; no ticket is open. The next row of the stage table ("What the events lack") is "Not planned": the owner plans it.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 

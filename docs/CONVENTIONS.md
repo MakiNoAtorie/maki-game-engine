@@ -32,6 +32,11 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
       Report: files changed, status of each "Done when" line, anything
       unverified, at most 10 bullet points of new conventions.
 
+## Engine facts that bind code
+- A game or a test app with `PlayerModule` adds `GameModule`: the rules give the controller the control. Find the player with `With<Player>`; move the control only with `give_control`.
+- `maki_core::PlayState` is the state of the game, changed along `can_change`; `Time::paused` is of the editor.
+- A test room writes events as objects: `maki_events::short_events` turns the short form into objects.
+
 ## Code intelligence
 - Use `rust-analyzer-lsp` (`/plugin install rust-analyzer-lsp@claude-plugins-official`, `rust-analyzer` on PATH) in local sessions: lookup by symbol and errors after each edit save build round trips.
 - No index tool (Serena, vector index) until searches for the same things repeat.
