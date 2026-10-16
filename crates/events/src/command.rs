@@ -22,9 +22,11 @@
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
+use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_scene::{ComponentText, RoomDef};
@@ -37,6 +39,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::check::{CheckContext, Finding};
 use crate::model::{EventDef, EventPages, RoomFile};
+use crate::script::ScriptContext;
 
 /// An enum of commands. Each type with these traits is one: derive them.
 pub trait CommandSet:
@@ -123,6 +126,9 @@ pub struct Step<'a> {
     pub start: bool,
     /// The name of the event, for log lines.
     pub event: &'a str,
+    /// The entity of the object of the event, or of the script that runs the
+    /// commands. `None`: a tool started them with no object.
+    pub entity: Option<Entity>,
     pub(crate) memory: &'a mut Option<Box<dyn Any + Send + Sync>>,
     pub(crate) opened: &'a mut Option<Vec<Command>>,
 }
@@ -201,11 +207,19 @@ fn read<T: CommandSet>(deserializer: &mut dyn erased_serde::Deserializer) -> Rea
     Ok(Arc::new(erased_serde::deserialize::<T>(deserializer)?))
 }
 
-/// All event commands of the game. `EventsModule` adds the resource.
+/// A function of the script crate that a row calls (`CallScript`), with the object of
+/// the event.
+pub type ScriptFunction = fn(&mut ScriptContext);
+
+/// All event commands of the game, and the script functions that a row calls.
+/// `EventsModule` adds the resource.
 // Shared, with a lock: the check of the room files (`maki_scene::RoomValidators`)
 // holds a clone, and sees the commands that modules add after it was made.
 #[derive(Resource, Clone, Default)]
-pub struct CommandRegistry(Arc<RwLock<Vec<Set>>>);
+pub struct CommandRegistry(
+    Arc<RwLock<Vec<Set>>>,
+    Arc<RwLock<BTreeMap<&'static str, ScriptFunction>>>,
+);
 
 impl CommandRegistry {
     /// Adds the commands of the enum `T`. Call from `Module::build`:
@@ -412,6 +426,28 @@ impl CommandRegistry {
             run: set.run.clone(),
             order: 0,
         })
+    }
+
+    /// Adds a function that the row `CallScript` calls by its name. A name that is in
+    /// use gets the new function: a new build of the script DLL adds them again.
+    pub fn add_function(&self, name: &'static str, function: ScriptFunction) {
+        let mut functions = self.1.write().expect("no writer panics");
+        functions.insert(name, function);
+    }
+
+    /// The script function of a name.
+    pub fn function(&self, name: &str) -> Option<ScriptFunction> {
+        self.1.read().expect("no writer panics").get(name).copied()
+    }
+
+    /// The names of the script functions, in the order of the names.
+    pub fn functions(&self) -> Vec<&'static str> {
+        self.1
+            .read()
+            .expect("no writer panics")
+            .keys()
+            .copied()
+            .collect()
     }
 
     /// The names of all commands, in the order in which they were added.

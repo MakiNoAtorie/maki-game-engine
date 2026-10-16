@@ -12,7 +12,7 @@
 
 use bevy_ecs::component::Component;
 use maki_engine::core::{App, Fields};
-use maki_engine::events::{Builtin, Script, ScriptContext, add_script};
+use maki_engine::events::{Builtin, Script, ScriptContext, add_script, add_script_function};
 use maki_engine::scene::Light;
 use serde::{Deserialize, Serialize};
 
@@ -95,8 +95,18 @@ impl Script for Beacon {
     }
 }
 
+/// A script function that a row calls (`CallScript("beacon_forget")`): the count of
+/// the touches starts again, and a message says so. The context is the object of the
+/// event.
+fn forget(context: &mut ScriptContext) {
+    context.state().set_variable(TOUCHES, 0);
+    let text = format!("{} turns. The lamp forgets.", context.name());
+    context.call(Builtin::Message(text));
+}
+
 pub fn add(app: &mut App) {
     add_script::<Beacon>(app, "beacon");
+    add_script_function(app, "beacon_forget", forget);
 }
 
 #[cfg(test)]
@@ -104,7 +114,7 @@ mod tests {
     use std::time::Duration;
 
     use maki_engine::core::{ConfigFile, FixedFirst, Interpolated, Startup, Transform};
-    use maki_engine::events::{EventsModule, GameState, MessageBox};
+    use maki_engine::events::{CommandRegistry, EventsModule, GameState, MessageBox};
     use maki_engine::platform::{Key, PlatformModule, RawInput};
     use maki_engine::scene::{Player, RoomRequest, RoomTarget, SceneModule};
 
@@ -175,5 +185,16 @@ mod tests {
             let message = app.world().resource::<MessageBox>().0.clone();
             assert_eq!(message.as_deref(), Some("The lamp hums. Touched 1 times."));
         });
+    }
+
+    #[test]
+    fn a_row_calls_the_function_that_the_beacon_adds() {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(PlatformModule)
+            .add_module(SceneModule)
+            .add_module(EventsModule);
+        add(&mut app);
+        let registry = app.world().resource::<CommandRegistry>();
+        assert!(registry.functions().contains(&"beacon_forget"));
     }
 }

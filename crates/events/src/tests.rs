@@ -489,6 +489,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         file: "a.ron",
         directory: std::path::Path::new(""),
         spawn: &|_, _| None,
+        functions: &[],
     };
     let problems = registry.check_events(&registry.parse_events(&text).unwrap(), &context);
     let found: Vec<_> = problems
@@ -514,6 +515,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
             file: "a.ron",
             directory: std::path::Path::new(""),
             spawn,
+            functions: &[],
         };
         let events = registry.parse_events(&room(transfer)).unwrap();
         let problems = registry.check_events(&events, &context);
@@ -813,4 +815,86 @@ fn one_press_starts_an_event_or_a_script_not_both() {
         assert!(flag(&app, "read"));
         assert_eq!(variable(&app, "interact"), 0);
     });
+}
+
+#[test]
+fn a_row_sets_a_field_of_a_component_of_an_object() {
+    // The speed of the script, and the width of the area of its object.
+    let events = r#"(name: "tune", pages: [(trigger: Autorun, commands: [
+        SetField("counter", "counter", "speed", 2.5),
+        SetField("counter", "area", "width", 3),
+        SetField("counter", "area", "nothing", 1),
+    ])])"#;
+    let app = counter_game("set-field", &counter_room(0.0, events));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        let world = app.world();
+        let mut counters = world.try_query::<(&Counter, &TriggerArea)>().unwrap();
+        let (counter, area) = counters.single(world).unwrap();
+        assert_eq!((counter.speed, area.width, area.depth), (2.5, 3.0, 1.0));
+        // A field that is not there changes nothing, and the event ends. A wrong
+        // object or component is an error of the check: the room does not load.
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn a_row_calls_a_function_of_the_script_crate_with_the_object_of_the_event() {
+    fn rename_count(context: &mut ScriptContext) {
+        let name = context.name().to_owned();
+        let mut state = context.state();
+        let calls = state.variable(&name);
+        state.set_variable(&name, calls + 1);
+    }
+    let events = r#"(name: "caller", pages: [(trigger: Autorun, commands: [
+        CallScript("count"), CallScript("count")])])"#;
+    let mut app = counter_game("call", &counter_room(0.0, events));
+    add_script_function(&mut app, "count", rename_count);
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        // The context is the object of the event: its name.
+        assert_eq!(variable(&app, "caller"), 2);
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn the_check_finds_a_wrong_object_component_or_function_of_a_general_command() {
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    add_script_function(&mut app, "count", |_| {});
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    let text = room(
+        r#"(name: "e", pages: [(trigger: Autorun, commands: [
+        SetField("lamp", "light", "intensity", 2.0),
+        SetField("lamb", "light", "intensity", 2.0),
+        SetField("lamp", "swing", "angle", 2.0),
+        CallScript("count"),
+        CallScript("cont"),
+    ])])"#,
+    );
+    let def = maki_scene::parse_room(&text).unwrap();
+    let context = CheckContext {
+        room: &def,
+        file: "a.ron",
+        directory: std::path::Path::new(""),
+        spawn: &|_, _| None,
+        functions: &registry.functions(),
+    };
+    let events = registry.parse_events(&text).unwrap();
+    let problems = registry.check_events(&events, &context);
+    let texts: Vec<&str> = problems
+        .iter()
+        .map(|problem| problem.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "the room has no object `lamb`",
+            "the object `lamp` has no component `swing`",
+            "no module added the script function `cont`",
+        ]
+    );
 }

@@ -1428,3 +1428,57 @@ fn an_instance_shows_its_prefab_with_its_changes() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// The rows "Set a field" and "Call a script function" are rows as each other: a
+/// change is one step of the history, and a wrong name is a problem of the row.
+#[test]
+fn a_general_command_row_has_undo_and_shows_its_problems() {
+    use maki_events::{Builtin, TriggerArea};
+
+    let (app, directory) = editor_app("general");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        let mut editor = app.resource_mut::<Editor>();
+        let registry = editor.registry.clone();
+        let before = editor.document.event(LEAVE, &registry).unwrap().unwrap();
+        // The object of the event gets an area, and its page a row of each.
+        let area = TriggerArea::default();
+        editor.document.room.objects[LEAVE].set_component("area", &area);
+        let mut event = before.clone();
+        let width = maki_core::fields::number(2.0, false);
+        let rows = [
+            Builtin::SetField("leave".into(), "area".into(), "width".into(), width.clone()),
+            Builtin::SetField("leave".into(), "swing".into(), "angle".into(), width),
+            Builtin::CallScript("nothing".into()),
+        ];
+        event.pages[0].commands = rows.map(|row| registry.command(row).unwrap()).into();
+        editor.document.set_event(LEAVE, &event);
+        editor.document.dirty = true;
+        frames(&mut app, 2);
+
+        let mut editor = app.resource_mut::<Editor>();
+        let problems = editor.problems();
+        let texts: Vec<(usize, &str)> = problems
+            .iter()
+            .map(|problem| (problem.object, problem.text.as_str()))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                (LEAVE, "the object `leave` has no component `swing`"),
+                (LEAVE, "no module added the script function `nothing`"),
+            ]
+        );
+        // Undo: the page of before, with no area.
+        request(&mut app, Command::Undo);
+        let editor = app.world().resource::<Editor>();
+        let event = editor.document.event(LEAVE, &editor.registry).unwrap();
+        assert_eq!(event.unwrap(), before);
+        assert!(
+            !editor.document.room.objects[LEAVE]
+                .components
+                .contains_key("area")
+        );
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}

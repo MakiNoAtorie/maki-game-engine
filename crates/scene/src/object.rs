@@ -17,8 +17,10 @@ use std::iter::Peekable;
 use std::str::Chars;
 
 use bevy_ecs::component::Component;
+use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::EntityCommands;
+use bevy_ecs::world::World;
 use maki_core::fields::{Value, read};
 use maki_core::{App, Fields};
 use ron::value::RawValue;
@@ -175,6 +177,21 @@ pub struct ComponentType {
     /// inserts the value into the entity of the object. `None`: the room loader has
     /// its own code for the type (a prop, a light), or the type is data only.
     pub insert: Option<Insert>,
+    /// For a component of `bevy_ecs`: its value in the game, as a tree. `None`: the
+    /// game has no value of the type as it is in the file (a light is made into
+    /// another component).
+    pub live: Option<Live>,
+}
+
+/// The value of a component of `bevy_ecs` in an entity, as the tree of its fields:
+/// what the event command `SetField` reads and writes.
+#[derive(Clone, Copy)]
+pub struct Live {
+    /// `None`: the entity has no such component.
+    pub get: fn(&World, Entity) -> Option<Value>,
+    /// Writes a tree into the component of the entity. `Err`: why the type does not
+    /// read the tree.
+    pub set: fn(&mut World, Entity, Value) -> Result<(), String>,
 }
 
 /// The types of components by name. [`add_component_type`] adds one.
@@ -194,7 +211,7 @@ pub fn add_component_type<T: Fields + Serialize + DeserializeOwned>(
     app: &mut App,
     name: &'static str,
 ) {
-    register::<T>(app, name, None);
+    register::<T>(app, name, None, None);
 }
 
 /// Registers a type of component that is also a component of `bevy_ecs`: as
@@ -204,14 +221,22 @@ pub fn add_object_component<T: Component + Fields + Serialize + DeserializeOwned
     app: &mut App,
     name: &'static str,
 ) {
-    register::<T>(
-        app,
-        name,
-        Some(|text, entity| {
-            entity.insert(text.read::<T>().map_err(|error| error.to_string())?);
+    let insert: Insert = |text, entity| {
+        entity.insert(text.read::<T>().map_err(|error| error.to_string())?);
+        Ok(())
+    };
+    let live = Live {
+        get: |world, entity| world.get::<T>(entity).map(Fields::tree),
+        set: |world, entity, tree| {
+            let value = read::<T>(tree).map_err(|error| error.to_string())?;
+            let mut entity = world
+                .get_entity_mut(entity)
+                .map_err(|error| error.to_string())?;
+            entity.insert(value);
             Ok(())
-        }),
-    );
+        },
+    };
+    register::<T>(app, name, Some(insert), Some(live));
 }
 
 /// Registers a type of component whose text needs more than its type to be read (the
@@ -222,6 +247,7 @@ pub fn add_component_reader(app: &mut App, name: &'static str, insert: Insert) {
         tree: |_| Err("the type is edited in a panel of its own".to_owned()),
         text: |_, _| Err("the type is edited in a panel of its own".to_owned()),
         insert: Some(insert),
+        live: None,
     };
     app.init_resource::<ComponentTypes>();
     app.resource_mut::<ComponentTypes>()
@@ -233,6 +259,7 @@ fn register<T: Fields + Serialize + DeserializeOwned>(
     app: &mut App,
     name: &'static str,
     insert: Option<Insert>,
+    live: Option<Live>,
 ) {
     maki_core::add_field_type::<T>(app, name);
     let component_type = ComponentType {
@@ -259,6 +286,7 @@ fn register<T: Fields + Serialize + DeserializeOwned>(
             }
         },
         insert,
+        live,
     };
     app.init_resource::<ComponentTypes>();
     app.resource_mut::<ComponentTypes>()

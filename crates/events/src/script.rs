@@ -32,7 +32,7 @@ use maki_scene::{Name, add_object_component};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::command::{Command, CommandSet};
+use crate::command::{Command, CommandSet, ScriptFunction};
 use crate::interpreter::{RunningEvent, faces};
 use crate::model::{Area, Trigger};
 use crate::{CommandRegistry, EventRunner, GameState};
@@ -147,6 +147,7 @@ impl ScriptContext<'_> {
         let name = self.name().to_owned();
         // `Interact`: the player started it, so it blocks the player.
         let mut running = RunningEvent::new(&name, Trigger::Interact, &commands);
+        running.entity = Some(self.entity);
         // ponytail: the step mode of a tool is not for script calls.
         if !running.step(self.world, &mut None) {
             self.world
@@ -197,6 +198,14 @@ pub(crate) struct ScriptRunners(pub(crate) Vec<RunScripts>);
 /// Runs the hooks of the entities of one type. The second argument: the position and
 /// the view direction of the player.
 type RunScripts = fn(&mut World, Option<(Vec3, Vec3)>);
+
+/// Registers a function of the script crate that the row `CallScript` calls by its
+/// name, with the object of the event. Needs `EventsModule`.
+pub fn add_script_function(app: &mut App, name: &'static str, function: ScriptFunction) {
+    app.world()
+        .resource::<CommandRegistry>()
+        .add_function(name, function);
+}
 
 /// Registers a script type under the name that the room files give it. Needs
 /// `EventsModule`.

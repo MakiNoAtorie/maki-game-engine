@@ -105,5 +105,25 @@
                 "beacon": (light: "spot", pulses: 1.5, strength: 0.6),
             },
         ),
+        // A dial near the start: a row changes a field of the beacon, and a row calls
+        // a function of the script crate (game/scripts/src/beacon.rs).
+        (
+            name: "dial",
+            pose: (position: (-1.6, 0.0, 2.6)),
+            components: {
+                "area": (width: 0.8, depth: 0.8),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Interact,
+                            commands: [
+                                SetField("beacon", "beacon", "pulses", 4.0),
+                                CallScript("beacon_forget"),
+                            ],
+                        ),
+                    ],
+                ),
+            },
+        ),
     ],
 )

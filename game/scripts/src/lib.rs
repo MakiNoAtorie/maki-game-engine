@@ -107,7 +107,7 @@ output = false",
             assert_eq!(again.room, document.room, "{path:?}");
             assert_eq!(again.text(), text, "{path:?}");
         }
-        assert_eq!((count, pages), (7, 9));
+        assert_eq!((count, pages), (8, 10));
     }
 
     /// A component of this game says what its fields are with the derive of the

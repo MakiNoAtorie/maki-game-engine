@@ -117,6 +117,7 @@ impl RunningEvent {
             let mut step = Step {
                 start,
                 event: &self.name,
+                entity: self.entity,
                 memory: &mut self.memory,
                 opened: &mut opened,
             };

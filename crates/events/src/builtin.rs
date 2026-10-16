@@ -5,18 +5,23 @@
 //! crate. No command calls the renderer or the user interface: they read what the
 //! commands wrote.
 
+use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use maki_core::Time;
+use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    CurrentRoom, Light, Mover, MoverState, Name, RoomRequest, RoomTarget, ScreenFade,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, RoomRequest, RoomTarget,
+    ScreenFade,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::CommandRegistry;
 use crate::check::{CheckContext, Finding};
 use crate::command::{Command, Step};
 use crate::interpreter::{ChoiceBox, Choices};
 use crate::model::{Compare, Condition, all_hold};
+use crate::script::ScriptContext;
 use crate::{CHOICE_DOWN, CHOICE_UP, GameState, INTERACT, MessageBox};
 
 /// Text arguments are names: of a flag, a variable, or an entity of the room file
@@ -49,6 +54,13 @@ pub enum Builtin {
     /// To a spawn point of another room. The first text is the room file, from the
     /// directory of the current room file. The event goes on in the new room.
     Transfer(String, String),
+    /// Changes a field of a component of an object: the object, the component, the
+    /// field, and the value in the form of the tree of the fields (a number, `true`,
+    /// a text, a list for a vector or a color).
+    SetField(String, String, String, Value),
+    /// Calls a function of the script crate (`add_script_function`) with the object
+    /// of the event.
+    CallScript(String),
 }
 
 /// One step of a built-in command. False: the command waits.
@@ -177,8 +189,66 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
                 tracing::error!(event = step.event, room, "the transfer did not happen");
             }
         }
+        Builtin::SetField(object, component, field, value) => {
+            set_field(world, [object, component, field], value);
+        }
+        Builtin::CallScript(name) => {
+            let function = world.resource::<CommandRegistry>().function(name);
+            match (function, step.entity) {
+                (Some(function), Some(entity)) => function(&mut ScriptContext { world, entity }),
+                (None, _) => tracing::warn!(event = step.event, name, "no such script function"),
+                (_, None) => tracing::warn!(name, "a script function needs the object of an event"),
+            }
+        }
     }
     true
+}
+
+/// Writes `value` into the field of the component of the first entity of the object
+/// that has the component. A name that the game does not have is a warning.
+fn set_field(world: &mut World, [object, component, field]: [&String; 3], value: &Value) {
+    let types = world.resource::<ComponentTypes>();
+    let Some(Live { get, set }) = types.get(component).and_then(|found| found.live) else {
+        tracing::warn!(
+            component,
+            "SetField: the component has no value in the game"
+        );
+        return;
+    };
+    let mut named = world.query::<(Entity, &Name)>();
+    let entities: Vec<Entity> = named
+        .iter(world)
+        .filter(|(_, name)| name.0 == *object)
+        .map(|(entity, _)| entity)
+        .collect();
+    let found = entities
+        .into_iter()
+        .find_map(|entity| Some((entity, get(world, entity)?)));
+    let Some((entity, mut tree)) = found else {
+        tracing::warn!(
+            object,
+            component,
+            "SetField: no such object with the component"
+        );
+        return;
+    };
+    let Some(slot) = tree.get_mut(field.as_str()) else {
+        tracing::warn!(
+            object,
+            component,
+            field,
+            "SetField: the component has no such field"
+        );
+        return;
+    };
+    // Only a new value is a write: a write is a change.
+    if slot == value {
+        return;
+    }
+    *slot = value.clone();
+    if let Err(error) = set(world, entity, tree) {
+        tracing::warn!(object, component, field, "SetField: {error}");
+    }
 }
 
 /// The command lists of a built-in command (`CommandRegistry::add_lists`): the two
@@ -247,6 +317,10 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Builtin::FadeOut(seconds) => format!("Fade to black, {seconds} s"),
         Builtin::FadeIn(seconds) => format!("Fade to the picture, {seconds} s"),
         Builtin::Transfer(room, spawn) => format!("Go to {room}, at {spawn}"),
+        Builtin::SetField(object, component, field, value) => {
+            format!("Set {object}: {component}.{field} = {value}")
+        }
+        Builtin::CallScript(name) => format!("Call the script function {name}"),
     })
 }
 
@@ -268,6 +342,8 @@ pub(crate) fn help(name: &str) -> Option<&'static str> {
         "FadeOut" => "The picture goes to black.",
         "FadeIn" => "The picture comes back from black.",
         "Transfer" => "Goes to a spawn point of a room. The event goes on there.",
+        "SetField" => "Changes a field of a component of an object.",
+        "CallScript" => "Calls a function of the script crate, with the object of the event.",
         _ => return None,
     })
 }
@@ -307,6 +383,17 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
             ))),
             None => Some(Finding::warning(format!("no room file `{file}`"))),
         },
+        Builtin::SetField(object, component, ..) => {
+            match room.objects.iter().find(|found| named(&found.name, object)) {
+                None => Some(Finding::error(format!("the room has no object `{object}`"))),
+                Some(found) if !found.components.contains_key(component) => Some(Finding::error(
+                    format!("the object `{object}` has no component `{component}`"),
+                )),
+                Some(_) => None,
+            }
+        }
+        Builtin::CallScript(name) => (!context.functions.contains(&name.as_str()))
+            .then(|| Finding::error(format!("no module added the script function `{name}`"))),
         _ => None,
     }
 }

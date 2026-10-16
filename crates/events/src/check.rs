@@ -27,6 +27,8 @@ pub struct CheckContext<'a> {
     /// For another room file in the directory of the room, and a name: true if the
     /// file has a spawn point of that name. `None`: no such room file.
     pub spawn: &'a dyn Fn(&str, &str) -> Option<bool>,
+    /// The names of the script functions (`CommandRegistry::functions`).
+    pub functions: &'a [&'static str],
 }
 
 impl CheckContext<'_> {
@@ -144,6 +146,7 @@ impl CommandRegistry {
                 file: &file.to_string_lossy(),
                 directory,
                 spawn: &spawn,
+                functions: &registry.functions(),
             };
             let problems = registry.check_events(&events, &context);
             let with_line = |problem: Problem| {
