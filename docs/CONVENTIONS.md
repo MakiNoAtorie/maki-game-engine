@@ -24,7 +24,8 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 ## Subagents
 - Parallel implementers may each have a worktree and a branch from the stage branch (owner, 2026-10-15); one implementer works on the stage branch. Two writers never touch the same files. A parallel branch is merged into the stage branch when its checks pass, then its worktree and branch go. Each lane is reviewed (`/code-review`) before or after its merge, in the same stage.
 - A lane keeps the stage branch green: it fixes a test outside its scope that its own change breaks.
-- A lane in a worktree builds into a warm slot: `CARGO_TARGET_DIR=<repo>/../maki-target/slotK`, K from 1 to 3, one slot for each running lane. GPU tools and `tools/reload_test.py` run in the main checkout (they read `target/`).
+- A lane in a worktree builds into the `target/` of its worktree; the first build there is cold (about 4 minutes for the dynamic form). `tools/reload_test.py` reads the `target/` of its own checkout, so it runs in a worktree too. GPU tools run in the main checkout.
+- In a worktree agent, a Bash command with `$(...)` or `python -c` near `git` is refused: write the commands to a scratchpad script and run it with `sh`.
 - A session or subagent whose work ends in its own branch or pull request gets its own worktree (`use_worktree: true`): the main checkout stays on the branch of the orchestrator.
 - Implementers run the local checks above, do not edit shared notes, and end their report with at most 10 bullet points of new conventions. The orchestrator folds them into this file.
 - Prompt template:
