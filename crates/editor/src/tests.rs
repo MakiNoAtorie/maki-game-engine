@@ -1255,7 +1255,7 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
     room.objects.push(mover.into_object());
     let prefab = PrefabUse {
         name: None,
-        file: PathBuf::from("table.prefab"),
+        file: "table.prefab".into(),
         pose: PoseDef::default(),
         changes: Default::default(),
     };
@@ -1446,7 +1446,7 @@ fn an_instance_shows_its_prefab_with_its_changes() {
             .unwrap();
         let used = PrefabUse {
             name: Some("lamp 2".to_owned()),
-            file: PathBuf::from("prefabs/lamp.prefab"),
+            file: "prefabs/lamp.prefab".into(),
             pose: Default::default(),
             changes,
         };

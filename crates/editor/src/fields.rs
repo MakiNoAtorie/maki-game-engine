@@ -97,7 +97,9 @@ fn value(
             changed
         }
         Kind::File(group) => {
-            let mut path = PathBuf::from(tree.as_str().unwrap_or_default());
+            // A reference with an id is `{path, id}`; a new file drops the id of the old one.
+            let shown = tree.as_str().or_else(|| tree.get("path")?.as_str());
+            let mut path = PathBuf::from(shown.unwrap_or_default());
             let changed = file(ui, label, &mut path, extensions(group));
             if changed {
                 *tree = Value::String(path.to_string_lossy().replace('\\', "/"));
