@@ -29,7 +29,8 @@ step "format" cargo fmt --all -- --check
 tools() {
     python -B -c 'import ast, glob; [ast.parse(open(p, encoding="utf-8").read(), p) for p in glob.glob("tools/*.py")]' &&
         python -B tools/bench.py selftest &&
-        python -B tools/comment_lint.py selftest
+        python -B tools/comment_lint.py selftest &&
+        python -B tools/symbol_count.py selftest
 }
 step "tools" tools
 # One-line comments, in the lines that this branch adds (CODING_STANDARDS.md).
@@ -38,6 +39,8 @@ step "clippy static" cargo clippy -q --workspace --all-targets
 if [ "$1" != "fast" ]; then
     step "test static" cargo test -q
     step "build dynamic" cargo build -q --profile dynamic -p maki-editor-app -p maki-game-dll
+    # The engine DLL exports 65,535 names at most (LNK1189): the step fails above a margin.
+    step "symbol count" python -B tools/symbol_count.py
     step "clippy dynamic" cargo clippy -q --profile dynamic -p maki-editor-app -p maki-game-dll -p maki-engine --features maki-engine/dynamic
     # A program of the profile `dynamic` needs the DLL of the standard library.
     PATH="$(cygpath "$(rustc --print sysroot)" 2>/dev/null || rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-msvc/lib:$PATH"
