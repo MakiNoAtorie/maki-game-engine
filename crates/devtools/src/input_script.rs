@@ -216,8 +216,7 @@ impl Module for InputScriptModule {
                 modifiers: egui::Modifiers::NONE,
                 ended: false,
             })
-            // The keys of a step start their actions in the same frame. It has the
-            // whole world (a command); the order to the rest of `Input` is free.
+            // Before `update_actions`: the keys of a step start their actions in the same frame.
             .add_systems(
                 Input,
                 run_input_script.before(update_actions).ambiguous_with_all(),
