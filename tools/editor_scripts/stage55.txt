@@ -1,0 +1,62 @@
+# The run by hand of stage 55 in room D, with no input of the desktop: an input script
+# of the editor (crates/devtools/src/input_script.rs). The coordinates are window pixels
+# of the maximized window on a display of 3840 x 2160 at a scale of 200 %.
+# A config for it: [rooms] start = "game/assets/rooms/room_d.ron",
+# [window] focus = false, [audio] output = false, [save] enabled = false.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage55.txt --input-shots DIR
+# It saves room D: look at `git diff game/assets/rooms/room_d.ron`, then
+# `git checkout -- game/assets/rooms/room_d.ron`.
+wait 40
+
+# Rename the button: one line of the file changes; the wire still opens the door.
+click 44 223
+wait 10
+tap F2
+wait 5
+tap Ctrl+A
+type button_renamed
+wait 5
+tap Enter
+wait 10
+shot renamed
+
+# Cut and paste the pad: it keeps id 5.
+click 38 245
+wait 10
+command editor.cut
+wait 10
+command editor.paste
+wait 10
+shot cut_paste
+
+# Copy the button and paste it (id 6, the same wire), then delete the original:
+# the check reports the Signal of the pad, which names the deleted id.
+click 44 223
+wait 10
+command editor.copy
+command editor.paste
+wait 10
+click 44 223
+wait 10
+tap Delete
+wait 10
+shot deleted
+tap Ctrl+S
+wait 20
+
+# Play: walk to the copy (0.5 m right, 0.5 m to the camera) and interact.
+tap F5
+wait 60
+press D
+wait 15
+release D
+press S
+wait 8
+release S
+wait 10
+tap Z
+wait 90
+shot copy_opens_door
+tap F5
+wait 20
+quit

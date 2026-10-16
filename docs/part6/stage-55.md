@@ -31,7 +31,11 @@ Seven lanes from the stage branch, at most three at a time, each merged when its
 
 - **The rooms of `bench.py`** get `id: 1` on their spawn, and the config of a run gets `rooms.start_spawn` from the room text (`bench.start_spawn`): `start_spawn` of the project is an id now (11), which is no spawn of a generated room. "What to watch for" 1 said these rooms have no ids. `tools/shot.py --spawn <name>` turns the name into an id.
 - **Paths that stay paths**: `Transfer`'s room, `PlaySound`, `PlayMusic`, and `start_room` of `project.toml` are plain paths, not `FileRef`. The player prefab of `project.toml` is a `FileRef`.
-- **The run by hand** in the editor (renames, play of the three rooms, a move of `cabinet.glb` in Explorer, copy of an object with a wire, Cut) was not done: headless tests cover the paths.
+- **The run by hand** was done after the merge, by the input script of the editor (no input of the desktop; room D: `tools/editor_scripts/stage55.txt`):
+  - Rename of the door of room A, the spawn `west` of room B, and the button of room D, then Ctrl+S: one line of each room file changes. In play, the renamed button of room D opens the door. A trip run of the game with the renamed rooms: the transfer of room A arrives at the renamed spawn (-2.2, 0, 0), and `OpenDoor(8)` finds the renamed door of room A (no warning). The trip script itself names the spawn `west` by name (`Place::Spawn` of `maki_devtools::script`), so it stops after a rename of that spawn: a limit of the test script, not of the game.
+  - Cut and paste of the pad of room D keeps id 5. Copy and paste of the button gives id 6 (`next_id` 7) with its wire `OpenDoor(2)`; after a delete of the original, the copy opens the door in play, and the room check reports `Signal(4, ...)` of the pad (an id with no object, the pad in red).
+  - `cabinet.glb` and its id file moved to another folder while the editor has room A open: the cabinet still shows, the tab shows `room_a.ron *`, and a save writes `moved/cabinet.glb` with the same id. The game with the old path loads the cabinet and logs "a file has moved".
+  - Found: `quit` of the input script did not end the editor when the room had changes (the path correction had marked it): the editor took the request as its own Quit command and asked a question. Fixed after the stage: `take_quit_request` leaves a request with no `QuitHold` alone (test `a_quit_with_no_hold_ends_the_app_with_changes_not_saved`).
 
 ## 4. Decisions where the stage file was silent
 
