@@ -898,3 +898,22 @@ fn the_check_finds_a_wrong_object_component_or_function_of_a_general_command() {
         ]
     );
 }
+
+#[test]
+fn interact_starts_nothing_outside_the_state_play() {
+    let events = r#"(name: "sign", area: (center: (0.0, 1.4), size: (1.0, 1.0)), pages: [(trigger: Interact, commands: [SetFlag("read", true)])])"#;
+    let app = counter_game("play-state", &counter_room(0.0, events));
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        for state in [maki_core::PlayState::Cutscene, maki_core::PlayState::Title] {
+            *app.resource_mut::<maki_core::PlayState>() = state;
+            interact(&mut app);
+            steps(&mut app, 1);
+            assert!(!flag(&app, "read"), "{state:?}");
+        }
+        *app.resource_mut::<maki_core::PlayState>() = maki_core::PlayState::Play;
+        interact(&mut app);
+        steps(&mut app, 1);
+        assert!(flag(&app, "read"));
+    });
+}

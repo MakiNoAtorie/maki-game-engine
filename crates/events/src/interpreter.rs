@@ -16,7 +16,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{EntityCommands, Res, ResMut};
 use bevy_ecs::world::{EntityWorldMut, Mut, World};
 use glam::Vec3;
-use maki_core::Interpolated;
+use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
 use maki_scene::{ComponentText, CurrentRoom, Name, Player, RoomItem};
 
@@ -209,7 +209,12 @@ impl EventRunner {
         // An interact press that goes to a running event (it closes a message)
         // starts no other event in the same step.
         let mut blocked = self.blocks_player();
-        let pressed = world.resource::<FixedActionState>().just_pressed(INTERACT);
+        // Only in play: in a title, a cutscene, or the end, the player starts nothing.
+        // A message still closes: its command reads the press itself.
+        let playing = world
+            .get_resource::<PlayState>()
+            .is_none_or(|state| *state == PlayState::Play);
+        let pressed = playing && world.resource::<FixedActionState>().just_pressed(INTERACT);
         let mut interact = pressed && !blocked;
 
         let mut index = 0;
