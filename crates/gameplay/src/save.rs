@@ -22,6 +22,8 @@ use maki_scene::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::control::Controller;
+
 /// Debug: reads the save file again and goes to its state.
 pub const LOAD_GAME: Action = Action("load_game");
 
@@ -127,7 +129,13 @@ impl Module for SaveModule {
                     // It has the world: these two orders are the ones that count.
                     .ambiguous_with_all(),
             )
-            .add_systems(FixedUpdate, save_when_the_event_ends.after(run_events))
+            // It reads `Controller::home` only; `apply_rules` writes `active`.
+            .add_systems(
+                FixedUpdate,
+                save_when_the_event_ends
+                    .after(run_events)
+                    .ambiguous_with(crate::game::apply_rules),
+            )
             // It has the world (`ResetPlay`): its order to the loader is the one that
             // counts.
             .add_systems(
@@ -153,7 +161,8 @@ fn save_when_the_event_ends(
     runner: Res<EventRunner>,
     room: Res<CurrentRoom>,
     state: Res<GameState>,
-    players: Query<&Interpolated, With<Player>>,
+    controller: Option<Res<Controller>>,
+    poses: Query<&Interpolated>,
 ) {
     // No write of the resource in a step with no request.
     let Some(event) = &request.0 else { return };
@@ -165,7 +174,11 @@ fn save_when_the_event_ends(
         return;
     }
     request.0 = None;
-    let (Some(file), Ok(player)) = (&file.0, players.single()) else {
+    // The home body, not the pawn: a load puts the place on the home body.
+    let home = controller
+        .and_then(|controller| controller.home)
+        .and_then(|home| poses.get(home).ok());
+    let (Some(file), Some(player)) = (&file.0, home) else {
         return;
     };
     let save = SaveData {
@@ -360,6 +373,31 @@ mod tests {
         game(&directory).run(|mut app| assert_eq!(state(&mut app), start));
         std::fs::write(directory.join("save.ron"), "not a save").unwrap();
         game(&directory).run(|mut app| assert_eq!(state(&mut app), start));
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_save_with_the_control_on_an_object_keeps_the_place_of_the_player() {
+        let directory = std::env::temp_dir().join(format!("maki-save-pawn-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let room = r#"(width: 4, depth: 4, height: 3, objects: [(name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
+            (name: "box", pose: (position: (-1.0, 0.0, -1.0)), components: {"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}),
+            (name: "go", components: {"event": (pages: [
+                (trigger: Autorun, commands: [SetFlag("seen", true), GiveControl("box"), SavePoint]),
+                (conditions: [Flag("seen")], trigger: Interact, commands: []),
+            ])}),
+        ])"#;
+        std::fs::write(directory.join("a.ron"), room).unwrap();
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            let world = app.world();
+            let mut pawns = world
+                .try_query_filtered::<&maki_scene::Name, With<Player>>()
+                .unwrap();
+            assert_eq!(pawns.single(world).unwrap().0, "box");
+        });
+        let save = read(&directory.join("save.ron")).unwrap().unwrap();
+        assert_eq!(save.position, [1.0, 0.0, 1.0]);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }

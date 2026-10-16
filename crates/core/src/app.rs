@@ -310,10 +310,8 @@ impl App {
             time.delta = delta;
             time.elapsed += delta;
             time.frame += 1;
-            // The time of a pause of the game does not come back as steps after it.
-            if game_paused {
-                time.accumulator = Duration::ZERO;
-            } else if !time.paused {
+            // The time of a pause does not come back as steps after it.
+            if !time.paused && !game_paused {
                 time.accumulator += delta;
             }
             time.fixed_delta
@@ -345,7 +343,12 @@ impl App {
         }
         self.fixed_step_since_message_update |= steps > 0;
 
+        let game_paused = self.game_paused();
         let mut time = self.world.resource_mut::<Time>();
+        // A pause drops the full steps left; the rest keeps `alpha`, so the picture stands.
+        while game_paused && time.accumulator >= fixed_delta {
+            time.accumulator -= fixed_delta;
+        }
         time.alpha = time.accumulator.div_duration_f32(fixed_delta);
 
         run_schedule!(self.world, Update);
@@ -448,11 +451,14 @@ max_fixed_steps = 4",
             },
         );
         app.run(|mut app| {
-            // 100 ms is five steps of time; the pause stops the frame at the third.
+            // 110 ms is five and a half steps of time; the pause stops the frame at
+            // the third, and the picture stands at the half step.
+            app.advance(Duration::from_millis(110));
+            assert_eq!(app.world.resource::<Time>().fixed_tick, 3);
+            assert_eq!(app.world.resource::<Time>().alpha, 0.5);
             app.advance(Duration::from_millis(100));
             assert_eq!(app.world.resource::<Time>().fixed_tick, 3);
-            app.advance(Duration::from_millis(100));
-            assert_eq!(app.world.resource::<Time>().fixed_tick, 3);
+            assert_eq!(app.world.resource::<Time>().alpha, 0.5);
             // Play again: the time of the pause does not come back as steps.
             app.world
                 .resource_mut::<crate::PlayState>()

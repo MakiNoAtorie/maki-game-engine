@@ -56,7 +56,8 @@ impl Settings for GameRules {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GameCommand {
     /// The game goes to this state, if the table of `PlayState::can_change`
-    /// allows it; else a warning, and no change.
+    /// allows it; else a warning, and no change. `Pause` needs the pause action on
+    /// (`GameRules::pause`): only the action ends a pause.
     SetPlayState(PlayState),
     /// The control goes to the first object with this name. An empty name: back to
     /// the body of the player prefab.
@@ -76,9 +77,9 @@ impl Module for GameModule {
             match command {
                 GameCommand::SetPlayState(to) => {
                     let from = *world.resource::<PlayState>();
-                    if from.can_change(*to) {
-                        *world.resource_mut::<PlayState>() = *to;
-                    } else if from != *to {
+                    // No fixed step runs in a pause: only the pause action ends it.
+                    let stuck = *to == PlayState::Pause && !world.resource::<GameRules>().pause;
+                    if stuck || !world.resource_mut::<PlayState>().change(*to) {
                         tracing::warn!(
                             event = step.event,
                             "no change of the game from {from:?} to {to:?}"
@@ -140,7 +141,7 @@ fn named(world: &mut World, name: &str) -> Option<Entity> {
 
 /// Runs in `FixedUpdate`: the rule of the control. The pawn takes the move actions
 /// in the state play, while no event blocks it (a message, a fade).
-fn apply_rules(
+pub(crate) fn apply_rules(
     state: Res<PlayState>,
     events: Res<EventRunner>,
     mut controller: ResMut<Controller>,
@@ -161,9 +162,7 @@ fn pause_on_action(actions: Res<ActionState>, rules: Res<GameRules>, mut state: 
         PlayState::Pause => PlayState::Play,
         _ => PlayState::Pause,
     };
-    if state.can_change(to) {
-        *state = to;
-    }
+    state.change(to);
 }
 
 /// Runs in `ResetPlay`: a play starts in the start state of the rules.
@@ -192,7 +191,7 @@ mod tests {
 
     /// The commands that [`Driver`] calls: the variable `call` of the game state is
     /// an index into this list, plus one.
-    fn calls() -> [GameCommand; 6] {
+    fn calls() -> [GameCommand; 7] {
         [
             GameCommand::GiveControl("box".to_owned()),
             GameCommand::GiveControl(String::new()),
@@ -200,6 +199,7 @@ mod tests {
             GameCommand::SetPlayState(PlayState::Cutscene),
             GameCommand::SetPlayState(PlayState::Title),
             GameCommand::GiveControl("nothing".to_owned()),
+            GameCommand::SetPlayState(PlayState::Pause),
         ]
     }
 
@@ -355,5 +355,62 @@ mod tests {
             app.reset_play();
             assert_eq!(play_state(&app), PlayState::Title);
         });
+    }
+
+    #[test]
+    fn a_row_does_not_pause_a_game_with_no_pause_action() {
+        let app = game(
+            "[rules]
+pause = false",
+        );
+        app.run(|mut app| {
+            call(&mut app, 6);
+            assert_eq!(*app.world().resource::<PlayState>(), PlayState::Play);
+        });
+        let app = game("");
+        app.run(|mut app| {
+            call(&mut app, 6);
+            assert_eq!(*app.world().resource::<PlayState>(), PlayState::Pause);
+        });
+    }
+
+    #[test]
+    fn the_pawn_stands_while_an_event_blocks_it() {
+        let directory = std::env::temp_dir().join(format!("maki-rules-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let room = r#"(width: 8, depth: 8, height: 3, objects: [(name: "start", components: {"spawn": ()}),
+            (name: "wait", components: {"event": (pages: [
+                (trigger: Autorun, commands: [Wait(0.2), SetFlag("done", true)]),
+                (conditions: [Flag("done")], trigger: Interact, commands: []),
+            ])}),
+        ])"#;
+        std::fs::write(directory.join("a.ron"), room).unwrap();
+        let mut app = game(
+            "[assets]
+background = false",
+        );
+        app.add_module(crate::RoomsModule {
+            start_room: directory.join("a.ron"),
+            start_spawn: "start".to_owned(),
+        });
+        app.run(|mut app| {
+            let z = |app: &App| {
+                let world = app.world();
+                let home = world.resource::<Controller>().home.unwrap();
+                world
+                    .get::<Interpolated>(home)
+                    .unwrap()
+                    .current
+                    .translation
+                    .z
+            };
+            app.write_message(RawInput::KeyDown(Key::W));
+            walk(&mut app, 5);
+            assert_eq!(z(&app), 0.0);
+            walk(&mut app, 10);
+            assert!(app.world().resource::<GameState>().flag("done"));
+            assert!(z(&app) < 0.0);
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

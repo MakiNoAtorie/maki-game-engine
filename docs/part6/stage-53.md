@@ -60,3 +60,32 @@ Stage 53 ran in a worktree beside stage 51 (its tickets had no edge to #12 and #
 - **Not run by hand**: the key P, the camera on a new pawn, a load with `start = "Title"`. The tests have no window.
 - **No room has an example** of `SetPlayState` or `GiveControl`; the tests make their own rooms.
 - **A title screen** is a state only: no picture of a title, no menu (a later stage of the UI).
+
+## 7. Code review (2026-10-16)
+
+Stage 53 was merged with no review. The `code-review` skill ran afterwards on `30d2b87..cad730e` (Standards and Spec, two agents). Branch `review/stage-53`.
+
+### Fixed, each with a test
+
+| Finding | Axis | Fix | Test |
+|---|---|---|---|
+| A rename of an object does not change its `GiveControl` rows | Standards (CODING_STANDARDS: a command that names an object follows a rename) | Arm for `GameCommand::GiveControl` in `Document::renamed` | `a_rename_changes_the_events_and_a_name_stays_unique` (4 commands) |
+| `SetPlayState(Pause)` with `[rules] pause = false` stops the game for good: no fixed step runs, the action is off | Both | The command refuses `Pause` when the pause action is off, with a warning | `a_row_does_not_pause_a_game_with_no_pause_action` |
+| A save point with the control on a room object saves the place of that object; the load puts it on the player body | Spec | The save takes the place of `Controller::home` | `a_save_with_the_control_on_an_object_keeps_the_place_of_the_player` |
+| In a pause the picture jumps back up to one step: the accumulator was set to zero, so `alpha` was 0 | Spec | A pause keeps the accumulator (as `Time::paused`); a step that pauses drops only the full steps after it | `no_fixed_step_runs_in_a_pause_and_a_step_that_pauses_is_the_last` checks `alpha` |
+| No test of "the pawn does not move while an event blocks it" (Done when) | Spec | – | `the_pawn_stands_while_an_event_blocks_it` |
+| `SetPlayState` and the pause action write the change table again | Standards (Duplicated Code) | Both call `PlayState::change` | – |
+| Comments of two lines, one that tells the code | Standards (Comments) | One line each, the narration removed | – |
+
+Each new test fails on the code before the fix (checked by hand).
+
+### Not changed
+
+- **P in the edit mode of the editor** sets `Pause`: `ResetPlay` at play and at stop sets the start state, and the edit mode is silent and has no fixed step. No effect.
+- **A row of `SetPlayState` runs only through a script call in the test**: a row and `ScriptContext::call` go to the same handler of `CommandRegistry`; the test parses the row.
+- **No test of a room change that removes the pawn** (watch point): `control_home_if_lost` is in place; a test is a follow-up.
+- **`Controller::active` false with no `GameModule`**, `Controller` added by two modules, `GiveControl("")` for the home body, `named`, no `is_paused()` method: judgement calls of the Standards review. The first is a decision of section 4; the others are small.
+
+### Checks
+
+`tools/check.sh`: all pass, static and dynamic. Trip run (debug, validation layers): the same legs and events as in stage 51, no error, no warning. No benchmark: no change in the render path, and the trip never pauses.
