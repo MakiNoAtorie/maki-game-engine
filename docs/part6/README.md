@@ -262,6 +262,42 @@ The build:
 
 The order is data, then behavior, then the way with no code. Each stage leaves the game as it runs, with the benchmark against the stage before. The stages are in 3.1.
 
+### 2.15 The plan after the object model comes from a vertical slice (owner, 2026-10-16)
+
+The owner makes a vertical slice of a game in the style of RPG Maker, in 3D, path-traced, with the step mode of 2.6. The stages build the engine and the tools with which the owner makes the slice; no stage makes the slice. Each system is made for a full game, not only for the slice.
+
+The slice:
+
+1. A title screen: new game, continue (the save), quit.
+2. Three or four rooms with doors and a locked door.
+3. A character to talk to: messages with choices, and a state of its own that changes after the talk.
+4. Items to pick up, an inventory menu, the use of an item (a key on the door).
+5. A short cutscene: the camera moves, a character walks and plays a clip, a light flickers.
+6. An enemy that follows the player and loses the player out of its line of sight.
+7. A game-over screen and an end screen.
+
+Decided for it:
+
+- **Movement**: free, and on a grid, as a setting of the walking module.
+- **No battle system.** A battle system of a later game is not the RPG Maker system.
+- **UI of the game**: egui behind a module of the game UI. Menus are data; a script and a command talk to the module, not to egui.
+- **Text in tables (item 11)**: each text names a key into a table for each language, made for a full game.
+- **All before the slice**: each item of 3.2 that the slice can use (physics, gamepad, particles, fog, water, post effects, decals, baked lighting) is built before the owner makes the slice, not after it.
+- **Object state**: a component of any object, with named switches and numbers ("self switches"). Its values live in a resource, by room and object, so that they stay over a change of room and go into the save. Events, their conditions, and scripts read and write it.
+- **Routine**: a command list in a file of its own (`.routine.ron`), with arguments, called from a row of an event and from a script. Not "common event".
+- **Data asset**: a file of a type that a module registers with `#[derive(Fields)]` (as the ScriptableObject of Unity, the Resource of Godot). The inspector edits it; the asset browser lists it. Item kinds, text tables, and later the values of enemies are data assets; a game registers its own types in its script crate.
+- **Animation**: one core of keys and tracks with the step mode of 2.6 first, then skinned characters (item 9), then the timeline (item 6). Light animation (item 26) is on the tracks of the timeline.
+- **Grid**: a cell size for each room (1 m if not set). Movement on the grid, the path search of enemies (on a grid made from the collision of the room at its load), and the snap of the editor use it. A navigation mesh later, if a room needs it.
+- **Object id**: each object has an id that does not change (a new name, a move, a copy). Object state, wires, the targets of events, and the parent name the id; the name is for people and for a search by name in a script. Same stage as files with an identity (item 12). `docs/adr/0001-object-ids.md`.
+- **Physics (Rapier)**: `area` is made on a sensor of Rapier (the same component, outputs, and hooks); the walking controller is made on the character controller of Rapier (its settings, free and grid). One system of collision.
+- **Pause of the editor (item 33)**: pause, one frame, and "pause at an error" use `Time::paused` of the editor, not `PlayState::Pause` of the game.
+- **A script that panics (item 31)**: each hook runs in `catch_unwind`; a panic stops the play, logs the message with the file and line, and drops the world of the play. The editor stays open. The game program panics as before.
+- **Dependencies**: `rapier3d` (physics), `gilrs` (gamepad). After the measure of the symbol limit.
+- **The gaps of the events (group A), one stage**: object state as a condition and as a command; routines (`CallRoutine`); "or", "else if", a loop with a break, "wait until" a condition; a random number, a compare of two variables; an autorun that runs again while its condition holds (a flag of the page); show, hide, and move any object by its id. "Animate" comes with the timeline; "Convert to script" only when the owner asks.
+- **Menus**: the module of the game UI has the widgets (message box, choices, a list of items, a stack of menus with focus). A menu is a data asset of the type `Menu`: its rows, and for each row a command, a routine, or a script function. The title, pause, inventory, and game-over screens are menus; a script can push a menu that it makes.
+- **Baked lighting (item 28)**: first a way to get GPU time back (the gate: `relmse` and GPU time against the live room), last in the renderer lane. A look of its own is valid too: a room can choose the bake where the live light fits the budget.
+- **First**: the measure of the symbol limit (`opt-level = 2` for the engine crates in the profile `dynamic`; a check in CI if the gain is large), and a stage for what the object model left (`PLANNING-HANDOVER.md`, group F).
+
 ## 3. Open
 
 ### 3.1 Stages
@@ -281,7 +317,22 @@ The order is data, then behavior, then the way with no code. Each stage leaves t
 | 51 | The events as components, and the general commands set a field and call a script function (2.8) (`stage-51-events-as-components.md`) | Done (`stage-51.md`) |
 | 52 | Wires between objects (item 3), and "Send a signal" (`stage-52-wires.md`) | Done (`stage-52.md`) |
 | 53 | Who is the player (item 4), and the states of the game (item 5) (`stage-53-player-and-states.md`); merged before stage 52 (a parallel lane) | Done (`stage-53.md`) |
-| After the object model | What the events lack (2.8), in one stage | Not planned |
+| 54 | What the object model left (`PLANNING-HANDOVER.md`, group F, and the fixes of the run by hand). Beside it, outside the stages: the measure of the symbol limit (2.15) | Planned |
+| 55 | Object ids (`docs/adr/0001-object-ids.md`), and files with an identity (item 12) | Planned |
+| 56 | The gaps of the events (2.8, 2.15): object state, routines, flow, numbers, autorun again, any object as a target | Planned |
+| 57 | Data assets (2.15) | Planned |
+| 58 | Text in tables (item 11) | Planned |
+| 59 | The UI of the game (item 7): the module, menus as data assets | Planned |
+| 60 | Physics on Rapier (item 15): `area` on sensors, the walking controller on the character controller | Planned |
+| 61 | Movement on the grid, the path search, the line of sight (item 8) | Planned |
+| 62 | The core of animation: keys, tracks, the step mode (2.6) | Planned |
+| 63 | Skinned characters (item 9) | Planned |
+| 64 | The timeline (item 6), and light animation (item 26) | Planned |
+| 65 | Gamepad (item 10) | Planned |
+| Editor lane, after 55 | A script that panics (31), pause and one frame (33), the log file (32), the console (30), the values of a game that runs (14), debug shapes (34), the asset browser (13). A stage number for each when it starts | Planned |
+| Renderer lane, after 54 | Post effects (19 to 22), load of the shaders while the engine runs (23), particles and effect files (16, 24), fog (17), water (18), decals (25), more light kinds (27), baked lighting (28). A stage number for each when it starts; one lane runs the benchmark at a time | Planned |
+
+All of it comes before the owner makes the vertical slice (2.15).
 
 Stages 45 and 46 need stage 43 only. They can come before stage 44 or after the object model.
 

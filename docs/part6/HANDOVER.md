@@ -1,6 +1,13 @@
 # Handover: part 6
 
-Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 49 (2026-10-15). For the session that goes on with part 6.
+Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after stage 49 (2026-10-15) and after the plan of 2026-10-16. For the session that goes on with part 6.
+
+## Now (2026-10-16)
+
+- The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
+- `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
+- Next: stage 54 (`stage-54-cleanup.md`, spec issue #22), and beside it the measure of the symbol limit (spec issue #23). The tickets come from `/to-tickets`, which the owner starts.
+- A run by hand of stages 50 to 53 in the editor found three panics and ten rough edges: `PLANNING-HANDOVER.md`, group F, "To fix". Stage 54 has them.
 
 ## State
 
@@ -19,7 +26,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 50 (script components with hooks, commands as functions, "New script", the log panel) is done: issues #8 to #11. Report: `stage-50.md`.
 - Stage 51 (events as components, "Set a field", "Call a script function"): issues #12, #13. Report: `stage-51.md`.
 - Stage 53 (who is the player, the states of the game) ran as a parallel lane and was merged before stage 52: issues #15, #16. Report: `stage-53.md`.
-- Stage 52 (wires, "Send a signal"): issue #14. Report: `stage-52.md`. The benchmark base is now `s52`. The object model (stages 47 to 53) is done; no ticket is open. The next row of the stage table ("What the events lack") is "Not planned": the owner plans it. To plan the gaps: `PLANNING-HANDOVER.md`.
+- Stage 52 (wires, "Send a signal"): issue #14. Report: `stage-52.md`. The benchmark base is now `s52`. The object model (stages 47 to 53) is done; no ticket is open. The stages after it are planned (see "Now").
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
@@ -45,7 +52,9 @@ The owner, 2026-10-12, for part 6: after each stage, always a sanity check, fill
 - A next stage with no stage file (44, and 47 to 53): write the file first. A proposal of a stage file that the owner did not change is taken as given (stages 43, 45, 46).
 - The object model was "in discussion" until the owner said "add it to the plan" for 2.14 (2026-10-12). Stages 47 to 53 are planned: no stop between them but the cases of `CLAUDE.md`.
 
-The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short.
+The owner plans by questions and answers: a question, an answer with a recommendation and its cost, then "add it to the plan". A thing goes into the plan only after the owner says so. An answer is plain and short. Questions can come in rounds: all the questions that do not wait on another answer at once.
+
+This repository builds an engine, not a game (`CLAUDE.md`): a stage builds the tools; the owner makes the content of the slice.
 
 ## Next: issues #6 to #16, and what can run in parallel
 

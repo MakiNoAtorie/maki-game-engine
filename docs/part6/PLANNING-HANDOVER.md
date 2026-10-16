@@ -2,6 +2,8 @@
 
 Written 2026-10-16, after stage 53 (the object model of stages 47 to 53 is done). For the session that plans the stages after it. It plans; it does not build.
 
+Done 2026-10-16: the plan is `README.md` 2.15 and 3.1. This file stays as the list of the gaps that the stages name.
+
 ## Start here
 
 1. `CLAUDE.md`, then `docs/part6/README.md` sections 2 (the decisions of the owner) and 3 (the stage table, the list of gaps). This file is the map over them; the decisions stay in `README.md`.
@@ -109,6 +111,29 @@ Small items; each can go into the stage that touches its code, or into one stage
 - **Wires**: the problem of an output has no index of the wire; signals and `entered` start wires outside the state play.
 - **`Trigger::Interact` stands in for a running wire**; the output names are text in three places (stage 52 review).
 - **No room uses `SetPlayState` or `GiveControl`**; a title is a state with no picture (stage 53).
+
+#### To fix: found by the run by hand (2026-10-16)
+
+A run of the features of stages 50 to 53 in the editor (`--profile dynamic`, rooms C and D). No validation error. These go into the stage for group F.
+
+Defects:
+
+- **"New script" from the File menu or Ctrl+P panics** (`crates/engine/src/new_script.rs:258`: no `Panels`). A command of a menu or the palette runs in `run_ui`, which holds `Panels` out of the world (`resource_scope`, `crates/ui/src/lib.rs:543`). Each command that reads `Panels` panics the same way.
+- **"New script" writes a `lib.rs` that does not build**: it puts `mod <name>;` after the last line that starts with `mod ` (`new_script.rs:136`), which is `mod tests {`. Error E0433. The unit test has no test module in its `lib.rs`.
+- **A `CallScript` row whose function shows a message panics** (`crates/events/src/script.rs:160`: no `EventRunner`): the row runs in the `resource_scope` of the runner (`crates/events/src/interpreter.rs:466`), and the script pushes a command that waits into that runner. The dial of room C, in the editor; the game takes the same path.
+
+Rough edges:
+
+- F5 is bound to play of the editor and to `reload_room` of the gameplay (`crates/gameplay/src/rooms.rs:63`): each play and stop also asks for a reload of the room.
+- A new `SetField` row has the value 1.0, not the value of the field now.
+- The object picker of `SetField` lists only objects with an area or a script: no props, lights, doors.
+- Two wires on one output: two tabs with the same label.
+- An object with no event: the panel has no "Add an event".
+- At 3840 px the column of the arguments is about 2,900 px right of the command rows.
+- A `SetField` change in play has no log line: it cannot be checked by hand.
+- "New script" shows 9 templates; the report of stage 50 says ten.
+- After "Create" the Build panel takes the focus.
+- The outliner at times keeps a grey mark on an object that is not selected.
 
 ## Edges between the gaps (a proposal, not decided)
 
