@@ -885,16 +885,18 @@ pub(crate) fn event_panel(
     let Some(list) = event.list_mut(at) else {
         return Some(changed);
     };
-    part(egui::Panel::right("event arguments")).show(ui, |ui| {
-        scroll("arguments").show(ui, |ui| {
-            let places = (&lists, &registry, &editors, room);
-            changed |= command_arguments(ui, list, event_ui, places);
-        });
-    });
-    egui::Frame::NONE.inner_margin(6).show(ui, |ui| {
+    // The rows have a panel of their own and the arguments fill the rest: at any
+    // width of the window the arguments are next to their rows.
+    part(egui::Panel::left("event commands")).show(ui, |ui| {
         scroll("commands").show(ui, |ui| {
             let places = (&lists, &registry, room);
             changed |= command_rows(ui, list, event_ui, places, &problems, at);
+        });
+    });
+    egui::Frame::NONE.inner_margin(6).show(ui, |ui| {
+        scroll("arguments").show(ui, |ui| {
+            let places = (&lists, &registry, &editors, room);
+            changed |= command_arguments(ui, list, event_ui, places);
         });
     });
     if changed {
@@ -1028,6 +1030,20 @@ fn pages(
     changed
 }
 
+/// The tab of wire `index`: its output; with the index too if another wire has the
+/// same output ("used 1", "used 2").
+pub(crate) fn wire_tab_label(wires: &[Wire], index: usize) -> String {
+    let output = &wires[index].output;
+    if wires.iter().filter(|wire| wire.output == *output).count() < 2 {
+        return output.clone();
+    }
+    let nth = wires[..index]
+        .iter()
+        .filter(|wire| wire.output == *output)
+        .count();
+    format!("{output} {}", nth + 1)
+}
+
 /// The wires of the object, as tabs under the pages: the output of the wire that
 /// shows, and buttons to add and delete one. The index of a wire in
 /// `EventUi::page` is after the pages.
@@ -1036,8 +1052,9 @@ fn wires(ui: &mut Ui, event: &mut EventPages, event_ui: &mut EventUi, lists: &Li
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         ui.label("Wires");
-        for (index, wire) in event.wires.iter().enumerate() {
-            let tab = ui.selectable_label(event_ui.page == first + index, &wire.output);
+        for index in 0..event.wires.len() {
+            let text = wire_tab_label(&event.wires, index);
+            let tab = ui.selectable_label(event_ui.page == first + index, text);
             if tab.clicked() {
                 (event_ui.page, event_ui.row) = (first + index, None);
             }
@@ -1079,7 +1096,7 @@ fn color(problem: &Problem) -> Color32 {
     if problem.warning { HINT } else { ERROR }
 }
 
-fn empty_page() -> Page {
+pub(crate) fn empty_page() -> Page {
     Page {
         conditions: Vec::new(),
         trigger: Trigger::Interact,
