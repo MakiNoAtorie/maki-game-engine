@@ -19,6 +19,7 @@ mod command;
 mod flow;
 mod interpreter;
 mod model;
+mod numbers;
 mod objects;
 mod routine;
 mod script;
@@ -44,6 +45,7 @@ pub use model::{
     Area, Compare, Condition, EventDef, EventPages, Page, Trigger, Wire, active_page, all_hold,
     short_events,
 };
+pub use numbers::{EventsSettings, Numbers, Random};
 pub use objects::ObjectCommand;
 pub use routine::{
     Arguments, ROUTINE_EXTENSION, RoutineCommand, RoutineDef, Routines, read_routine, routine_text,
@@ -99,6 +101,7 @@ impl Module for EventsModule {
         registry.add_texts(builtin::row_text, builtin::help);
         registry.add_lists(builtin::lists, builtin::with_lists);
         flow::add(&registry);
+        numbers::add(app, &registry);
         registry.add(routine::run);
         registry.add_fields::<RoutineCommand>();
         registry.add_check(routine::check);

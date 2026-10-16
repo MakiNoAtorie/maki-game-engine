@@ -18,6 +18,7 @@ use maki_scene::{
 use super::*;
 
 mod flow;
+mod numbers;
 mod objects;
 mod repeat;
 

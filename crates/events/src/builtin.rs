@@ -304,19 +304,23 @@ pub(crate) fn conditions_text(conditions: &[Condition], join: &str) -> String {
     texts.join(join)
 }
 
+fn compare_sign(compare: Compare) -> &'static str {
+    match compare {
+        Compare::Equals => "=",
+        Compare::NotEquals => "!=",
+        Compare::Less => "<",
+        Compare::AtLeast => ">=",
+    }
+}
+
 fn condition_text(condition: &Condition) -> String {
     match condition {
         Condition::Flag(name) => name.clone(),
         Condition::NotFlag(name) => format!("not {name}"),
         Condition::Variable(name, compare, value) => {
-            let sign = match compare {
-                Compare::Equals => "=",
-                Compare::NotEquals => "!=",
-                Compare::Less => "<",
-                Compare::AtLeast => ">=",
-            };
-            format!("{name} {sign} {value}")
+            format!("{name} {} {value}", compare_sign(*compare))
         }
+        Condition::Variables(a, compare, b) => format!("{a} {} {b}", compare_sign(*compare)),
         Condition::Any(conditions) => format!("({})", conditions_text(conditions, " or ")),
     }
 }

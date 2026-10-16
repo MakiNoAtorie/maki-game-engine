@@ -211,8 +211,9 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
     # A key of `extra` takes the place of the same key below: TOML permits a key one time.
     # No sound device: a benchmark is silent, and its work is the same on each machine.
     # No loader thread: a model file is there in the frame that asks for it, in each run.
+    # A fixed seed of the random numbers: each run draws the same numbers.
     # No save file: the trip script presses the switch, a save point; each run starts in room A.
-    fixed = {"window.width": WINDOW[0], "window.height": WINDOW[1], "render.width": width, "render.height": height, "audio.output": False, "assets.background": False, "save.enabled": False}
+    fixed = {"window.width": WINDOW[0], "window.height": WINDOW[1], "render.width": width, "render.height": height, "audio.output": False, "assets.background": False, "save.enabled": False, "events.seed": 1}
     if "render.samples_per_frame" not in extra:
         # Not the automatic count: each run must do the same work.
         fixed["render.samples_per_frame"] = 1

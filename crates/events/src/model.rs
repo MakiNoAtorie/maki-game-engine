@@ -156,6 +156,13 @@ pub enum Condition {
         #[field(label = "is")] Compare,
         #[field(label = "value")] i32,
     ),
+    /// Two variables compared: `Variables("a", Less, "b")`.
+    #[field(label = "variables")]
+    Variables(
+        #[field(pick = "variables")] String,
+        #[field(label = "is")] Compare,
+        #[field(label = "than", pick = "variables")] String,
+    ),
     /// One of the conditions holds ("or"). With no condition: it does not hold.
     #[field(label = "any of")]
     Any(Vec<Condition>),
@@ -174,19 +181,27 @@ pub enum Compare {
     AtLeast,
 }
 
+impl Compare {
+    pub fn holds(self, left: i32, right: i32) -> bool {
+        match self {
+            Compare::Equals => left == right,
+            Compare::NotEquals => left != right,
+            Compare::Less => left < right,
+            Compare::AtLeast => left >= right,
+        }
+    }
+}
+
 impl Condition {
     pub fn holds(&self, state: &GameState) -> bool {
         match self {
             Condition::Flag(name) => state.flag(name),
             Condition::NotFlag(name) => !state.flag(name),
             Condition::Variable(name, compare, value) => {
-                let variable = state.variable(name);
-                match compare {
-                    Compare::Equals => variable == *value,
-                    Compare::NotEquals => variable != *value,
-                    Compare::Less => variable < *value,
-                    Compare::AtLeast => variable >= *value,
-                }
+                compare.holds(state.variable(name), *value)
+            }
+            Condition::Variables(a, compare, b) => {
+                compare.holds(state.variable(a), state.variable(b))
             }
             Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
         }
@@ -198,6 +213,7 @@ impl Condition {
         match self {
             Condition::Flag(name) | Condition::NotFlag(name) => vec![(false, name)],
             Condition::Variable(name, ..) => vec![(true, name)],
+            Condition::Variables(a, _, b) => vec![(true, a), (true, b)],
             Condition::Any(conditions) => conditions.iter().flat_map(Condition::names).collect(),
         }
     }
