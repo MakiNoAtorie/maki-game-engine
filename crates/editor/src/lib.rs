@@ -53,7 +53,7 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::query::{Has, With};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::ResMut;
+use bevy_ecs::system::{Res, ResMut};
 use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
 use maki_assets::{AssetChanged, AssetFailed, AssetWatch};
@@ -1484,8 +1484,13 @@ fn load_assets_again(world: &mut World) {
 
 /// Runs in `Input`: a quit request of the frame before (the close button of the
 /// window, the quit action of the game) becomes a command.
-fn take_quit_request(mut quit: ResMut<QuitRequested>, mut editor: ResMut<Editor>) {
-    if std::mem::take(&mut quit.0) {
+fn take_quit_request(
+    mut quit: ResMut<QuitRequested>,
+    hold: Res<QuitHold>,
+    mut editor: ResMut<Editor>,
+) {
+    // With no hold, a tool ends the app (the input script): no question.
+    if hold.0 && std::mem::take(&mut quit.0) {
         let command = if editor.playing() {
             Command::Stop
         } else {

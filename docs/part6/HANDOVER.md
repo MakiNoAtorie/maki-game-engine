@@ -28,7 +28,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 53 (who is the player, the states of the game) ran as a parallel lane and was merged before stage 52: issues #15, #16. Report: `stage-53.md`.
 - Stage 52 (wires, "Send a signal"): issue #14. Report: `stage-52.md`. The benchmark base is now `s52`. The object model (stages 47 to 53) is done; no ticket is open. The stages after it are planned (see "Now").
 - Stage 54 (what the object model left): issues #22, #24 to #29. Report: `stage-54.md`. The base of the GPU time is now `s54`; the pictures go through `bench.py gate`. Its run by hand is open (section 3 of the report).
-- Stage 55 (object ids, files with an id): issues #40 to #47. Report: `stage-55.md`. The base of the GPU time is now `s55`. Its run by hand is open (section 3 of the report).
+- Stage 55 (object ids, files with an id): issues #40 to #47. Report: `stage-55.md`. The base of the GPU time is now `s55`. Its run by hand was done by the input script (section 3 of the report).
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 

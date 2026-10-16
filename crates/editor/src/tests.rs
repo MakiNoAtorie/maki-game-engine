@@ -126,6 +126,22 @@ fn lamp(app: &App) -> (Light, Vec3, usize) {
 }
 
 #[test]
+fn a_quit_with_no_hold_ends_the_app_with_changes_not_saved() {
+    let (app, directory) = editor_app("quit_no_hold");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        app.resource_mut::<Editor>().document.dirty = true;
+        // The quit of a tool (the input script): no question.
+        app.resource_mut::<maki_platform::QuitHold>().0 = false;
+        app.resource_mut::<QuitRequested>().0 = true;
+        frames(&mut app, 2);
+        assert!(app.world().resource::<QuitRequested>().0);
+        assert_eq!(app.world().resource::<Editor>().pending(), None);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
     let (app, directory) = editor_app("save");
     app.run(|mut app| {
