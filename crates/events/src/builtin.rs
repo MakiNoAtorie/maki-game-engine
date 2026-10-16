@@ -12,8 +12,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomItem, RoomRequest,
-    RoomTarget, ScreenFade,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomRequest, RoomTarget,
+    ScreenFade,
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,13 +71,10 @@ pub enum Builtin {
 pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool {
     match command {
         Builtin::SetFlag(name, value) => world.resource_mut::<GameState>().set_flag(name, *value),
-        Builtin::SetVariable(name, value) => {
-            world.resource_mut::<GameState>().set_variable(name, *value);
-        }
+        Builtin::SetVariable(name, value) => step.set_variable(world, name, *value),
         Builtin::AddVariable(name, value) => {
-            let mut state = world.resource_mut::<GameState>();
-            let sum = state.variable(name).saturating_add(*value);
-            state.set_variable(name, sum);
+            let sum = step.state(world).variable(name).saturating_add(*value);
+            step.set_variable(world, name, sum);
         }
         Builtin::Wait(seconds) => {
             let passed = world.resource::<Time>().fixed_delta.as_secs_f32();
@@ -91,7 +88,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             return *left <= 1e-5;
         }
         Builtin::If(conditions, then, otherwise) => {
-            let branch = if all_hold(conditions, world.resource::<GameState>()) {
+            let branch = if all_hold(conditions, &step.state(world)) {
                 then
             } else {
                 otherwise
@@ -241,19 +238,7 @@ fn set_field(
         return;
     };
     // The entities of the reference first: an instance has its id and the prefab names.
-    let def = &world.resource::<CurrentRoom>().def;
-    let item = def.find(object).map(|(index, _)| index);
-    let mut entities = world.query::<(Entity, Option<&ObjectId>, Option<&RoomItem>)>();
-    let mut named = Vec::new();
-    let mut of_item = Vec::new();
-    for (entity, id, room_item) in entities.iter(world) {
-        if id == Some(object) {
-            named.push(entity);
-        } else if item.is_some() && room_item.map(|room_item| room_item.0) == item {
-            of_item.push(entity);
-        }
-    }
-    let mut candidates = named.into_iter().chain(of_item);
+    let mut candidates = crate::objects::entities_of(world, object).into_iter();
     let target = candidates.find_map(|entity| Some((entity, get(world, entity)?)));
     let Some((entity, mut tree)) = target else {
         tracing::warn!(

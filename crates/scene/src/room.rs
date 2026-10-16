@@ -2116,7 +2116,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "door", "doorway", "light", "mover", "object", "prefab", "prop", "room", "spawn"
+                "door", "doorway", "hidden", "light", "mover", "object", "prefab", "prop", "room",
+                "spawn"
             ]
         );
         for (name, kind) in types.iter() {

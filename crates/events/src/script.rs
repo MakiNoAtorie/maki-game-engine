@@ -187,6 +187,13 @@ impl<'w> ScriptContext<'w> {
         }
     }
 
+    /// Runs a routine file (from the directory of the room file) with a number for
+    /// each of its arguments, as a row `CallRoutine` does. See [`Self::run`].
+    pub fn routine(&mut self, file: &str, arguments: &[i32]) {
+        let arguments = crate::Arguments(arguments.to_vec());
+        self.call(crate::RoutineCommand::CallRoutine(file.into(), arguments));
+    }
+
     /// Runs a list of commands as an event runs a page. The first step runs now. A
     /// command that waits (a message, a door that turns) goes on as a running event
     /// with the name of the object: it blocks the player as an event does. In a
@@ -295,15 +302,20 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
         .map(|(entity, hooked)| (entity, hooked.map(|hooked| hooked.inside)))
         .collect();
     for (entity, before) in entities {
-        let area = world.get::<TriggerArea>(entity).map(|area| {
-            let center = world
-                .get::<Interpolated>(entity)
-                .map_or(Vec3::ZERO, |pose| pose.current.translation);
-            Area {
-                center: [center.x, center.z],
-                size: [area.width, area.depth],
-            }
-        });
+        // The area of a hidden object gives no output.
+        let hidden = world.entity(entity).contains::<maki_scene::Hidden>();
+        let area = world
+            .get::<TriggerArea>(entity)
+            .filter(|_| !hidden)
+            .map(|area| {
+                let center = world
+                    .get::<Interpolated>(entity)
+                    .map_or(Vec3::ZERO, |pose| pose.current.translation);
+                Area {
+                    center: [center.x, center.z],
+                    size: [area.width, area.depth],
+                }
+            });
         let inside =
             area.is_some_and(|area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0));
         // A hook before could have despawned the entity.

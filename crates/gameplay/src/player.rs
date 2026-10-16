@@ -12,7 +12,7 @@ use maki_assets::FileRef;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::query::With;
+use bevy_ecs::query::{With, Without};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, EntityCommands, Local, Query, Res, ResMut};
 use glam::{Quat, Vec3};
@@ -437,7 +437,7 @@ pub fn steer_player(
 /// `.before(walk)`.
 pub fn walk(
     time: Res<Time>,
-    colliders: Query<&Collider>,
+    colliders: Query<&Collider, Without<maki_scene::Hidden>>,
     mut walkers: Query<(&mut Interpolated, &Walker)>,
 ) {
     // Few boxes: a copy for each step costs less than a search structure.
@@ -472,6 +472,34 @@ mod tests {
 "buffers":[{"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA","byteLength":36}],
 "bufferViews":[{"buffer":0,"byteLength":36}],
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]}"#;
+
+    #[test]
+    fn a_walker_goes_through_a_hidden_collider() {
+        let mut world = bevy_ecs::world::World::new();
+        let mut time = Time::default();
+        time.fixed_delta = Duration::from_secs(1);
+        world.insert_resource(time);
+        let wall = Collider::new(Vec3::new(1.0, 0.0, -5.0), Vec3::new(9.0, 2.0, 5.0));
+        let wall = world.spawn(wall).id();
+        let walker = Walker {
+            radius: 0.25,
+            direction: Vec3::X,
+            speed: 3.0,
+        };
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(walk);
+        // Where a walker from the origin is after one step of 3 m.
+        let mut end = |world: &mut bevy_ecs::world::World| {
+            let at = world
+                .spawn((Interpolated::at(Transform::IDENTITY), walker))
+                .id();
+            schedule.run(world);
+            world.get::<Interpolated>(at).unwrap().current.translation.x
+        };
+        assert!(end(&mut world) < 1.0);
+        world.entity_mut(wall).insert(maki_scene::Hidden {});
+        assert_eq!(end(&mut world), 3.0);
+    }
 
     #[test]
     fn the_player_is_made_from_its_prefab_and_follows_its_files() {

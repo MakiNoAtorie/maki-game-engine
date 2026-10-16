@@ -4,6 +4,7 @@
 //! This crate must not depend on `gpu`, `render`, or `ui`.
 
 mod collision;
+mod hidden;
 mod mover;
 mod object;
 mod prefab;
@@ -16,6 +17,7 @@ use maki_assets::{Handle, Mesh};
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
 pub use collision::{Collider, move_circle, room_colliders};
+pub use hidden::Hidden;
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
     ComponentText, ComponentType, ComponentTypes, Live, ObjectDef, ObjectId, add_component_reader,
@@ -50,6 +52,7 @@ impl Module for SceneModule {
         add_component_type::<MoverPath>(app, "mover");
         add_component_type::<PrefabFile>(app, "prefab");
         add_component_type::<SpawnPoint>(app, "spawn");
+        add_object_component::<Hidden>(app, "hidden");
         // The stores normally come from `AssetsModule`. This keeps the loader
         // independent of the order in which the modules are added.
         app.init_resource::<maki_assets::Assets<Mesh>>()
@@ -94,6 +97,9 @@ impl Module for SceneModule {
                         .after(maki_assets::forget_changed)
                         .before(room::load_requested_room),
                     room::watch_models.after(room::load_requested_room),
+                    hidden::spread_hidden
+                        .after(room::load_requested_room)
+                        .after(room::spawn_loaded_models),
                 ),
             );
     }

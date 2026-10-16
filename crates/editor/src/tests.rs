@@ -59,7 +59,7 @@ const ROOM_B: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [(id: 1, 
 
 /// A directory with the two rooms, and an app with the modules of a game and the
 /// editor.
-fn editor_app(name: &str) -> (App, PathBuf) {
+pub(crate) fn editor_app(name: &str) -> (App, PathBuf) {
     session_app(name, None)
 }
 
@@ -97,7 +97,7 @@ output = false",
     (app, directory)
 }
 
-fn frames(app: &mut App, count: usize) {
+pub(crate) fn frames(app: &mut App, count: usize) {
     for _ in 0..count {
         app.advance(Duration::from_millis(20));
     }

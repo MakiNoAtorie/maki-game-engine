@@ -17,11 +17,14 @@ use maki_scene::{
 
 use super::*;
 
+mod flow;
+mod objects;
+
 /// 50 Hz: one fixed step of 20 ms for each frame.
 const STEP: Duration = Duration::from_millis(20);
 
 /// A room of 8 x 8 m with a lamp, a door in the back wall, and these events.
-pub(crate) fn room(events: &str) -> String {
+fn room(events: &str) -> String {
     let events = short_events(events);
     let objects = [
         r#"(id: 1, name: "door", components: {"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)})"#,
@@ -34,7 +37,7 @@ pub(crate) fn room(events: &str) -> String {
 }
 
 /// The directory of the room files of one test.
-pub(crate) fn directory(test: &str) -> PathBuf {
+fn directory(test: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!("maki-events-{test}-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     directory
@@ -42,7 +45,7 @@ pub(crate) fn directory(test: &str) -> PathBuf {
 
 /// A headless game in the room `a.ron` of `directory`, with the player at "start".
 /// The first step with the events of the room is that of the second frame.
-pub(crate) fn game(directory: &std::path::Path) -> App {
+fn game(directory: &std::path::Path) -> App {
     let path = directory.join("a.ron");
     let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
     app.add_module(PlatformModule)
@@ -70,7 +73,7 @@ fn running(app: &App) -> usize {
     app.world().resource::<EventRunner>().running().len()
 }
 
-pub(crate) fn steps(app: &mut App, count: u32) {
+fn steps(app: &mut App, count: u32) {
     for _ in 0..count {
         app.advance(STEP);
     }

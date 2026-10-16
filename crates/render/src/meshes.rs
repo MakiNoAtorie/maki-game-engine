@@ -31,6 +31,7 @@ use anyhow::{Context, Result, ensure};
 use bevy_ecs::change_detection::{DetectChanges, Ref};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::lifecycle::RemovedComponents;
+use bevy_ecs::query::{Added, With, Without};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Query, Res, ResMut};
@@ -39,7 +40,7 @@ use glam::{Mat4, Vec3};
 use maki_assets::{Assets, Handle, Material, Mesh, Model, Textures};
 use maki_core::{App, Extract, Render, Startup, Transform};
 use maki_gpu::{BlasDesc, BlasGeometry, BlasHandle, BufferDesc, BufferHandle, Gpu};
-use maki_scene::MeshInstance;
+use maki_scene::{Hidden, MeshInstance};
 
 use crate::textures::{GpuTextures, NO_TEXTURE};
 use crate::{RenderGpu, RenderWorld, setup_renderer};
@@ -544,8 +545,10 @@ fn extract_meshes(
 
 /// Copies each mesh instance into the render world. The renderer never reads the entities.
 fn extract_instances(
-    instances: Query<(Entity, Ref<Transform>, Ref<MeshInstance>)>,
+    instances: Query<(Entity, Ref<Transform>, Ref<MeshInstance>), Without<Hidden>>,
     mut removed: RemovedComponents<MeshInstance>,
+    hidden: Query<(), (Added<Hidden>, With<MeshInstance>)>,
+    mut shown: RemovedComponents<Hidden>,
     mut render_world: ResMut<RenderWorld>,
     // The transform that each entity had in the last frame.
     mut last: Local<HashMap<Entity, Mat4>>,
@@ -556,7 +559,9 @@ fn extract_instances(
     let changed = |(_, transform, instance): (Entity, Ref<Transform>, Ref<MeshInstance>)| {
         transform.is_changed() || instance.is_changed()
     };
-    if removed.read().count() > 0 || instances.iter().any(changed) {
+    // A hide or a show is as a despawn or a spawn.
+    let shown = shown.read().count() > 0;
+    if removed.read().count() > 0 || shown || !hidden.is_empty() || instances.iter().any(changed) {
         tracing::trace!("an instance changed");
         render_world.soften_accumulation();
     }
@@ -722,6 +727,38 @@ mod tests {
         assert_eq!(other.len(), 1);
         assert_ne!(other[0].id, first[0].id);
         assert_eq!(other[0].previous_transform, at(5.0).matrix());
+    }
+
+    #[test]
+    fn a_hidden_instance_is_not_extracted_and_a_show_brings_it_back_and_starts_a_new_mean() {
+        use bevy_ecs::schedule::Schedule;
+
+        let mut world = World::new();
+        let mut render_world = RenderWorld::default();
+        render_world.0.init_resource::<ExtractedInstances>();
+        world.insert_resource(render_world);
+        let mesh = Assets::<Mesh>::default().add(Mesh::cube(1.0));
+        let entity = world.spawn((Transform::IDENTITY, MeshInstance(mesh))).id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(extract_instances);
+        // The count of instances, and true if the extract started a new mean.
+        let mut extract = |world: &mut World| {
+            schedule.run(world);
+            world.clear_trackers();
+            let mut render_world = world.resource_mut::<RenderWorld>();
+            let mut accumulation = render_world.0.resource_mut::<crate::Accumulation>();
+            // No history: a change starts the mean again.
+            accumulation.start_frame(u32::MAX, 1, 0);
+            let new = accumulation.samples() == 1;
+            (render_world.0.resource::<ExtractedInstances>().0.len(), new)
+        };
+        extract(&mut world);
+        assert_eq!(extract(&mut world), (1, false));
+        world.entity_mut(entity).insert(maki_scene::Hidden {});
+        assert_eq!(extract(&mut world), (0, true));
+        assert_eq!(extract(&mut world), (0, false));
+        world.entity_mut(entity).remove::<maki_scene::Hidden>();
+        assert_eq!(extract(&mut world), (1, true));
     }
 
     #[test]

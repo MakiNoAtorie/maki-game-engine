@@ -1645,9 +1645,11 @@ dependencies = [
 name = "maki-events"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bevy_ecs",
  "erased-serde",
  "glam 0.34.1",
+ "maki-assets",
  "maki-core",
  "maki-platform",
  "maki-scene",

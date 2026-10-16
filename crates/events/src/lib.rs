@@ -19,6 +19,8 @@ mod command;
 mod flow;
 mod interpreter;
 mod model;
+mod objects;
+mod routine;
 mod script;
 
 use std::collections::BTreeMap;
@@ -41,6 +43,10 @@ pub use interpreter::{
 pub use model::{
     Area, Compare, Condition, EventDef, EventPages, Page, Trigger, Wire, active_page, all_hold,
     short_events,
+};
+pub use objects::ObjectCommand;
+pub use routine::{
+    Arguments, ROUTINE_EXTENSION, RoutineCommand, RoutineDef, Routines, read_routine, routine_text,
 };
 pub use script::{
     Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
@@ -93,6 +99,16 @@ impl Module for EventsModule {
         registry.add_texts(builtin::row_text, builtin::help);
         registry.add_lists(builtin::lists, builtin::with_lists);
         flow::add(&registry);
+        registry.add(routine::run);
+        registry.add_fields::<RoutineCommand>();
+        registry.add_check(routine::check);
+        registry.add_texts(routine::row_text, routine::help);
+        registry.add_defaults(|_, _| {
+            Some(RoutineCommand::CallRoutine(
+                Default::default(),
+                Arguments::default(),
+            ))
+        });
         add_bindings(
             app,
             &[
@@ -110,7 +126,8 @@ impl Module for EventsModule {
             .init_resource::<MessageBox>()
             .init_resource::<ChoiceBox>()
             .init_resource::<RoomValidators>()
-            .init_resource::<script::ScriptRunners>();
+            .init_resource::<script::ScriptRunners>()
+            .init_resource::<Routines>();
         // The area of an object, for the hooks of its scripts and for its event.
         maki_scene::add_object_component::<TriggerArea>(app, "area");
         registry.add_outputs("area", TriggerArea::OUTPUTS);
@@ -118,6 +135,8 @@ impl Module for EventsModule {
         maki_scene::add_component_reader(app, "event", interpreter::insert_event);
         // A room with a bad event is not loaded. The check has the registry, with
         // the commands and the checks that other modules add later.
+        // Show, hide, and move of any object.
+        objects::add(app, &registry);
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)
@@ -127,6 +146,10 @@ impl Module for EventsModule {
             .add_systems(
                 Update,
                 interpreter::load_room_events.after(load_requested_room),
+            )
+            .add_systems(
+                Update,
+                (routine::forget_changed, routine::watch_routines).chain(),
             )
             .add_systems(
                 Update,

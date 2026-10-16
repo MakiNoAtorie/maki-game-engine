@@ -11,16 +11,16 @@
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::query::{QueryState, With};
+use bevy_ecs::query::{Has, QueryState, With};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{EntityCommands, Res, ResMut};
 use bevy_ecs::world::{EntityWorldMut, Mut, World};
 use glam::Vec3;
 use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
-use maki_scene::{ComponentText, CurrentRoom, Name, ObjectId, Player, RoomItem};
+use maki_scene::{ComponentText, CurrentRoom, Hidden, Name, ObjectId, Player, RoomItem};
 
-use crate::command::{Command, CommandRegistry, Jump, Step};
+use crate::command::{Command, CommandRegistry, Jump, Scope, Step};
 use crate::model::{EventDef, EventPages, Trigger, active_page};
 use crate::script::{ScriptRunners, TriggerArea};
 use crate::{GameState, INTERACT};
@@ -75,9 +75,9 @@ pub struct RunningEvent {
     pub(crate) entity: Option<Entity>,
     pub start: Start,
     /// The command lists that are open: the page, and in it the branch of each `If`
-    /// that was taken. With each list, the index of its next command, and true for
-    /// the list of a `Loop`.
-    stack: Vec<(Vec<Command>, usize, bool)>,
+    /// that was taken. With each list, the index of its next command, the variables
+    /// of the routine call that opened the list, and true for the list of a `Loop`.
+    stack: Vec<(Vec<Command>, usize, Option<Scope>, bool)>,
     /// True: the current command ran in a step before and waits.
     waiting: bool,
     /// What the current command keeps between its steps (`Step::memory`).
@@ -91,7 +91,7 @@ impl RunningEvent {
             id: None,
             entity: None,
             start,
-            stack: vec![(commands.to_vec(), 0, false)],
+            stack: vec![(commands.to_vec(), 0, None, false)],
             waiting: false,
             memory: None,
         }
@@ -106,7 +106,7 @@ impl RunningEvent {
 
     /// The command that runs or waits now.
     pub fn current(&self) -> Option<&Command> {
-        let (list, index, _) = self.stack.last()?;
+        let (list, index, ..) = self.stack.last()?;
         list.get(*index)
     }
 
@@ -114,7 +114,7 @@ impl RunningEvent {
     pub(crate) fn step(&mut self, world: &mut World, steps: &mut Option<u32>) -> bool {
         for _ in 0..MAX_COMMANDS_PER_STEP {
             // A closed list: the outer list goes on. A loop starts again; an empty one closes.
-            while let Some((list, index, looping)) = self.stack.last_mut()
+            while let Some((list, index, _, looping)) = self.stack.last_mut()
                 && *index >= list.len()
             {
                 if *looping && !list.is_empty() {
@@ -123,7 +123,7 @@ impl RunningEvent {
                 }
                 self.stack.pop();
             }
-            let Some((list, index, _)) = self.stack.last() else {
+            let Some((list, index, ..)) = self.stack.last() else {
                 return true;
             };
             let command = list[*index].clone();
@@ -140,6 +140,12 @@ impl RunningEvent {
             }
             let mut opened = None;
             let mut jump = Jump::None;
+            // The variables of the nearest routine call.
+            let scope = self
+                .stack
+                .iter_mut()
+                .rev()
+                .find_map(|frame| frame.2.as_mut());
             let mut step = Step {
                 start,
                 event: &self.name,
@@ -147,6 +153,7 @@ impl RunningEvent {
                 entity: self.entity,
                 memory: &mut self.memory,
                 opened: &mut opened,
+                scope,
                 jump: &mut jump,
             };
             if !command.run(&mut step, world) {
@@ -154,7 +161,7 @@ impl RunningEvent {
             }
             self.waiting = false;
             if jump == Jump::Break {
-                match self.stack.iter().rposition(|(_, _, looping)| *looping) {
+                match self.stack.iter().rposition(|(.., looping)| *looping) {
                     // The index of the list around the loop is already after it.
                     Some(at) => {
                         self.stack.truncate(at);
@@ -164,9 +171,9 @@ impl RunningEvent {
                 }
             }
             self.stack.last_mut().expect("tested above").1 += 1;
-            // The branch of an `If`, or the list of a loop.
-            if let Some(list) = opened {
-                self.stack.push((list, 0, jump == Jump::Loop));
+            // The branch of an `If`, a routine, or the list of a loop.
+            if let Some((list, scope)) = opened {
+                self.stack.push((list, 0, scope, jump == Jump::Loop));
             }
         }
         tracing::warn!(
@@ -292,13 +299,16 @@ impl EventRunner {
             Option<&Interpolated>,
             Option<&RoomItem>,
             Option<&EventMemory>,
+            Has<Hidden>,
         )>();
         let mut events: Vec<_> = events.iter(world).collect();
         events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
 
         let state = world.resource::<GameState>();
         let mut memories = Vec::new();
-        for (entity, pages, name, area, pose, _, memory) in events {
+        for (entity, pages, name, area, pose, _, memory, hidden) in events {
+            // The area of a hidden object gives no output.
+            let area = area.filter(|_| !hidden);
             let name = name.map_or("", |name| name.0.as_str());
             let at = pose.map_or(Vec3::ZERO, |pose| pose.current.translation);
             let area = area.map(|area| EventDef::area_at(area, at.to_array()));
