@@ -1490,3 +1490,65 @@ fn a_general_command_row_has_undo_and_shows_its_problems() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn f5_is_the_play_key_of_the_editor_and_the_reload_key_of_the_game() {
+    let (app, directory) = editor_app("f5keys");
+    let keys = |app: &App| {
+        let bindings = &app.world().resource::<maki_platform::Bindings>().0;
+        let on_f5 = |action| {
+            bindings
+                .iter()
+                .any(|b| b.action == action && b.chord == Key::F5.into())
+        };
+        (on_f5(PLAY), on_f5(maki_gameplay::RELOAD_ROOM))
+    };
+    // The game: F5 reloads the room.
+    assert_eq!(keys(&app), (true, true));
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        // The editor: F5 plays and stops only.
+        assert_eq!(keys(&app), (true, false));
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn add_an_event_to_an_object_with_none_and_undo() {
+    let (app, directory) = editor_app("addevent");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        let editor = app.world().resource::<Editor>();
+        let index = (0..editor.document.room.objects.len())
+            .find(|i| editor.document.event(*i, &editor.registry).is_none())
+            .unwrap();
+        let mut editor = app.resource_mut::<Editor>();
+        editor.document.add_event(index);
+        editor.document.dirty = true;
+        frames(&mut app, 2);
+        let editor = app.world().resource::<Editor>();
+        let event = editor
+            .document
+            .event(index, &editor.registry)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.pages.len(), 1);
+        request(&mut app, Command::Undo);
+        let editor = app.world().resource::<Editor>();
+        assert!(editor.document.event(index, &editor.registry).is_none());
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn two_wires_on_one_output_have_two_tab_labels() {
+    let wire = |output: &str| maki_events::Wire {
+        output: output.to_owned(),
+        commands: Vec::new(),
+    };
+    let wires = [wire("used"), wire("hit"), wire("used")];
+    let label = |i| crate::event_panel::wire_tab_label(&wires, i);
+    assert_eq!(label(0), "used 1");
+    assert_eq!(label(1), "hit");
+    assert_eq!(label(2), "used 2");
+}

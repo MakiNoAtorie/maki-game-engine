@@ -62,7 +62,7 @@ use maki_core::{
 use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
 use maki_gameplay::StartRoom;
 use maki_platform::{
-    Action, ActionState, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
+    Action, ActionState, Bindings, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
@@ -1298,6 +1298,13 @@ impl Module for EditorModule {
         // In a game: the same key and the same action stop it.
         maki_platform::add_bindings(app, &[(Key::F5, PLAY, "Stop the game (editor)")]);
         add_mode_bindings(app, MODE, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
+        // F5 is the play key here; the reload of the room (a debug key of the game) has no key.
+        // After all modules were built, so the order of the modules does not matter.
+        app.add_systems(Startup, |mut bindings: ResMut<Bindings>| {
+            bindings
+                .0
+                .retain(|binding| binding.action != maki_gameplay::RELOAD_ROOM);
+        });
         // A quit request is a command of the editor: it asks for changes that are
         // not saved, and in a game it is a stop.
         app.resource_mut::<QuitHold>().0 = true;
