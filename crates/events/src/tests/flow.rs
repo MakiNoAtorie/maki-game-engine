@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn any_of_holds_when_one_of_its_conditions_holds() {
-    let directory = directory("any-of");
+    let directory = directory("flow-any-of");
     let events = r#"(name: "or", pages: [(trigger: Autorun, commands: [
         SetFlag("b", true),
         If([Any([Flag("a"), Flag("b")])], [SetVariable("one", 1)], [SetVariable("one", 2)]),
@@ -23,7 +23,7 @@ fn any_of_holds_when_one_of_its_conditions_holds() {
 
 #[test]
 fn a_loop_with_a_break_ends_and_one_with_no_wait_goes_on_over_steps() {
-    let directory = directory("loop");
+    let directory = directory("flow-loop");
     let events = r#"
         (name: "counted", pages: [(trigger: Autorun, commands: [
             Loop([
@@ -52,7 +52,7 @@ fn a_loop_with_a_break_ends_and_one_with_no_wait_goes_on_over_steps() {
 
 #[test]
 fn wait_until_goes_on_when_its_conditions_hold() {
-    let directory = directory("wait-until");
+    let directory = directory("flow-wait-until");
     let events = r#"
         (name: "waits", pages: [(trigger: Autorun, commands: [
             WaitUntil([Variable("ticks", AtLeast, 5)]), SetFlag("done", true)])]),
