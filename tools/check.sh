@@ -39,5 +39,7 @@ if [ "$1" != "fast" ]; then
     PATH="$(cygpath "$(rustc --print sysroot)" 2>/dev/null || rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-msvc/lib:$PATH"
     export PATH
     step "test dynamic" cargo test -q --profile dynamic -p maki-editor-app -p maki-game-dll
+    # The tests of reload.rs compile only with the feature `dynamic`.
+    step "test reload" cargo test -q --profile dynamic -p maki-engine --features dynamic --lib
 fi
 exit $failed
