@@ -20,6 +20,7 @@ use maki_scene::{CurrentRoom, Player};
 
 use crate::command::{Command, CommandRegistry, Step};
 use crate::model::{EventDef, Trigger, active_page};
+use crate::script::ScriptRunners;
 use crate::{GameState, INTERACT};
 
 /// An interact event starts if its area is not farther from the player than this, in
@@ -64,7 +65,7 @@ pub struct RunningEvent {
 }
 
 impl RunningEvent {
-    fn new(name: &str, trigger: Trigger, commands: &[Command]) -> Self {
+    pub(crate) fn new(name: &str, trigger: Trigger, commands: &[Command]) -> Self {
         Self {
             name: name.to_owned(),
             trigger,
@@ -81,7 +82,7 @@ impl RunningEvent {
     }
 
     /// One fixed step. True: the event has ended. `steps`: see `EventRunner::steps`.
-    fn step(&mut self, world: &mut World, steps: &mut Option<u32>) -> bool {
+    pub(crate) fn step(&mut self, world: &mut World, steps: &mut Option<u32>) -> bool {
         for _ in 0..MAX_COMMANDS_PER_STEP {
             // A list at its end is closed: the list around it goes on.
             while self
@@ -143,7 +144,10 @@ pub struct EventRunner {
     /// True until the first step in a new room: a player that starts in an area did
     /// not walk into it.
     new_room: bool,
-    running: Vec<RunningEvent>,
+    pub(crate) running: Vec<RunningEvent>,
+    /// True in a step with a press of interact that started no event: a script can
+    /// take it (`script` module).
+    pub(crate) interact_free: bool,
     /// Step mode, for a tool that shows an event command by command. `None`: off,
     /// the events run. `Some`: the number of commands that can still start; at 0
     /// each event waits before its next command.
@@ -217,7 +221,7 @@ impl EventRunner {
         // starts no other event in the same step.
         let mut blocked = self.blocks_player();
         let pressed = world.resource::<FixedActionState>().just_pressed(INTERACT);
-        let interact = pressed && !blocked;
+        let mut interact = pressed && !blocked;
 
         let mut index = 0;
         while index < self.running.len() {
@@ -255,7 +259,9 @@ impl EventRunner {
                 Trigger::Autorun => !blocked && self.autorun[index] != page_index,
                 Trigger::Touch => !blocked && entered,
                 Trigger::Interact => {
-                    interact && !blocked && player.is_some_and(|player| faces(player, event))
+                    interact
+                        && !blocked
+                        && player.zip(event.area).is_some_and(|(player, area)| faces(player, area))
                 }
             };
             if !start {
@@ -266,18 +272,19 @@ impl EventRunner {
                 self.autorun[index] = page_index;
             }
             blocked |= page.trigger != Trigger::Parallel;
+            if page.trigger == Trigger::Interact {
+                interact = false;
+            }
             self.running
                 .push(RunningEvent::new(&event.name, page.trigger, &page.commands));
         }
         self.new_room = false;
+        self.interact_free = interact;
     }
 }
 
-/// True if the player is at the area of the event and looks toward it.
-fn faces((position, facing): (Vec3, Vec3), event: &EventDef) -> bool {
-    let Some(area) = event.area else {
-        return false;
-    };
+/// True if the player is at the area and looks toward it.
+pub(crate) fn faces((position, facing): (Vec3, Vec3), area: crate::Area) -> bool {
     let [x, z] = area.nearest(position.x, position.z);
     let to_event = Vec3::new(x - position.x, 0.0, z - position.z);
     let distance = to_event.length();
@@ -334,19 +341,30 @@ pub(crate) fn reset_play(
 pub fn run_events(world: &mut World, players: &mut QueryState<&Interpolated, With<Player>>) {
     use bevy_ecs::change_detection::DetectChangesMut;
 
-    // Nothing to do: no write, so no resource is marked as changed in each step.
-    let runner = world.resource::<EventRunner>();
-    if runner.events.is_empty() && runner.running.is_empty() {
-        return;
-    }
     // The front of the player model is its +Z.
     let player = players.iter(world).next().map(|pose| {
         let pose = pose.current;
         (pose.translation, pose.rotation * Vec3::Z)
     });
-    // The runner is out of the world while its commands have the world.
-    world.resource_scope(|world, mut runner: Mut<EventRunner>| {
-        // Change detection of the runner has no reader.
-        runner.bypass_change_detection().step(world, player);
-    });
+    let runner = world.resource::<EventRunner>();
+    if runner.events.is_empty() && runner.running.is_empty() {
+        // Nothing to run. Only a different value is a write: no resource is marked
+        // as changed in each step. The press is free for a script.
+        let pressed = world.resource::<FixedActionState>().just_pressed(INTERACT);
+        let mut runner = world.resource_mut::<EventRunner>();
+        if runner.interact_free != pressed {
+            runner.bypass_change_detection().interact_free = pressed;
+        }
+    } else {
+        // The runner is out of the world while its commands have the world.
+        world.resource_scope(|world, mut runner: Mut<EventRunner>| {
+            // Change detection of the runner has no reader.
+            runner.bypass_change_detection().step(world, player);
+        });
+    }
+    // The scripts, after the events: a press that started an event starts no script.
+    let scripts = world.resource::<ScriptRunners>().0.clone();
+    for run in scripts {
+        run(world, player);
+    }
 }

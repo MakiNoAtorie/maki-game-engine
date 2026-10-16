@@ -1,0 +1,166 @@
+//! A script of this game: the lamp of room C pulses while the player stands under it,
+//! and says how often it was touched. It uses each hook of a script.
+//!
+//! The room file gives the lamp the component and an area:
+//!
+//! ```ron
+//! components: {"light": (...), "beacon": (pulses: 1.5), "area": (width: 1.6, depth: 1.6)}
+//! ```
+
+use bevy_ecs::component::Component;
+use maki_engine::core::{App, Fields};
+use maki_engine::events::{Builtin, Script, ScriptContext, add_script};
+use maki_engine::scene::Light;
+use serde::{Deserialize, Serialize};
+
+/// The variable that counts the presses of interact at the lamp.
+const TOUCHES: &str = "beacon_touches";
+
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(default, deny_unknown_fields)]
+#[fields(default)]
+pub struct Beacon {
+    /// Pulses in a second.
+    #[field(range = 0.1..=10.0, step = 0.1)]
+    pub pulses: f32,
+    /// The largest change of the brightness, as a part of it.
+    #[field(range = 0.0..=1.0, step = 0.05)]
+    pub strength: f32,
+    /// The brightness of the light at the start. Not in the file.
+    #[serde(skip)]
+    #[field(skip)]
+    base: f32,
+    /// Seconds since the player came in. `None`: the player is not in the area.
+    #[serde(skip)]
+    #[field(skip)]
+    time: Option<f32>,
+}
+
+impl Default for Beacon {
+    fn default() -> Self {
+        Self {
+            pulses: 1.5,
+            strength: 0.6,
+            base: 0.0,
+            time: None,
+        }
+    }
+}
+
+impl Beacon {
+    fn set_intensity(context: &mut ScriptContext, intensity: f32) {
+        if let Some(mut light) = context.get_mut::<Light>() {
+            light.intensity = intensity;
+        }
+    }
+}
+
+impl Script for Beacon {
+    fn start(&mut self, context: &mut ScriptContext) {
+        // The object entity of a light is the entity of the light.
+        self.base = context.get_mut::<Light>().map_or(0.0, |light| light.intensity);
+    }
+
+    fn step(&mut self, context: &mut ScriptContext) {
+        // At rest no write: a change of a light is a change for the renderer.
+        let Some(time) = &mut self.time else { return };
+        *time += context.seconds();
+        let wave = (*time * self.pulses * std::f32::consts::TAU).sin();
+        Self::set_intensity(context, self.base * (1.0 + self.strength * wave));
+    }
+
+    fn interact(&mut self, context: &mut ScriptContext) {
+        // Two commands of the engine, through the same registry as the rows of an
+        // event: the count, and a message that waits for a press.
+        context.call(Builtin::AddVariable(TOUCHES.to_owned(), 1));
+        let touches = context.state().variable(TOUCHES);
+        context.call(Builtin::Message(format!("The lamp hums. Touched {touches} times.")));
+    }
+
+    fn enter_area(&mut self, _context: &mut ScriptContext) {
+        self.time = Some(0.0);
+    }
+
+    fn leave_area(&mut self, context: &mut ScriptContext) {
+        self.time = None;
+        Self::set_intensity(context, self.base);
+    }
+}
+
+pub fn add(app: &mut App) {
+    add_script::<Beacon>(app, "beacon");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use maki_engine::core::{ConfigFile, FixedFirst, Interpolated, Startup, Transform};
+    use maki_engine::events::{EventsModule, GameState, MessageBox};
+    use maki_engine::platform::{Key, PlatformModule, RawInput};
+    use maki_engine::scene::{Player, RoomRequest, RoomTarget, SceneModule};
+
+    use super::*;
+
+    #[test]
+    fn the_lamp_pulses_while_the_player_is_under_it_and_counts_the_touches() {
+        let room = r#"(width: 8, depth: 8, height: 3, objects: [
+            (name: "lamp", pose: (position: (0.0, 2.3, 1.0)), components: {
+                "light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 10.0),
+                "beacon": (pulses: 1.0, strength: 0.5),
+                "area": (width: 1.0, depth: 1.0)})])"#;
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
+        app.add_module(PlatformModule)
+            .add_module(SceneModule)
+            .add_module(EventsModule);
+        add(&mut app);
+        app.add_systems(
+            Startup,
+            move |mut commands: bevy_ecs::system::Commands, mut request: bevy_ecs::system::ResMut<RoomRequest>| {
+                commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
+                request.0 = Some(RoomTarget {
+                    path: "beacon.ron".into(),
+                    spawn: None,
+                    text: Some(room.to_owned()),
+                });
+            },
+        );
+        // The player walks under the lamp in the step after the frame number 10.
+        app.add_systems(
+            FixedFirst,
+            |time: bevy_ecs::system::Res<maki_engine::core::Time>,
+             mut players: bevy_ecs::system::Query<&mut Interpolated, bevy_ecs::query::With<Player>>| {
+                if time.fixed_tick == 10 {
+                    for mut pose in &mut players {
+                        pose.snap(Transform::from_translation([0.0, 0.0, 1.0].into()));
+                    }
+                }
+            },
+        );
+        app.run(|mut app| {
+            let step = Duration::from_millis(20);
+            let intensity = |app: &App| {
+                let mut lights = app.world().try_query::<&Light>().unwrap();
+                lights.single(app.world()).unwrap().intensity
+            };
+            for _ in 0..8 {
+                app.advance(step);
+            }
+            // Far from the lamp: the light of the file.
+            assert_eq!(intensity(&app), 10.0);
+            for _ in 0..12 {
+                app.advance(step);
+            }
+            assert_ne!(intensity(&app), 10.0);
+            assert!((5.0..=15.0).contains(&intensity(&app)));
+
+            // In the area each direction faces it: a press shows the message.
+            app.write_message(RawInput::KeyDown(Key::Z))
+                .write_message(RawInput::KeyUp(Key::Z));
+            app.advance(step);
+            assert_eq!(app.world().resource::<GameState>().variable(TOUCHES), 1);
+            let message = app.world().resource::<MessageBox>().0.clone();
+            assert_eq!(message.as_deref(), Some("The lamp hums. Touched 1 times."));
+        });
+    }
+}

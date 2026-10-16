@@ -1341,25 +1341,63 @@ impl Spawner<'_, '_, '_> {
 
     /// The entities of the components of the scene of an object. `check_room` read
     /// the text of each of them.
+    ///
+    /// The components of `bevy_ecs` of the object (`add_object_component`: the
+    /// scripts) go to one entity, the object entity: that of its prop with a
+    /// generated mesh, of its light, door, or mover, else a new one. It has the pose
+    /// of the object as `Interpolated`, so a script that moves it moves the mesh.
     fn object(&mut self, object: &ObjectDef, item: RoomItem, width: f32, depth: f32) {
+        let mut main = None;
         if let Some(Ok(prop)) = object.prop() {
-            self.prop(&prop, item);
+            main = self.prop(&prop, item);
         }
+        let of_prop = main.is_some();
         if let Some(Ok(light)) = object.light() {
-            self.light(&light, item);
+            main = main.or(Some(self.light(&light, item)));
         }
         if let (Some(Ok(door)), Some(Ok(doorway))) = (object.door(), object.doorway()) {
-            self.door(&object.name, &door, item, &doorway, width, depth);
+            let door = self.door(&object.name, &door, item, &doorway, width, depth);
+            main = main.or(Some(door));
         }
         if let Some(Ok(mover)) = object.mover() {
-            self.mover(&mover, item);
+            main = main.or(self.mover(&mover, item));
         }
         if let Some(Ok(used)) = object.prefab() {
             self.prefab(&used, item, width, depth);
         }
+
+        let inserts: Vec<_> = object
+            .components
+            .iter()
+            .filter_map(|(name, text)| Some((name, text, self.types.get(name)?.insert?)))
+            .collect();
+        if inserts.is_empty() {
+            return;
+        }
+        let mut entity = match main {
+            Some(entity) => self.commands.entity(entity),
+            None => {
+                let mut entity = self.commands.spawn((RoomEntity, item));
+                if let Some(name) = &object.name {
+                    entity.insert(Name(name.clone()));
+                }
+                entity
+            }
+        };
+        // A light, a door, and a mover have their pose already; a prop has a
+        // `Transform` only.
+        if of_prop || main.is_none() {
+            entity.insert(Interpolated::at(object.pose.transform()));
+        }
+        for (name, text, insert) in inserts {
+            if let Err(error) = insert(text, &mut entity) {
+                let object = object.name.as_deref().unwrap_or("");
+                tracing::error!("object {object}: component {name} left out: {error}");
+            }
+        }
     }
 
-    fn light(&mut self, light: &LightDef, item: RoomItem) {
+    fn light(&mut self, light: &LightDef, item: RoomItem) -> Entity {
         let mut entity = self.commands.spawn((
             RoomEntity,
             item,
@@ -1373,6 +1411,7 @@ impl Spawner<'_, '_, '_> {
         if let Some(sound) = &light.sound {
             entity.insert(sound.source(self.directory));
         }
+        entity.id()
     }
 
     /// The items of a prefab file, each at its pose in the room. A file that does
@@ -1395,8 +1434,10 @@ impl Spawner<'_, '_, '_> {
         }
     }
 
-    fn prop(&mut self, prop: &PropDef, item: RoomItem) {
+    /// The entity of a generated mesh. `None` for a file: its meshes come later.
+    fn prop(&mut self, prop: &PropDef, item: RoomItem) -> Option<Entity> {
         let transform = prop.pose.transform();
+        let file = matches!(prop.mesh, MeshDef::File(_));
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
                 let path = self.directory.join(path);
@@ -1437,12 +1478,13 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = &prop.name {
             entity.insert(Name(name.clone()));
         }
+        (!file).then(|| entity.id())
     }
 
-    fn mover(&mut self, mover: &MoverDef, item: RoomItem) {
+    fn mover(&mut self, mover: &MoverDef, item: RoomItem) -> Option<Entity> {
         if matches!(mover.mesh, MeshDef::File(_)) {
             tracing::error!(name = ?mover.name, "a mover cannot have a file as its mesh: left out");
-            return;
+            return None;
         }
         let handle = self.mesh(format!("{:?} {:?}", mover.mesh, mover.look), |spawner| {
             let mesh = mover.mesh.generate().expect("not a file");
@@ -1459,6 +1501,7 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = &mover.name {
             entity.insert(Name(name.clone()));
         }
+        Some(entity.id())
     }
 
     /// The door leaf: a thin box that fills the doorway when it is closed.
@@ -1470,7 +1513,7 @@ impl Spawner<'_, '_, '_> {
         doorway: &Doorway,
         width: f32,
         depth: f32,
-    ) {
+    ) -> Entity {
         const THICKNESS: f32 = 0.06;
         // The open door stands at this angle to the wall, in degrees. Not a quarter
         // turn: the open door then does not lie in the side of the passage.
@@ -1529,6 +1572,7 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = name {
             entity.insert(Name(name.clone()));
         }
+        entity.id()
     }
 }
 
@@ -1612,8 +1656,9 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             &mut Transform,
             &MeshInstance,
             Option<&mut Collider>,
+            Option<&mut Interpolated>,
         ), Without<Mover>>();
-        for (item, mut transform, instance, collider) in props.iter_mut(world) {
+        for (item, mut transform, instance, collider, pose) in props.iter_mut(world) {
             let object = &room.objects[item.0];
             let Some(Ok(prop)) = object.prop() else {
                 continue;
@@ -1626,6 +1671,11 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
                 continue;
             }
             *transform = new;
+            // The object entity of a script: the blend of the poses writes the
+            // `Transform` in each frame.
+            if let Some(mut pose) = pose {
+                pose.snap(new);
+            }
             if let (Some(mut collider), Some(mesh)) = (collider, meshes.get(instance.0)) {
                 *collider = collider_around(mesh, &new);
             }
@@ -1700,6 +1750,8 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
 
     use crate::SceneModule;
+    use crate::object::add_object_component;
+    use bevy_ecs::query::Has;
 
     /// A room with one of each thing: objects 0 crate, 1 ball, 2 lamp, 3 door, 4
     /// mover, 5 the spawn point "start".
@@ -2502,5 +2554,56 @@ watch = true",
             "{back:?}"
         );
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A component of a project, for the tests of the object entity.
+    #[derive(Component, Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
+    #[serde(default)]
+    struct Spin {
+        speed: f32,
+    }
+
+    #[test]
+    fn the_components_of_bevy_ecs_of_an_object_go_to_one_entity_with_its_pose() {
+        let room = r#"(width: 6.0, depth: 6.0, height: 3.0, objects: [
+            (name: "top", pose: (position: (1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(0.5)), "spin": (speed: 2.0)}),
+            (name: "empty", pose: (position: (-1.0, 0.0, 2.0)), components: {"spin": (speed: 3.0)}),
+            (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 1.0), "spin": ()}),
+            (name: "lost", components: {"wobble": (speed: 1.0)}),
+        ])"#;
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(SceneModule);
+        add_object_component::<Spin>(&mut app, "spin");
+        app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+            path: PathBuf::from("spin.ron"),
+            spawn: None,
+            text: Some(room.to_owned()),
+        });
+        app.run(|mut app| {
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let mut spins = world
+                .try_query::<(&RoomItem, &Spin, &Name, &Interpolated, Has<MeshInstance>, Has<Light>)>()
+                .unwrap();
+            let mut found: Vec<_> = spins
+                .iter(world)
+                .map(|(item, spin, name, pose, mesh, light)| {
+                    (item.0, spin.speed, name.0.clone(), pose.current.translation, mesh, light)
+                })
+                .collect();
+            found.sort_by_key(|found| found.0);
+            assert_eq!(
+                found,
+                [
+                    // The mesh of the prop is on the object entity: a script moves it.
+                    (0, 2.0, "top".to_owned(), Vec3::new(1.0, 0.5, 0.0), true, false),
+                    (1, 3.0, "empty".to_owned(), Vec3::new(-1.0, 0.0, 2.0), false, false),
+                    (2, 0.0, "lamp".to_owned(), Vec3::new(0.0, 2.0, 0.0), false, true),
+                ]
+            );
+            // A component that no module registered stays text: no entity.
+            let mut items = world.try_query::<&RoomItem>().unwrap();
+            assert!(items.iter(world).all(|item| item.0 != 3));
+        });
     }
 }

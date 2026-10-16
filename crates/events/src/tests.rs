@@ -587,3 +587,167 @@ fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// A script that counts its hooks in variables of the game state, and goes along X
+/// by `speed` meters in each second.
+#[derive(bevy_ecs::component::Component, Debug, Default, serde::Serialize, serde::Deserialize, maki_core::Fields)]
+#[serde(default)]
+struct Counter {
+    speed: f32,
+}
+
+impl Counter {
+    fn count(context: &mut ScriptContext, hook: &str) {
+        let mut state = context.state();
+        let count = state.variable(hook);
+        state.set_variable(hook, count + 1);
+    }
+}
+
+impl Script for Counter {
+    fn start(&mut self, context: &mut ScriptContext) {
+        Self::count(context, "start");
+    }
+
+    fn step(&mut self, context: &mut ScriptContext) {
+        Self::count(context, "step");
+        let mut pose = context.pose();
+        pose.translation.x += self.speed * context.seconds();
+        context.set_pose(pose);
+    }
+
+    fn interact(&mut self, context: &mut ScriptContext) {
+        Self::count(context, "interact");
+        // A command of the registry, as a row calls it: the message waits for a
+        // press, and the player has no control until then.
+        context.call(Builtin::Message("hello".to_owned()));
+    }
+
+    fn enter_area(&mut self, context: &mut ScriptContext) {
+        Self::count(context, "enter");
+    }
+
+    fn leave_area(&mut self, context: &mut ScriptContext) {
+        Self::count(context, "leave");
+    }
+}
+
+/// A room with the counter at (0, 0, 1.4): its area of 1 x 1 m is 0.9 m in front of
+/// the player at the start, in reach.
+fn counter_room(speed: f32, events: &str) -> String {
+    room(events).replacen(
+        "objects: [",
+        &format!(
+            r#"objects: [(name: "counter", pose: (position: (0, 0, 1.4)), components: {{"counter": (speed: {speed}), "area": (width: 1.0, depth: 1.0)}}),"#
+        ),
+        1,
+    )
+}
+
+fn counter_game(test: &str, room: &str) -> App {
+    let directory = directory(test);
+    std::fs::write(directory.join("a.ron"), room).unwrap();
+    let mut app = game(&directory);
+    add_script::<Counter>(&mut app, "counter");
+    app.init_resource::<PlaceAt>().add_systems(
+        maki_core::FixedFirst,
+        |mut place: ResMut<PlaceAt>, mut players: Query<&mut Interpolated, With<Player>>| {
+            if let Some(at) = place.0.take() {
+                for mut pose in &mut players {
+                    pose.snap(Transform::from_translation(at.into()));
+                }
+            }
+        },
+    );
+    app
+}
+
+fn variable(app: &App, name: &str) -> i32 {
+    app.world().resource::<GameState>().variable(name)
+}
+
+#[test]
+fn each_hook_of_a_script_runs_at_its_time() {
+    let app = counter_game("hooks", &counter_room(0.0, ""));
+    app.run(|mut app| {
+        // The room loads in the first frame, the script starts in the step of the
+        // second.
+        steps(&mut app, 3);
+        assert_eq!(variable(&app, "start"), 1);
+        assert_eq!(variable(&app, "step"), 2);
+        assert_eq!(variable(&app, "enter"), 0);
+
+        // The player faces the area and presses interact: the hook, and the message
+        // that it calls.
+        interact(&mut app);
+        assert_eq!(variable(&app, "interact"), 1);
+        assert!(app.world().resource::<MessageBox>().0.is_some());
+        assert!(app.world().resource::<EventRunner>().blocks_player());
+        // The press that closes the message goes to the message, not to the script.
+        steps(&mut app, 3);
+        interact(&mut app);
+        steps(&mut app, 1);
+        assert_eq!(variable(&app, "interact"), 1);
+        assert!(!app.world().resource::<EventRunner>().blocks_player());
+
+        // Into the area, and out.
+        place_player(&mut app, [0.0, 0.0, 1.4]);
+        steps(&mut app, 1);
+        assert_eq!((variable(&app, "enter"), variable(&app, "leave")), (1, 0));
+        steps(&mut app, 2);
+        assert_eq!(variable(&app, "enter"), 1);
+        place_player(&mut app, [0.0, 0.0, -2.0]);
+        steps(&mut app, 1);
+        assert_eq!((variable(&app, "enter"), variable(&app, "leave")), (1, 1));
+        // The player looks away from the area: no interact.
+        interact(&mut app);
+        assert_eq!(variable(&app, "interact"), 1);
+        assert_eq!(variable(&app, "start"), 1);
+    });
+}
+
+/// Where the player goes at the start of the next step.
+#[derive(bevy_ecs::resource::Resource, Default)]
+struct PlaceAt(Option<[f32; 3]>);
+
+fn place_player(app: &mut App, at: [f32; 3]) {
+    app.resource_mut::<PlaceAt>().0 = Some(at);
+}
+
+#[test]
+fn a_script_moves_its_object_and_an_object_with_no_code_keeps_its_text() {
+    let app = counter_game("move", &counter_room(5.0, ""));
+    app.run(|mut app| {
+        // One step of the script in the second frame: 5 m/s for 20 ms.
+        steps(&mut app, 2);
+        let world = app.world();
+        let mut counters = world.try_query::<(&Counter, &Interpolated)>().unwrap();
+        let (counter, pose) = counters.single(world).unwrap();
+        assert_eq!(counter.speed, 5.0);
+        assert!((pose.current.translation.x - 0.1).abs() < 1e-6, "{pose:?}");
+    });
+    // The same room with no script registered: the object keeps its component as
+    // text, and the room loads.
+    let directory = directory("no-code");
+    std::fs::write(directory.join("a.ron"), counter_room(5.0, "")).unwrap();
+    let app = game(&directory);
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        let room = &app.world().resource::<CurrentRoom>().def;
+        assert_eq!(room.objects[0].components["counter"].as_str(), "(speed:5)");
+    });
+}
+
+#[test]
+fn one_press_starts_an_event_or_a_script_not_both() {
+    let events = r#"(name: "sign", area: (center: (0.0, 1.4), size: (1.0, 1.0)), pages: [(trigger: Interact, commands: [SetFlag("read", true)])])"#;
+    let app = counter_game("press", &counter_room(0.0, events));
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        interact(&mut app);
+        // The event runs its commands from the next step.
+        steps(&mut app, 1);
+        assert!(flag(&app, "read"));
+        assert_eq!(variable(&app, "interact"), 0);
+    });
+}

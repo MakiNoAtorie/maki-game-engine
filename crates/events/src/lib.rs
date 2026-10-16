@@ -18,6 +18,7 @@ mod check;
 mod command;
 mod interpreter;
 mod model;
+mod script;
 
 use std::collections::BTreeMap;
 
@@ -34,6 +35,7 @@ pub use interpreter::{
     ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, load_room_events, run_events,
 };
 pub use model::{Area, Compare, Condition, EventDef, Page, Trigger, active_page, all_hold};
+pub use script::{Script, ScriptContext, TriggerArea, add_script};
 
 /// Starts the event that the player faces, closes a message, and takes the marked
 /// answer of a question.
@@ -96,7 +98,10 @@ impl Module for EventsModule {
             .init_resource::<EventRunner>()
             .init_resource::<MessageBox>()
             .init_resource::<ChoiceBox>()
-            .init_resource::<RoomValidators>();
+            .init_resource::<RoomValidators>()
+            .init_resource::<script::ScriptRunners>();
+        // The area of an object, for the hooks of its scripts.
+        maki_scene::add_object_component::<TriggerArea>(app, "area");
         // A room with a bad event is not loaded. The check has the registry, with
         // the commands and the checks that other modules add later.
         let check = registry.validator();

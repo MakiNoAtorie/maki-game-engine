@@ -1,9 +1,11 @@
-//! The script crate of the project: the Rust code of this game. Its event command
-//! (`shake`), and its benchmark scripts (`bench`).
+//! The script crate of the project: the Rust code of this game. Its script
+//! component (`beacon`), its event command (`shake`), and its benchmark scripts
+//! (`bench`).
 //!
 //! The game program and the editor call [`add_modules`]: the program has this crate
 //! linked in, the editor loads it as a DLL (`dll/`).
 
+mod beacon;
 mod bench;
 mod shake;
 
@@ -11,6 +13,7 @@ use maki_engine::core::App;
 
 /// The entry function of the project: adds the modules of this crate.
 pub fn add_modules(app: &mut App) {
+    beacon::add(app);
     app.add_module(shake::ShakeModule);
     bench::add_scripts(app);
 }
