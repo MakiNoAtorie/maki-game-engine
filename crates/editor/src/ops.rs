@@ -597,8 +597,11 @@ impl Document {
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
         let used = PrefabUse {
             name: None,
-            // Forward slashes: the same room file on each system.
-            file: PathBuf::from(file.to_string_lossy().replace('\\', "/")).into(),
+            // Forward slashes: the same room file on each system. An old prefab file keeps its id.
+            file: maki_assets::FileRef {
+                path: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
+                id: maki_assets::FileId::read(&path),
+            },
             pose: outer,
             changes: Default::default(),
         };

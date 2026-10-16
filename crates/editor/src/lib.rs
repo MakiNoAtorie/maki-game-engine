@@ -33,6 +33,7 @@ mod event_panel;
 mod events;
 pub mod fields;
 mod gizmo;
+mod ids;
 mod ops;
 mod overlay;
 mod panels;
@@ -727,6 +728,8 @@ impl Editor {
         self.document = document;
         self.selection.clear();
         self.shown = None;
+        // A file that moved while the room was closed: the room gets its new path.
+        ids::correct_paths(&mut self.document);
         self.history.reset(&self.document);
         self.others = None;
         self.event_ui.row = None;
