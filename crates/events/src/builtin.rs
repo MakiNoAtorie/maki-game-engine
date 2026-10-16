@@ -62,7 +62,7 @@ pub enum Builtin {
     /// of the event.
     CallScript(String),
     /// Sends an output of an object: the object, the output. Its wires start in the
-    /// next step.
+    /// step of the interpreter after the commands that run.
     Signal(String, String),
 }
 

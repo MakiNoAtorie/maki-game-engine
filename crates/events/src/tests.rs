@@ -1026,3 +1026,32 @@ fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
         ]
     );
 }
+
+#[test]
+fn a_wire_that_sends_its_own_output_starts_once_in_a_step_and_an_event_goes_first() {
+    // The second wire of `used` runs after the first, and sends `used` again.
+    let wires = r#"(output: "used", commands: [AddVariable("count", 1)]),
+        (output: "used", commands: [Signal("button", "used")])"#;
+    let app = counter_game("loop", &button_room(wires));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        interact(&mut app);
+        steps(&mut app, 10);
+        // One start in each step: about ten, not a loop with no end in one step.
+        let count = variable(&app, "count");
+        assert!((5..=11).contains(&count), "{count}");
+    });
+    // An event and a wire on one press of the same area: the event.
+    let room = button_room(r#"(output: "used", commands: [SetFlag("wire", true)])"#).replacen(
+        r#""event": (wires:"#,
+        r#""event": (pages: [(trigger: Interact, commands: [SetFlag("page", true)])], wires:"#,
+        1,
+    );
+    let app = counter_game("press-order", &room);
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        interact(&mut app);
+        steps(&mut app, 2);
+        assert!(flag(&app, "page") && !flag(&app, "wire"));
+    });
+}

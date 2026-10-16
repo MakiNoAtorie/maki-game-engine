@@ -121,7 +121,7 @@ impl ScriptContext<'_> {
     }
 
     /// Sends an output of the object (named with `add_outputs`): its wires start in
-    /// the next step.
+    /// the step of the interpreter after this one.
     pub fn signal(&mut self, output: &str) {
         crate::interpreter::Signals::send(self.world, self.entity, output);
     }

@@ -166,9 +166,10 @@ pub struct EventRunner {
     steps: Option<u32>,
 }
 
-/// The outputs that a row or a script sent: their wires start in the next step. So a
-/// wire that sends its own output runs one time in each step, not in a loop. Not a
-/// part of the runner: a command runs while the runner is out of the world.
+/// The outputs that a row or a script sent. Their wires start in the step of the
+/// interpreter after the commands that run: a wire that sends its own output starts
+/// at most one time in each step, not in a loop. Not a part of the runner: a command
+/// runs while the runner is out of the world.
 #[derive(Resource, Debug, Default)]
 pub struct Signals(pub(crate) Vec<(Entity, String)>);
 
@@ -315,8 +316,10 @@ impl EventRunner {
             // that were sent to the object.
             let mut outputs: Vec<String> = Vec::new();
             if area.is_some() {
+                // Not in the first step of a room, as the hook `interact` of a script.
                 let used = interact
                     && !blocked
+                    && !self.new_room
                     && player
                         .zip(area)
                         .is_some_and(|(player, area)| faces(player, area));
@@ -340,13 +343,20 @@ impl EventRunner {
                 !of_this
             });
             for output in &outputs {
-                for wire in pages.wires.iter().filter(|wire| wire.output == *output) {
-                    tracing::debug!(event = name, output, "wire starts");
-                    let mut running = RunningEvent::new(name, Trigger::Interact, &wire.commands);
-                    running.entity = Some(entity);
-                    self.running.push(running);
-                    blocked = true;
+                // The wires of an output run one after the other, in the order of the
+                // list: one command list.
+                let wires = pages.wires.iter().filter(|wire| wire.output == *output);
+                let commands: Vec<Command> = wires.flat_map(|wire| wire.commands.clone()).collect();
+                if commands.is_empty() {
+                    continue;
                 }
+                tracing::debug!(event = name, output, "wires start");
+                // `Interact`: a wire blocks the player as an event that the player
+                // started.
+                let mut running = RunningEvent::new(name, Trigger::Interact, &commands);
+                running.entity = Some(entity);
+                self.running.push(running);
+                blocked = true;
             }
 
             if memory.is_none_or(|memory| (memory.inside, memory.autorun) != (inside, autorun)) {
