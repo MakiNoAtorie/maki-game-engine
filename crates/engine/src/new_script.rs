@@ -130,17 +130,46 @@ pub fn fill(template: &str, snake: &str, pascal: &str) -> String {
 }
 
 /// `src/lib.rs` with the module and its line in `add_modules`. `None`: the text has
-/// no top-level `mod` line or no `add_modules`.
+/// no `add_modules`.
 fn register(lib: &str, snake: &str) -> Option<String> {
     let lines: Vec<&str> = lib.lines().collect();
-    let last_mod = lines.iter().rposition(|line| line.starts_with("mod "))?;
+    // The code of a line without its visibility and its end comment.
+    let code = |line: &str| {
+        let line = line.split("//").next().unwrap_or("").trim_end();
+        let line = line.strip_prefix("pub").map_or(line, |rest| {
+            rest.strip_prefix("(crate)")
+                .or(rest.strip_prefix("(super)"))
+                .unwrap_or(rest)
+                .trim_start()
+        });
+        line.to_owned()
+    };
+    // After the last `mod x;`, else the last `use`, else the inner lines that must stay first.
+    let last_mod = lines.iter().rposition(|l| {
+        let code = code(l);
+        code.starts_with("mod ") && code.ends_with(';')
+    });
+    let last_use = lines
+        .iter()
+        .rposition(|l| code(l).starts_with("use "))
+        .map(|start| {
+            let end = lines[start..].iter().position(|l| code(l).ends_with(';'));
+            start + end.unwrap_or(0)
+        });
+    let inner = |l: &&&str| l.starts_with("//!") || l.starts_with("#![") || l.trim().is_empty();
+    let head = lines.iter().take_while(inner).count();
+    let top = lines[..head].iter().rposition(|l| !l.trim().is_empty());
+    let at = last_mod.or(last_use).or(top);
     let entry = lines.iter().position(|line| line.trim() == ENTRY)?;
     let mod_line = format!("mod {snake};");
     let add_line = format!("    {snake}::add(app);");
     let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 2);
+    if at.is_none() {
+        out.push(&mod_line);
+    }
     for (index, line) in lines.iter().enumerate() {
         out.push(line);
-        if index == last_mod {
+        if Some(index) == at {
             out.push(&mod_line);
         }
         if index == entry {
@@ -213,7 +242,7 @@ mod panel {
     };
 
     use super::{create, names, templates};
-    use crate::reload::open_in_code_editor;
+    use crate::reload::open_after_build;
 
     const PANEL: &str = "new_script";
     /// The folder of the script crate in a project folder.
@@ -267,8 +296,8 @@ mod panel {
         }
     }
 
-    /// A name, a template, and "Create": the file goes into the script crate and
-    /// opens in the code editor. The watch of the build sees it.
+    /// A name, a template, and "Create": the file goes into the script crate. It opens
+    /// in the code editor when the build passes; if not, the panel "Build" shows.
     fn new_script_panel(ui: &mut egui::Ui, world: &mut World) {
         // A new type under the name of another would take its place in each room.
         let taken: Vec<&str> = world
@@ -331,7 +360,7 @@ mod panel {
                 tracing::info!("{text}");
                 form.result = Some((text, !created.to_add.is_empty()));
                 form.name.clear();
-                open_in_code_editor(world, &created.file, 1);
+                open_after_build(world, created.file);
             }
             Some(Err(text)) => {
                 form.result = Some((text.clone(), true));
@@ -385,6 +414,43 @@ mod tests {
         let created = create(&dir, "gate", TEMPLATES[0].1).unwrap();
         assert!(created.to_add.contains("mod gate;"), "{}", created.to_add);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_mod_line_is_top_level_never_in_a_tests_block() {
+        let entry = "pub fn add_modules(app: &mut App) {\n}\n";
+        let lib =
+            format!("mod beacon;\n\n{entry}\n#[cfg(test)]\nmod tests {{\n    use super::*;\n}}\n");
+        let out = register(&lib, "gate").unwrap();
+        assert!(out.starts_with("mod beacon;\nmod gate;\n"), "{out}");
+        assert_eq!(out.matches("mod gate;").count(), 1);
+        // No `mod` line: after the `use` lines, else at the top (after the `//!` lines).
+        let out = register(
+            &format!("//! Doc.\n\nuse a::B;\nuse c::D;\n\n{entry}"),
+            "gate",
+        )
+        .unwrap();
+        assert!(out.contains("use c::D;\nmod gate;\n"), "{out}");
+        let out = register(&format!("//! Doc.\n\n{entry}"), "gate").unwrap();
+        assert!(out.starts_with("//! Doc.\nmod gate;\n"), "{out}");
+    }
+
+    #[test]
+    fn the_mod_line_reads_the_forms_of_mod_use_and_the_inner_lines() {
+        let entry = "pub fn add_modules(app: &mut App) {\n}\n";
+        let register = |head: &str| register(&format!("{head}\n{entry}"), "gate").unwrap();
+        // A visibility and a comment after the `;`: still a top-level `mod` line.
+        let out = register("pub mod a;\npub(crate) mod b;\nmod c; // the c\n");
+        assert!(out.contains("mod c; // the c\nmod gate;\n"), "{out}");
+        // A `use` over many lines: the `mod` line goes after its end.
+        let out = register("use a::{\n    B,\n    C,\n};\n");
+        assert!(out.contains("};\nmod gate;\n"), "{out}");
+        // Inner lines with blank lines among them: after the last of them.
+        let out = register("//! Doc.\n\n#![allow(dead_code)]\n\n");
+        assert!(
+            out.starts_with("//! Doc.\n\n#![allow(dead_code)]\nmod gate;\n"),
+            "{out}"
+        );
     }
 
     #[test]

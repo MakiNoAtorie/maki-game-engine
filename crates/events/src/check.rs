@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use maki_scene::{RoomCheck, RoomDef, RoomProblem, RoomValidator};
+use bevy_ecs::system::Res;
+use maki_core::fields::Value;
+use maki_scene::{ComponentTypes, RoomCheck, RoomDef, RoomProblem, RoomValidator};
 
 use crate::builtin::Builtin;
 use crate::command::{Command, CommandRegistry, Stop};
-use crate::model::EventDef;
+use crate::model::{EventDef, Wire};
 
 /// What the check of a command knows of the room that the command is in.
 pub struct CheckContext<'a> {
@@ -35,8 +37,7 @@ impl CheckContext<'_> {
     /// What is wrong with an output of an object of the room. `None`: the object has
     /// it.
     pub fn output_problem(&self, object: &str, output: &str) -> Option<String> {
-        let named = |found: &&maki_scene::ObjectDef| found.name.as_deref() == Some(object);
-        let Some(found) = self.room.objects.iter().find(named) else {
+        let Some((_, found)) = self.room.object_named(object) else {
             return Some(format!("the room has no object `{object}`"));
         };
         let has = self.registry.outputs_of(found).contains(&output);
@@ -53,6 +54,46 @@ impl CheckContext<'_> {
         }
         (self.spawn)(file, spawn)
     }
+}
+
+impl CheckContext<'_> {
+    /// What is wrong with a `SetField` row: an object that the room does not have, a
+    /// component that the object (or its prefab) does not have, a field that the
+    /// component does not have, a value that is not of the kind of the field. `None`:
+    /// the row is right.
+    pub fn field_problem(
+        &self,
+        object: &str,
+        component: &str,
+        field: &str,
+        value: &Value,
+    ) -> Option<String> {
+        let Some((_, found)) = self.room.object_named(object) else {
+            return Some(format!("the room has no object `{object}`"));
+        };
+        let types = self
+            .registry
+            .component_types
+            .read()
+            .expect("no writer panics");
+        let components = found.reached_components(self.directory, &types);
+        let Some(text) = components.get(component) else {
+            return Some(format!(
+                "the object `{object}` has no component `{component}`"
+            ));
+        };
+        let problem = types.field_problem(component, text, field, value);
+        let fixed = types.is_live(component) && !types.is_live_field(component, field);
+        problem.or_else(|| {
+            fixed.then(|| format!("the field `{component}.{field}` does not change in the game"))
+        })
+    }
+}
+
+/// Copies the types of components into the registry when they change: the check of
+/// a room file has no world.
+pub(crate) fn copy_component_types(types: Res<ComponentTypes>, registry: Res<CommandRegistry>) {
+    *registry.component_types.write().expect("no writer panics") = types.clone();
 }
 
 /// What the check of a command found.
@@ -113,14 +154,15 @@ impl CommandRegistry {
                 });
             }
             // A wire joins an output that a component of its object has.
-            for wire in &event.wires {
+            for (wire_index, wire) in event.wires.iter().enumerate() {
                 if let Some(text) = context.output_problem(&event.name, &wire.output) {
+                    let wire = Wire::label(&event.wires, wire_index);
                     problems.push(Problem {
                         event: index,
                         object: event.object,
                         command: None,
                         warning: false,
-                        text,
+                        text: format!("the wire `{wire}`: {text}"),
                     });
                 }
             }

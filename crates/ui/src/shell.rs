@@ -446,7 +446,7 @@ pub(crate) fn run_search_row(
 ) {
     match row.target {
         Target::Command(id) => {
-            crate::run_command(world, id);
+            crate::queue_command(world, id);
         }
         Target::Panel(name) => {
             for panel in panels.iter_mut().filter(|panel| panel.name == name) {

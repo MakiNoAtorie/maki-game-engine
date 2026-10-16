@@ -132,9 +132,17 @@ pub(crate) fn build(app: &mut App) {
                     return;
                 }
                 _ => {
-                    ui.weak(
-                        "Select an object with an event: its pages and its commands show here.",
-                    );
+                    // An object with no event: a button adds one.
+                    if let Item::Object(index) = editor.primary() {
+                        if ui.button("Add an event").clicked() {
+                            editor.document.add_event(index);
+                            editor.document.dirty = true;
+                        }
+                    } else {
+                        ui.weak(
+                            "Select an object with an event: its pages and its commands show here.",
+                        );
+                    }
                     return;
                 }
             };
@@ -570,6 +578,8 @@ fn rows(
         }
         let row = row.response;
         if row.clicked() {
+            // The focus stays on a clicked row and draws a mark on it after the selection moves.
+            row.surrender_focus();
             // The room is "nothing selected". Shift adds, as in the picture.
             let add = ui.ctx().input(|input| input.modifiers.shift);
             match &item {

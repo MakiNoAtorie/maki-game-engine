@@ -52,6 +52,16 @@ pub struct Choices {
     pub selected: usize,
 }
 
+/// What started a running event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A page of the event, on its trigger.
+    Page(Trigger),
+    /// An output of the object: its wires. A wire blocks the player as an event that
+    /// the player started.
+    Wire,
+}
+
 /// An event whose commands run.
 #[derive(Debug)]
 pub struct RunningEvent {
@@ -59,7 +69,7 @@ pub struct RunningEvent {
     /// The entity of the object of the event. `None`: a script or a tool started the
     /// commands.
     pub(crate) entity: Option<Entity>,
-    pub trigger: Trigger,
+    pub start: Start,
     /// The command lists that are open: the page, and in it the branch of each `If`
     /// that was taken. With each list, the index of its next command.
     stack: Vec<(Vec<Command>, usize)>,
@@ -70,11 +80,11 @@ pub struct RunningEvent {
 }
 
 impl RunningEvent {
-    pub(crate) fn new(name: &str, trigger: Trigger, commands: &[Command]) -> Self {
+    pub(crate) fn new(name: &str, start: Start, commands: &[Command]) -> Self {
         Self {
             name: name.to_owned(),
             entity: None,
-            trigger,
+            start,
             stack: vec![(commands.to_vec(), 0)],
             waiting: false,
             memory: None,
@@ -188,7 +198,7 @@ impl EventRunner {
     /// True while an event runs that the player started or that runs by itself one
     /// time (all triggers but `Parallel`): the player has no control.
     pub fn blocks_player(&self) -> bool {
-        let blocks = |event: &RunningEvent| event.trigger != Trigger::Parallel;
+        let blocks = |event: &RunningEvent| event.start != Start::Page(Trigger::Parallel);
         self.running.iter().any(blocks)
     }
 
@@ -217,7 +227,7 @@ impl EventRunner {
     /// goes on: one of them asked for the new room.
     pub fn room_changed(&mut self) {
         self.running
-            .retain(|event| event.trigger != Trigger::Parallel);
+            .retain(|event| event.start != Start::Page(Trigger::Parallel));
         self.new_room = true;
     }
 
@@ -280,7 +290,7 @@ impl EventRunner {
             let start = page.is_some_and(|page| {
                 let runs = |trigger| {
                     let same = |running: &RunningEvent| {
-                        running.entity == Some(entity) && running.trigger == trigger
+                        running.entity == Some(entity) && running.start == Start::Page(trigger)
                     };
                     self.running.iter().any(same)
                 };
@@ -306,7 +316,8 @@ impl EventRunner {
                 if page.trigger == Trigger::Interact {
                     interact = false;
                 }
-                let mut running = RunningEvent::new(name, page.trigger, &page.commands);
+                let start = Start::Page(page.trigger);
+                let mut running = RunningEvent::new(name, start, &page.commands);
                 running.entity = Some(entity);
                 self.running.push(running);
             }
@@ -322,16 +333,20 @@ impl EventRunner {
                     && player
                         .zip(area)
                         .is_some_and(|(player, area)| faces(player, area));
-                let used = used && pages.wires.iter().any(|wire| wire.output == "used");
+                let used = used
+                    && pages
+                        .wires
+                        .iter()
+                        .any(|wire| wire.output == TriggerArea::USED);
                 if used {
                     interact = false;
-                    outputs.push("used".to_owned());
+                    outputs.push(TriggerArea::USED.to_owned());
                 }
                 if entered && !blocked {
-                    outputs.push("entered".to_owned());
+                    outputs.push(TriggerArea::ENTERED.to_owned());
                 }
                 if before.0 && !inside {
-                    outputs.push("left".to_owned());
+                    outputs.push(TriggerArea::LEFT.to_owned());
                 }
             }
             signals.retain(|(to, output)| {
@@ -341,6 +356,10 @@ impl EventRunner {
                 }
                 !of_this
             });
+            // As no event runs in a title or a pause, no wire runs: the outputs are dropped.
+            if !playing {
+                outputs.clear();
+            }
             for output in &outputs {
                 // The wires of an output run one after the other, in the order of the
                 // list: one command list.
@@ -350,9 +369,7 @@ impl EventRunner {
                     continue;
                 }
                 tracing::debug!(event = name, output, "wires start");
-                // `Interact`: a wire blocks the player as an event that the player
-                // started.
-                let mut running = RunningEvent::new(name, Trigger::Interact, &commands);
+                let mut running = RunningEvent::new(name, Start::Wire, &commands);
                 running.entity = Some(entity);
                 self.running.push(running);
                 blocked = true;
@@ -383,7 +400,7 @@ pub fn start_event(world: &mut World, name: &str, page: usize) -> bool {
         return false;
     };
     tracing::debug!(event = name, "event starts for a test");
-    let mut running = RunningEvent::new(name, page.trigger, &page.commands);
+    let mut running = RunningEvent::new(name, Start::Page(page.trigger), &page.commands);
     running.entity = Some(entity);
     world.resource_mut::<EventRunner>().running.push(running);
     true

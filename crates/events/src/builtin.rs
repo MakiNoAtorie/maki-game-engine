@@ -11,8 +11,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, RoomRequest, RoomTarget,
-    ScreenFade,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, RoomItem, RoomRequest,
+    RoomTarget, ScreenFade,
 };
 use serde::{Deserialize, Serialize};
 
@@ -206,7 +206,9 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
         Builtin::CallScript(name) => {
             let function = world.resource::<CommandRegistry>().function(name);
             match (function, step.entity) {
-                (Some(function), Some(entity)) => function(&mut ScriptContext { world, entity }),
+                (Some(function), Some(entity)) => {
+                    step.open(ScriptContext::call_function(function, world, entity));
+                }
                 (None, _) => tracing::warn!(event = step.event, name, "no such script function"),
                 (_, None) => tracing::warn!(name, "a script function needs the object of an event"),
             }
@@ -219,23 +221,32 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
 /// that has the component. A name that the game does not have is a warning.
 fn set_field(world: &mut World, [object, component, field]: [&String; 3], value: &Value) {
     let types = world.resource::<ComponentTypes>();
-    let Some(Live { get, set }) = types.get(component).and_then(|found| found.live) else {
+    let live = types
+        .get(component)
+        .and_then(|component_type| component_type.live);
+    let Some(Live { get, set, .. }) = live else {
         tracing::warn!(
             component,
             "SetField: the component has no value in the game"
         );
         return;
     };
-    let mut named = world.query::<(Entity, &Name)>();
-    let entities: Vec<Entity> = named
-        .iter(world)
-        .filter(|(_, name)| name.0 == *object)
-        .map(|(entity, _)| entity)
-        .collect();
-    let found = entities
-        .into_iter()
-        .find_map(|entity| Some((entity, get(world, entity)?)));
-    let Some((entity, mut tree)) = found else {
+    // The entities of the name first: a prefab instance has its item, and names of the prefab.
+    let def = &world.resource::<CurrentRoom>().def;
+    let item = def.object_named(object).map(|(index, _)| index);
+    let mut entities = world.query::<(Entity, Option<&Name>, Option<&RoomItem>)>();
+    let mut named = Vec::new();
+    let mut of_item = Vec::new();
+    for (entity, name, room_item) in entities.iter(world) {
+        if name.is_some_and(|name| name.0 == *object) {
+            named.push(entity);
+        } else if item.is_some() && room_item.map(|room_item| room_item.0) == item {
+            of_item.push(entity);
+        }
+    }
+    let mut candidates = named.into_iter().chain(of_item);
+    let target = candidates.find_map(|entity| Some((entity, get(world, entity)?)));
+    let Some((entity, mut tree)) = target else {
         tracing::warn!(
             object,
             component,
@@ -257,8 +268,9 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
         return;
     }
     *slot = value.clone();
-    if let Err(error) = set(world, entity, tree) {
-        tracing::warn!(object, component, field, "SetField: {error}");
+    match set(world, entity, tree) {
+        Ok(()) => tracing::debug!(object, component, field, %value, "SetField"),
+        Err(error) => tracing::warn!(object, component, field, "SetField: {error}"),
     }
 }
 
@@ -396,15 +408,9 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
             ))),
             None => Some(Finding::warning(format!("no room file `{file}`"))),
         },
-        Builtin::SetField(object, component, ..) => {
-            match room.objects.iter().find(|found| named(&found.name, object)) {
-                None => Some(Finding::error(format!("the room has no object `{object}`"))),
-                Some(found) if !found.components.contains_key(component) => Some(Finding::error(
-                    format!("the object `{object}` has no component `{component}`"),
-                )),
-                Some(_) => None,
-            }
-        }
+        Builtin::SetField(object, component, field, value) => context
+            .field_problem(object, component, field, value)
+            .map(Finding::error),
         Builtin::Signal(object, output) => {
             context.output_problem(object, output).map(Finding::error)
         }

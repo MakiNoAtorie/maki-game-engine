@@ -19,7 +19,7 @@ pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
     ComponentText, ComponentType, ComponentTypes, Live, ObjectDef, add_component_reader,
-    add_component_type, add_object_component,
+    add_component_type, add_live_component_type, add_object_component,
 };
 pub use prefab::{
     PrefabDef, PrefabFile, PrefabUse, change_key, changed_text, difference, instance_objects,
@@ -43,10 +43,10 @@ impl Module for SceneModule {
         // The fields of an object but its components.
         maki_core::add_field_type::<ObjectDef>(app, "object");
         // The types of components of the scene.
-        add_component_type::<Prop>(app, "prop");
-        add_component_type::<LightSource>(app, "light");
+        add_live_component_type::<Prop>(app, "prop", Prop::LIVE);
+        add_live_component_type::<LightSource>(app, "light", LightSource::LIVE);
         add_component_type::<maki_assets::Doorway>(app, "doorway");
-        add_component_type::<DoorLeaf>(app, "door");
+        add_live_component_type::<DoorLeaf>(app, "door", DoorLeaf::LIVE);
         add_component_type::<MoverPath>(app, "mover");
         add_component_type::<PrefabFile>(app, "prefab");
         add_component_type::<SpawnPoint>(app, "spawn");

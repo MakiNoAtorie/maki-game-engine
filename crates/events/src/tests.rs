@@ -823,7 +823,6 @@ fn a_row_sets_a_field_of_a_component_of_an_object() {
     let events = r#"(name: "tune", pages: [(trigger: Autorun, commands: [
         SetField("counter", "counter", "speed", 2.5),
         SetField("counter", "area", "width", 3),
-        SetField("counter", "area", "nothing", 1),
     ])])"#;
     let app = counter_game("set-field", &counter_room(0.0, events));
     app.run(|mut app| {
@@ -832,8 +831,115 @@ fn a_row_sets_a_field_of_a_component_of_an_object() {
         let mut counters = world.try_query::<(&Counter, &TriggerArea)>().unwrap();
         let (counter, area) = counters.single(world).unwrap();
         assert_eq!((counter.speed, area.width, area.depth), (2.5, 3.0, 1.0));
-        // A field that is not there changes nothing, and the event ends. A wrong
-        // object or component is an error of the check: the room does not load.
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn a_row_sets_the_strength_color_and_radius_of_a_light_in_play() {
+    let directory = directory("set-light");
+    let events = r#"(name: "dim", pages: [(trigger: Autorun, commands: [
+        SetField("lamp", "light", "intensity", 2.0),
+        SetField("lamp", "light", "color", (1.0, 0.5, 0.0)),
+        SetField("lamp", "light", "radius", 0.3),
+    ])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    game(&directory).run(|mut app| {
+        steps(&mut app, 3);
+        let mut lights = app.world().try_query::<&Light>().unwrap();
+        let lamp = *lights.single(app.world()).unwrap();
+        let wanted = (2.0, glam::Vec3::new(1.0, 0.5, 0.0), 0.3, true);
+        assert_eq!((lamp.intensity, lamp.color, lamp.radius, lamp.on), wanted);
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn a_row_opens_a_door_and_takes_the_collider_from_a_prop_in_play() {
+    let directory = directory("set-door-prop");
+    let events = r#"(name: "open", pages: [(trigger: Autorun, commands: [
+        SetField("door", "door", "open", true),
+        SetField("door", "door", "seconds", 0.5),
+        SetField("crate", "prop", "collider", false),
+    ])])"#;
+    let text = room(events).replacen(
+        "objects: [",
+        r#"objects: [(name: "crate", pose: (position: (2, 0, 2)), components: {"prop": (mesh: Cube(1.0))}),"#,
+        1,
+    );
+    std::fs::write(directory.join("a.ron"), text).unwrap();
+    game(&directory).run(|mut app| {
+        let crate_collider = |app: &mut App| {
+            let world = app.world();
+            let query = world.try_query::<(&Name, bevy_ecs::query::Has<maki_scene::Collider>)>();
+            let mut props = query.unwrap();
+            let found = props.iter(world).find(|(name, _)| name.0 == "crate");
+            found.unwrap().1
+        };
+        steps(&mut app, 1);
+        assert!(crate_collider(&mut app));
+        steps(&mut app, 2);
+        let mut doors = app.world().try_query::<&maki_scene::Mover>().unwrap();
+        let door = *doors.single(app.world()).unwrap();
+        assert_ne!(door.state, maki_scene::MoverState::AtA);
+        assert_eq!(door.duration, 0.5);
+        assert!(!crate_collider(&mut app));
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn the_check_finds_a_field_that_the_component_does_not_have_and_a_value_of_a_wrong_kind() {
+    let events = r#"(name: "e", pages: [(trigger: Autorun, commands: [
+        SetField("lamp", "light", "intensity", 2),
+        SetField("lamp", "light", "strength", 2.0),
+        SetField("lamp", "light", "intensity", "bright"),
+        SetField("door", "door", "color", (1.0, 0.0, 0.0)),
+    ])])"#;
+    let directory = directory("check-field");
+    let path = directory.join("a.ron");
+    std::fs::write(&path, room(events)).unwrap();
+    let mut app = game(&directory);
+    // The check knows the types of components after the modules are built.
+    app.update();
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let error = maki_scene::check_room(&path, &room(events), validators).unwrap_err();
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("the component `light` has no field `strength`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"bright\" is not a value of the field `light.intensity`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the field `door.color` does not change in the game"),
+        "{text}"
+    );
+    assert_eq!(text.matches("event `e`").count(), 3, "{text}");
+}
+
+#[test]
+fn a_row_sets_a_field_of_a_component_of_the_prefab_of_an_instance() {
+    let directory = directory("set-prefab");
+    let lamp = r#"(objects: [(name: "bulb", pose: (position: (0, 1, 0)), components: {
+        "light": (radius: 0.1, color: (1, 1, 1), intensity: 8.0)})])"#;
+    std::fs::write(directory.join("lamp.ron"), lamp).unwrap();
+    let events = r#"(name: "dim", pages: [(trigger: Autorun, commands: [
+        SetField("standing", "light", "intensity", 3.0)])])"#;
+    let text = room(events).replacen(
+        "objects: [",
+        r#"objects: [(name: "standing", pose: (position: (2, 0, 2)), components: {"prefab": (file: "lamp.ron")}),"#,
+        1,
+    );
+    std::fs::write(directory.join("a.ron"), text).unwrap();
+    // The room loads only if the check finds no problem.
+    game(&directory).run(|mut app| {
+        steps(&mut app, 3);
+        let mut lights = app.world().try_query::<(&Name, &Light)>().unwrap();
+        let bulb = lights.iter(app.world()).find(|(name, _)| name.0 == "bulb");
+        assert_eq!(bulb.unwrap().1.intensity, 3.0);
         assert_eq!(running(&app), 0);
     });
 }
@@ -854,6 +960,30 @@ fn a_row_calls_a_function_of_the_script_crate_with_the_object_of_the_event() {
         steps(&mut app, 3);
         // The context is the object of the event: its name.
         assert_eq!(variable(&app, "caller"), 2);
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn a_called_function_shows_a_message_and_the_next_row_runs_after_it() {
+    fn greet(context: &mut ScriptContext) {
+        context.call(Builtin::SetVariable("order".to_owned(), 1));
+        context.call(Builtin::Message("hello".to_owned()));
+    }
+    let events = r#"(name: "caller", pages: [(trigger: Autorun, commands: [
+        CallScript("greet"), AddVariable("order", 10)])])"#;
+    let mut app = counter_game("call-wait", &counter_room(0.0, events));
+    add_script_function(&mut app, "greet", greet);
+    app.run(|mut app| {
+        let message = |app: &App| app.world().resource::<MessageBox>().0.clone();
+        steps(&mut app, 3);
+        // The pushed commands ran in the step of the call; the next row waits.
+        assert_eq!(message(&app).as_deref(), Some("hello"));
+        assert_eq!(variable(&app, "order"), 1);
+        interact(&mut app);
+        steps(&mut app, 1);
+        assert_eq!(message(&app), None);
+        assert_eq!(variable(&app, "order"), 11);
         assert_eq!(running(&app), 0);
     });
 }
@@ -1020,7 +1150,7 @@ fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
     assert_eq!(
         texts,
         [
-            "the object `button` has no output `pressed`",
+            "the wire `pressed`: the object `button` has no output `pressed`",
             "the object `button` has no output `pushed`",
             "the room has no object `knob`",
         ]
@@ -1054,4 +1184,91 @@ fn a_wire_that_sends_its_own_output_starts_once_in_a_step_and_an_event_goes_firs
         steps(&mut app, 2);
         assert!(flag(&app, "page") && !flag(&app, "wire"));
     });
+}
+
+#[test]
+fn a_signal_and_entered_start_wires_only_in_the_state_play() {
+    let wires = r#"(output: "used", commands: [AddVariable("used", 1)]),
+        (output: "entered", commands: [AddVariable("entered", 1)])"#;
+    let app = counter_game("wires-play-state", &button_room(wires));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        let button = {
+            let world = app.world();
+            let mut objects = world
+                .try_query::<(bevy_ecs::entity::Entity, &Name)>()
+                .unwrap();
+            let found = objects.iter(world).find(|(_, name)| name.0 == "button");
+            found.unwrap().0
+        };
+        // Out of the area, a signal `used`, and into the area: `entered`.
+        let signal_and_enter = |app: &mut App| {
+            place_player(app, [0.0, 0.0, -2.0]);
+            steps(app, 2);
+            let used = (button, TriggerArea::USED.to_owned());
+            app.resource_mut::<Signals>().0.push(used);
+            place_player(app, [0.0, 0.0, 1.4]);
+            steps(app, 3);
+        };
+        for state in [maki_core::PlayState::Cutscene, maki_core::PlayState::Title] {
+            *app.resource_mut::<maki_core::PlayState>() = state;
+            signal_and_enter(&mut app);
+            let counts = (variable(&app, "used"), variable(&app, "entered"));
+            assert_eq!(counts, (0, 0), "{state:?}");
+        }
+        *app.resource_mut::<maki_core::PlayState>() = maki_core::PlayState::Play;
+        signal_and_enter(&mut app);
+        assert_eq!((variable(&app, "used"), variable(&app, "entered")), (1, 1));
+    });
+}
+
+#[test]
+fn a_running_wire_has_the_start_of_a_wire_not_of_a_trigger() {
+    let wires = r#"(output: "used", commands: [Wait(1.0)])"#;
+    let app = counter_game("wire-start", &button_room(wires));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        interact(&mut app);
+        steps(&mut app, 1);
+        let runner = app.world().resource::<EventRunner>();
+        let starts: Vec<Start> = runner.running().iter().map(|event| event.start).collect();
+        assert_eq!(starts, [Start::Wire]);
+        // A wire blocks the player as an event that the player started.
+        assert!(runner.blocks_player());
+    });
+}
+
+#[test]
+fn a_problem_of_a_wire_names_the_wire_as_its_tab_does() {
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    let text = button_room(
+        r#"(output: "used", commands: []),
+        (output: "pressed", commands: []),
+        (output: "pressed", commands: [])"#,
+    );
+    let def = maki_scene::parse_room(&text).unwrap();
+    let context = CheckContext {
+        room: &def,
+        file: "a.ron",
+        directory: std::path::Path::new(""),
+        spawn: &|_, _| None,
+        registry: &registry,
+    };
+    let events = registry.parse_events(&text).unwrap();
+    let problems = registry.check_events(&events, &context);
+    let texts: Vec<&str> = problems
+        .iter()
+        .map(|problem| problem.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "the wire `pressed 1`: the object `button` has no output `pressed`",
+            "the wire `pressed 2`: the object `button` has no output `pressed`",
+        ]
+    );
 }

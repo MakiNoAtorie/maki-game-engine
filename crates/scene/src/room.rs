@@ -35,7 +35,7 @@ use maki_assets::{
 use maki_core::{Fields, Interpolated, Transform};
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ComponentTypes, ObjectDef};
+use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
@@ -80,6 +80,12 @@ pub struct RoomShell {
 }
 
 impl RoomDef {
+    /// The first object of the name, with its index (its `RoomItem`).
+    pub fn object_named(&self, name: &str) -> Option<(usize, &ObjectDef)> {
+        let named = |(_, object): &(usize, &ObjectDef)| object.name.as_deref() == Some(name);
+        self.objects.iter().enumerate().find(named)
+    }
+
     /// The position of the spawn point `name`: of the object of that name with the
     /// component `spawn`.
     pub fn spawn(&self, name: &str) -> Option<[f32; 3]> {
@@ -636,7 +642,94 @@ pub struct LightSource {
     pub sound: Option<SoundDef>,
 }
 
+impl LightSource {
+    /// The live form of the component `light`: the tree of a [`Light`] of the game,
+    /// and a tree written back into it. The sound is another component: it is not a
+    /// live field.
+    pub(crate) const LIVE: Live = Live {
+        fields: Some(&["radius", "color", "intensity", "on", "direction", "cone"]),
+        get: |world, entity| {
+            let light = world.get::<Light>(entity)?;
+            let source = LightSource {
+                radius: light.radius,
+                color: light.color.into(),
+                intensity: light.intensity,
+                on: light.on,
+                direction: Some(light.direction.into()),
+                cone: (light.cone_degrees < 180.0).then_some(light.cone_degrees),
+                sound: None,
+            };
+            Some(source.tree())
+        },
+        set: |world, entity, tree| {
+            let source = maki_core::fields::read::<LightSource>(tree).map_err(|e| e.to_string())?;
+            let mut light = world
+                .get_mut::<Light>(entity)
+                .ok_or("the entity has no light")?;
+            light.set_if_neq(LightDef::from_source(source).light());
+            Ok(())
+        },
+    };
+}
+
+impl DoorLeaf {
+    /// The live form of the component `door`: `seconds`, and `open` (a closed door
+    /// opens). The color is of the mesh: a new one needs work of the renderer.
+    pub(crate) const LIVE: Live = Live {
+        fields: Some(&["seconds", "open"]),
+        get: |world, entity| {
+            world.get::<Door>(entity)?;
+            let mover = world.get::<Mover>(entity)?;
+            let leaf = DoorLeaf {
+                seconds: mover.duration,
+                color: default_door_color(),
+                open: matches!(mover.state, MoverState::AtB | MoverState::ToB(_)),
+            };
+            Some(leaf.tree())
+        },
+        set: |world, entity, tree| {
+            let leaf = maki_core::fields::read::<DoorLeaf>(tree).map_err(|e| e.to_string())?;
+            let mut mover = world
+                .get_mut::<Mover>(entity)
+                .ok_or("the entity has no door")?;
+            let mut new = *mover;
+            new.duration = leaf.seconds;
+            if leaf.open {
+                new.go_to_b();
+            } else {
+                new.go_to_a();
+            }
+            mover.set_if_neq(new);
+            Ok(())
+        },
+    };
+}
+
 impl LightDef {
+    /// A light at the origin with no name, with the values of the component.
+    fn from_source(source: LightSource) -> Self {
+        let LightSource {
+            radius,
+            color,
+            intensity,
+            on,
+            direction,
+            cone,
+            sound,
+        } = source;
+        LightDef {
+            name: None,
+            position: [0.0; 3],
+            radius,
+            color,
+            intensity,
+            on,
+            direction,
+            cone,
+            sound,
+        }
+    }
+
     /// The light as an object with the component `light`.
     pub fn into_object(self) -> ObjectDef {
         let LightDef {
@@ -699,6 +792,52 @@ impl ObjectDef {
         let text = object.components["light"].clone();
         self.components.insert("light".to_owned(), text);
     }
+}
+
+impl Prop {
+    /// The live form of the component `prop`: only `collider`. A new mesh or look needs
+    /// work of the renderer. The entity of a generated mesh: a door or a mover is not one.
+    // ponytail: a file mesh has an entity per mesh; only the first one changes.
+    pub(crate) const LIVE: Live = Live {
+        fields: Some(&["collider"]),
+        get: |world, entity| {
+            let entity = world.get_entity(entity).ok()?;
+            if !entity.contains::<MeshInstance>() || entity.contains::<Mover>() {
+                return None;
+            }
+            let collider = entity.contains::<Collider>();
+            Some(
+                Prop {
+                    collider,
+                    ..Prop::default()
+                }
+                .tree(),
+            )
+        },
+        set: |world, entity, tree| {
+            let prop = maki_core::fields::read::<Prop>(tree).map_err(|e| e.to_string())?;
+            let found = world.get_entity(entity).map_err(|e| e.to_string())?;
+            if found.contains::<Collider>() == prop.collider {
+                return Ok(());
+            }
+            if !prop.collider {
+                world.entity_mut(entity).remove::<Collider>();
+                return Ok(());
+            }
+            let (Some(mesh), Some(transform)) =
+                (found.get::<MeshInstance>(), found.get::<Transform>())
+            else {
+                return Err("the prop has no mesh or no place".to_owned());
+            };
+            let meshes = world.resource::<Assets<Mesh>>();
+            let mesh = meshes
+                .get(mesh.0)
+                .ok_or("the mesh of the prop is not loaded")?;
+            let collider = collider_around(mesh, transform);
+            world.entity_mut(entity).insert(collider);
+            Ok(())
+        },
+    };
 }
 
 /// The component of an object that is a door in the doorway of the same object.
@@ -1756,6 +1895,26 @@ mod tests {
     use crate::SceneModule;
     use crate::object::add_object_component;
     use bevy_ecs::query::Has;
+
+    #[test]
+    fn a_live_form_that_gets_its_own_value_back_writes_nothing() {
+        use bevy_ecs::change_detection::DetectChanges;
+        let mut world = World::new();
+        let blocker = Collider::new(Vec3::ZERO, Vec3::ONE);
+        let lamp = world.spawn(Light::default()).id();
+        let mover = Mover::new(Transform::IDENTITY, Transform::IDENTITY, 1.0);
+        let door = world.spawn((mover, Door { blocker })).id();
+        world.clear_trackers();
+        for live in [LightSource::LIVE, DoorLeaf::LIVE] {
+            for entity in [lamp, door] {
+                if let Some(tree) = (live.get)(&world, entity) {
+                    (live.set)(&mut world, entity, tree).unwrap();
+                }
+            }
+        }
+        assert!(!world.entity(lamp).get_ref::<Light>().unwrap().is_changed());
+        assert!(!world.entity(door).get_ref::<Mover>().unwrap().is_changed());
+    }
 
     /// A room with one of each thing: objects 0 crate, 1 ball, 2 lamp, 3 door, 4
     /// mover, 5 the spawn point "start".

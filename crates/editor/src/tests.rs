@@ -1026,6 +1026,54 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+/// A command of a menu or the command search reads `Panels`, which `run_ui` holds out
+/// of the world during the frame.
+#[test]
+fn a_command_that_reads_the_panels_runs_from_the_palette_and_from_a_menu() {
+    use bevy_ecs::resource::Resource;
+    #[derive(Resource, Default)]
+    struct Seen(u32);
+    /// 1: start from the palette, 2: from a menu. Taken by `drive`.
+    #[derive(Resource, Default)]
+    struct Press(u32);
+    // As a click in the egui frame: `Panels` is out of the world.
+    fn drive(world: &mut World) {
+        let press = std::mem::take(&mut world.resource_mut::<Press>().0);
+        world.resource_scope(|world, mut panels: Mut<Panels>| match press {
+            1 => {
+                let row = panels.search(world, "reads panels").remove(0);
+                panels.run_row(world, &row);
+            }
+            2 => maki_ui::queue_command(world, "test.reads_panels"),
+            _ => {}
+        });
+    }
+    let (mut app, directory) = editor_app("panel_commands");
+    app.init_resource::<Seen>().init_resource::<Press>();
+    app.add_systems(Update, drive.ambiguous_with_all());
+    let read = |world: &mut World| {
+        // Panics if `Panels` is not in the world.
+        assert!(world.resource::<Panels>().is_open(panels::OUTLINER));
+        world.resource_mut::<Seen>().0 += 1;
+    };
+    maki_ui::add_command(
+        &mut app,
+        maki_ui::ToolCommand {
+            menu: "File",
+            ..maki_ui::ToolCommand::new("test.reads_panels", "Reads panels", read)
+        },
+    );
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        for press in [1, 2] {
+            app.resource_mut::<Press>().0 = press;
+            frames(&mut app, 2);
+            assert_eq!(app.world().resource::<Seen>().0, press);
+        }
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
 #[test]
 fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
     let (app, directory) = editor_app("shell");
@@ -1489,4 +1537,77 @@ fn a_general_command_row_has_undo_and_shows_its_problems() {
         );
     });
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn f5_is_the_play_key_of_the_editor_and_the_reload_key_of_the_game() {
+    let (app, directory) = editor_app("f5keys");
+    let keys = |app: &App| {
+        let bindings = &app.world().resource::<maki_platform::Bindings>().0;
+        let on_f5 = |action| {
+            bindings
+                .iter()
+                .any(|b| b.action == action && b.chord == Key::F5.into())
+        };
+        (on_f5(PLAY), on_f5(maki_gameplay::RELOAD_ROOM))
+    };
+    // The game: F5 reloads the room.
+    assert_eq!(keys(&app), (true, true));
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        // The editor: F5 plays and stops only.
+        assert_eq!(keys(&app), (true, false));
+        // The key as a hand presses it: a game starts, and no frame asks for a reload.
+        use maki_platform::RawInput;
+        app.write_message(RawInput::KeyDown(Key::F5));
+        for _ in 0..4 {
+            frames(&mut app, 1);
+            let actions = app.world().resource::<maki_platform::ActionState>();
+            assert!(!actions.pressed(maki_gameplay::RELOAD_ROOM));
+        }
+        app.write_message(RawInput::KeyUp(Key::F5));
+        frames(&mut app, 2);
+        assert!(app.world().resource::<Editor>().playing());
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn add_an_event_to_an_object_with_none_and_undo() {
+    let (app, directory) = editor_app("addevent");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        let editor = app.world().resource::<Editor>();
+        let index = (0..editor.document.room.objects.len())
+            .find(|i| editor.document.event(*i, &editor.registry).is_none())
+            .unwrap();
+        let mut editor = app.resource_mut::<Editor>();
+        editor.document.add_event(index);
+        editor.document.dirty = true;
+        frames(&mut app, 2);
+        let editor = app.world().resource::<Editor>();
+        let event = editor
+            .document
+            .event(index, &editor.registry)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.pages.len(), 1);
+        request(&mut app, Command::Undo);
+        let editor = app.world().resource::<Editor>();
+        assert!(editor.document.event(index, &editor.registry).is_none());
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn two_wires_on_one_output_have_two_tab_labels() {
+    let wire = |output: &str| maki_events::Wire {
+        output: output.to_owned(),
+        commands: Vec::new(),
+    };
+    let wires = [wire("used"), wire("hit"), wire("used")];
+    let label = |i| maki_events::Wire::label(&wires, i);
+    assert_eq!(label(0), "used 1");
+    assert_eq!(label(1), "hit");
+    assert_eq!(label(2), "used 2");
 }
