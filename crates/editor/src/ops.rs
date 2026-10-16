@@ -457,7 +457,8 @@ impl Document {
                 // The text of the event: the commands of a wire need the registry to be
                 // made as values.
                 let door = door.unwrap_or_default();
-                let wire = format!("(wires: [(output: \"used\", commands: [OpenDoor({door:?})])])");
+                let used = TriggerArea::USED;
+                let wire = format!("(wires: [(output: {used:?}, commands: [OpenDoor({door:?})])])");
                 let wire = ComponentText::parse(&wire).expect("the text is RON");
                 object.components.insert("event".to_owned(), wire);
                 let item = Item::Object(room.objects.len());

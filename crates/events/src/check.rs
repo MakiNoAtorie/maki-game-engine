@@ -17,7 +17,7 @@ use maki_scene::{ComponentTypes, RoomCheck, RoomDef, RoomProblem, RoomValidator}
 
 use crate::builtin::Builtin;
 use crate::command::{Command, CommandRegistry, Stop};
-use crate::model::EventDef;
+use crate::model::{EventDef, Wire};
 
 /// What the check of a command knows of the room that the command is in.
 pub struct CheckContext<'a> {
@@ -152,14 +152,15 @@ impl CommandRegistry {
                 });
             }
             // A wire joins an output that a component of its object has.
-            for wire in &event.wires {
+            for (wire_index, wire) in event.wires.iter().enumerate() {
                 if let Some(text) = context.output_problem(&event.name, &wire.output) {
+                    let wire = Wire::label(&event.wires, wire_index);
                     problems.push(Problem {
                         event: index,
                         object: event.object,
                         command: None,
                         warning: false,
-                        text,
+                        text: format!("the wire `{wire}`: {text}"),
                     });
                 }
             }

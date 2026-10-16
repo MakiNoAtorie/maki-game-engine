@@ -53,6 +53,20 @@ pub struct Wire {
     pub commands: Vec<Command>,
 }
 
+impl Wire {
+    /// The name of wire `index` for a person: its output; with the index from 1 too
+    /// if another wire has the same output ("used 1", "used 2").
+    pub fn label(wires: &[Wire], index: usize) -> String {
+        let output = &wires[index].output;
+        let same = |wire: &&Wire| wire.output == *output;
+        if wires.iter().filter(same).count() < 2 {
+            return output.clone();
+        }
+        let nth = wires[..index].iter().filter(same).count();
+        format!("{output} {}", nth + 1)
+    }
+}
+
 /// One event of a room, as the checks and the tools see it: the component `event` of
 /// an object, with the name and the area of the object.
 #[derive(Debug, Clone, PartialEq)]

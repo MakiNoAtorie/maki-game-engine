@@ -87,7 +87,7 @@ pub fn game_state_panel(
             let runner = world.resource::<EventRunner>();
             for event in runner.running() {
                 let command = event.current().map_or(String::new(), |c| format!("{c:?}"));
-                ui.label(format!("{} ({:?}): {command}", event.name, event.trigger));
+                ui.label(format!("{} ({:?}): {command}", event.name, event.start));
             }
             if runner.running().is_empty() {
                 ui.weak("none");
