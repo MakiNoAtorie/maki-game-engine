@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.15 ("Data asset", "Menus"), the slice (item 4: i
 Goal: a module or a script crate registers a type with `#[derive(Fields)]` as a data asset type (as the ScriptableObject of Unity, the Resource of Godot). A file of that type is made, edited in the inspector, read by a script and by an event command, and loads again when it changes. Item kinds are the first data asset type of the engine, with an inventory that events and scripts change.
 Gate: a test in code: a type of a test module is registered; "New data asset" writes its file with the default values and an id file; a change in the inspector writes the file; a script reads the value; a change of the file on the disk gives the new value at the next read. A type of the script crate of `game/` shows in "New data asset" of the editor after a load of the script DLL. An item kind `key`: `GiveItem(key, 1)`, then a door event with the condition `Item(key, AtLeast, 1)` opens; the count stays over a change of room and over a save and a load; an old save with no inventory loads. The game plays as before: the trip run passes, `bench.py gate` shows the same pictures, the GPU time against `s56` is the same.
 
-State: written by the session from the plan and the code at commit `42e6ecc`. Not seen by the owner.
+State: written by the session from the plan and the code at commit `42e6ecc`. Approved by the owner (2026-10-16).
 
 ## Now (the code at stage 56)
 
@@ -31,16 +31,16 @@ State: written by the session from the plan and the code at commit `42e6ecc`. No
 
 ## Tickets
 
-Proposed, not approved.
+Approved by the owner (2026-10-16). GitHub issues #58 to #61.
 
 | Ticket | Blocked by |
 |---|---|
-| A. Data asset types, their files, the store, and the read by a script | none |
-| B. Data assets in the editor: new, open, the inspector, the pick of a reference | A |
-| C. A data asset type of the game in its script crate | B |
-| D. Item kinds and the inventory | A |
+| #58 Data asset types, their files, the store, and the read by a script | none |
+| #59 Data assets in the editor: new, open, the inspector, the pick of a reference | #58 |
+| #61 A data asset type of the game in its script crate | #59 |
+| #60 Item kinds and the inventory | #58 |
 
-B and D can run at the same time after A: B writes the editor crate, D writes `crates/events` and `crates/gameplay`. C after B (its check is the list of "New data asset" after a load of the DLL).
+#59 and #60 can run at the same time after #58: #59 writes the editor crate, #60 writes `crates/events` and `crates/gameplay`. #61 after #59 (its check is the list of "New data asset" after a load of the DLL).
 
 ## Done when
 
@@ -57,5 +57,5 @@ B and D can run at the same time after A: B writes the editor crate, D writes `c
 4. **Symbols**: each data type instantiates the generic read, check, and write. Count after each ticket (`tools/symbol_count.py`; the stage before: 16,629 of 65,535).
 5. **Names**: `DataTypes` is not `FieldTypes`; a data type and a component type of the same name both stay. Two data types of one name: the later replaces the earlier, as `add_field_type` does, with a warning.
 6. **No undo**: a data asset in the inspector writes its file at each change, as a routine does. Undo of an asset file comes with the asset browser, if the owner wants it.
-7. **Two lanes**: B owns `crates/editor`; D adds no editor code (its rows and conditions come from their field tables, its item pick from the group `"item"` of B). D's tests of the pick wait for B.
+7. **Two lanes**: #59 owns `crates/editor`; #60 adds no editor code (its rows and conditions come from their field tables, its item pick from the group `"item"` of #59). The tests of its pick wait for #59.
 8. **Not in this stage**: the asset browser (item 13), text tables (stage 58: `ItemKind.name` becomes a key then), menus as data assets (stage 59: `Menu` is a data asset type there), the values of enemies, the use of an item from a menu (stage 59).
