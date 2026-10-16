@@ -3,7 +3,7 @@
 //! A prefab file is a list of objects around one origin, in the form of a room file
 //! ([`PrefabDef`]). An object of a room with the component `prefab` ([`PrefabFile`])
 //! shows the objects of the file at its own pose. It stores only the values that it
-//! changed: by `object/component`, the changed fields as a tree (2.14). A change of
+//! changed: by `id/component`, the changed fields as a tree (2.14). A change of
 //! the file shows in each instance that did not change that value.
 //!
 //! A change is a tree and not RON text: it is a part of a value, and RON cannot read
@@ -29,8 +29,18 @@ use crate::room::{PoseDef, pose_in, ron_options};
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrefabDef {
+    /// As `RoomDef::next_id`: the ids of a prefab file are of the file.
+    #[serde(default, skip_serializing_if = "crate::room::is_zero")]
+    pub next_id: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDef>,
+}
+
+impl PrefabDef {
+    /// Gives an id of the file to each object with none. True if one had none.
+    pub fn give_ids(&mut self) -> bool {
+        crate::room::give_ids(&mut self.objects, &mut self.next_id)
+    }
 }
 
 /// Reads a prefab file. The error has the file, the line, and the column.
@@ -57,7 +67,7 @@ pub struct PrefabFile {
     /// From the directory of the room file.
     #[field(label = "prefab file", file = "prefab")]
     pub file: FileRef,
-    /// The values that this instance changed: by `object/component` of the file
+    /// The values that this instance changed: by `id/component` of the file
     /// ([`change_key`]), the changed fields as a tree.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[field(skip)]
@@ -154,11 +164,30 @@ impl crate::RoomDef {
 }
 
 /// The key of a component of an object of a prefab file in the changes of an
-/// instance: the name of the object (its index if it has none), and the component.
+/// instance: the id of the object, and the component. A file with no ids (before
+/// stage 55): the name of the object, or its index if it has none.
 pub fn change_key(index: usize, object: &ObjectDef, component: &str) -> String {
-    match &object.name {
-        Some(name) => format!("{name}/{component}"),
-        None => format!("{index}/{component}"),
+    match (object.id, &object.name) {
+        (Some(id), _) => format!("{}/{component}", id.0),
+        (None, Some(name)) => format!("{name}/{component}"),
+        (None, None) => format!("{index}/{component}"),
+    }
+}
+
+/// Moves the changes keyed by the name of an object of the file (an instance from
+/// before the ids of the file) to the key of its id. A key by index stays: it can be
+/// an id too (the migration rewrites it).
+pub fn key_changes_by_id(changes: &mut BTreeMap<String, Value>, prefab: &PrefabDef) {
+    for object in &prefab.objects {
+        let (Some(id), Some(name)) = (object.id, &object.name) else {
+            continue;
+        };
+        for component in object.components.keys() {
+            if let Some(change) = changes.remove(&format!("{name}/{component}")) {
+                let key = format!("{}/{component}", id.0);
+                changes.entry(key).or_insert(change);
+            }
+        }
     }
 }
 
@@ -172,6 +201,8 @@ pub fn instance_objects(
     types: &ComponentTypes,
 ) -> Vec<ObjectDef> {
     let outer = used.pose.transform();
+    let mut changes = used.changes.clone();
+    key_changes_by_id(&mut changes, prefab);
     let mut objects = Vec::new();
     for (index, inner) in prefab.objects.iter().enumerate() {
         if inner.components.contains_key("prefab") {
@@ -180,7 +211,7 @@ pub fn instance_objects(
         }
         let mut object = inner.clone();
         for (name, text) in &mut object.components {
-            let Some(change) = used.changes.get(&change_key(index, inner, name)) else {
+            let Some(change) = changes.get(&change_key(index, inner, name)) else {
                 continue;
             };
             match changed_text(types, name, text, change) {
@@ -268,7 +299,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::object::add_component_type;
+    use crate::object::{ObjectId, add_component_type};
     use crate::room::{LightSource, Prop};
 
     fn types() -> App {
@@ -359,6 +390,48 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((light.intensity, light.radius), (3.0, 0.3));
+    }
+
+    #[test]
+    fn a_change_of_an_instance_stays_after_a_rename_in_the_prefab_file() {
+        let app = types();
+        let types = app.world().resource::<ComponentTypes>();
+        let with_ids = LAMP
+            .replace("(objects: [", "(next_id: 3, objects: [")
+            .replace(r#"(name: "lamp","#, r#"(id: 1, name: "lamp","#)
+            .replace("(pose: (position: (1.0", "(id: 2, pose: (position: (1.0");
+        let prefab: PrefabDef = ron_options().from_str(&with_ids).unwrap();
+        assert_eq!(prefab.next_id, 3);
+        assert_eq!(change_key(0, &prefab.objects[0], "light"), "1/light");
+        let intensity = |prefab: &PrefabDef, changes: &BTreeMap<String, Value>| {
+            let used = PrefabUse {
+                name: None,
+                file: "lamp.prefab".into(),
+                pose: PoseDef::default(),
+                changes: changes.clone(),
+            };
+            let objects = instance_objects(&used, prefab, types);
+            objects[0].light().unwrap().unwrap().intensity
+        };
+        let by_id = BTreeMap::from([("1/light".to_owned(), json!({"intensity": 3.0}))]);
+        // A change keyed by the name, of an instance from before the ids.
+        let by_name = BTreeMap::from([("lamp/light".to_owned(), json!({"intensity": 3.0}))]);
+        assert_eq!(intensity(&prefab, &by_id), 3.0);
+        assert_eq!(intensity(&prefab, &by_name), 3.0);
+
+        let renamed = with_ids.replace(r#"name: "lamp""#, r#"name: "lantern""#);
+        let renamed: PrefabDef = ron_options().from_str(&renamed).unwrap();
+        assert_eq!(intensity(&renamed, &by_id), 3.0);
+    }
+
+    #[test]
+    fn a_prefab_file_gives_ids_that_it_did_not_give_before() {
+        let mut prefab: PrefabDef = ron_options().from_str(LAMP).unwrap();
+        assert!(prefab.give_ids());
+        let ids: Vec<_> = prefab.objects.iter().map(|object| object.id).collect();
+        assert_eq!(ids, [Some(ObjectId(1)), Some(ObjectId(2))]);
+        assert!(prefab_text(&prefab).contains("next_id: 3"));
+        assert!(!prefab.give_ids());
     }
 
     #[test]

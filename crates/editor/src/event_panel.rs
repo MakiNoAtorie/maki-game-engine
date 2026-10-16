@@ -917,10 +917,7 @@ pub(crate) fn event_panel(
     let directory = document.path.parent().unwrap_or(std::path::Path::new(""));
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
     let mut event = document.event(index, &registry)?.ok()?;
-    let name = document.room.objects[index]
-        .name
-        .clone()
-        .unwrap_or_default();
+    let id = document.room.objects[index].id;
     let room = &document.room;
     let mut changed = false;
     if event.pages.is_empty() && event.wires.is_empty() {
@@ -942,7 +939,7 @@ pub(crate) fn event_panel(
     };
     part(egui::Panel::left("event pages")).show(ui, |ui| {
         scroll("pages").show(ui, |ui| {
-            changed |= pages(ui, &mut event.pages, &name, event_ui, &state, &lists, queue);
+            changed |= pages(ui, &mut event.pages, id, event_ui, &state, &lists, queue);
             ui.separator();
             changed |= wires(ui, &mut event, event_ui, &lists);
         });
@@ -984,7 +981,7 @@ const SIDE_WIDTH: f32 = 340.0;
 fn pages(
     ui: &mut Ui,
     pages: &mut Vec<Page>,
-    name: &str,
+    id: Option<ObjectId>,
     event_ui: &mut EventUi,
     state: &GameState,
     lists: &Lists,
@@ -1091,12 +1088,14 @@ fn pages(
         ui.weak("Autorun runs one time when the page gets active (also when the room loads), not again and again as in RPG Maker.");
     }
     ui.separator();
-    if ui
-        .button("Test this page")
-        .on_hover_text("Plays the room and runs this page, one command for each step")
-        .clicked()
+    // The editor gives each object an id: `None` only in a room it did not open.
+    if let Some(id) = id
+        && ui
+            .button("Test this page")
+            .on_hover_text("Plays the room and runs this page, one command for each step")
+            .clicked()
     {
-        queue.push(EditorCommand::Test(name.to_owned(), at));
+        queue.push(EditorCommand::Test(id, at));
     }
     changed
 }

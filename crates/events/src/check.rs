@@ -154,26 +154,34 @@ fn is_transfer(command: &Command) -> bool {
 }
 
 impl CommandRegistry {
-    /// The checks of the events of a room: two events with one name (an error: a
-    /// `Parallel` event is found by its name), and for each command the check of its
-    /// module.
+    /// The checks of the events of a room: two events of one object (an error: the
+    /// save point and a test find an event by the id of its object; by its name in a
+    /// file with no ids), and for each command the check of its module.
     pub fn check_events(&self, events: &[EventDef], context: &CheckContext) -> Vec<Problem> {
         let mut problems = Vec::new();
         for (index, event) in events.iter().enumerate() {
-            if events[..index].iter().any(|other| other.name == event.name) {
+            let twin = events[..index]
+                .iter()
+                .find_map(|other| match (other.id, event.id) {
+                    (Some(a), Some(b)) => (a == b).then(|| format!("the id {}", a.0)),
+                    _ => (other.name == event.name).then(|| format!("the name `{}`", event.name)),
+                });
+            if let Some(key) = twin {
                 problems.push(Problem {
                     event: index,
                     object: event.object,
                     command: None,
                     warning: false,
-                    text: format!("another event has the name `{}`", event.name),
+                    text: format!("another event has {key}"),
                 });
             }
             // A wire joins an output that a component of its object has.
             for (wire_index, wire) in event.wires.iter().enumerate() {
-                if let Some(text) =
-                    context.output_problem(&ObjectRef::from(event.name.as_str()), &wire.output)
-                {
+                // The object of the event by its id; by its name in a file with no ids.
+                let object = event
+                    .id
+                    .map_or_else(|| ObjectRef::from(event.name.as_str()), ObjectRef::Id);
+                if let Some(text) = context.output_problem(&object, &wire.output) {
                     let wire = Wire::label(&event.wires, wire_index);
                     problems.push(Problem {
                         event: index,

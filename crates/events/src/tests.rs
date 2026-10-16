@@ -11,8 +11,8 @@ use bevy_ecs::world::World;
 use maki_core::{App, ConfigFile, FixedUpdate, Interpolated, Startup, Time, Transform};
 use maki_platform::{Key, PlatformModule, RawInput};
 use maki_scene::{
-    CurrentRoom, Light, Mover, MoverState, Name, Player, RoomRequest, RoomTarget, SceneModule,
-    ScreenFade,
+    CurrentRoom, Light, Mover, MoverState, Name, ObjectId, Player, RoomRequest, RoomTarget,
+    SceneModule, ScreenFade,
 };
 
 use super::*;
@@ -414,7 +414,7 @@ fn in_step_mode_each_command_waits_for_its_step_and_a_page_starts_for_a_test() {
     let directory = directory("step");
     // The second page needs a flag that nothing sets, and an interact that no
     // one gives: only a test starts it.
-    let events = r#"(name: "door", pages: [
+    let events = r#"(id: 4, name: "door", pages: [
         (trigger: Interact, commands: [SetFlag("first", true)]),
         (conditions: [Flag("never")], trigger: Interact, commands: [
             SetFlag("a", true), Wait(0.04), SetFlag("b", true), SetFlag("c", true),
@@ -424,14 +424,19 @@ fn in_step_mode_each_command_waits_for_its_step_and_a_page_starts_for_a_test() {
     // A tool starts a page with the world: the pages asked for, and what each start
     // returned.
     #[derive(bevy_ecs::resource::Resource, Default)]
-    struct Starts(Vec<(&'static str, usize)>, Vec<bool>);
+    struct Starts(Vec<(ObjectId, usize)>, Vec<bool>);
     let mut app = game(&directory);
     app.init_resource::<Starts>().add_systems(
         maki_core::Update,
         (|world: &mut World| {
             let asked = std::mem::take(&mut world.resource_mut::<Starts>().0);
-            for (name, page) in asked {
-                let started = start_event(world, name, page);
+            // A new name: the event is of the object, by its id.
+            let mut names = world.query::<&mut Name>();
+            for mut name in names.iter_mut(world).filter(|name| name.0 == "door") {
+                name.0 = "gate".to_owned();
+            }
+            for (id, page) in asked {
+                let started = start_event(world, id, page);
                 world.resource_mut::<Starts>().1.push(started);
             }
         })
@@ -448,7 +453,8 @@ fn in_step_mode_each_command_waits_for_its_step_and_a_page_starts_for_a_test() {
                 .map(|c| format!("{c:?}"))
         };
         app.resource_mut::<EventRunner>().set_step_mode(true);
-        app.resource_mut::<Starts>().0 = vec![("door", 7), ("window", 0), ("door", 1)];
+        let (door, window) = (ObjectId(4), ObjectId(9));
+        app.resource_mut::<Starts>().0 = vec![(door, 7), (window, 0), (door, 1)];
         steps(&mut app, 1);
         assert_eq!(app.world().resource::<Starts>().1, [false, false, true]);
         // No step was asked for: the event waits before its first command.
@@ -598,6 +604,26 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         texts(&|_, spawn| Some(spawn.name() == Some("west"))),
         ["`a.ron` has no spawn point `north`"]
     );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// An event is the event of its object: two events with one id are an error, two
+/// with one name and their own ids are not (a name is not a key).
+#[test]
+fn the_check_finds_two_events_of_one_object_by_id() {
+    let directory = directory("check-ids");
+    let app = game(&directory);
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let path = directory.join("a.ron");
+    let check = |events: &str| maki_scene::check_room(&path, &room(events), validators);
+    let twins = r#"(id: 7, name: "a", pages: []), (id: 7, name: "b", pages: [])"#;
+    let error = check(twins).unwrap_err().to_string();
+    assert!(
+        error.ends_with("event `b`: another event has the id 7"),
+        "{error}"
+    );
+    let named = r#"(id: 7, name: "a", pages: []), (id: 8, name: "a", pages: [])"#;
+    assert!(check(named).is_ok());
     std::fs::remove_dir_all(&directory).unwrap();
 }
 

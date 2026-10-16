@@ -883,6 +883,8 @@ fn instance(
         }
     };
     let mut changes = used.changes.clone();
+    // A change of an instance from before the ids of the file is written by id.
+    maki_scene::key_changes_by_id(&mut changes, &prefab);
     // A reference in a prefab file names an object of that file.
     let objects = crate::widgets::object_names(&prefab.objects);
     for (number, object) in prefab.objects.iter().enumerate() {

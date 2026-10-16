@@ -67,8 +67,8 @@ use maki_platform::{
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
-    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, ObjectRef, Player, RoomDef,
-    RoomOverride, RoomRequest, RoomTarget, load_requested_room, patch_room,
+    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, ObjectId, ObjectRef, Player,
+    RoomDef, RoomOverride, RoomRequest, RoomTarget, load_requested_room, patch_room,
 };
 use maki_ui::{COMMAND_SEARCH, NoticeLevel, Panels, TOGGLE_HELP, ToolCommand, notify};
 use serde::{Deserialize, Serialize};
@@ -198,9 +198,9 @@ pub enum Command {
     SaveAs(PathBuf),
     Play,
     Stop,
-    /// Plays the room in step mode and starts a page of an event (its name, the
-    /// index of the page), whatever its trigger and conditions are.
-    Test(String, usize),
+    /// Plays the room in step mode and starts a page of an event (the id of its
+    /// object, the index of the page), whatever its trigger and conditions are.
+    Test(ObjectId, usize),
     /// A new item, on the floor at the point that the view looks at.
     Add(Kind),
     /// Removes the selected items, or the selected command rows: what had the last
@@ -271,7 +271,7 @@ pub struct Editor {
     /// The other room files beside the open one. `None`: read them again.
     others: Option<Vec<OtherRoom>>,
     /// The page that a test waits to start, when the room of the game is loaded.
-    test: Option<(String, usize)>,
+    test: Option<(ObjectId, usize)>,
     /// The spawn point where the game starts on `Play`. `None`, or one that the room
     /// does not have: the first one ([`play_spawn`]).
     pub play_from: Option<ObjectRef>,
@@ -1525,8 +1525,8 @@ pub fn run_commands(world: &mut World) {
             notify(world, NoticeLevel::Error, error);
         }
         // A test: its page starts when the events of the room are loaded.
-        if let Some((event, page)) = &editor.test
-            && maki_events::start_event(world, event, *page)
+        if let Some((event, page)) = editor.test
+            && maki_events::start_event(world, event, page)
         {
             editor.test = None;
         }

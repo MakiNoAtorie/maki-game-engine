@@ -471,11 +471,13 @@ impl Document {
         let objects = parts
             .iter()
             .map(|item| self.object(item).expect("`parts` has objects"));
-        let prefab = PrefabDef {
+        let mut prefab = PrefabDef {
             objects: objects
                 .map(|object| into_space(object.clone(), &space))
                 .collect(),
+            ..PrefabDef::default()
         };
+        prefab.give_ids();
         let path = self.path.parent().unwrap_or(Path::new("")).join(file);
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))
             .and_then(|()| std::fs::write(&path, prefab_text(&prefab)))

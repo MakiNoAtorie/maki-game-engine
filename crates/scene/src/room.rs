@@ -83,30 +83,40 @@ pub struct RoomShell {
     pub walls: Option<TextureDef>,
 }
 
-fn is_zero(value: &u32) -> bool {
+pub(crate) fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+/// A new id of a list of objects (a room, a prefab file) whose next id is `next_id`.
+pub(crate) fn new_id(objects: &[ObjectDef], next_id: &mut u32) -> ObjectId {
+    let used = objects.iter().filter_map(|object| object.id);
+    let next = used.map(|id| id.0 + 1).fold((*next_id).max(1), u32::max);
+    *next_id = next + 1;
+    ObjectId(next)
+}
+
+/// Gives an id to each object with none, in the order. True if one had none.
+pub(crate) fn give_ids(objects: &mut [ObjectDef], next_id: &mut u32) -> bool {
+    let mut given = false;
+    for index in 0..objects.len() {
+        if objects[index].id.is_none() {
+            objects[index].id = Some(new_id(objects, next_id));
+            given = true;
+        }
+    }
+    given
 }
 
 impl RoomDef {
     /// A new id, not given before in this room.
     pub fn new_id(&mut self) -> ObjectId {
-        let used = self.objects.iter().filter_map(|object| object.id);
-        let next = used.map(|id| id.0 + 1).fold(self.next_id.max(1), u32::max);
-        self.next_id = next + 1;
-        ObjectId(next)
+        new_id(&self.objects, &mut self.next_id)
     }
 
     /// Gives an id to each object with none, in the order of the objects. Returns
     /// true if one had none.
     pub fn give_ids(&mut self) -> bool {
-        let mut given = false;
-        for index in 0..self.objects.len() {
-            if self.objects[index].id.is_none() {
-                self.objects[index].id = Some(self.new_id());
-                given = true;
-            }
-        }
-        given
+        give_ids(&mut self.objects, &mut self.next_id)
     }
 
     /// The first object of the name, with its index (its `RoomItem`).

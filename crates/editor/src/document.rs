@@ -254,6 +254,7 @@ impl Document {
             let event = registry.parse_pages(object.components.get("event")?).ok()?;
             let area = object.component::<TriggerArea>("area").and_then(Result::ok);
             Some(EventDef {
+                id: object.id,
                 name: object.name.clone().unwrap_or_default(),
                 object: index,
                 area: area.map(|area| EventDef::area_at(&area, object.pose.position)),

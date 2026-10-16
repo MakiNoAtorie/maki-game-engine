@@ -517,7 +517,7 @@ fn a_test_of_a_page_plays_the_room_in_step_mode_and_stop_ends_it() {
     let (app, directory) = editor_app("test-run");
     app.run(|mut app| {
         frames(&mut app, 2);
-        request(&mut app, Command::Test("leave".to_owned(), 0));
+        request(&mut app, Command::Test(maki_scene::ObjectId(4), 0));
         frames(&mut app, 10);
         // The game runs, and each event waits before its first command.
         let world = app.world();
@@ -935,7 +935,7 @@ fn a_click_on_a_model_from_a_file_selects_its_prop() {
 
 #[test]
 fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
-    use maki_scene::{PoseDef, RoomItem, read_prefab};
+    use maki_scene::{ObjectId, PoseDef, RoomItem, read_prefab};
 
     let (app, directory) = editor_app("prefab");
     app.run(|mut app| {
@@ -982,6 +982,14 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
             objects.iter().map(|object| object.pose.position).collect()
         };
         assert_eq!(places(&file), [[0.0, 0.5, 0.0], [1.0, 0.5, 0.0]]);
+        // The objects of the file have ids of the file.
+        let ids = read_prefab(&file)
+            .unwrap()
+            .objects
+            .iter()
+            .map(|o| o.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [Some(ObjectId(1)), Some(ObjectId(2))]);
         // The world shows the two cubes, and a click on one selects the prefab.
         frames(&mut app, 2);
         let world = app.world();

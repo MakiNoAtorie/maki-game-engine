@@ -512,12 +512,12 @@ mod tests {
         std::fs::write(directory.join("b.ron"), other).unwrap();
         std::fs::write(directory.join("notes.ron"), "not a room").unwrap();
         let events = r#"
-            (name: "door", pages: [
+            (id: 5, name: "door", pages: [
                 (trigger: Interact, commands: [If([Flag("power_off"), Variable("tries", Less, 3)], [OpenDoor("door")], [LightOff("lamp")])]),
                 (conditions: [Flag("power_off"), Variable("presses", AtLeast, 2)], trigger: Autorun,
                     commands: [Transfer("b.ron", "west")]),
             ]),
-            (name: "door", pages: [
+            (id: 5, name: "door", pages: [
                 (trigger: Touch, commands: [LightOn("lamb"), If([Flag("x")], [CloseDoor("gate")], []), Transfer("b.ron", "east")]),
                 (trigger: Touch, commands: [Transfer("c.ron", "west")]),
                 (trigger: Touch, commands: [Transfer("a.ron", "start")]),
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(
             found,
             [
-                (1, false, "another event has the name `door`"),
+                (1, false, "another event has the id 5"),
                 (1, false, "the room has no light `lamb`"),
                 (1, false, "the room has no door or mover `gate`"),
                 (1, true, "`b.ron` has no spawn point `east`"),
