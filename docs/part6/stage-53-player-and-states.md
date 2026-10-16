@@ -3,7 +3,7 @@
 Plan: [README.md](README.md), 2.1, 2.14, items 4 and 5 of 3.2. Report: `docs/part6/stage-53.md`. Needs: stage 49 (the player is a prefab), stage 50 (scripts, commands as functions).
 
 Goal: the thing in the world, what controls it, and the rules of the game are three things, as the pawn, the player controller, and the game mode of Unreal, in a small form. The game has the states title, play, pause, cutscene, and end, and changes between them; rows and scripts change the state.
-Gate: a row and a script move the control to another object and change the state of the game; pause stops the simulation; play and stop of the editor still work. The game plays as before: the trip run passes, the benchmark against `s52` shows the same pictures.
+Gate: a row and a script move the control to another object and change the state of the game; pause stops the simulation; play and stop of the editor still work. The game plays as before: the trip run passes, the benchmark against `s51` shows the same pictures (stage 53 was merged before stage 52: a parallel lane).
 
 State: written by the session from 2.1, 2.14, items 4 and 5 of 3.2, and issues #15 and #16. Not seen by the owner.
 
@@ -45,7 +45,7 @@ State: written by the session from 2.1, 2.14, items 4 and 5 of 3.2, and issues #
 
 - The gate.
 - Tests: the change table of the states; no fixed step in pause, and the steps again after; a row (the text of a command) and a script change the state and refuse a change that is not in the table; the control moves to another object, the object walks with the move actions, the pawn before stands, and `ResetPlay` gives the control back; the pawn does not move in a cutscene or while an event blocks it; `ResetPlay` sets the start state.
-- Tests and clippy, static and dynamic; a validation run; the trip run; the benchmark against `s52`; the symbol count of the engine DLL.
+- Tests and clippy, static and dynamic; a validation run; the trip run; the benchmark against `s51`; the symbol count of the engine DLL.
 
 ## What to watch for
 
@@ -53,4 +53,4 @@ State: written by the session from 2.1, 2.14, items 4 and 5 of 3.2, and issues #
 2. **A pawn that a room removes**: the control goes back to `home` before `place_player`, or no player is placed.
 3. **Pause in the editor**: `Time::paused` is of the editor, the pause state is of the game; stop leaves no pause behind.
 4. **The order in `FixedUpdate`**: the rule of the control runs after `run_events` and before `steer_player`.
-5. **The interact of the events in a cutscene**: the interpreter is in `crates/events`, which another lane changes in stages 51 and 52; it does not read the state yet.
+5. **The interact of the events in a cutscene**: the interpreter is in `crates/events`, which another lane changed in stage 51; after the merge it reads the state: interact starts nothing outside play.
