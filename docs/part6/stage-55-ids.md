@@ -28,7 +28,7 @@ State: written by the session from the plan and the code at commit `1590424`. No
 - **The entity** of an object gets the component `ObjectId` beside `Name`.
 - **The parent** is an `ObjectId`.
 - **The commands** name objects by `ObjectId`: each command of the list in "Now". `Transfer(room, spawn)` names the spawn by id. The systems find the entity by `ObjectId`. The rename code of the editor (`Document::renamed`, its `rename_in_events`) goes: a rename changes the name only. The editor keeps names unique in a room, as now, so that a pick by name is clear; a name is not a key.
-- **The field kind** `Kind::Object` in `maki_core::fields`: a field that names an object of the room. The inspector and the argument column of the event panel show the names in a pick and store the id; an id with no object shows as "missing (id 7)", in red. The pick of objects of the event panel (`Picked::Name`, `crates/editor/src/event_panel.rs:263`) picks ids. A command of a script crate gets the kind from its field type, with no code of the editor.
+- **The field kind** `Kind::Object` in `maki_core::fields`: a field that names an object of the room. The inspector and the argument column of the event panel show the names in a pick and store the id; an id with no object shows as "missing (id 7)", in red. The pick of objects of the event panel (`Picked::Name`, `crates/editor/src/event_panel.rs:263`) picks ids. A command of a script crate gets the kind from its field type, with no code of the editor. This is new work: today the argument column has hand-written widgets for the commands of the engine, a module gives a closure (`add_argument_editor`), and a command of a script crate with none has a text field. A command enum with `#[derive(Fields)]` gets an argument editor from its field table.
 - **Events** are named by the id of their object: `EventDef` gets the id; the check, the save point, and `start_event` use it. The log and the panels show the name.
 - **The objects of a prefab file** have ids of the file (`next_id` in the prefab file). The key of a change of an instance is `id/component` (`change_key`). A command names a room object; on a prefab instance it reaches the object of the instance that has the component, as a name does now.
 - **A script** finds an object by id (`ScriptContext::object_mut(ObjectId)`) and by name (`named_mut`, as now). A script that names an object of a room by id reads it from a field of its component (`Kind::Object`), not from a number in its code.
@@ -43,6 +43,21 @@ State: written by the session from the plan and the code at commit `1590424`. No
 - **The resolve**, in `maki_assets`, before a store loads: the path, if its file is there and has the id. Else the first look for an id builds a table of the id files of the asset folder (one walk, then kept; the watch keeps it right in the editor), and the path of the id is used; the log has a warning with the old and the new path. Neither: the error of a missing file, as now, with the id. The stores and the handles do not change: they get a path.
 - **The editor corrects the path**: a document whose reference resolves by id gets the new path, and the room is marked as changed. No file operation comes in this stage: the move and the new name in the editor are the asset browser (2.11, part A), which uses this.
 - **The migration**: an id file for each asset of `game/assets`, and each reference of the rooms, the prefab, and `project.toml` gets its id.
+
+## Tickets
+
+The object references go in three steps (expand, move, contract): #42 reads an id or a name, #43 to #45 move the editor and the scripts to ids, #47 migrates the content and removes the name form.
+
+| Ticket | Blocked by |
+|---|---|
+| #40 Each object of a room has an id | none |
+| #41 Files with an id, and the resolve in the game | none |
+| #42 Commands, the parent, and the spawn point name objects by id (expand) | #40 |
+| #43 The editor shows names and stores ids | #42 |
+| #44 Events and prefab changes keyed by id (merge after #42) | #40 |
+| #45 Scripts name objects by id | #43 |
+| #46 The editor writes id files and corrects paths | #41 |
+| #47 Migrate the content and remove the name form (contract) | #42, #43, #44, #45, #46 |
 
 ## Done when
 
