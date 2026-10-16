@@ -27,7 +27,7 @@ use std::sync::{Arc, RwLock};
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
-use maki_scene::RoomDef;
+use maki_scene::{ComponentText, RoomDef};
 use serde::de::value::EnumAccessDeserializer;
 use serde::de::{
     DeserializeOwned, DeserializeSeed, EnumAccess, Error as _, IntoDeserializer, VariantAccess,
@@ -36,7 +36,7 @@ use serde::de::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::check::{CheckContext, Finding};
-use crate::model::{EventDef, RoomFile};
+use crate::model::{EventDef, EventPages, RoomFile};
 
 /// An enum of commands. Each type with these traits is one: derive them.
 pub trait CommandSet:
@@ -428,7 +428,15 @@ impl CommandRegistry {
     /// The events in the text of a room file. The error has the line and the column,
     /// also for a command that no module added and for a bad argument.
     pub fn parse_events(&self, text: &str) -> Result<Vec<EventDef>, ron::error::SpannedError> {
-        Ok(self.parse::<RoomFile>(text, None)?.events)
+        Ok(self.parse::<RoomFile>(text, None)?.events())
+    }
+
+    /// The pages of the text of a component `event`.
+    pub fn parse_pages(
+        &self,
+        text: &ComponentText,
+    ) -> Result<EventPages, ron::error::SpannedError> {
+        self.parse(text.as_str(), None)
     }
 
     fn parse<T: DeserializeOwned>(
@@ -484,9 +492,8 @@ struct Parsing {
 
 const STOPPED: &str = "the read stops here";
 
-/// Reads the name of an event (`EventDef::name`), and counts the event.
-pub(crate) fn event_name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let name = String::deserialize(deserializer)?;
+/// Counts an event: the reader is at the component `event` of an object.
+pub(crate) fn event_starts<E: serde::de::Error>() -> Result<(), E> {
     let stop = PARSING.with_borrow_mut(|parsing| {
         parsing.as_mut().is_some_and(|parsing| {
             parsing.events += 1;
@@ -494,9 +501,9 @@ pub(crate) fn event_name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<S
         })
     });
     if stop {
-        return Err(D::Error::custom(STOPPED));
+        return Err(E::custom(STOPPED));
     }
-    Ok(name)
+    Ok(())
 }
 
 thread_local! {

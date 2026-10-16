@@ -301,7 +301,7 @@ fn marks(
             under
         }
     };
-    let (room, events) = (&editor.document.room, &editor.document.events);
+    let room = &editor.document.room;
     let (half_width, half_depth) = (room.width / 2.0, room.depth / 2.0);
 
     // The floor grid: one line for each meter, from the center of the room.
@@ -321,10 +321,13 @@ fn marks(
         );
     }
 
-    for (index, event) in events.iter().enumerate() {
-        let (Some(area), item) = (event.area, Item::Event(index)) else {
+    // The areas of the objects: of their events and their scripts.
+    for index in 0..room.objects.len() {
+        let item = Item::Object(index);
+        let Some(area) = editor.document.area(&item) else {
             continue;
         };
+        let name = room.objects[index].name.as_deref().unwrap_or("");
         let corner = |x: f32, z: f32| {
             let [center_x, center_z] = area.center;
             Vec3::new(
@@ -342,7 +345,7 @@ fn marks(
         ];
         let pen = pen_of(&item);
         pen.path(&corners.map(|(x, z)| corner(x, z)), stroke(&item, AREA));
-        pen.text(corner(-1.0, -1.0), &event.name, AREA);
+        pen.text(corner(-1.0, -1.0), name, AREA);
     }
 
     let objects = room.objects.iter().enumerate();

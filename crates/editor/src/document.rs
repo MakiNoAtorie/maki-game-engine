@@ -1,5 +1,5 @@
 //! The document: the room that the editor has open. It is the content of one room
-//! file: the room, its events, and its comments. The panels change the document, the
+//! file: the room (its objects, and their events), and its comments. The panels change the document, the
 //! world is built from it, and a save writes it. The world is never written back.
 
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use glam::{Quat, Vec3};
 use maki_assets::Doorway;
 use maki_core::Fields;
 use maki_core::fields::{Value, read};
-use maki_events::{Area, CommandRegistry, EventDef};
+use maki_events::{Area, CommandRegistry, EventDef, EventPages, TriggerArea};
 use maki_scene::{
     ComponentTypes, LightDef, MoverDef, ObjectDef, PoseDef, PrefabUse, RoomDef, RoomValidators,
     check_room, ron_options,
@@ -25,15 +25,12 @@ pub enum Item {
     Room,
     /// An object of the list `objects`.
     Object(usize),
-    Event(usize),
 }
 
 /// The part of an item that tells where it is: what a gizmo changes.
 pub enum Place<'a> {
     /// The pose of an object. The second pose of a mover: [`Document::with_mover_b`].
     Pose(&'a mut PoseDef),
-    /// The rectangle of an event on the floor.
-    Area(&'a mut Area),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,8 +38,6 @@ pub struct Document {
     /// The room file. It need not exist: a new room has a path and no file.
     pub path: PathBuf,
     pub room: RoomDef,
-    /// `RoomDef` does not hold them: the events crate reads them from the same file.
-    pub events: Vec<EventDef>,
     /// The comments of the file.
     pub notes: Notes,
     /// True: the document is not what the file holds.
@@ -84,7 +79,6 @@ impl Document {
                 ],
                 ..RoomDef::default()
             },
-            events: Vec::new(),
             notes: Notes::default(),
             dirty: true,
         }
@@ -103,13 +97,13 @@ impl Document {
     // shows what those checks find (`problems`).
     pub fn parse(path: &Path, text: &str, registry: &CommandRegistry) -> Result<Self> {
         let room = check_room(path, text, &RoomValidators::default())?;
-        let events = registry
+        // The events read, with the line of a command that no module added.
+        registry
             .parse_events(text)
             .map_err(|error| anyhow!("{}:{error}", path.display()))?;
         Ok(Self {
             path: path.to_owned(),
             room,
-            events,
             notes: read_notes(text),
             dirty: false,
         })
@@ -120,13 +114,7 @@ impl Document {
         let write = |result: Result<String, _>| -> String {
             result.expect("a room has no value that RON cannot write")
         };
-        let mut compact = write(ron_options().to_string(&self.room));
-        if !self.events.is_empty() {
-            // `RoomDef` does not write its `events` field: it goes in as the last one.
-            let events = write(ron_options().to_string(&self.events));
-            compact.pop();
-            compact.push_str(&format!(",events:{events})"));
-        }
+        let compact = write(ron_options().to_string(&self.room));
         pretty(&compact, &self.notes)
     }
 
@@ -139,15 +127,13 @@ impl Document {
     }
 
     /// The fields of an item as a tree, and the name of its type for the table of
-    /// its fields (`maki_core::FieldTypes`). `None`: the document has no such item,
-    /// or the item has rows of its own (an event).
+    /// its fields (`maki_core::FieldTypes`). `None`: the document has no such item.
     pub fn tree(&self, item: &Item) -> Option<(&'static str, Value)> {
         let room = &self.room;
         Some(match item {
             Item::Room => ("room", room.shell().tree()),
             // Its name, pose, and parent. `component_tree` gives each component.
             Item::Object(index) => ("object", room.objects.get(*index)?.tree()),
-            Item::Event(_) => return None,
         })
     }
 
@@ -169,7 +155,6 @@ impl Document {
                 let new = new?;
                 (object.name, object.pose, object.parent) = (new.name, new.pose, new.parent);
             }
-            Item::Event(_) => return Err(anyhow!("the item has no tree")),
         }
         Ok(())
     }
@@ -213,6 +198,64 @@ impl Document {
             .context("the object has no such component")?;
         *slot = (component_type.text)(slot, tree).map_err(|error| anyhow!(error))?;
         Ok(())
+    }
+
+    /// The pages of the event of object `index` (its component `event`). `None`: the
+    /// object has no event. `Err`: the text does not read (a command that no module
+    /// added).
+    pub fn event(
+        &self,
+        index: usize,
+        registry: &CommandRegistry,
+    ) -> Option<Result<EventPages, String>> {
+        let text = self.room.objects.get(index)?.components.get("event")?;
+        Some(
+            registry
+                .parse_pages(text)
+                .map_err(|error| error.to_string()),
+        )
+    }
+
+    /// Writes the pages of the event of object `index`.
+    pub fn set_event(&mut self, index: usize, pages: &EventPages) {
+        if let Some(object) = self.room.objects.get_mut(index) {
+            object.set_component("event", pages);
+        }
+    }
+
+    /// The events of the room, in the order of the objects: for the checks and the
+    /// pickers. An event whose text does not read is left out.
+    pub fn events(&self, registry: &CommandRegistry) -> Vec<EventDef> {
+        let objects = self.room.objects.iter().enumerate();
+        let event = |(index, object): (usize, &ObjectDef)| {
+            let pages = registry.parse_pages(object.components.get("event")?).ok()?;
+            let area = object.component::<TriggerArea>("area").and_then(Result::ok);
+            Some(EventDef {
+                name: object.name.clone().unwrap_or_default(),
+                object: index,
+                area: area.map(|area| EventDef::area_at(&area, object.pose.position)),
+                pages: pages.pages,
+            })
+        };
+        objects.filter_map(event).collect()
+    }
+
+    /// The area of an item on the floor: an object with the component `area`, for its
+    /// event and its scripts.
+    pub fn area(&self, item: &Item) -> Option<Area> {
+        let object = self.object(item)?;
+        let area = object.component::<TriggerArea>("area")?.ok()?;
+        Some(EventDef::area_at(&area, object.pose.position))
+    }
+
+    /// Writes the area of an item that [`Document::area`] gave: its center is the
+    /// position of the object.
+    pub fn set_area(&mut self, item: &Item, area: Area) {
+        if let Some(object) = self.object_mut(item) {
+            [object.pose.position[0], object.pose.position[2]] = area.center;
+            let [width, depth] = area.size;
+            object.set_component("area", &TriggerArea { width, depth });
+        }
     }
 
     /// The object of an item. `None`: not an object, or not in the room.
@@ -285,16 +328,12 @@ impl Document {
                 .get_mut(*index)
                 .filter(|object| !object.components.contains_key("doorway"))
                 .map(|object| Place::Pose(&mut object.pose)),
-            Item::Event(index) => {
-                let event = self.events.get_mut(*index)?;
-                event.area.as_mut().map(Place::Area)
-            }
             Item::Room => None,
         }
     }
 
     /// The origin and the rotation of an item. `second`: for a mover, its pose `b`.
-    /// `None` as for [`Document::place`], and for an event with no area.
+    /// `None` as for [`Document::place`].
     pub fn pose_of(&self, item: &Item, second: bool) -> Option<(Vec3, Quat)> {
         let of_pose = |pose: &PoseDef| (Vec3::from(pose.position), pose.transform().rotation);
         match item {
@@ -309,10 +348,6 @@ impl Document {
                     _ => Some(of_pose(&object.pose)),
                 }
             }
-            Item::Event(index) => {
-                let [x, z] = self.events.get(*index)?.area?.center;
-                Some((Vec3::new(x, 0.0, z), Quat::IDENTITY))
-            }
             Item::Room => None,
         }
     }
@@ -323,7 +358,6 @@ impl Document {
         Some(match item {
             Item::Room => return None,
             Item::Object(index) => ("objects", *index),
-            Item::Event(index) => ("events", *index),
         })
     }
 
@@ -372,7 +406,10 @@ mod tests {
             "{text}"
         );
         assert_eq!(maki_scene::parse_room(&text).unwrap(), document.room);
-        assert_eq!(registry.parse_events(&text).unwrap(), document.events);
+        assert_eq!(
+            registry.parse_events(&text).unwrap(),
+            document.events(&registry)
+        );
         assert_eq!(read_notes(&text), document.notes);
     }
 }

@@ -322,7 +322,7 @@ pub fn file_name(document: &Document) -> String {
 /// The names that the open room and the other rooms use.
 pub fn names(document: &Document, others: &[OtherRoom], registry: &CommandRegistry) -> Names {
     let mut names = Names::default();
-    names.add(&file_name(document), &document.events, registry);
+    names.add(&file_name(document), &document.events(registry), registry);
     for room in others {
         names.add(&room.file, &room.events, registry);
     }
@@ -347,7 +347,7 @@ pub fn problems(
         directory: document.path.parent().unwrap_or(Path::new("")),
         spawn: &spawn,
     };
-    registry.check_events(&document.events, &context)
+    registry.check_events(&document.events(registry), &context)
 }
 
 #[cfg(test)]
@@ -369,8 +369,9 @@ mod tests {
                     (name: "door", components: {{"door": (), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
                     (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {{"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)}}),
                     (name: "start", components: {{"spawn": ()}}),
-                ],
-                events: [{events}])"#
+                    {},
+                ])"#,
+            maki_events::short_events(events)
         );
         Document::parse(Path::new(name), &text, registry).unwrap()
     }
@@ -391,7 +392,9 @@ mod tests {
             FadeIn(0.5),
         ])])"#;
         let mut document = document(&registry, "a.ron", event);
-        let commands = &mut document.events[0].pages[0].commands;
+        // The event is on object 3, after the door, the lamp, and the spawn point.
+        let mut event = document.event(3, &registry).unwrap().unwrap();
+        let commands = &mut event.pages[0].commands;
         let texts = |commands: &[Command]| texts(commands, &registry);
         assert_eq!(
             texts(commands),
@@ -487,11 +490,14 @@ mod tests {
             ]
         );
         // What was changed is written and read as the same commands.
+        document.set_event(3, &event);
         let text = document.text();
         assert!(
             text.contains(r#"Choice("Open it?", [("Yes", []), ("No", [Message("Then not.")])])"#)
         );
-        assert_eq!(registry.parse_events(&text).unwrap(), document.events);
+        let events = registry.parse_events(&text).unwrap();
+        assert_eq!(events, document.events(&registry));
+        assert_eq!(events[0].pages, event.pages);
     }
 
     #[test]
@@ -499,8 +505,8 @@ mod tests {
         let registry = registry();
         let directory = std::env::temp_dir().join(format!("maki-names-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let other = r#"(width: 4, depth: 4, height: 3, objects: [(name: "west", components: {"spawn": ()})], events: [
-            (name: "switch", pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])]),
+        let other = r#"(width: 4, depth: 4, height: 3, objects: [(name: "west", components: {"spawn": ()}),
+            (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])])}),
         ])"#;
         std::fs::write(directory.join("b.ron"), other).unwrap();
         std::fs::write(directory.join("notes.ron"), "not a room").unwrap();

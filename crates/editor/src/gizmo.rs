@@ -18,7 +18,6 @@
 //! one step.
 
 use glam::{EulerRot, Quat, Vec3};
-use maki_events::EventDef;
 use maki_scene::{PoseDef, RoomDef};
 
 use crate::document::Place;
@@ -84,21 +83,15 @@ impl Extra {
             let top = |along_wall: f32| start + along * along_wall + Vec3::Y * doorway.height;
             return Self::Corners([top(from), top(to), Vec3::ZERO, Vec3::ZERO], 2);
         }
-        match item {
-            Item::Event(index) => {
-                let area = document.events.get(*index).and_then(|event| event.area);
-                let Some(area) = area else {
-                    return Self::None;
-                };
-                let corner = |[x, z]: [f32; 2]| {
-                    let [center_x, center_z] = area.center;
-                    let (half_x, half_z) = (area.size[0] / 2.0, area.size[1] / 2.0);
-                    Vec3::new(center_x + x * half_x, 0.0, center_z + z * half_z)
-                };
-                Self::Corners(AREA_CORNERS.map(corner), 4)
-            }
-            _ => Self::None,
-        }
+        let Some(area) = document.area(item) else {
+            return Self::None;
+        };
+        let corner = |[x, z]: [f32; 2]| {
+            let [center_x, center_z] = area.center;
+            let (half_x, half_z) = (area.size[0] / 2.0, area.size[1] / 2.0);
+            Vec3::new(center_x + x * half_x, 0.0, center_z + z * half_z)
+        };
+        Self::Corners(AREA_CORNERS.map(corner), 4)
     }
 }
 
@@ -268,7 +261,7 @@ pub struct Drag {
     grab: f32,
     grab_point: Vec3,
     /// The room and the events when the drag started.
-    start: (RoomDef, Vec<EventDef>),
+    start: RoomDef,
 }
 
 impl Drag {
@@ -295,13 +288,13 @@ impl Drag {
             local,
             grab,
             grab_point: floor_point(&ray, gizmo.origin),
-            start: (document.room.clone(), document.events.clone()),
+            start: document.room.clone(),
         }
     }
 
     /// Ends the drag with no change: the document gets the values of its start.
     pub fn cancel(self, document: &mut Document) {
-        (document.room, document.events) = self.start;
+        document.room = self.start;
     }
 
     /// Makes the document from the start of the drag and the place of the pointer
@@ -321,8 +314,7 @@ impl Drag {
             origin, axes, tool, ..
         } = self.gizmo;
         let ray = view.ray(pixel);
-        document.room.clone_from(&self.start.0);
-        document.events.clone_from(&self.start.1);
+        document.room.clone_from(&self.start);
         document.dirty = true;
         // Tenths of a millimeter: no 2.4999998 in a room file.
         let round = |value: f32| (value * 1e4).round() / 1e4;
@@ -346,10 +338,9 @@ impl Drag {
                 }
             }
             (_, Handle::Corner(corner)) => match selection.last() {
-                Some(Item::Event(index)) => {
-                    let area = document.events.get_mut(*index);
-                    let area = area.and_then(|event| event.area.as_mut());
-                    let (Some(area), Some((floor, _))) = (area, ray.height(0.0)) else {
+                Some(item) if document.area(item).is_some() => {
+                    let area = document.area(item);
+                    let (Some(mut area), Some((floor, _))) = (area, ray.height(0.0)) else {
                         return;
                     };
                     let to = [snap(floor.x, grid), snap(floor.z, grid)];
@@ -360,6 +351,7 @@ impl Drag {
                         area.center[axis] = round((fixed + to[axis]) / 2.0);
                         area.size[axis] = round((to[axis] - fixed).abs().max(SMALLEST));
                     }
+                    document.set_area(item, area);
                 }
                 Some(item @ Item::Object(_)) => {
                     let room = &document.room;
@@ -423,12 +415,6 @@ impl Drag {
                     }
                     match document.place(item) {
                         Some(Place::Pose(pose)) => moved_point(&mut pose.position),
-                        Some(Place::Area(area)) => {
-                            area.center = [
-                                moved(area.center[0], offset.x),
-                                moved(area.center[1], offset.z),
-                            ];
-                        }
                         None => {}
                     }
                 }
@@ -468,8 +454,7 @@ impl Drag {
                     }
                     match document.place(item) {
                         Some(Place::Pose(pose)) => turned(pose),
-                        // An area has no turn: its sides are along X and Z.
-                        Some(Place::Area(_)) | None => {}
+                        None => {}
                     }
                 }
             }
@@ -648,28 +633,27 @@ mod tests {
     #[test]
     fn a_drag_of_a_corner_sizes_an_event_area_and_a_doorway() {
         use maki_assets::{Doorway, Wall};
-        use maki_events::{Area, EventDef};
+        use maki_events::Area;
 
         let (view, mut document, _) = scene();
-        document.events.push(EventDef {
-            name: "area".to_owned(),
-            area: Some(Area {
-                center: [1.0, 1.0],
-                size: [2.0, 1.0],
-            }),
-            pages: Vec::new(),
-        });
+        // An object with an area of 2 x 1 m at (1, 0, 1).
+        let item = Item::Object(document.room.objects.len());
+        document.room.objects.push(maki_scene::ObjectDef::default());
+        let area = Area {
+            center: [1.0, 1.0],
+            size: [2.0, 1.0],
+        };
+        document.set_area(&item, area);
         // Corner 2 is at (2, 1.5). To (3.1, 2.6): on the grid that is (3, 2.5).
-        let item = Item::Event(0);
         let to = Vec3::new(3.1, 0.0, 2.6);
         let sized = drag_point(document.clone(), item.clone(), Handle::Corner(2), to);
         // The corner across, at (0, 0.5), did not move.
-        let area = sized.events[0].area.unwrap();
+        let area = sized.area(&item).unwrap();
         assert_eq!((area.center, area.size), ([1.5, 1.5], [3.0, 2.0]));
         // Past the corner across: the area does not turn inside out or go away.
         let to = Vec3::new(0.0, 0.0, 0.5);
-        let small = drag_point(document.clone(), item, Handle::Corner(2), to);
-        assert_eq!(small.events[0].area.unwrap().size, [0.1, 0.1]);
+        let small = drag_point(document.clone(), item.clone(), Handle::Corner(2), to);
+        assert_eq!(small.area(&item).unwrap().size, [0.1, 0.1]);
 
         // A doorway of 1 x 2 m in the middle of the back wall of the room of 8 m:
         // from 3.5 to 4.5 m along the wall, which is from x = -0.5 to 0.5.
@@ -683,7 +667,7 @@ mod tests {
         };
         doorway.set_component("doorway", &opening);
         document.room.objects.push(doorway);
-        let item = Item::Object(3);
+        let item = Item::Object(document.room.objects.len() - 1);
         let gizmo = Gizmo::of(&document, &item, false, false, Tool::Move, &view).unwrap();
         assert!(!gizmo.posed && gizmo.points().len() == 2);
         assert_eq!(gizmo.points()[1].1, Vec3::new(0.5, 2.0, -4.0));
@@ -698,8 +682,8 @@ mod tests {
         // Past the end of the wall and above the room: the end, and the height of
         // the room.
         let to = Vec3::new(-6.0, 3.6, -4.0);
-        let end = drag_point(document, item, Handle::Corner(0), to);
-        let doorway = end.doorway(&Item::Object(3)).unwrap();
+        let end = drag_point(document, item.clone(), Handle::Corner(0), to);
+        let doorway = end.doorway(&item).unwrap();
         assert_eq!(
             (doorway.width, doorway.offset, doorway.height),
             (4.5, -1.75, 3.0)

@@ -321,10 +321,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         // The event of room A goes to room B, saves, and sets a variable after the
         // save point.
-        let room_a = r#"(width: 4, depth: 4, height: 3, objects: [(name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()})], events: [
-            (name: "go", pages: [(trigger: Autorun, commands: [
+        let room_a = r#"(width: 4, depth: 4, height: 3, objects: [(name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
+            (name: "go", components: {"event": (pages: [(trigger: Autorun, commands: [
                 SetFlag("seen", true), Transfer("b.ron", "in"), SavePoint, SetVariable("count", 3),
-            ])]),
+            ])])}),
         ])"#;
         let room_b = r#"(width: 4, depth: 4, height: 3, objects: [(name: "in", pose: (position: (-1.0, 0.0, 0.5)), components: {"spawn": ()})])"#;
         std::fs::write(directory.join("a.ron"), room_a).unwrap();

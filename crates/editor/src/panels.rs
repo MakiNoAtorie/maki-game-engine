@@ -125,15 +125,15 @@ pub(crate) fn build(app: &mut App) {
     let events = panel(EVENT, "Events", icon::EVENTS, ToolPlace::Bottom);
     add_tool_panel(app, events, |ui, world| {
         with_editor(world, |world, editor| {
-            let index = match editor.primary() {
-                Item::Event(index) if !editor.playing() => index,
+            let index = match editor.selected_event() {
+                Some(index) if !editor.playing() => index,
                 _ if editor.playing() => {
                     ui.weak("A game runs. The outliner has the events that run.");
                     return;
                 }
                 _ => {
                     ui.weak(
-                        "Select an event in the outliner: its pages and its commands show here.",
+                        "Select an object with an event: its pages and its commands show here.",
                     );
                     return;
                 }
@@ -495,10 +495,12 @@ fn status_bar(ui: &mut Ui, world: &World, editor: &mut Editor) {
         let count = format!("{errors} errors, {warnings} warnings in the events");
         ui.menu_button(egui::RichText::new(count).color(color), |ui| {
             for problem in &problems {
-                let event = &editor.document.events[problem.event];
+                let object = editor.document.room.objects.get(problem.object);
+                let name = object.and_then(|object| object.name.clone());
+                let name = name.unwrap_or_default();
                 let place = match &problem.command {
-                    Some((page, _)) => format!("{}, page {}", event.name, page + 1),
-                    None => event.name.clone(),
+                    Some((page, _)) => format!("{name}, page {}", page + 1),
+                    None => name,
                 };
                 let color = if problem.warning { HINT } else { ERROR };
                 let text = format!("{place}: {}", problem.text);
@@ -511,20 +513,26 @@ fn status_bar(ui: &mut Ui, world: &World, editor: &mut Editor) {
     });
 }
 
-/// Selects the event of a problem, and shows its page with its command row selected.
+/// Selects the object of the event of a problem, and shows its page with its
+/// command row selected.
 fn go_to_problem(editor: &mut Editor, problem: &Problem) {
-    editor.select(Item::Event(problem.event), false);
+    editor.select(Item::Object(problem.object), false);
     let Some((page, command)) = &problem.command else {
         return;
     };
-    let commands = &editor.document.events[problem.event].pages[*page].commands;
     let registry = &editor.registry;
+    let Some(Ok(event)) = editor.document.event(problem.object, registry) else {
+        return;
+    };
+    let Some(commands) = event.pages.get(*page).map(|page| &page.commands) else {
+        return;
+    };
     let rows = crate::events::rows(commands, registry);
     let of_command = |row: &crate::Row| {
         row.kind == crate::RowKind::Command && row.command(commands, registry) == Some(command)
     };
     let row = rows.into_iter().map(|row| row.0).find(of_command);
-    editor.event_ui.go_to(problem.event, *page, row);
+    editor.event_ui.go_to(problem.object, *page, row);
 }
 
 /// The rows of one list of the outliner. `filter`: only the items whose label has
@@ -544,7 +552,7 @@ fn rows(
         }
         let selected =
             editor.selection.contains(&item) || (item == Item::Room && editor.selection.is_empty());
-        let of_item = |problem: &&Problem| Item::Event(problem.event) == item;
+        let of_item = |problem: &&Problem| Item::Object(problem.object) == item;
         let found: Vec<&Problem> = problems.iter().filter(of_item).collect();
         let error = found.iter().any(|problem| !problem.warning);
         let texts: Vec<&str> = found.iter().map(|problem| problem.text.as_str()).collect();
@@ -623,12 +631,9 @@ fn sections(document: &Document) -> Vec<Section> {
             .map_or("object", String::as_str);
         (Item::Object(index), named(&object.name, kind, index))
     });
-    let events = document.events.iter().enumerate();
-    let events = events.map(|(index, event)| (Item::Event(index), event.name.clone()));
     vec![
         (None, vec![(Item::Room, "Room".to_owned())]),
         (Some("Objects"), objects.collect()),
-        (Some("Events"), events.collect()),
     ]
 }
 
@@ -672,10 +677,10 @@ fn where_used(ui: &mut Ui, editor: &mut Editor) {
         }
     }
     if let Some((event, page)) = go_to {
-        let events = editor.document.events.iter();
-        if let Some(index) = events.into_iter().position(|other| other.name == event) {
-            editor.select(Item::Event(index), false);
-            editor.event_ui.go_to(index, page, None);
+        let events = editor.document.events(&editor.registry);
+        if let Some(found) = events.iter().find(|other| other.name == event) {
+            editor.select(Item::Object(found.object), false);
+            editor.event_ui.go_to(found.object, page, None);
         }
     }
 }
@@ -693,10 +698,7 @@ fn properties(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
     }
     // `Some`: the name of the item was changed, from this one.
     let mut old_name = None;
-    let shown = match &item {
-        Item::Event(index) => event_properties(ui, editor, *index, &mut old_name),
-        item => item_properties(ui, world, editor, item, &mut old_name),
-    };
+    let shown = item_properties(ui, world, editor, &item, &mut old_name);
     let Some(mut changed) = shown else {
         ui.weak("The room has no such item.");
         return;
@@ -747,8 +749,6 @@ fn item_properties(
 ) -> Option<bool> {
     // What is not a field of an item kind.
     match item {
-        // `event_panel` shows an event.
-        Item::Event(_) => return None,
         item if editor.document.mover(item).is_some() => {
             let label = "the gizmo changes the second pose (b) only";
             ui.checkbox(&mut editor.second_pose, label);
@@ -800,6 +800,11 @@ fn components(ui: &mut Ui, world: &World, editor: &mut Editor, index: usize) -> 
     for name in names {
         ui.separator();
         ui.strong(&name);
+        // The pages and the commands have the panel "Events".
+        if name == "event" {
+            event_properties(ui, editor, index);
+            continue;
+        }
         let tree = editor.document.component_tree(index, &name, types);
         let table = tables.and_then(|tables| tables.get(&name));
         // No type of the name, or a text that the type does not read: the reason.

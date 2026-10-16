@@ -214,6 +214,21 @@ pub fn add_object_component<T: Component + Fields + Serialize + DeserializeOwned
     );
 }
 
+/// Registers a type of component whose text needs more than its type to be read (the
+/// pages of an event: commands of all modules). The room loader calls `insert`. It
+/// has no table of fields: a tool shows it with a panel of its own.
+pub fn add_component_reader(app: &mut App, name: &'static str, insert: Insert) {
+    let component_type = ComponentType {
+        tree: |_| Err("the type is edited in a panel of its own".to_owned()),
+        text: |_, _| Err("the type is edited in a panel of its own".to_owned()),
+        insert: Some(insert),
+    };
+    app.init_resource::<ComponentTypes>();
+    app.resource_mut::<ComponentTypes>()
+        .0
+        .insert(name, component_type);
+}
+
 fn register<T: Fields + Serialize + DeserializeOwned>(
     app: &mut App,
     name: &'static str,

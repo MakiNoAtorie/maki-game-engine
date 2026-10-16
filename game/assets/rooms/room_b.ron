@@ -1,6 +1,6 @@
 // Room B: the switch room, east of room A.
-// The format is `RoomDef` in crates/scene/src/room.rs, and `EventDef` in
-// crates/events/src/model.rs for the events. Lengths are meters, angles degrees.
+// The format is `RoomDef` in crates/scene/src/room.rs; an event is the component
+// "event" (`EventPages` in crates/events/src/model.rs). Lengths are meters, angles degrees.
 (
     width: 6.0,
     depth: 5.0,
@@ -55,56 +55,82 @@
         // In the west wall: the way back to room A.
         (components: {"doorway": (wall: NegX, offset: 0.0, width: 1.2, height: 2.1, depth: 1.5)}),
         (name: "west", pose: (position: (-2.2, 0.0, 0.0)), components: {"spawn": ()}),
-    ],
-    events: [
+        // The events: an object with the component "event". Its area is the
+        // component "area" at the position of the object.
         // `SavePoint` is a command of the save module (crates/gameplay):
         // the file is written when this event ends.
         (
             name: "switch",
-            area: (center: (2.2, -1.5), size: (0.6, 0.6)),
-            pages: [
-                (
-                    trigger: Interact,
-                    commands: [
-                        PlaySound("sounds/click.wav", 1.0),
-                        SetFlag("power_off", true),
-                        LightOff("lamp_b"),
-                        Message("Click. The lamp dies. Far away, a lock lets go."),
-                        SavePoint,
+            pose: (position: (2.2, 0.0, -1.5)),
+            components: {
+                "area": (width: 0.6, depth: 0.6),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Interact,
+                            commands: [
+                                PlaySound("sounds/click.wav", 1.0),
+                                SetFlag("power_off", true),
+                                LightOff("lamp_b"),
+                                Message("Click. The lamp dies. Far away, a lock lets go."),
+                                SavePoint,
+                            ],
+                        ),
+                        (
+                            conditions: [Flag("power_off")],
+                            trigger: Interact,
+                            commands: [Message("The switch does not move.")],
+                        ),
                     ],
                 ),
-                (
-                    conditions: [Flag("power_off")],
-                    trigger: Interact,
-                    commands: [Message("The switch does not move.")],
-                ),
-            ],
+            },
         ),
         // The lamp stays off when the player comes back: the room file says "on".
         (
             name: "lamp is dead",
-            pages: [(conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")])],
+            components: {
+                "event": (
+                    pages: [
+                        (conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")]),
+                    ],
+                ),
+            },
         ),
         // `ShakeCamera` is a command of the game (game/scripts/src/shake.rs): seconds, meters.
         // Not on the way of the trip script (game/scripts/src/bench.rs): a shake in its
         // frames would change the pictures that the benchmark compares.
         (
             name: "mirror ball",
-            area: (center: (-1.2, -1.4), size: (0.8, 0.8)),
-            pages: [
-                (
-                    trigger: Interact,
-                    commands: [
-                        ShakeCamera(0.6, 0.06),
-                        Message("The ball rings. Something under the floor answers."),
+            pose: (position: (-1.2, 0.0, -1.4)),
+            components: {
+                "area": (width: 0.8, depth: 0.8),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Interact,
+                            commands: [
+                                ShakeCamera(0.6, 0.06),
+                                Message("The ball rings. Something under the floor answers."),
+                            ],
+                        ),
                     ],
                 ),
-            ],
+            },
         ),
         (
             name: "to room a",
-            area: (center: (-3.9, 0.0), size: (0.8, 1.2)),
-            pages: [(trigger: Touch, commands: [FadeOut(0.4), Transfer("room_a.ron", "east"), FadeIn(0.4)])],
+            pose: (position: (-3.9, 0.0, 0.0)),
+            components: {
+                "area": (width: 0.8, depth: 1.2),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Touch,
+                            commands: [FadeOut(0.4), Transfer("room_a.ron", "east"), FadeIn(0.4)],
+                        ),
+                    ],
+                ),
+            },
         ),
     ],
 )

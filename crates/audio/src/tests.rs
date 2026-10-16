@@ -47,8 +47,8 @@ fn room_directory(name: &str, events: &str) -> (PathBuf, PathBuf) {
             (name: "start", components: {{"spawn": ()}}),
             (name: "lamp", pose: (position: (2, 2, 0)), components: {{"light": (radius: 0.1,
                 color: (1, 1, 1), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5, reach: 9.0))}}),
-            ],
-            events: [{events}])"#
+            {}])"#,
+        maki_events::short_events(events)
     );
     let path = directory.join("room.ron");
     std::fs::write(&path, room).unwrap();
@@ -192,7 +192,7 @@ fn the_loader_checks_the_names_and_the_files_of_the_audio_commands() {
     assert_eq!(check("file", &event(r#"PlayMusic("no.ogg", 1.0)"#)), Ok(()));
     // A name with no sound is an error, with the line of the command.
     let error = check("name", &event(r#"SoundOn("lamb")"#)).unwrap_err();
-    let wanted = "6: event `a`: the room has no light `lamb` with a sound";
+    let wanted = "5: event `a`: the room has no light `lamb` with a sound";
     assert!(error.ends_with(wanted), "{error}");
 }
 

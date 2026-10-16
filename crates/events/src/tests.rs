@@ -28,9 +28,10 @@ fn room(events: &str) -> String {
             objects: [(name: "door", components: {{"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
                 (name: "lamp", pose: (position: (0, 2, 0)), components: {{"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}}),
                 (name: "start", components: {{"spawn": ()}}),
-                (name: "east", pose: (position: (2, 0, 0)), components: {{"spawn": ()}})],
-            events: [{events}],
-        )"#
+                (name: "east", pose: (position: (2, 0, 0)), components: {{"spawn": ()}}),
+                {}],
+        )"#,
+        short_events(events)
     )
 }
 
@@ -352,7 +353,22 @@ fn in_step_mode_each_command_waits_for_its_step_and_a_page_starts_for_a_test() {
         ]),
     ])"#;
     std::fs::write(directory.join("a.ron"), room(events)).unwrap();
-    let app = game(&directory);
+    // A tool starts a page with the world: the pages asked for, and what each start
+    // returned.
+    #[derive(bevy_ecs::resource::Resource, Default)]
+    struct Starts(Vec<(&'static str, usize)>, Vec<bool>);
+    let mut app = game(&directory);
+    app.init_resource::<Starts>().add_systems(
+        maki_core::Update,
+        (|world: &mut World| {
+            let asked = std::mem::take(&mut world.resource_mut::<Starts>().0);
+            for (name, page) in asked {
+                let started = start_event(world, name, page);
+                world.resource_mut::<Starts>().1.push(started);
+            }
+        })
+        .ambiguous_with_all(),
+    );
     app.run(|mut app| {
         steps(&mut app, 2);
         let current = |app: &App| {
@@ -363,10 +379,10 @@ fn in_step_mode_each_command_waits_for_its_step_and_a_page_starts_for_a_test() {
                 .and_then(|event| event.current())
                 .map(|c| format!("{c:?}"))
         };
-        let mut runner = app.resource_mut::<EventRunner>();
-        assert!(!runner.start_event("door", 7) && !runner.start_event("window", 0));
-        runner.set_step_mode(true);
-        assert!(runner.start_event("door", 1));
+        app.resource_mut::<EventRunner>().set_step_mode(true);
+        app.resource_mut::<Starts>().0 = vec![("door", 7), ("window", 0), ("door", 1)];
+        steps(&mut app, 1);
+        assert_eq!(app.world().resource::<Starts>().1, [false, false, true]);
         // No step was asked for: the event waits before its first command.
         steps(&mut app, 5);
         assert_eq!(current(&app).as_deref(), Some(r#"SetFlag("a", true)"#));
@@ -439,7 +455,9 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     let validators = app.world().resource::<maki_scene::RoomValidators>();
     let check = |events: &str| maki_scene::check_room(&path, &room(events), validators);
 
-    // `room` has its events in line 7. Two equal commands: each has its own line.
+    // `room` has its event objects from line 8, each object in the line of its
+    // name. Two equal commands: each has its own line. A problem of an event has
+    // the line of its component `event`.
     let bad = r#"
         (name: "a", pages: [(trigger: Interact, commands: [
             OpenDoor("door"),
@@ -455,11 +473,11 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     let lines: Vec<&str> = error.lines().collect();
     let file = path.display().to_string();
     let expected = [
+        "10: event `a`: the room has no door or mover `dor`",
         "11: event `a`: the room has no door or mover `dor`",
-        "12: event `a`: the room has no door or mover `dor`",
-        "13: event `a`: a bell rings one time or more",
-        "17: event `a`: another event has the name `a`",
-        "17: event `a`: the room has no light `lamb`",
+        "12: event `a`: a bell rings one time or more",
+        "15: event `a`: another event has the name `a`",
+        "15: event `a`: the room has no light `lamb`",
     ];
     assert_eq!(lines, expected.map(|line| format!("{file}:{line}")));
 
@@ -742,6 +760,44 @@ fn a_script_moves_its_object_and_an_object_with_no_code_keeps_its_text() {
         steps(&mut app, 2);
         let room = &app.world().resource::<CurrentRoom>().def;
         assert_eq!(room.objects[0].components["counter"].as_str(), "(speed:5)");
+    });
+}
+
+#[test]
+fn an_event_and_a_script_of_one_object_share_its_area_and_it_moves_with_the_object() {
+    // The counter goes along X at 1.5 m/s, with an event on the same object.
+    let room = counter_room(1.5, "").replacen(
+        r#""area": (width: 1.0, depth: 1.0)"#,
+        r#""area": (width: 1.0, depth: 1.0), "event": (pages: [(trigger: Touch, commands: [AddVariable("touched", 1)])])"#,
+        1,
+    );
+    let app = counter_game("shared-area", &room);
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        // At X = 2 the player is out of the area at the start (X from -0.5 to 0.5).
+        place_player(&mut app, [2.0, 0.0, 1.4]);
+        steps(&mut app, 2);
+        assert_eq!((variable(&app, "touched"), variable(&app, "enter")), (0, 0));
+        // After 1.2 s the area reaches X = 1.5: the player is in it, and the event
+        // starts. It blocks the player in that step, so the hook `enter_area` does
+        // not run: one area, the rules of stage 50.
+        steps(&mut app, 60);
+        assert_eq!((variable(&app, "touched"), variable(&app, "enter")), (1, 0));
+    });
+}
+
+#[test]
+fn a_script_and_a_row_use_one_store_of_variables() {
+    // The counter writes the variable "step" in each step; a page waits for it.
+    let events = r#"(name: "watch", pages: [
+        (trigger: Parallel, commands: []),
+        (conditions: [Variable("step", AtLeast, 5)], trigger: Autorun, commands: [SetVariable("seen", 1)])])"#;
+    let app = counter_game("one-store", &counter_room(0.0, events));
+    app.run(|mut app| {
+        steps(&mut app, 4);
+        assert_eq!(variable(&app, "seen"), 0);
+        steps(&mut app, 4);
+        assert_eq!(variable(&app, "seen"), 1);
     });
 }
 

@@ -27,8 +27,7 @@ fn beside(name: &str) -> PathBuf {
 /// True: the app has the event command of the script crate.
 fn has_shake(app: &App) -> bool {
     let registry = app.world().resource::<CommandRegistry>();
-    let events = r#"(events: [(name: "e", pages: [(trigger: Autorun, commands: [ShakeCamera(0.5, 0.05)])])])"#;
-    registry.parse_events(events).is_ok()
+    registry.parse_command("ShakeCamera(0.5, 0.05)").is_ok()
 }
 
 fn error(app: &mut App, dll: &Path) -> String {

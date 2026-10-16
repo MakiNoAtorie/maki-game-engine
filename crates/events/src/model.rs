@@ -1,28 +1,56 @@
 //! What an event is: data, read from the room file.
 //!
-//! An event belongs to a room and has pages. Each page has conditions, a trigger, and
-//! a list of commands. The active page of an event is the last page in the list whose
-//! conditions all hold, so a later page replaces an earlier one when the game state
-//! changes (a locked door becomes an open one). An event with no active page does
-//! nothing.
+//! An event is a component of an object (`event`, [`EventPages`]), as a script is. It
+//! has pages. Each page has conditions, a trigger, and a list of commands. The active
+//! page of an event is the last page in the list whose conditions all hold, so a later
+//! page replaces an earlier one when the game state changes (a locked door becomes an
+//! open one). An event with no active page does nothing.
+//!
+//! The name of an event is the name of its object. Its area is the component `area`
+//! of the object ([`TriggerArea`]) at the pose of the object: the same area as for the
+//! hooks of a script.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use bevy_ecs::component::Component;
+use maki_scene::PoseDef;
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::GameState;
 use crate::command::Command;
+use crate::script::TriggerArea;
 
-/// One event of a room.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The component `event` of an object: the pages of its event. The commands are an
+/// open set: read the text with `CommandRegistry::parse_pages`.
+#[derive(Component, Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct EventPages {
+    pub pages: Vec<Page>,
+}
+
+/// One event of a room, as the checks and the tools see it: the component `event` of
+/// an object, with the name and the area of the object.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventDef {
-    /// For the debug panel and the log.
-    #[serde(deserialize_with = "crate::command::event_name")]
+    /// The name of the object. Empty: it has none.
     pub name: String,
-    /// Where the event is, for the triggers `Interact` and `Touch`. `None`: the event
-    /// has no place, and no player starts it (`Autorun`, `Parallel`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The index of the object in the list `objects` of the room.
+    pub object: usize,
+    /// Where the event is, for the triggers `Interact` and `Touch`. `None`: the object
+    /// has no `area`, and no player starts the event (`Autorun`, `Parallel`).
     pub area: Option<Area>,
     pub pages: Vec<Page>,
+}
+
+impl EventDef {
+    /// The area of an object with the component `area`, at its position.
+    pub fn area_at(area: &TriggerArea, position: [f32; 3]) -> Area {
+        Area {
+            center: [position[0], position[2]],
+            size: [area.width, area.depth],
+        }
+    }
 }
 
 /// A rectangle on the floor, with sides along X and Z.
@@ -135,18 +163,118 @@ pub enum Trigger {
     Parallel,
 }
 
-/// The index of the active page: the last one whose conditions hold.
-pub fn active_page(event: &EventDef, state: &GameState) -> Option<usize> {
+/// The index of the active page of an event: the last one whose conditions hold.
+pub fn active_page(pages: &[Page], state: &GameState) -> Option<usize> {
     let holds = |page: &Page| all_hold(&page.conditions, state);
-    event.pages.iter().rposition(holds)
+    pages.iter().rposition(holds)
 }
 
-/// The part of a room file that this crate reads. The fields of the scene crate are
-/// skipped. Read with `CommandRegistry::parse_events`.
+/// Events in a short form, `(name: "x", area: (center: (x, z), size: (x, z)), pages:
+/// [...])`, as the objects of a room file: an object with the name, the center of the
+/// area as its position, the components `area` and `event`. For tests that write a
+/// room. Panics if the text is not of that form.
+pub fn short_events(events: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct Short {
+        name: String,
+        #[serde(default)]
+        area: Option<Area>,
+        pages: Box<ron::value::RawValue>,
+    }
+    let events: Vec<Short> = maki_scene::ron_options()
+        .from_str(&format!("[{events}]"))
+        .unwrap();
+    let object = |event: &Short| {
+        let (position, area) = match event.area {
+            Some(Area { center, size }) => (
+                format!("({}, 0.0, {})", center[0], center[1]),
+                format!(r#""area": (width: {}, depth: {}), "#, size[0], size[1]),
+            ),
+            None => ("(0.0, 0.0, 0.0)".to_owned(), String::new()),
+        };
+        let (name, pages) = (&event.name, event.pages.get_ron());
+        format!(
+            r#"(name: "{name}", pose: (position: {position}), components: {{{area}"event": (pages: {pages})}})"#
+        )
+    };
+    events.iter().map(object).collect::<Vec<_>>().join(",\n")
+}
+
+/// The part of a room file that this crate reads: of each object, its name, its pose,
+/// and the components `area` and `event`. The rest is skipped. Read with
+/// `CommandRegistry::parse_events`.
 #[derive(Deserialize)]
 pub(crate) struct RoomFile {
     #[serde(default)]
-    pub events: Vec<EventDef>,
+    pub objects: Vec<RoomObject>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RoomObject {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub pose: PoseDef,
+    #[serde(default)]
+    pub components: EventComponents,
+}
+
+/// The components of an object that an event needs.
+#[derive(Default)]
+pub(crate) struct EventComponents {
+    pub area: Option<TriggerArea>,
+    pub event: Option<EventPages>,
+}
+
+impl RoomFile {
+    /// The events of the objects, in the order of the objects.
+    pub(crate) fn events(self) -> Vec<EventDef> {
+        let objects = self.objects.into_iter().enumerate();
+        let event = |(index, object): (usize, RoomObject)| {
+            let pages = object.components.event?.pages;
+            let area = object.components.area;
+            Some(EventDef {
+                name: object.name.unwrap_or_default(),
+                object: index,
+                area: area.map(|area| EventDef::area_at(&area, object.pose.position)),
+                pages,
+            })
+        };
+        objects.filter_map(event).collect()
+    }
+}
+
+// A map of component names to values of many types: only two are read, the others
+// are skipped as they are. The reader stays in the text, so an error has its line.
+impl<'de> Deserialize<'de> for EventComponents {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Components;
+
+        impl<'de> Visitor<'de> for Components {
+            type Value = EventComponents;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                write!(formatter, "the components of an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<EventComponents, A::Error> {
+                let mut components = EventComponents::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    match name.as_str() {
+                        "area" => components.area = Some(map.next_value()?),
+                        "event" => {
+                            crate::command::event_starts()?;
+                            components.event = Some(map.next_value()?);
+                        }
+                        _ => drop(map.next_value::<IgnoredAny>()?),
+                    }
+                }
+                Ok(components)
+            }
+        }
+
+        deserializer.deserialize_map(Components)
+    }
 }
 
 #[cfg(test)]
@@ -162,12 +290,9 @@ mod tests {
         }
     }
 
-    fn event(pages: Vec<Page>) -> EventDef {
-        EventDef {
-            name: "test".to_owned(),
-            area: None,
-            pages,
-        }
+    /// The pages of an event.
+    fn event(pages: Vec<Page>) -> Vec<Page> {
+        pages
     }
 
     #[test]
@@ -211,54 +336,67 @@ mod tests {
     }
 
     #[test]
-    fn events_are_read_from_a_room_file_and_the_rest_is_skipped() {
+    fn events_are_read_from_the_objects_of_a_room_file() {
         let text = r#"(
             width: 4, depth: 4, height: 3,
-            objects: [(components: {"prop": (mesh: Cube(1.0))})],
-            events: [
+            objects: [
+                (components: {"prop": (mesh: Cube(1.0))}),
                 (
                     name: "door",
-                    area: (center: (3.0, -3.3), size: (1.0, 0.8)),
-                    pages: [
-                        (trigger: Interact, commands: [Message("Locked.")]),
-                        (
-                            conditions: [Flag("power")],
-                            trigger: Interact,
-                            commands: [
-                                If([Flag("seen"), Variable("turns", Less, 3)], [Wait(0.5)], [SetFlag("seen", true)]),
-                                OpenDoor("door"),
-                                Transfer("room_b.ron", "west"),
-                            ],
-                        ),
-                    ],
+                    pose: (position: (3.0, 0.0, -3.3)),
+                    components: {
+                        "area": (width: 1.0, depth: 0.8),
+                        "event": (pages: [
+                            (trigger: Interact, commands: [Message("Locked.")]),
+                            (
+                                conditions: [Flag("power")],
+                                trigger: Interact,
+                                commands: [
+                                    If([Flag("seen"), Variable("turns", Less, 3)], [Wait(0.5)], [SetFlag("seen", true)]),
+                                    OpenDoor("door"),
+                                    Transfer("room_b.ron", "west"),
+                                ],
+                            ),
+                        ]),
+                    },
                 ),
+                (name: "timer", components: {"event": (pages: [(trigger: Autorun)])}),
             ],
         )"#;
         let registry = CommandRegistry::default();
         registry.add(crate::builtin::run);
         let events = registry.parse_events(text).unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].area.unwrap().size, [1.0, 0.8]);
+        assert_eq!(events.len(), 2);
+        // The name of the object, and its area at the pose of the object.
+        assert_eq!((events[0].name.as_str(), events[0].object), ("door", 1));
+        assert_eq!(
+            events[0].area,
+            Some(Area {
+                center: [3.0, -3.3],
+                size: [1.0, 0.8]
+            })
+        );
         assert_eq!(events[0].pages[1].commands.len(), 3);
         assert_eq!(
             events[0].pages[0].commands[0].get(),
             Some(&Builtin::Message("Locked.".to_owned()))
         );
+        // An object with no area: an event that no player walks to.
+        assert_eq!((events[1].object, events[1].area), (2, None));
         // The scene crate reads the same text.
         assert!(maki_scene::parse_room(text).is_ok());
         // A room with no events.
         let none = registry.parse_events("(width: 4, depth: 4, height: 3)");
         assert_eq!(none.unwrap(), []);
         // A command that does not exist: the error has the line.
-        let bad = "(\n events: [(name: \"x\", pages: [(trigger: Touch,\n commands: [Explode])])])";
+        let bad = "(\n objects: [(name: \"x\", components: {\"event\": (pages: [(trigger: Touch,\n commands: [Explode])])})])";
         let error = registry.parse_events(bad).unwrap_err().to_string();
         assert!(
             error.starts_with("3:") && error.contains("Explode"),
             "{error}"
         );
         // A bad argument of a command that exists.
-        let bad =
-            "(\n events: [(name: \"x\", pages: [(trigger: Touch,\n commands: [Wait(\"long\")])])])";
+        let bad = "(\n objects: [(components: {\"event\": (pages: [(trigger: Touch,\n commands: [Wait(\"long\")])])})])";
         let error = registry.parse_events(bad).unwrap_err().to_string();
         assert!(error.starts_with("3:"), "{error}");
 
@@ -267,12 +405,13 @@ mod tests {
         assert_eq!(made.as_ref(), Some(&events[0].pages[0].commands[0]));
         assert!(registry.command(crate::Trigger::Touch).is_none());
 
-        // What is written is read as the same events: the editor saves room files.
-        let written = ron::to_string(&events).unwrap();
-        let read = registry
-            .parse_events(&format!("(events: {written})"))
-            .unwrap();
-        assert_eq!(read, events);
+        // The text of the component is read back as the same pages: the editor
+        // writes it.
+        let pages = EventPages {
+            pages: events[0].pages.clone(),
+        };
+        let component = maki_scene::ComponentText::of(&pages);
+        assert_eq!(registry.parse_pages(&component).unwrap(), pages);
     }
 
     #[test]

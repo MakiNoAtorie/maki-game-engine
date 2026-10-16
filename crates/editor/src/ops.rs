@@ -2,8 +2,8 @@
 //! an item, names and the events that use them, and the history for undo and redo.
 //!
 //! Names: events find an object (a light, a door, a mover, a spawn point) by name.
-//! So a new or changed name is made unique in its group (the objects; the events),
-//! and a change of a name changes the commands of this room that use it. A command of another
+//! So a new or changed name is made unique among the objects (an event has the name
+//! of its object), and a change of a name changes the commands of this room that use it. A command of another
 //! module, and a `Transfer` in another room file, are not changed: see
 //! [`spawn_users`].
 
@@ -13,7 +13,9 @@ use glam::Vec3;
 use maki_assets::{Doorway, Wall};
 use maki_audio::AudioCommand;
 use maki_core::Transform;
-use maki_events::{Area, Builtin, Command, CommandRegistry, CommandSet, EventDef, Page, Trigger};
+use maki_events::{
+    Builtin, Command, CommandRegistry, CommandSet, EventPages, Page, Trigger, TriggerArea,
+};
 use maki_scene::{
     ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef, PrefabDef,
     PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
@@ -98,7 +100,6 @@ impl Document {
         match item {
             Item::Room => true,
             Item::Object(index) => *index < self.room.objects.len(),
-            Item::Event(index) => *index < self.events.len(),
         }
     }
 
@@ -113,11 +114,6 @@ impl Document {
                     .filter_map(|(_, object)| object.name.as_deref())
                     .collect()
             }
-            Item::Event(index) => {
-                let events = self.events.iter().enumerate();
-                let others = events.filter(|(other, _)| other != index);
-                others.map(|(_, event)| event.name.as_str()).collect()
-            }
             Item::Room => return None,
         })
     }
@@ -131,7 +127,7 @@ impl Document {
         }
     }
 
-    /// Call after the name of an object or an event was changed from `old`. The new
+    /// Call after the name of an object was changed from `old`. The new
     /// name is made unique, and the commands of the events of this room that name the
     /// object (built-in, and of the audio module) get the new name. Returns a text for
     /// the user if something more than the name itself was changed.
@@ -143,16 +139,6 @@ impl Document {
     ) -> String {
         let index = match item {
             Item::Object(index) => *index,
-            Item::Event(index) => {
-                let typed = std::mem::take(&mut self.events[*index].name);
-                self.events[*index].name = self.unique_name(item, &typed);
-                let changed = self.events[*index].name != typed;
-                return if changed {
-                    "The name was in use: a number was added".to_owned()
-                } else {
-                    String::new()
-                };
-            }
             Item::Room => return String::new(),
         };
         let Some(typed) = self.room.objects[index].name.take() else {
@@ -242,10 +228,21 @@ impl Document {
             }
             count
         }
-        let pages = self.events.iter_mut().flat_map(|event| &mut event.pages);
-        pages
-            .map(|page| walk(&mut page.commands, registry, &change))
-            .sum()
+        let mut count = 0;
+        for index in 0..self.room.objects.len() {
+            let Some(Ok(mut event)) = self.event(index, registry) else {
+                continue;
+            };
+            let pages = event.pages.iter_mut();
+            let changed: usize = pages
+                .map(|page| walk(&mut page.commands, registry, &change))
+                .sum();
+            if changed > 0 {
+                self.set_event(index, &event);
+                count += changed;
+            }
+        }
+        count
     }
 
     /// Adds an item at a point of the floor. Returns the new item. `Err`: why not.
@@ -392,22 +389,24 @@ impl Document {
                 self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
+            // An object with an area and an event on it.
             Kind::Event => {
-                let item = Item::Event(self.events.len());
-                self.events.push(EventDef {
-                    name: String::new(),
-                    area: Some(Area {
-                        center: [at.x, at.z],
-                        size: [1.0, 1.0],
-                    }),
-                    pages: vec![Page {
-                        conditions: Vec::new(),
-                        trigger: Trigger::Interact,
-                        commands: Vec::new(),
-                    }],
-                });
+                let item = Item::Object(room.objects.len());
+                let mut object = ObjectDef {
+                    pose: on_floor(0.0),
+                    ..ObjectDef::default()
+                };
+                object.set_component("area", &TriggerArea::default());
+                let page = Page {
+                    conditions: Vec::new(),
+                    trigger: Trigger::Interact,
+                    commands: Vec::new(),
+                };
+                let pages = EventPages { pages: vec![page] };
+                object.set_component("event", &pages);
+                room.objects.push(object);
                 let name = self.unique_name(&item, "event");
-                self.events.last_mut().expect("pushed above").name = name;
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
                 item
             }
         };
@@ -428,7 +427,6 @@ impl Document {
             match item {
                 Item::Room => continue,
                 Item::Object(index) => drop(self.room.objects.remove(*index)),
-                Item::Event(index) => drop(self.events.remove(*index)),
             }
             self.dirty = true;
         }
@@ -477,19 +475,6 @@ impl Document {
                     room.objects.push(object);
                     let name = name.map(|name| self.unique_name(&copy, &name));
                     self.room.objects.last_mut().expect("pushed above").name = name;
-                    copy
-                }
-                Item::Event(index) => {
-                    let mut event = source.events[*index].clone();
-                    if let Some(area) = &mut event.area {
-                        area.center[0] += offset;
-                        area.center[1] += offset;
-                    }
-                    let copy = Item::Event(self.events.len());
-                    let name = std::mem::take(&mut event.name);
-                    self.events.push(event);
-                    let name = self.unique_name(&copy, &name);
-                    self.events.last_mut().expect("pushed above").name = name;
                     copy
                 }
             };
@@ -607,15 +592,15 @@ impl Document {
 
     /// What undo and redo keep: all of the document but the path.
     fn content(&self) -> Content {
-        (self.room.clone(), self.events.clone(), self.notes.clone())
+        (self.room.clone(), self.notes.clone())
     }
 
     fn is(&self, content: &Content) -> bool {
-        self.room == content.0 && self.events == content.1 && self.notes == content.2
+        self.room == content.0 && self.notes == content.1
     }
 
     fn set_content(&mut self, content: Content) {
-        (self.room, self.events, self.notes) = content;
+        (self.room, self.notes) = content;
         self.dirty = true;
     }
 }
@@ -642,11 +627,11 @@ fn into_space(mut object: ObjectDef, space: &Transform) -> ObjectDef {
 fn item_index(item: &Item) -> usize {
     match item {
         Item::Room => 0,
-        Item::Object(index) | Item::Event(index) => *index,
+        Item::Object(index) => *index,
     }
 }
 
-type Content = (RoomDef, Vec<EventDef>, Notes);
+type Content = (RoomDef, Notes);
 /// A state of the document, and the items that were selected in it.
 type Step = (Content, Vec<Item>);
 
@@ -821,12 +806,12 @@ mod tests {
                     "light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
                 }),
                 (name: "start", components: {"spawn": ()}),
+                (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
+                    LightOff("lamp"),
+                    If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
+                    Transfer("room.ron", "start"),
+                ])])}),
             ],
-            events: [(name: "switch", pages: [(trigger: Interact, commands: [
-                LightOff("lamp"),
-                If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
-                Transfer("room.ron", "start"),
-            ])])],
         )"#;
         Document::parse(Path::new("room.ron"), text, registry).unwrap()
     }
@@ -860,10 +845,10 @@ mod tests {
         assert_eq!(document.room.objects[new].name.as_deref(), Some("light"));
         assert!(document.light(&Item::Object(new)).is_some());
         let copies = document.duplicate(&[lamp, Item::Object(new)]);
-        assert_eq!(copies, [Item::Object(5), Item::Object(6)]);
+        assert_eq!(copies, [Item::Object(6), Item::Object(7)]);
         let name = |index: usize| document.room.objects[index].name.clone().unwrap();
         assert_eq!(
-            (name(5), name(6)),
+            (name(6), name(7)),
             ("bulb_2".to_owned(), "light_2".to_owned())
         );
         assert_eq!(free_name("bulb_2", |name| name == "bulb_2"), "bulb_3");
@@ -899,10 +884,10 @@ mod tests {
         let Ok(doorway) = document.add(Kind::Doorway, Vec3::ZERO) else {
             panic!("a doorway");
         };
-        assert_eq!(doorway, Item::Object(3));
-        assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Object(3)));
-        assert!(document.room.objects[3].door().is_some());
-        assert_eq!(document.room.objects[3].name.as_deref(), Some("door"));
+        assert_eq!(doorway, Item::Object(4));
+        assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Object(4)));
+        assert!(document.room.objects[4].door().is_some());
+        assert_eq!(document.room.objects[4].name.as_deref(), Some("door"));
     }
 
     #[test]
@@ -938,8 +923,8 @@ mod tests {
             history.redo(&mut document, &mut selection)
                 && history.redo(&mut document, &mut selection)
         );
-        assert_eq!(document.room.objects.len(), 5);
-        assert_eq!(selection, [Item::Object(4)]);
+        assert_eq!(document.room.objects.len(), 6);
+        assert_eq!(selection, [Item::Object(5)]);
         // A change after an undo drops the steps that were undone.
         history.undo(&mut document, &mut selection);
         document.delete(&[Item::Object(2)]);
@@ -948,7 +933,7 @@ mod tests {
         // A change that was not tracked yet is a step of its own before the undo.
         document.room.width = 9.0;
         history.undo(&mut document, &mut selection);
-        assert_eq!((document.room.width, document.room.objects.len()), (8.0, 3));
+        assert_eq!((document.room.width, document.room.objects.len()), (8.0, 4));
     }
 
     #[test]
@@ -958,7 +943,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let room = |commands: &str| {
             format!(
-                "(width: 4, depth: 4, height: 3, events: [(name: \"go\", pages: [(trigger: Touch, commands: [{commands}])])])"
+                "(width: 4, depth: 4, height: 3, objects: [(name: \"go\", components: {{\"event\": (pages: [(trigger: Touch, commands: [{commands}])])}})])"
             )
         };
         std::fs::write(

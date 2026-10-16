@@ -1,8 +1,8 @@
 //! Rooms as data: the room file format, and load and unload of a room.
 //!
 //! A room file is RON text (`game/assets/rooms/*.ron`): the size of the room and its
-//! objects ([`ObjectDef`]). [`RoomDef`] is its content. The file also holds the events of the room, which this crate does not
-//! read: the events crate reads them from [`CurrentRoom::source`].
+//! objects ([`ObjectDef`]). [`RoomDef`] is its content. An event is the component
+//! `event` of an object: the events crate reads it.
 //!
 //! To change the room, write a [`RoomRequest`]. `load_requested_room` then removes
 //! all entities with the [`RoomEntity`] marker and spawns those of the new room. The
@@ -33,7 +33,6 @@ use maki_assets::{
     ModelLoads, TextureRef, Textures,
 };
 use maki_core::{Fields, Interpolated, Transform};
-use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::object::{ComponentText, ComponentTypes, ObjectDef};
@@ -62,9 +61,6 @@ pub struct RoomDef {
     /// The things of the room: each a name, a pose, and components.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDef>,
-    /// The events of the room. Not read here: see the module comment.
-    #[serde(default, skip_serializing)]
-    pub events: IgnoredAny,
 }
 
 /// The fields of a room that are of the room itself, not of a thing in it: what a
@@ -1847,7 +1843,6 @@ mod tests {
             ],
             floor: None,
             walls: None,
-            events: IgnoredAny,
         }
     }
 
@@ -1908,11 +1903,10 @@ mod tests {
     }
 
     #[test]
-    fn a_short_room_file_gets_the_defaults_and_its_events_are_not_read() {
+    fn a_short_room_file_gets_the_defaults() {
         let room = parse_room(
             r#"(width: 4, depth: 4, height: 3,
-                objects: [(name: "box", components: {"prop": (mesh: Cube(1.0))})],
-                events: [(what: "ever", this: (is, 1))])"#,
+                objects: [(name: "box", components: {"prop": (mesh: Cube(1.0))})])"#,
         )
         .unwrap();
         let prop = room.objects[0].prop().unwrap().unwrap();

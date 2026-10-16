@@ -9,18 +9,20 @@
 //! A command is a value of an open set (`command` module). Its handler gets the
 //! world, so `run_events` is a system with the full world.
 
+use bevy_ecs::component::Component;
+use bevy_ecs::entity::Entity;
 use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Res, ResMut};
-use bevy_ecs::world::{Mut, World};
+use bevy_ecs::system::{EntityCommands, Res, ResMut};
+use bevy_ecs::world::{EntityWorldMut, Mut, World};
 use glam::Vec3;
 use maki_core::Interpolated;
 use maki_platform::FixedActionState;
-use maki_scene::{CurrentRoom, Player};
+use maki_scene::{ComponentText, CurrentRoom, Name, Player, RoomItem};
 
 use crate::command::{Command, CommandRegistry, Step};
-use crate::model::{EventDef, Trigger, active_page};
-use crate::script::ScriptRunners;
+use crate::model::{EventDef, EventPages, Trigger, active_page};
+use crate::script::{ScriptRunners, TriggerArea};
 use crate::{GameState, INTERACT};
 
 /// An interact event starts if its area is not farther from the player than this, in
@@ -54,6 +56,9 @@ pub struct Choices {
 #[derive(Debug)]
 pub struct RunningEvent {
     pub name: String,
+    /// The entity of the object of the event. `None`: a script or a tool started the
+    /// commands.
+    pub(crate) entity: Option<Entity>,
     pub trigger: Trigger,
     /// The command lists that are open: the page, and in it the branch of each `If`
     /// that was taken. With each list, the index of its next command.
@@ -68,6 +73,7 @@ impl RunningEvent {
     pub(crate) fn new(name: &str, trigger: Trigger, commands: &[Command]) -> Self {
         Self {
             name: name.to_owned(),
+            entity: None,
             trigger,
             stack: vec![(commands.to_vec(), 0)],
             waiting: false,
@@ -132,15 +138,20 @@ impl RunningEvent {
     }
 }
 
-/// The events of the current room, and those that run. A resource: an event that
-/// asked for a room change goes on in the new room.
+/// What the interpreter keeps of the event of an object between two steps.
+#[derive(Component, Debug, Default)]
+pub(crate) struct EventMemory {
+    /// The player was in the area in the step before.
+    inside: bool,
+    /// The page whose `Autorun` commands were started.
+    autorun: Option<usize>,
+}
+
+/// The events that run. The events of the room are the components `event` of its
+/// objects ([`EventPages`]). A resource: an event that asked for a room change goes on
+/// in the new room.
 #[derive(Resource, Debug, Default)]
 pub struct EventRunner {
-    events: Vec<EventDef>,
-    /// For each event: the player was in its area in the step before.
-    inside: Vec<bool>,
-    /// For each event: the page whose `Autorun` commands were started.
-    autorun: Vec<Option<usize>>,
     /// True until the first step in a new room: a player that starts in an area did
     /// not walk into it.
     new_room: bool,
@@ -167,11 +178,6 @@ impl EventRunner {
         &self.running
     }
 
-    /// The events of the current room.
-    pub fn events(&self) -> &[EventDef] {
-        &self.events
-    }
-
     /// Turns the step mode on or off. On: no command starts until [`Self::step`].
     pub fn set_step_mode(&mut self, on: bool) {
         self.steps = on.then_some(0);
@@ -188,30 +194,12 @@ impl EventRunner {
         }
     }
 
-    /// Starts the commands of a page of an event of the room now, whatever its
-    /// trigger and its conditions are: for a test of the page. False: the room has
-    /// no such event or page.
-    pub fn start_event(&mut self, name: &str, page: usize) -> bool {
-        let event = self.events.iter().find(|event| event.name == name);
-        let Some(page) = event.and_then(|event| event.pages.get(page)) else {
-            return false;
-        };
-        tracing::debug!(event = name, "event starts for a test");
-        let running = RunningEvent::new(name, page.trigger, &page.commands);
-        self.running.push(running);
-        true
-    }
-
-    /// The events of a new room take the place of the old ones. A `Parallel` event of
-    /// the old room stops. Each other running event goes on: one of them asked for
-    /// the new room.
-    pub fn set_events(&mut self, events: Vec<EventDef>) {
+    /// A new room: a `Parallel` event of the old room stops. Each other running event
+    /// goes on: one of them asked for the new room.
+    pub fn room_changed(&mut self) {
         self.running
             .retain(|event| event.trigger != Trigger::Parallel);
-        self.inside = vec![false; events.len()];
-        self.autorun = vec![None; events.len()];
         self.new_room = true;
-        self.events = events;
     }
 
     /// One fixed step: runs the running events, then starts those whose trigger
@@ -233,56 +221,100 @@ impl EventRunner {
         }
         blocked |= self.blocks_player();
 
+        // In the order of the objects in the file: on one press, the first event wins.
+        let mut events = world.query::<(
+            Entity,
+            &EventPages,
+            Option<&Name>,
+            Option<&TriggerArea>,
+            Option<&Interpolated>,
+            Option<&RoomItem>,
+            Option<&EventMemory>,
+        )>();
+        let mut events: Vec<_> = events.iter(world).collect();
+        events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
+
         let state = world.resource::<GameState>();
-        for (index, event) in self.events.iter().enumerate() {
+        let mut memories = Vec::new();
+        for (entity, pages, name, area, pose, _, memory) in events {
+            let name = name.map_or("", |name| name.0.as_str());
+            let at = pose.map_or(Vec3::ZERO, |pose| pose.current.translation);
+            let area = area.map(|area| EventDef::area_at(area, at.to_array()));
+            let before = memory.map_or((false, None), |memory| (memory.inside, memory.autorun));
             let inside =
                 |area: crate::Area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0);
-            let inside = event.area.is_some_and(inside);
-            let entered = inside && !self.inside[index] && !self.new_room;
-            self.inside[index] = inside;
+            let inside = area.is_some_and(inside);
+            let entered = inside && !before.0 && !self.new_room;
 
-            let page_index = active_page(event, state);
-            let page = page_index.map(|page| &event.pages[page]);
+            let page_index = active_page(&pages.pages, state);
+            let page = page_index.map(|page| &pages.pages[page]);
             // An autorun page starts again if another page was active in between.
+            let mut autorun = before.1;
             if page.is_none_or(|page| page.trigger != Trigger::Autorun) {
-                self.autorun[index] = None;
+                autorun = None;
             }
-            let Some(page) = page else { continue };
-            let runs = |trigger| {
-                let same = |running: &RunningEvent| {
-                    running.name == event.name && running.trigger == trigger
+            let start = page.is_some_and(|page| {
+                let runs = |trigger| {
+                    let same = |running: &RunningEvent| {
+                        running.entity == Some(entity) && running.trigger == trigger
+                    };
+                    self.running.iter().any(same)
                 };
-                self.running.iter().any(same)
-            };
-            let start = match page.trigger {
-                Trigger::Parallel => !runs(Trigger::Parallel),
-                Trigger::Autorun => !blocked && self.autorun[index] != page_index,
-                Trigger::Touch => !blocked && entered,
-                Trigger::Interact => {
-                    interact
-                        && !blocked
-                        && player
-                            .zip(event.area)
-                            .is_some_and(|(player, area)| faces(player, area))
+                match page.trigger {
+                    Trigger::Parallel => !runs(Trigger::Parallel),
+                    Trigger::Autorun => !blocked && autorun != page_index,
+                    Trigger::Touch => !blocked && entered,
+                    Trigger::Interact => {
+                        interact
+                            && !blocked
+                            && player
+                                .zip(area)
+                                .is_some_and(|(player, area)| faces(player, area))
+                    }
                 }
-            };
-            if !start {
-                continue;
+            });
+            if let (true, Some(page)) = (start, page) {
+                tracing::debug!(event = name, trigger = ?page.trigger, "event starts");
+                if page.trigger == Trigger::Autorun {
+                    autorun = page_index;
+                }
+                blocked |= page.trigger != Trigger::Parallel;
+                if page.trigger == Trigger::Interact {
+                    interact = false;
+                }
+                let mut running = RunningEvent::new(name, page.trigger, &page.commands);
+                running.entity = Some(entity);
+                self.running.push(running);
             }
-            tracing::debug!(event = event.name, trigger = ?page.trigger, "event starts");
-            if page.trigger == Trigger::Autorun {
-                self.autorun[index] = page_index;
+            if memory.is_none_or(|memory| (memory.inside, memory.autorun) != (inside, autorun)) {
+                memories.push((entity, EventMemory { inside, autorun }));
             }
-            blocked |= page.trigger != Trigger::Parallel;
-            if page.trigger == Trigger::Interact {
-                interact = false;
-            }
-            self.running
-                .push(RunningEvent::new(&event.name, page.trigger, &page.commands));
+        }
+        for (entity, memory) in memories {
+            world.entity_mut(entity).insert(memory);
         }
         self.new_room = false;
         self.interact_free = interact;
     }
+}
+
+/// Starts the commands of a page of the event of an object now, whatever its trigger
+/// and its conditions are: for a test of the page. `name`: of the object. False: the
+/// room has no such event or page.
+pub fn start_event(world: &mut World, name: &str, page: usize) -> bool {
+    let mut events = world.query::<(Entity, &EventPages, &Name)>();
+    let found = events
+        .iter(world)
+        .find(|(_, _, other)| other.0 == name)
+        .and_then(|(entity, pages, _)| Some((entity, pages.pages.get(page)?.clone())));
+    let Some((entity, page)) = found else {
+        return false;
+    };
+    tracing::debug!(event = name, "event starts for a test");
+    let mut running = RunningEvent::new(name, page.trigger, &page.commands);
+    running.entity = Some(entity);
+    world.resource_mut::<EventRunner>().running.push(running);
+    true
 }
 
 /// True if the player is at the area and looks toward it.
@@ -295,30 +327,34 @@ pub(crate) fn faces((position, facing): (Vec3, Vec3), area: crate::Area) -> bool
         && (distance < 1e-3 || to_event.dot(facing) / distance > INTERACT_FACING)
 }
 
-/// Runs in `Update` after the room loader: reads the events of a new room.
-pub fn load_room_events(
-    room: Res<CurrentRoom>,
-    registry: Res<CommandRegistry>,
-    mut runner: ResMut<EventRunner>,
-) {
+/// Runs in `Update` after the room loader: a new room.
+pub fn load_room_events(room: Res<CurrentRoom>, mut runner: ResMut<EventRunner>) {
     use bevy_ecs::change_detection::DetectChanges;
 
     // The resource also counts as changed before the first room.
     if !room.is_changed() || room.loads == 0 {
         return;
     }
-    match registry.parse_events(&room.source) {
-        Ok(events) => {
-            tracing::info!(events = events.len(), "events loaded");
-            runner.set_events(events);
+    runner.room_changed();
+}
+
+/// Reads the text of a component `event` into its entity. The commands are read with
+/// the registry, a resource: so the read waits until the commands of the loader
+/// run with the world.
+pub(crate) fn insert_event(
+    text: &ComponentText,
+    entity: &mut EntityCommands,
+) -> Result<(), String> {
+    let text = text.clone();
+    entity.queue(move |mut entity: EntityWorldMut| {
+        let registry = entity.world().resource::<CommandRegistry>().clone();
+        match registry.parse_pages(&text) {
+            Ok(pages) => drop(entity.insert(pages)),
+            // The check of the room files stops such a room before it loads.
+            Err(error) => tracing::error!("an event left out: {error}"),
         }
-        // The check of the room files stops such a room before it loads. This is
-        // for a room that was loaded with no check.
-        Err(error) => {
-            tracing::error!("{}:{error}: the room has no events", room.path.display());
-            runner.set_events(Vec::new());
-        }
-    }
+    });
+    Ok(())
 }
 
 /// Runs in `ResetPlay`: no event runs, no message shows. The flags and variables
@@ -348,22 +384,11 @@ pub fn run_events(world: &mut World, players: &mut QueryState<&Interpolated, Wit
         let pose = pose.current;
         (pose.translation, pose.rotation * Vec3::Z)
     });
-    let runner = world.resource::<EventRunner>();
-    if runner.events.is_empty() && runner.running.is_empty() {
-        // Nothing to run. Only a different value is a write: no resource is marked
-        // as changed in each step. The press is free for a script.
-        let pressed = world.resource::<FixedActionState>().just_pressed(INTERACT);
-        let mut runner = world.resource_mut::<EventRunner>();
-        if runner.interact_free != pressed {
-            runner.bypass_change_detection().interact_free = pressed;
-        }
-    } else {
-        // The runner is out of the world while its commands have the world.
-        world.resource_scope(|world, mut runner: Mut<EventRunner>| {
-            // Change detection of the runner has no reader.
-            runner.bypass_change_detection().step(world, player);
-        });
-    }
+    // The runner is out of the world while its commands have the world.
+    world.resource_scope(|world, mut runner: Mut<EventRunner>| {
+        // Change detection of the runner has no reader.
+        runner.bypass_change_detection().step(world, player);
+    });
     // The scripts, after the events: a press that started an event starts no script.
     for index in 0..world.resource::<ScriptRunners>().0.len() {
         let run = world.resource::<ScriptRunners>().0[index];

@@ -64,7 +64,9 @@ output = false",
         let app = game_app();
         let registry = app.world().resource::<events::CommandRegistry>();
         let types = app.world().resource::<scene::ComponentTypes>();
-        let mut count = 0;
+        // The events and their pages: those of the rooms before the events were
+        // components (stage 51).
+        let (mut count, mut pages) = (0, 0);
         for path in ROOMS {
             let path = PathBuf::from(path);
             let validators = app.world().resource::<scene::RoomValidators>();
@@ -77,10 +79,12 @@ output = false",
                 .replace("\r\n", "\n");
             assert_eq!(file, text, "{path:?}");
             assert_eq!(scene::parse_room(&text).unwrap(), document.room);
-            assert_eq!(registry.parse_events(&text).unwrap(), document.events);
+            let events = registry.parse_events(&text).unwrap();
+            assert_eq!(events, document.events(registry));
             assert_eq!(maki_editor::read_notes(&text), document.notes);
             assert!(!document.notes.room.is_empty() && !document.notes.items.is_empty());
-            count += document.events.len();
+            count += events.len();
+            pages += events.iter().map(|event| event.pages.len()).sum::<usize>();
             // The inspector reads the room, each object, and each component as a tree,
             // and reads a changed tree back. With no change: the same room, and the
             // same file.
@@ -94,7 +98,8 @@ output = false",
                 again.set_tree(item, tree).unwrap();
             }
             for (index, object) in document.room.objects.iter().enumerate() {
-                for name in object.components.keys() {
+                // The pages of an event have a panel of their own, not a tree.
+                for name in object.components.keys().filter(|name| *name != "event") {
                     let tree = again.component_tree(index, name, types).unwrap().unwrap();
                     again.set_component_tree(index, name, &tree, types).unwrap();
                 }
@@ -102,7 +107,7 @@ output = false",
             assert_eq!(again.room, document.room, "{path:?}");
             assert_eq!(again.text(), text, "{path:?}");
         }
-        assert_eq!(count, 7);
+        assert_eq!((count, pages), (7, 9));
     }
 
     /// A component of this game says what its fields are with the derive of the

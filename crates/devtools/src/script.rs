@@ -4,7 +4,6 @@
 //! changes does not break the script, as long as the way along the two axes is free.
 
 use glam::Vec3;
-use maki_events::EventDef;
 use maki_gameplay::{MOVE_BACK, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, RUN};
 use maki_platform::Action;
 use maki_scene::RoomDef;
@@ -78,7 +77,6 @@ pub(crate) struct Progress {
 pub(crate) struct World<'a> {
     pub player: Vec3,
     pub room: &'a RoomDef,
-    pub events: &'a [EventDef],
     /// `CurrentRoom::loads`.
     pub loads: u64,
     /// An event has the control (`EventRunner::blocks_player`).
@@ -88,9 +86,15 @@ pub(crate) struct World<'a> {
 impl Place {
     fn find(&self, world: &World) -> Option<Vec3> {
         match self {
+            // The area of an event is at the position of its object.
             Place::Event(name) => {
-                let event = world.events.iter().find(|event| event.name == *name)?;
-                let [x, z] = event.area?.center;
+                let objects = world.room.objects.iter();
+                let event = objects.filter(|object| object.components.contains_key("event"));
+                let [x, _, z] = event
+                    .into_iter()
+                    .find(|object| object.name.as_deref() == Some(*name))?
+                    .pose
+                    .position;
                 Some(Vec3::new(x, 0.0, z))
             }
             Place::Spawn(name) => world.room.spawn(name).map(Vec3::from),
@@ -170,18 +174,15 @@ pub(crate) fn actions(
 
 #[cfg(test)]
 mod tests {
-    use maki_events::Area;
-
     use super::*;
 
     const LEFT: Action = Action("left");
     const UP: Action = Action("up");
 
-    fn world<'a>(player: [f32; 3], room: &'a RoomDef, events: &'a [EventDef]) -> World<'a> {
+    fn world(player: [f32; 3], room: &RoomDef) -> World<'_> {
         World {
             player: player.into(),
             room,
-            events,
             loads: 1,
             blocked: false,
         }
@@ -197,7 +198,7 @@ mod tests {
         let room = RoomDef::default();
         let mut progress = Progress::default();
         let held: Vec<&[Action]> = (0..=620)
-            .map(|frame| actions(SCRIPT, &mut progress, frame, &world([0.0; 3], &room, &[])))
+            .map(|frame| actions(SCRIPT, &mut progress, frame, &world([0.0; 3], &room)))
             .collect();
         assert_eq!(held[1], &[]);
         assert_eq!(held[40], &[LEFT]);
@@ -220,18 +221,30 @@ mod tests {
         let mut room = RoomDef::default();
         let east = maki_scene::ObjectDef::spawn_point("east".to_owned(), [3.0, 0.0, 0.0]);
         room.objects.push(east);
-        let events = [EventDef {
-            name: "switch".to_owned(),
-            area: Some(Area {
-                center: [5.0, -2.0],
-                size: [1.0, 1.0],
-            }),
-            pages: Vec::new(),
-        }];
+        let switch = maki_scene::ObjectDef {
+            name: Some("switch".to_owned()),
+            pose: maki_scene::PoseDef {
+                position: [5.0, 0.0, -2.0],
+                ..Default::default()
+            },
+            components: [
+                ("event", "(pages: [])"),
+                ("area", "(width: 1.0, depth: 1.0)"),
+            ]
+            .map(|(name, text)| {
+                (
+                    name.to_owned(),
+                    maki_scene::ComponentText::parse(text).unwrap(),
+                )
+            })
+            .into(),
+            ..Default::default()
+        };
+        room.objects.push(switch);
         let mut progress = Progress::default();
         let mut frame = 0;
         let mut at = |player: [f32; 3], blocked: bool, progress: &mut Progress| {
-            let mut world = world(player, &room, &events);
+            let mut world = world(player, &room);
             world.blocked = blocked;
             frame += 1;
             actions(SCRIPT, progress, frame, &world)

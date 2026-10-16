@@ -112,9 +112,9 @@ mod tests {
     #[test]
     fn an_event_of_a_room_file_shakes_the_camera_and_the_camera_comes_back() {
         let path = std::env::temp_dir().join(format!("maki-shake-{}.ron", std::process::id()));
-        let room = r#"(width: 8, depth: 8, height: 3, objects: [(name: "start", components: {"spawn": ()})],
-            events: [(name: "quake", pages: [(trigger: Autorun, commands: [
-                ShakeCamera(0.1, 0.5), SetFlag("after", true)])])])"#;
+        let room = r#"(width: 8, depth: 8, height: 3, objects: [(name: "start", components: {"spawn": ()}),
+            (name: "quake", components: {"event": (pages: [(trigger: Autorun, commands: [
+                ShakeCamera(0.1, 0.5), SetFlag("after", true)])])})])"#;
         std::fs::write(&path, room).unwrap();
 
         let mut app = App::new(ConfigFile::from_text("[camera]\nfollow_time = 0.0")).unwrap();

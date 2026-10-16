@@ -35,8 +35,8 @@ fn runs(add: fn(&mut App)) {
     let room = r#"(width: 8, depth: 8, height: 3, objects: [
         (name: "thing", pose: (position: (0, 1, 0)), components: {
             "script_name": (), "area": (),
-            "light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)})],
-        events: [(name: "row", pages: [(trigger: Autorun, commands: [])])])"#;
+            "light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}),
+        (name: "row", components: {"event": (pages: [(trigger: Autorun, commands: [])])})])"#;
     let mut app = App::new(ConfigFile::default()).unwrap();
     app.add_module(platform::PlatformModule)
         .add_module(scene::SceneModule)

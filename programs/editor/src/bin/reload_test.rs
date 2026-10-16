@@ -12,9 +12,8 @@ use maki_engine::core::{App, ConfigFile};
 use maki_engine::events::CommandRegistry;
 use maki_engine::{Project, Result, events, gameplay, platform, scene};
 
-/// An event with the command of the script crate of the game.
-const EVENTS: &str = r#"(events: [(name: "e", pages: [(trigger: Autorun, commands: [
-    ShakeCamera(0.5, 0.05)])])])"#;
+/// The command of the script crate of the game.
+const SHAKE: &str = "ShakeCamera(0.5, 0.05)";
 
 /// A new app with some engine modules and the modules of the DLL.
 fn build(dll: &Path) -> Result<App> {
@@ -31,11 +30,9 @@ fn build(dll: &Path) -> Result<App> {
 /// The rows of the commands (closures of the DLL), and one frame (its systems).
 fn report(name: &str, app: &mut App) -> Result {
     let registry = app.world().resource::<CommandRegistry>();
-    let events = registry.parse_events(EVENTS)?;
-    for command in &events[0].pages[0].commands {
-        let text = registry.row_text(command);
-        println!("{name}: {}", text.as_deref().unwrap_or("no row text"));
-    }
+    let command = registry.parse_command(SHAKE)?;
+    let text = registry.row_text(&command);
+    println!("{name}: {}", text.as_deref().unwrap_or("no row text"));
     app.advance(Duration::from_millis(16));
     Ok(())
 }

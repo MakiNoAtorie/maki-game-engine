@@ -12,3 +12,6 @@
 /game/save.ron
 # Backup of the owner. Not part of the repository.
 /maki-renderer-*.zip
+
+# Worktrees of parallel agents.
+.claude/worktrees/

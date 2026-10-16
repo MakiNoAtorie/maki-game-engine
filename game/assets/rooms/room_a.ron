@@ -1,8 +1,8 @@
 // Room A: the test room. A cube and a sphere of 1 m on the floor, a glass ball in
 // front of them, two mirrors, a locked door in the back wall, and the way to room B
 // in the east wall.
-// The format is `RoomDef` in crates/scene/src/room.rs, and `EventDef` in
-// crates/events/src/model.rs for the events. Lengths are meters, angles degrees.
+// The format is `RoomDef` in crates/scene/src/room.rs; an event is the component
+// "event" (`EventPages` in crates/events/src/model.rs). Lengths are meters, angles degrees.
 (
     width: 8.0,
     depth: 8.0,
@@ -68,46 +68,68 @@
         (components: {"doorway": (wall: PosX, offset: -1.0, width: 1.2, height: 2.1, depth: 1.5)}),
         (name: "east", pose: (position: (3.2, 0.0, -1.0)), components: {"spawn": ()}),
         (name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
-    ],
-    events: [
+        // The events: an object with the component "event". Its area is the
+        // component "area" at the position of the object.
         (
             name: "locked door",
-            area: (center: (3.0, -3.5), size: (1.0, 0.8)),
-            pages: [
-                (trigger: Interact, commands: [Message("The door is locked. Something hums behind it.")]),
-                (
-                    conditions: [Flag("power_off")],
-                    trigger: Interact,
-                    commands: [Message("The lock is dead. The door gives way."), OpenDoor("door")],
+            pose: (position: (3.0, 0.0, -3.5)),
+            components: {
+                "area": (width: 1.0, depth: 0.8),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Interact,
+                            commands: [Message("The door is locked. Something hums behind it.")],
+                        ),
+                        (
+                            conditions: [Flag("power_off")],
+                            trigger: Interact,
+                            commands: [Message("The lock is dead. The door gives way."), OpenDoor("door")],
+                        ),
+                    ],
                 ),
-            ],
+            },
         ),
         (
             name: "to room b",
-            area: (center: (4.9, -1.0), size: (0.8, 1.2)),
-            pages: [(trigger: Touch, commands: [FadeOut(0.4), Transfer("room_b.ron", "west"), FadeIn(0.4)])],
+            pose: (position: (4.9, 0.0, -1.0)),
+            components: {
+                "area": (width: 0.8, depth: 1.2),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Touch,
+                            commands: [FadeOut(0.4), Transfer("room_b.ron", "west"), FadeIn(0.4)],
+                        ),
+                    ],
+                ),
+            },
         ),
         // With the power off, the lamp runs on what is left, and its hum is gone.
         // `SoundOff` is a command of the audio module (crates/audio).
         (
             name: "flicker",
-            pages: [
-                (
-                    conditions: [Flag("power_off")],
-                    trigger: Parallel,
-                    commands: [
-                        SoundOff("lamp"),
-                        LightIntensity("lamp", 3.0),
-                        Wait(0.06),
-                        LightIntensity("lamp", 12.0),
-                        Wait(0.9),
-                        LightIntensity("lamp", 6.0),
-                        Wait(0.05),
-                        LightIntensity("lamp", 12.0),
-                        Wait(1.7),
+            components: {
+                "event": (
+                    pages: [
+                        (
+                            conditions: [Flag("power_off")],
+                            trigger: Parallel,
+                            commands: [
+                                SoundOff("lamp"),
+                                LightIntensity("lamp", 3.0),
+                                Wait(0.06),
+                                LightIntensity("lamp", 12.0),
+                                Wait(0.9),
+                                LightIntensity("lamp", 6.0),
+                                Wait(0.05),
+                                LightIntensity("lamp", 12.0),
+                                Wait(1.7),
+                            ],
+                        ),
                     ],
                 ),
-            ],
+            },
         ),
     ],
 )

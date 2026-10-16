@@ -67,8 +67,10 @@ impl Finding {
 /// Something wrong in the events of a room.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problem {
-    /// The index of the event.
+    /// The index of the event in the list that was checked.
     pub event: usize,
+    /// The index of the object of the event in the room.
+    pub object: usize,
     /// `Some`: the index of the page, and the command. `None`: the event itself.
     pub command: Option<(usize, Command)>,
     pub warning: bool,
@@ -89,6 +91,7 @@ impl CommandRegistry {
             if events[..index].iter().any(|other| other.name == event.name) {
                 problems.push(Problem {
                     event: index,
+                    object: event.object,
                     command: None,
                     warning: false,
                     text: format!("another event has the name `{}`", event.name),
@@ -106,6 +109,7 @@ impl CommandRegistry {
                     if let Some(finding) = self.check(command, context) {
                         problems.push(Problem {
                             event: index,
+                            object: event.object,
                             command: Some((page, command.clone())),
                             warning: finding.warning,
                             text: finding.text,

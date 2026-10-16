@@ -230,16 +230,16 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
             hit(t, Some(item));
         }
     }
-    for (index, event) in document.events.iter().enumerate() {
+    for index in 0..document.room.objects.len() {
+        let item = Item::Object(index);
+        let Some(area) = document.area(&item) else {
+            continue;
+        };
         // A little above the floor: the rectangle is in front of the floor.
         let on_floor = ray.height(0.02);
-        let inside = |(at, _): &(Vec3, f32)| {
-            event
-                .area
-                .is_some_and(|area| area.distance(at.x, at.z) == 0.0)
-        };
+        let inside = |(at, _): &(Vec3, f32)| area.distance(at.x, at.z) == 0.0;
         if let Some((_, t)) = on_floor.filter(inside) {
-            hit(t, Some(Item::Event(index)));
+            hit(t, Some(item));
         }
     }
     nearest.1

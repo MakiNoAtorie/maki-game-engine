@@ -210,7 +210,6 @@ fn run_script(
         let world = crate::script::World {
             player: player.unwrap_or_default(),
             room: &room.def,
-            events: events.as_ref().map_or(&[], |runner| runner.events()),
             loads: room.loads,
             blocked: events.as_ref().is_some_and(|runner| runner.blocks_player()),
         };

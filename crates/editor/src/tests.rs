@@ -33,21 +33,25 @@ const ROOM_A: &str = r#"// The test room.
             components: {"light": (radius: 0.1, color: (1.0, 0.9, 0.8), intensity: 5.0)},
         ),
         (name: "start", pose: (position: (0.0, 0.0, 2.0)), components: {"spawn": ()}),
-    ],
-    events: [
         // Runs at the start.
         (
             name: "leave",
-            pages: [
-                (
-                    trigger: Autorun,
-                    commands: [SetFlag("left", true), LightOff("lamp"), Transfer("b.ron", "in")],
+            components: {
+                "event": (
+                    pages: [
+                        (
+                            trigger: Autorun,
+                            commands: [SetFlag("left", true), LightOff("lamp"), Transfer("b.ron", "in")],
+                        ),
+                    ],
                 ),
-            ],
+            },
         ),
     ],
 )
 "#;
+/// The object of the event of room A.
+const LEAVE: usize = 3;
 const ROOM_B: &str =
     r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [(name: "in", components: {"spawn": ()})])"#;
 
@@ -147,7 +151,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
             Item::Object(1),
             Item::Object(0),
             Item::Object(2),
-            Item::Event(0),
+            Item::Object(LEAVE),
         ] {
             app.resource_mut::<Editor>().selection = vec![item];
             frames(&mut app, 3);
@@ -423,12 +427,12 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
 
         // A copy, then the copy is removed: the selection follows.
         request(&mut app, Command::Duplicate);
-        assert_eq!(selection(&app), [Item::Object(3)]);
+        assert_eq!(selection(&app), [Item::Object(4)]);
         request(&mut app, Command::Delete);
         assert_eq!(selection(&app), []);
         assert_eq!(
             app.world().resource::<Editor>().document.room.objects.len(),
-            3
+            4
         );
         // The comment of the cube is still the comment of the cube.
         assert!(
@@ -444,7 +448,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
 
 #[test]
 fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
-    use maki_events::{Builtin, EventDef, Page, Trigger};
+    use maki_events::{Builtin, EventPages, Page, Trigger};
 
     let (app, directory) = editor_app("mover");
     app.run(|mut app| {
@@ -459,18 +463,20 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
         let mut mover = editor.document.mover(&Item::Object(2)).unwrap();
         mover.seconds = 0.2;
         editor.document.room.objects[2].set_mover(mover);
-        editor.document.events.push(EventDef {
-            name: "lift".to_owned(),
-            area: Default::default(),
-            pages: vec![Page {
-                conditions: Vec::new(),
-                trigger: Trigger::Autorun,
-                commands: vec![
-                    command(Builtin::OpenDoor("mover".to_owned())),
-                    command(Builtin::SetFlag("up".to_owned(), true)),
-                ],
-            }],
-        });
+        let lift = maki_scene::ObjectDef {
+            name: Some("lift".to_owned()),
+            ..Default::default()
+        };
+        editor.document.room.objects.push(lift);
+        let pages = vec![Page {
+            conditions: Vec::new(),
+            trigger: Trigger::Autorun,
+            commands: vec![
+                command(Builtin::OpenDoor("mover".to_owned())),
+                command(Builtin::SetFlag("up".to_owned(), true)),
+            ],
+        }];
+        editor.document.set_event(3, &EventPages { pages });
         let height = |app: &App| {
             let world = app.world();
             let mut movers = world
@@ -514,11 +520,9 @@ fn a_test_of_a_page_plays_the_room_in_step_mode_and_stop_ends_it() {
                 .map(|c| format!("{c:?}"))
                 .collect::<Vec<_>>()
         };
-        // The page that the test started, and the same page by its own trigger.
-        assert_eq!(
-            waits(&app),
-            [r#"SetFlag("left", true)"#, r#"SetFlag("left", true)"#]
-        );
+        // The page that the test started. It starts before the first step of the
+        // room, so its own `Autorun` waits: an event blocks the player.
+        assert_eq!(waits(&app), [r#"SetFlag("left", true)"#]);
         assert!(!app.world().resource::<GameState>().flag("left"));
 
         app.resource_mut::<EventRunner>().step_command();
@@ -598,7 +602,13 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
             app.world().resource::<Editor>()
         }
         let cube = |app: &App| editor(app).document.room.objects[0].pose.position;
-        let commands = |app: &App| editor(app).document.events[0].pages[0].commands.len();
+        // The first page of the one event of the room.
+        fn page(app: &App) -> Vec<maki_events::Command> {
+            let editor = editor(app);
+            let events = editor.document.events(&editor.registry);
+            events[0].pages[0].commands.clone()
+        }
+        let commands = |app: &App| page(app).len();
         let row = |index| Row {
             list: Vec::new(),
             index,
@@ -632,11 +642,14 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         // not the event.
         {
             let mut editor = app.resource_mut::<Editor>();
-            editor.select(Item::Event(0), false);
+            editor.select(Item::Object(LEAVE), false);
+            // The panel shows the first page of the event, then a click on a row.
+            editor.event_ui.go_to(LEAVE, 0, None);
             editor.event_ui.select_rows(row(1), None);
         }
         request(&mut app, Command::Delete);
-        assert_eq!((editor(&app).document.events.len(), commands(&app)), (1, 2));
+        let objects = editor(&app).document.room.objects.len();
+        assert_eq!((objects, commands(&app)), (4, 2));
         // A range of two rows (Shift and a click): copy, paste after them, and a
         // copy of the pasted rows.
         app.resource_mut::<Editor>()
@@ -650,7 +663,7 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         assert_eq!(commands(&app), 6);
         request(&mut app, Command::Delete);
         assert_eq!(commands(&app), 4);
-        let list = &editor(&app).document.events[0].pages[0].commands;
+        let list = &page(&app);
         assert_eq!((&list[0], &list[1]), (&list[2], &list[3]));
         // Undo is of the document: the rows that were deleted are back.
         request(&mut app, Command::Undo);
@@ -662,11 +675,11 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         // The key comes in a later frame than the click.
         frames(&mut app, 1);
         request(&mut app, Command::Delete);
-        assert_eq!(editor(&app).document.room.objects.len(), 2);
+        assert_eq!(editor(&app).document.room.objects.len(), 3);
         assert_eq!((commands(&app), editor(&app).selection.len()), (6, 0));
         request(&mut app, Command::Undo);
         assert_eq!(editor(&app).selection, [Item::Object(0)]);
-        assert_eq!(editor(&app).document.room.objects.len(), 3);
+        assert_eq!(editor(&app).document.room.objects.len(), 4);
 
         // Play with changes: no question. The game goes to room B (the event of
         // room A), and a load of room A gets the room of the editor, not the file.
@@ -742,10 +755,10 @@ fn a_sound_command_is_added_with_arguments_and_a_rename_of_its_light_follows() {
         objects: [
             (name: "dark", pose: (position: (2.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)}),
             (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5))}),
-        ],
-        events: [(name: "power", pages: [(trigger: Interact, commands: [
-            SoundOff("lamp"), If([Flag("loud")], [SoundOn("lamp")], [PlaySound("click.wav", 1.0)]),
-        ])])])"#;
+            (name: "power", components: {"event": (pages: [(trigger: Interact, commands: [
+                SoundOff("lamp"), If([Flag("loud")], [SoundOn("lamp")], [PlaySound("click.wav", 1.0)]),
+            ])])}),
+        ])"#;
     let mut document = Document::parse(Path::new("room.ron"), text, &registry).unwrap();
     let room = document.room.clone();
 
@@ -836,9 +849,9 @@ fn stop_ends_all_sound_and_a_room_that_the_editor_shows_is_silent() {
         objects: [
             (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0, sound: (file: "hum.wav"))}),
             (name: "start", pose: (position: (0.0, 0.0, 2.0)), components: {"spawn": ()}),
-        ],
-        events: [(name: "start", pages: [(trigger: Autorun, commands: [
-            PlayMusic("hum.wav", 1.0), PlaySound("hum.wav", 1.0)])])])"#;
+            (name: "music", components: {"event": (pages: [(trigger: Autorun, commands: [
+                PlayMusic("hum.wav", 1.0), PlaySound("hum.wav", 1.0)])])}),
+        ])"#;
     std::fs::write(directory.join("c.ron"), room).unwrap();
     // Music, the sounds that play one time, the sounds at a place.
     let playing = |app: &App| {
@@ -1052,7 +1065,8 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
         app.resource_mut::<Panels>().apply_layout("Look");
         frames(&mut app, 2);
         assert!(!app.world().resource::<Panels>().is_open(panels::EVENT));
-        app.resource_mut::<Editor>().select(Item::Event(0), false);
+        app.resource_mut::<Editor>()
+            .select(Item::Object(LEAVE), false);
         frames(&mut app, 2);
         assert!(app.world().resource::<Panels>().is_open(panels::EVENT));
 
@@ -1084,7 +1098,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         editor.document.set_light(&Item::Object(1), light);
         editor.document.dirty = true;
         editor.play_from = Some("other".to_owned());
-        editor.select(Item::Event(0), false);
+        editor.select(Item::Object(LEAVE), false);
         frames(&mut app, 2);
         let world = app.world();
         let mut cameras = world.try_query::<&EditorCamera>().unwrap();
@@ -1110,7 +1124,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         assert!(editor.document.dirty);
         assert_eq!(editor.document.path, directory.join("a.ron"));
         assert_eq!(editor.play_from.as_deref(), Some("other"));
-        assert_eq!(editor.selection, [Item::Event(0)]);
+        assert_eq!(editor.selection, [Item::Object(LEAVE)]);
         // The same session comes out of it.
         assert_eq!(super::session(world).unwrap(), session);
     });
@@ -1263,7 +1277,6 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
     assert!(document.set_tree(&Item::Object(0), tree.clone()).is_err());
     assert!(document.set_tree(&Item::Object(9), tree).is_err());
     assert!(document.tree(&Item::Object(9)).is_none());
-    assert!(document.tree(&Item::Event(0)).is_none());
     let null = Value::Null;
     assert!(
         document

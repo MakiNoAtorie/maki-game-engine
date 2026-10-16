@@ -476,16 +476,13 @@ impl Editor {
 
     /// A command for the selected command rows of the event panel.
     fn rows(&mut self, command: RowCommand) {
-        let Item::Event(index) = self.primary() else {
+        let Some(index) = self.selected_event() else {
             return;
         };
-        let page = self.event_ui.page;
-        let pages = self
-            .document
-            .events
-            .get_mut(index)
-            .map(|event| &mut event.pages);
-        let Some(page) = pages.and_then(|pages| pages.get_mut(page)) else {
+        let Some(Ok(mut event)) = self.document.event(index, &self.registry) else {
+            return;
+        };
+        let Some(page) = event.pages.get_mut(self.event_ui.page) else {
             return;
         };
         if row_command(
@@ -494,9 +491,19 @@ impl Editor {
             &self.registry,
             command,
         ) {
+            self.document.set_event(index, &event);
             self.document.dirty = true;
         }
         self.status = format!("{command:?}: command rows");
+    }
+
+    /// The object of the primary item, if it has an event.
+    pub(crate) fn selected_event(&self) -> Option<usize> {
+        let Item::Object(index) = self.primary() else {
+            return None;
+        };
+        let object = self.document.room.objects.get(index)?;
+        object.components.contains_key("event").then_some(index)
     }
 
     fn run(&mut self, world: &mut World, command: Command, confirmed: bool) {
@@ -514,7 +521,7 @@ impl Editor {
         }
         // The list that had the last click gets the command: the command rows of
         // the event panel, or the items.
-        let on_rows = self.event_ui.focused && matches!(self.primary(), Item::Event(_));
+        let on_rows = self.event_ui.focused && self.selected_event().is_some();
         let row = match command {
             Command::Delete => Some(RowCommand::Delete),
             Command::Duplicate => Some(RowCommand::Duplicate),
@@ -757,10 +764,6 @@ impl Editor {
         let registry = self.registry.clone();
         // The name that the item had.
         let old = match item {
-            Item::Event(index) => match self.document.events.get_mut(*index) {
-                Some(event) => Some(std::mem::replace(&mut event.name, new)),
-                None => return,
-            },
             Item::Object(index) => match self.document.room.objects.get_mut(*index) {
                 Some(object) => {
                     std::mem::replace(&mut object.name, (!new.is_empty()).then_some(new))
@@ -932,9 +935,9 @@ impl Editor {
         if panels.is_open(panels::CONFIRM) != ask {
             panels.set_open(panels::CONFIRM, ask);
         }
-        // An event becomes the selected item: its panel shows. The user can close
-        // the tab while the event stays selected.
-        let event = !playing && matches!(self.primary(), Item::Event(_));
+        // An object with an event becomes the selected item: the event panel shows.
+        // The user can close the tab while the object stays selected.
+        let event = !playing && self.selected_event().is_some();
         if event && !self.event_selected {
             panels.show(panels::EVENT);
         }
@@ -1499,9 +1502,7 @@ pub fn run_commands(world: &mut World) {
         }
         // A test: its page starts when the events of the room are loaded.
         if let Some((event, page)) = &editor.test
-            && world
-                .resource_mut::<EventRunner>()
-                .start_event(event, *page)
+            && maki_events::start_event(world, event, *page)
         {
             editor.test = None;
         }

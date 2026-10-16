@@ -18,8 +18,8 @@ use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transfo
 pub use collision::{Collider, move_circle, room_colliders};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
-    ComponentText, ComponentType, ComponentTypes, ObjectDef, add_component_type,
-    add_object_component,
+    ComponentText, ComponentType, ComponentTypes, ObjectDef, add_component_reader,
+    add_component_type, add_object_component,
 };
 pub use prefab::{
     PrefabDef, PrefabFile, PrefabUse, change_key, changed_text, difference, instance_objects,

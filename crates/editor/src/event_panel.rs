@@ -12,8 +12,8 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_core::App;
 use maki_events::{
-    Area, Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, GameState, Page,
-    Problem, Trigger, active_page,
+    Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, GameState, Page, Problem,
+    Trigger, active_page,
 };
 use maki_scene::{RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
@@ -21,7 +21,7 @@ use maki_ui::egui::{self, Color32, Ui};
 use crate::events::{
     ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, optional, row, same_kind, text};
+use crate::widgets::{choice, drag, number, row, same_kind};
 use crate::{Command as EditorCommand, Editor};
 
 pub(crate) const ERROR: Color32 = maki_ui::THEME.error;
@@ -621,7 +621,7 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     let others = editor.others().to_vec();
     let used = names(&editor.document, &others, &registry);
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
-    problems.retain(|problem| problem.event == index);
+    problems.retain(|problem| problem.object == index);
     let room = &editor.document.room;
     let own = (file_name(&editor.document), room.spawn_names());
     let other_rooms = others
@@ -650,55 +650,21 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     (lists, problems)
 }
 
-/// The part of an event in the property panel: its name and its area. True: the
-/// event was changed. `None`: the document has no such event. `old_name`: set if the
-/// name was changed.
-pub(crate) fn event_properties(
-    ui: &mut Ui,
-    editor: &mut Editor,
-    index: usize,
-    old_name: &mut Option<Option<String>>,
-) -> Option<bool> {
+/// What the property panel shows of the event of an object: the problems of the
+/// event itself (a name that another event has). The name is that of the object;
+/// the area is its component `area`.
+pub(crate) fn event_properties(ui: &mut Ui, editor: &mut Editor, index: usize) {
     let (_, problems) = lists_and_problems(editor, index);
-    let event = editor.document.events.get_mut(index)?;
-    let mut changed = false;
-
-    let old = event.name.clone();
-    if text(ui, "name", &mut event.name) {
-        *old_name = Some(Some(old));
-        changed = true;
-    }
-    // An event with no area is one that no player walks to: Autorun, Parallel.
-    let new_area = || Area {
-        center: [0.0; 2],
-        size: [1.0; 2],
-    };
-    let label = "has an area on the floor";
-    changed |= optional(ui, label, &mut event.area, new_area, |ui, area| {
-        let mut changed = false;
-        for (label, value, least) in [
-            ("center (X, Z)", &mut area.center, -100.0),
-            ("size (X, Z)", &mut area.size, 0.05),
-        ] {
-            row(ui, label, |ui| {
-                for part in value {
-                    let drag = drag(part).speed(0.01).range(least..=100.0).suffix(" m");
-                    changed |= ui.add(drag).changed();
-                }
-            });
-        }
-        changed
-    });
     for problem in problems.iter().filter(|problem| problem.command.is_none()) {
         ui.colored_label(color(problem), problem.text.as_str());
     }
     ui.weak("Pages and commands: the panel \"Events\".");
-    Some(changed)
 }
 
 /// The event panel, under the picture: the pages with their conditions and trigger
 /// at the left, the command rows in the middle, the arguments of the selected row
-/// at the right. True: the event was changed. `None`: the document has no such event.
+/// at the right. `index`: the object of the event. True: the event was changed.
+/// `None`: the object has no event that reads.
 pub(crate) fn event_panel(
     ui: &mut Ui,
     world: &mut World,
@@ -725,8 +691,12 @@ pub(crate) fn event_panel(
     // For the file pickers of the arguments.
     let directory = document.path.parent().unwrap_or(std::path::Path::new(""));
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
+    let mut event = document.event(index, &registry)?.ok()?;
+    let name = document.room.objects[index]
+        .name
+        .clone()
+        .unwrap_or_default();
     let room = &document.room;
-    let event = document.events.get_mut(index)?;
     let mut changed = false;
     if event.pages.is_empty() {
         event.pages.push(empty_page());
@@ -744,7 +714,7 @@ pub(crate) fn event_panel(
     };
     part(egui::Panel::left("event pages")).show(ui, |ui| {
         scroll("pages").show(ui, |ui| {
-            changed |= pages(ui, event, event_ui, &state, &lists, queue);
+            changed |= pages(ui, &mut event.pages, &name, event_ui, &state, &lists, queue);
         });
     });
     let at = event_ui.page;
@@ -766,6 +736,9 @@ pub(crate) fn event_panel(
             changed |= command_rows(ui, page, event_ui, places, &problems, at);
         });
     });
+    if changed {
+        document.set_event(index, &event);
+    }
     Some(changed)
 }
 
@@ -776,7 +749,8 @@ const SIDE_WIDTH: f32 = 340.0;
 /// trigger of the page that shows.
 fn pages(
     ui: &mut Ui,
-    event: &mut maki_events::EventDef,
+    pages: &mut Vec<Page>,
+    name: &str,
     event_ui: &mut EventUi,
     state: &GameState,
     lists: &Lists,
@@ -784,9 +758,9 @@ fn pages(
 ) -> bool {
     let mut changed = false;
     // The pages, as tabs. The one that the game would run now has a star.
-    let count = event.pages.len();
+    let count = pages.len();
     event_ui.page = event_ui.page.min(count - 1);
-    let active = active_page(event, state);
+    let active = active_page(pages, state);
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
         for page in 0..count {
@@ -805,9 +779,9 @@ fn pages(
     });
     let at = event_ui.page;
     ui.horizontal(|ui| {
-        let before = (event.pages.clone(), at);
+        let before = (pages.clone(), at);
         if ui.button("Add").clicked() {
-            event.pages.insert(at + 1, empty_page());
+            pages.insert(at + 1, empty_page());
             event_ui.page = at + 1;
         }
         if ui
@@ -815,14 +789,14 @@ fn pages(
             .on_hover_text("A copy of the page, after it")
             .clicked()
         {
-            event.pages.insert(at + 1, event.pages[at].clone());
+            pages.insert(at + 1, pages[at].clone());
             event_ui.page = at + 1;
         }
         if ui
             .add_enabled(count > 1, egui::Button::new("Delete"))
             .clicked()
         {
-            event.pages.remove(at);
+            pages.remove(at);
             event_ui.page = at.min(count - 2);
         }
         if ui
@@ -830,7 +804,7 @@ fn pages(
             .on_hover_text("Earlier in the order")
             .clicked()
         {
-            event.pages.swap(at, at - 1);
+            pages.swap(at, at - 1);
             event_ui.page = at - 1;
         }
         if ui
@@ -838,17 +812,16 @@ fn pages(
             .on_hover_text("Later: it wins over the pages before it")
             .clicked()
         {
-            event.pages.swap(at, at + 1);
+            pages.swap(at, at + 1);
             event_ui.page = at + 1;
         }
-        if before != (event.pages.clone(), event_ui.page) {
+        if before != (pages.clone(), event_ui.page) {
             event_ui.row = None;
             changed = true;
         }
     });
     let at = event_ui.page;
-    let name = event.name.clone();
-    let page = &mut event.pages[at];
+    let page = &mut pages[at];
 
     ui.label("Conditions (all must hold)");
     changed |= ui
@@ -878,7 +851,7 @@ fn pages(
         .on_hover_text("Plays the room and runs this page, one command for each step")
         .clicked()
     {
-        queue.push(EditorCommand::Test(name, at));
+        queue.push(EditorCommand::Test(name.to_owned(), at));
     }
     changed
 }
