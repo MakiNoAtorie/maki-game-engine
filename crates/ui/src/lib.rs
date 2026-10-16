@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 /// this, so it has the same egui version as this crate.
 pub use commands::{
     COMMAND_SEARCH, ToolCommand, ToolCommands, add_command, command_item, command_keys, key_label,
-    run_command,
+    queue_command, run_command, run_queued,
 };
 pub use egui;
 pub use events::{EventsUiModule, game_state_panel};
@@ -288,6 +288,13 @@ impl Panels {
         leaf.map_or(Vec::new(), |leaf| leaf.tabs.clone())
     }
 
+    /// Does what a row of the command search stands for, as a click on it does.
+    pub fn run_row(&mut self, world: &mut World, row: &SearchRow) {
+        if let Some(shell) = &mut self.tool {
+            shell::run_search_row(shell, &mut self.panels, world, row);
+        }
+    }
+
     /// The rows of the command search of a tool for a text.
     pub fn search(&self, world: &World, query: &str) -> Vec<SearchRow> {
         match &self.tool {
@@ -504,6 +511,8 @@ impl Module for UiModule {
             // It thus conflicts with each system of `Update`. The order to them changes
             // only if a panel shows a value of this frame or of the frame before.
             .add_systems(Update, run_ui.ambiguous_with_all())
+            // The commands of a menu or the search: `Panels` is back in the world.
+            .add_systems(Update, run_queued.after(run_ui).ambiguous_with_all())
             .add_systems(Extract, extract_ui.run_if(resource_exists::<RenderWorld>));
         help::build(app);
     }
