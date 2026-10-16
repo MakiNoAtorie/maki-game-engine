@@ -133,18 +133,33 @@ pub fn fill(template: &str, snake: &str, pascal: &str) -> String {
 /// no `add_modules`.
 fn register(lib: &str, snake: &str) -> Option<String> {
     let lines: Vec<&str> = lib.lines().collect();
-    // Top level only: `mod tests {` has no `;`. Else after the `use` lines, else at
-    // the top, below the inner `//!` and `#![..]` lines that must stay first.
-    let last = |start: &str| {
-        lines
-            .iter()
-            .rposition(|l| l.starts_with(start) && l.trim_end().ends_with(';'))
+    // The code of a line without its visibility and its end comment.
+    let code = |line: &str| {
+        let line = line.split("//").next().unwrap_or("").trim_end();
+        let line = line.strip_prefix("pub").map_or(line, |rest| {
+            rest.strip_prefix("(crate)")
+                .or(rest.strip_prefix("(super)"))
+                .unwrap_or(rest)
+                .trim_start()
+        });
+        line.to_owned()
     };
-    let top = lines
+    // After the last `mod x;`, else the last `use`, else the inner lines that must stay first.
+    let last_mod = lines.iter().rposition(|l| {
+        let code = code(l);
+        code.starts_with("mod ") && code.ends_with(';')
+    });
+    let last_use = lines
         .iter()
-        .take_while(|l| l.starts_with("//!") || l.starts_with("#!["))
-        .count();
-    let at = last("mod ").or(last("use ")).or(top.checked_sub(1));
+        .rposition(|l| code(l).starts_with("use "))
+        .map(|start| {
+            let end = lines[start..].iter().position(|l| code(l).ends_with(';'));
+            start + end.unwrap_or(0)
+        });
+    let inner = |l: &&&str| l.starts_with("//!") || l.starts_with("#![") || l.trim().is_empty();
+    let head = lines.iter().take_while(inner).count();
+    let top = lines[..head].iter().rposition(|l| !l.trim().is_empty());
+    let at = last_mod.or(last_use).or(top);
     let entry = lines.iter().position(|line| line.trim() == ENTRY)?;
     let mod_line = format!("mod {snake};");
     let add_line = format!("    {snake}::add(app);");
@@ -418,6 +433,24 @@ mod tests {
         assert!(out.contains("use c::D;\nmod gate;\n"), "{out}");
         let out = register(&format!("//! Doc.\n\n{entry}"), "gate").unwrap();
         assert!(out.starts_with("//! Doc.\nmod gate;\n"), "{out}");
+    }
+
+    #[test]
+    fn the_mod_line_reads_the_forms_of_mod_use_and_the_inner_lines() {
+        let entry = "pub fn add_modules(app: &mut App) {\n}\n";
+        let register = |head: &str| register(&format!("{head}\n{entry}"), "gate").unwrap();
+        // A visibility and a comment after the `;`: still a top-level `mod` line.
+        let out = register("pub mod a;\npub(crate) mod b;\nmod c; // the c\n");
+        assert!(out.contains("mod c; // the c\nmod gate;\n"), "{out}");
+        // A `use` over many lines: the `mod` line goes after its end.
+        let out = register("use a::{\n    B,\n    C,\n};\n");
+        assert!(out.contains("};\nmod gate;\n"), "{out}");
+        // Inner lines with blank lines among them: after the last of them.
+        let out = register("//! Doc.\n\n#![allow(dead_code)]\n\n");
+        assert!(
+            out.starts_with("//! Doc.\n\n#![allow(dead_code)]\nmod gate;\n"),
+            "{out}"
+        );
     }
 
     #[test]

@@ -1298,8 +1298,7 @@ impl Module for EditorModule {
         // In a game: the same key and the same action stop it.
         maki_platform::add_bindings(app, &[(Key::F5, PLAY, "Stop the game (editor)")]);
         add_mode_bindings(app, MODE, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
-        // F5 is the play key here; the reload of the room (a debug key of the game) has no key.
-        // After all modules were built, so the order of the modules does not matter.
+        // F5 plays here: the room reload loses its key after all modules, in any order.
         app.add_systems(Startup, |mut bindings: ResMut<Bindings>| {
             bindings
                 .0

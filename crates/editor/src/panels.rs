@@ -133,11 +133,11 @@ pub(crate) fn build(app: &mut App) {
                 }
                 _ => {
                     // An object with no event: a button adds one.
-                    if let Item::Object(index) = editor.primary()
-                        && ui.button("Add an event").clicked()
-                    {
-                        editor.document.add_event(index);
-                        editor.document.dirty = true;
+                    if let Item::Object(index) = editor.primary() {
+                        if ui.button("Add an event").clicked() {
+                            editor.document.add_event(index);
+                            editor.document.dirty = true;
+                        }
                     } else {
                         ui.weak(
                             "Select an object with an event: its pages and its commands show here.",
