@@ -12,7 +12,7 @@ use bevy_ecs::schedule::{
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::{FromWorld, World};
 
-use crate::{ConfigFile, Settings, Time, TimeSettings};
+use crate::{ConfigFile, PlayState, Settings, Time, TimeSettings};
 
 /// Runs one time, before the first frame.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
@@ -107,6 +107,7 @@ impl App {
             fixed_delta: Duration::from_secs_f64(1.0 / time.fixed_hz),
             ..Default::default()
         });
+        world.init_resource::<PlayState>();
         let max_fixed_steps = time.max_fixed_steps;
         world.insert_resource(time);
         world.insert_resource(config);
@@ -286,9 +287,16 @@ impl App {
         self.last_frame = None;
     }
 
+    /// The game is in the state pause: no fixed step runs. Apart from
+    /// `Time::paused`, which a tool sets.
+    fn game_paused(&self) -> bool {
+        *self.world.resource::<PlayState>() == PlayState::Pause
+    }
+
     /// Runs one frame with a given delta. `update` calls this; tests call it directly.
     pub fn advance(&mut self, delta: Duration) {
         let fixed_delta = {
+            let game_paused = self.game_paused();
             let mut time = self.world.resource_mut::<Time>();
             // A frame that was too slow counts as a shorter frame: game time runs slow
             // for that frame. Without this limit, each slow frame would cause more fixed
@@ -302,7 +310,10 @@ impl App {
             time.delta = delta;
             time.elapsed += delta;
             time.frame += 1;
-            if !time.paused {
+            // The time of a pause of the game does not come back as steps after it.
+            if game_paused {
+                time.accumulator = Duration::ZERO;
+            } else if !time.paused {
                 time.accumulator += delta;
             }
             time.fixed_delta
@@ -322,7 +333,8 @@ impl App {
 
         // The delta limit above keeps this loop at `max_fixed_steps` steps or less.
         let mut steps = 0;
-        while self.world.resource::<Time>().accumulator >= fixed_delta {
+        // A step that pauses the game is the last one.
+        while self.world.resource::<Time>().accumulator >= fixed_delta && !self.game_paused() {
             let mut time = self.world.resource_mut::<Time>();
             time.accumulator -= fixed_delta;
             time.fixed_tick += 1;
@@ -420,6 +432,33 @@ max_fixed_steps = 4",
             assert_eq!(time.fixed_tick, 56);
             assert_eq!(time.alpha, 0.75);
             assert_eq!(time.frame, 103);
+        });
+    }
+
+    #[test]
+    fn no_fixed_step_runs_in_a_pause_and_a_step_that_pauses_is_the_last() {
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
+        // The third step pauses the game, as a command of an event can.
+        app.add_systems(
+            FixedUpdate,
+            |time: Res<Time>, mut state: ResMut<crate::PlayState>| {
+                if time.fixed_tick == 3 {
+                    state.change(crate::PlayState::Pause);
+                }
+            },
+        );
+        app.run(|mut app| {
+            // 100 ms is five steps of time; the pause stops the frame at the third.
+            app.advance(Duration::from_millis(100));
+            assert_eq!(app.world.resource::<Time>().fixed_tick, 3);
+            app.advance(Duration::from_millis(100));
+            assert_eq!(app.world.resource::<Time>().fixed_tick, 3);
+            // Play again: the time of the pause does not come back as steps.
+            app.world
+                .resource_mut::<crate::PlayState>()
+                .change(crate::PlayState::Play);
+            app.advance(Duration::from_millis(20));
+            assert_eq!(app.world.resource::<Time>().fixed_tick, 4);
         });
     }
 

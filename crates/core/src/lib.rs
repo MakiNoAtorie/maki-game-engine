@@ -10,6 +10,7 @@ pub mod app;
 pub mod config;
 pub mod fields;
 pub mod interpolation;
+pub mod play_state;
 pub mod time;
 pub mod transform;
 
@@ -22,6 +23,7 @@ pub use config::{ConfigFile, Settings, TimeSettings};
 pub use fields::{FieldTypes, Fields, add_field_type};
 pub use interpolation::{Interpolated, interpolate_transforms};
 pub use maki_macros::Fields;
+pub use play_state::PlayState;
 pub use time::Time;
 pub use transform::Transform;
 

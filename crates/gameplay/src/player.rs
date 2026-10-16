@@ -18,10 +18,10 @@ use maki_assets::{
     AssetChanged, AssetWatch, Assets, Handle, LoadState, Mesh, Model, Textures, load_gltf,
 };
 use maki_core::{
-    App, Fields, FixedUpdate, Interpolated, Module, Startup, Time, Transform, Update,
+    App, Fields, FixedUpdate, Interpolated, Module, ResetPlay, Startup, Time, Transform, Update,
     interpolate_transforms,
 };
-use maki_events::{EventRunner, run_events};
+use maki_events::run_events;
 use maki_platform::FixedActionState;
 use maki_scene::{
     ActiveCamera, Camera, Collider, CurrentRoom, MeshDef, MeshInstance, ObjectDef, Player,
@@ -29,6 +29,7 @@ use maki_scene::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::control::{Controller, control_home, control_home_if_lost};
 use crate::controls::{MoveCapture, RUN, move_direction};
 
 /// An entity that walks on the floor and stops at colliders. `walk` moves it; some
@@ -116,7 +117,8 @@ pub(crate) struct PlayerFile {
 
 /// Spawns the player from its prefab file, steers it with the move actions, moves it
 /// to the spawn point of a room that loads, and moves each [`Walker`]. Needs
-/// `ControlsModule` (the move actions) and `maki_events::EventsModule`.
+/// `ControlsModule` (the move actions), `maki_events::EventsModule`, and
+/// `GameModule` (the rules: when the control is on).
 #[derive(Debug, Clone, Default)]
 pub struct PlayerModule {
     /// The folder of the room files: a file name in the prefab starts there, as in
@@ -137,7 +139,18 @@ impl Module for PlayerModule {
         app.insert_resource(file.clone())
             .init_resource::<Textures>()
             .init_resource::<MoveCapture>()
+            .init_resource::<Controller>()
             .add_systems(Startup, spawn_player)
+            // They have the world: their order to the loader and the placement is
+            // the one that counts.
+            .add_systems(ResetPlay, control_home.ambiguous_with_all())
+            .add_systems(
+                Update,
+                control_home_if_lost
+                    .after(maki_scene::load_requested_room)
+                    .before(place_player)
+                    .ambiguous_with_all(),
+            )
             // After the events: a transfer command and the player then agree in each step
             // on who moves the player.
             .add_systems(FixedUpdate, (steer_player, walk).chain().after(run_events))
@@ -225,6 +238,7 @@ pub(crate) fn spawn_player(
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
+    mut controller: ResMut<Controller>,
 ) {
     let (def, mesh) = file.read_or_default();
     // `place_player` moves the player to a spawn point.
@@ -234,6 +248,7 @@ pub(crate) fn spawn_player(
         speed: 0.0,
     };
     let mut entity = commands.spawn((Player, walker, def, Interpolated::at(Transform::IDENTITY)));
+    controller.home = Some(entity.id());
     let stores = (&mut *meshes, &mut *models, &mut *textures);
     give_mesh(&mut entity, &mesh, &file.rooms, stores);
 }
@@ -276,12 +291,13 @@ fn reload_player(
             Option<&PlayerModel>,
             Option<&MeshInstance>,
         ),
-        With<Player>,
+        With<PlayerDef>,
     >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut models: ResMut<Assets<Model>>,
     mut textures: ResMut<Textures>,
     watch: Option<ResMut<AssetWatch>>,
+    controller: Res<Controller>,
 ) {
     let files: Vec<PathBuf> = changed.read().map(|changed| changed.0.clone()).collect();
     if files.is_empty() {
@@ -295,6 +311,10 @@ fn reload_player(
         watch.set("player", file.watched(&mesh));
     }
     for (entity, mut walker, model, instance) in &mut players {
+        // The body of the prefab, not an object that has the control now.
+        if Some(entity) != controller.home {
+            continue;
+        }
         // A texture of an image file has the name of the file.
         let model_changed = model.is_some_and(|PlayerModel(handle, path)| {
             let image = |texture: Option<maki_assets::TextureRef>| {
@@ -388,16 +408,16 @@ fn place_player(
     }
 }
 
-/// Runs in `FixedUpdate`: the move actions tell the player where to walk.
+/// Runs in `FixedUpdate`: the controller. The move actions tell the pawn where to
+/// walk, while the rules of the game let them (`Controller::active`).
 pub fn steer_player(
     actions: Res<FixedActionState>,
     capture: Res<MoveCapture>,
-    events: Res<EventRunner>,
+    controller: Res<Controller>,
     cameras: Query<&Camera, With<ActiveCamera>>,
     mut players: Query<(&mut Walker, &PlayerDef), With<Player>>,
 ) {
-    // An event that runs has the control: the player reads a message, or a fade runs.
-    let direction = if capture.0 || events.blocks_player() {
+    let direction = if capture.0 || !controller.active {
         Vec3::ZERO
     } else {
         move_direction(&actions, cameras.iter().next())

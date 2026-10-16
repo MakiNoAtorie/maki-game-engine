@@ -286,6 +286,7 @@ mod tests {
             .add_module(maki_events::EventsModule)
             .add_module(crate::ControlsModule)
             .add_module(PlayerModule::default())
+            .add_module(crate::GameModule)
             .add_module(RoomsModule {
                 start_room: directory.join("a.ron"),
                 start_spawn: "start".to_owned(),

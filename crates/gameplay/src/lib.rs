@@ -11,17 +11,21 @@
 //! `gpu`, `render`, or `ui`.
 
 mod camera;
+mod control;
 mod controls;
+mod game;
 mod light_control;
 mod player;
 mod rooms;
 mod save;
 
 pub use camera::{CameraModule, CameraSettings, FollowCamera, follow_player};
+pub use control::{Controller, give_control};
 pub use controls::{
     ControlsModule, MOVE_BACK, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, MoveCapture, MoverToggleModule,
     QUIT, RUN, TOGGLE_MOVERS, move_direction,
 };
+pub use game::{GameCommand, GameModule, GameRules, PAUSE};
 pub use light_control::{
     LIGHT_DOWN, LIGHT_INTENSITY_DOWN, LIGHT_INTENSITY_UP, LIGHT_UP, LightControlModule,
     TOGGLE_LIGHT_CONTROL, clamp_to_room,
