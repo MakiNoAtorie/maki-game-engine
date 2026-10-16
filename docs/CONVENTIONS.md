@@ -7,11 +7,13 @@ Never pull full logs into context. Filter to errors and failures.
 - All checks: `sh tools/check.sh` (format, clippy and tests of the static and the dynamic build, errors only). `sh tools/check.sh fast` is the pre-commit hook (`.githooks`; once per clone: `git config core.hooksPath .githooks`). CI (`.github/workflows/ci.yml`, Windows) runs `tools/check.sh` on each pull request and each push to `main`; the GPU checks stay local. Read a red job with `gh run view --log-failed | rg -e '^(error|FAIL)' -A 5 | head -60`.
 - One build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`. Tests: `cargo test -q` runs the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit.
 - Benchmark: `tools/bench.py` writes CSV. `compare A B --total` gives one row per scenario.
+- A step of the GPU time with equal pictures: `bench.py confirm COMMIT SCENARIO...` runs the build of the commit before and this tree back to back (two rounds) and drops its runs. Equal within a few percent: the machine.
 - Picture gate first: after a change of a room file or of the renderer, `bench.py run --label X --only trip_720p walk_720p test_1080p materials_720p` and `bench.py same SCENARIO sNN X` for each (2 minutes), before the full run (20 minutes). `bench.py drop X` removes a side run.
 
 ## Editing files
-- Write a file with the Write tool. A Bash heredoc breaks on an odd count of `'`.
-- Edit with the Edit tool after a Read of the part, or `python tools/replace.py FILE --script PAIRS.py` (keeps CRLF; the pairs in a file written with the Write tool).
+- A room file in the form of the editor (a test compares them): `MAKI_WRITE_ROOMS=1 cargo test -q -p maki-game-scripts the_editor_writes`, then `git diff game/assets/rooms`.
+- Write a file with the Write tool: a Bash heredoc or `printf` turns the two characters of an escape (a backslash and `n`) into a new line, and a heredoc breaks on an odd count of `'`.
+- Edit with the Edit tool after a Read of the part. Many edits, also in many files: `python tools/replace.py --script EDITS.py` (`EDITS = [(file, old, new), ...]`, the script written with the Write tool; each old text one time; all or nothing; keeps CRLF).
 
 ## Model per task
 Decide before each subagent and pass `model` explicitly; state the choice and why in one line.
@@ -35,7 +37,7 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 ## Engine facts that bind code
 - A game or a test app with `PlayerModule` adds `GameModule`: the rules give the controller the control. Find the player with `With<Player>`; move the control only with `give_control`.
 - `maki_core::PlayState` is the state of the game, changed along `can_change`; `Time::paused` is of the editor.
-- A test room writes events as objects: `maki_events::short_events` turns the short form into objects.
+- A test that writes a room builds the text with `maki_scene::room_text` and its events with `maki_events::short_events`: the form of the file is in one place. The tests of the format itself (`crates/scene/src/room.rs`) keep their literal texts.
 
 ## Code intelligence
 - Use `rust-analyzer-lsp` (`/plugin install rust-analyzer-lsp@claude-plugins-official`, `rust-analyzer` on PATH) in local sessions: lookup by symbol and errors after each edit save build round trips.

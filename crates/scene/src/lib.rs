@@ -30,7 +30,7 @@ pub use room::{
     PoseDef, Prop, PropDef, RoomCheck, RoomDef, RoomEntity, RoomItem, RoomModels, RoomOverride,
     RoomProblem, RoomRequest, RoomShell, RoomTarget, RoomValidator, RoomValidators, SoundDef,
     SpawnPoint, TextureDef, check_room, load_requested_room, parse_room, patch_room, pose_in,
-    pose_out, read_room, ron_options,
+    pose_out, read_room, ron_options, room_text,
 };
 
 /// Adds the systems of the world components (movers, doors) and the room loader.

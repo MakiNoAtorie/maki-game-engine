@@ -18,6 +18,15 @@ Judgement rules for the review of a diff. The architecture rules are in `CLAUDE.
 - **A component of a project keeps its text** when no module reads it: no code path drops or rewrites a `ComponentText` that it cannot read.
 - **A new name of a component type** must not be one of the engine (`prop`, `light`, `area`, ...): the registry takes the last one, and each room reads the new type.
 - **A script hook leaves its value** in the entity: code that takes a component out of an entity puts it back, and a despawned entity is not an error.
+- **A command that names an object follows a rename**: each argument that is the name of an object (a light, a door, an object of `SetField` or `Signal`) has its arm in `Document::renamed` (`crates/editor/src/ops.rs`), with a test.
+
+## The editor
+
+- **A panel that shows a value writes it only on an edit of the user**: no default, no "first of the list" goes into the document while the panel only draws. A write makes the document dirty and a step of the history.
+
+## Tests
+
+- **A new test room is built by code**: `maki_scene::room_text` and `maki_events::short_events`, not a new literal room text outside the tests of the format (`crates/scene/src/room.rs`). A change of the format then changes one function, not each test.
 
 ## Comments
 
