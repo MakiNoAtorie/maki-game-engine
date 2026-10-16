@@ -61,7 +61,7 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Each stage has a branch `stage/NN-<slug>`, and a draft pull request into `main` from its first push, titled `Stage NN: <name>`, with `Closes #N` for each ticket. The branch starts from the branch of the stage before while that one is not merged, else from `main`: GitHub moves the base of the pull request to `main` when the one before merges. A parallel lane works in a worktree on a branch from the stage branch and merges into it.- Work outside a stage (tools, docs, a retro) goes the same way: a branch, a pull request, auto-merge.
 - The tests of "Done when" in the stage file are the agreed seams of the `tdd` skill: no question to the owner about them.
 - At the end of each stage, always, in this order:
-  1. Sanity check: tests and clippy (each build form), a validation run, the benchmark against the stage before, each line of "Done when" and each point of "What to watch for" of the stage file, and a run by hand of what the stage changed.
+  1. Sanity check: tests and clippy (each build form), a validation run, the picture gate (`bench.py gate`), the benchmark against the stage before, each line of "Done when" and each point of "What to watch for" of the stage file, and a run by hand of what the stage changed.
   2. Fill the gaps and fix the bugs that the check finds, in the same stage. Then check again.
   3. Report (`docs/partN/stage-NN.md`):
      1. What was built, in a few lines.

@@ -549,24 +549,64 @@ def command_quality(args):
     writer.writerow([args.label, args.frames, f"{error:.6g}", f"{sharp:.4f}", f"{noise:.4f}", f"{gpu_ms:.3f}", f"{gpu_ms * args.frames:.1f}", sheet.relative_to(ROOT).as_posix()])
 
 
-def command_same(args):
-    """Compares the pictures that two runs of a scenario dumped."""
-    a, b = ((WORK / args.scenario / f"{label}.dump").read_bytes() for label in (args.a, args.b))
+def difference(scenario, label_a, label_b):
+    """None for byte-equal pictures, else {name: value} of the difference."""
+    a, b = ((WORK / scenario / f"{label}.dump").read_bytes() for label in (label_a, label_b))
     if a == b:
-        print("ok")
-        return
+        return None
     if a[:8] != b[:8]:
-        raise SystemExit("FAIL: the pictures differ in size")
+        raise SystemExit(f"FAIL {scenario}: the pictures differ in size")
     x, y = array.array("f", a[8:]), array.array("f", b[8:])
     differences = [max(abs(x[i + c] - y[i + c]) for c in range(3)) for i in range(0, len(x), 4)]
-    changed = sum(d > 0 for d in differences)
     mean = lambda values: sum(values[c] for i in range(0, len(values), 4) for c in (i, i + 1, i + 2)) / (len(values) * 0.75)
-    print(f"pixels_changed,{changed}")
-    print(f"pixels,{len(differences)}")
-    print(f"max_difference,{max(differences):.6g}")
-    print(f"mean_a,{mean(x):.6g}")
-    print(f"mean_b,{mean(y):.6g}")
+    return {
+        "pixels_changed": sum(d > 0 for d in differences),
+        "pixels": len(differences),
+        "max_difference": max(differences),
+        "mean_a": mean(x),
+        "mean_b": mean(y),
+    }
+
+
+def command_same(args):
+    """Compares the pictures that two runs of a scenario dumped."""
+    found = difference(args.scenario, args.a, args.b)
+    if found is None:
+        print("ok")
+        return
+    for name, value in found.items():
+        print(f"{name},{value:.6g}")
     raise SystemExit(1)
+
+
+# The pictures of the gate. Two runs of one build differ by up to 0.0005 in some pixels
+# (test_1080p, stage 54): a difference at or below NOISE is the same picture.
+GATE = ["trip_720p", "walk_720p", "test_1080p", "materials_720p", "textured_walk_720p"]
+NOISE = 0.001
+
+
+def command_gate(args):
+    """The picture gate: the build of the merge-base with main and this tree, back to back."""
+    commit = args.commit or git("merge-base", "origin/main", "HEAD")
+    common = {"only": args.scenarios, "behind": True}
+    command_base(argparse.Namespace(commit=commit, label="gatebase", **common))
+    command_run(argparse.Namespace(label="gatethis", frames=700, warmup=100, **common))
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(["scenario", "result", "pixels_changed", "max_difference"])
+    failed = False
+    for scenario in args.scenarios:
+        found = difference(scenario, "gatebase", "gatethis")
+        if found is None:
+            writer.writerow([scenario, "equal", 0, 0])
+            continue
+        same = found["max_difference"] <= NOISE
+        failed |= not same
+        writer.writerow([scenario, "noise" if same else "CHANGED", found["pixels_changed"], f"{found['max_difference']:.6g}"])
+    for label in ("gatebase", "gatethis"):
+        command_drop(argparse.Namespace(label=label))
+    print(f"base {commit[:9]}")
+    if failed:
+        raise SystemExit(1)
 
 
 def command_selftest(_args):
@@ -644,6 +684,10 @@ if __name__ == "__main__":
     confirm.add_argument("scenarios", nargs="+", metavar="SCENARIO")
     confirm.add_argument("--rounds", type=int, default=2)
     confirm.set_defaults(function=command_confirm)
+    gate = commands.add_parser("gate", help="pictures of this tree against the build of the merge-base with main; the runs are dropped")
+    gate.add_argument("scenarios", nargs="*", default=GATE, metavar="SCENARIO")
+    gate.add_argument("--commit", help="another base than the merge-base with origin/main")
+    gate.set_defaults(function=command_gate)
     commands.add_parser("selftest").set_defaults(function=command_selftest)
     arguments = parser.parse_args()
     arguments.function(arguments)
