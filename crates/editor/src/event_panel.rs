@@ -231,6 +231,8 @@ struct Lists {
     objects: Vec<(String, Vec<String>)>,
     /// The fields of each of those component types.
     fields: BTreeMap<String, Vec<Field>>,
+    /// The value that a field has now in the document, by object, component, field.
+    current: BTreeMap<(String, String, String), Value>,
     /// The script functions that `CallScript` calls.
     functions: Vec<String>,
     /// The objects with a name and outputs, each with its outputs: what `Signal`
@@ -499,7 +501,10 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
                 names.contains(field),
                 fields.first(),
             ) {
-                (*field, *value) = (first.name.to_owned(), field_value(first));
+                (*field, *value) = (
+                    first.name.to_owned(),
+                    field_value(lists, object, component, first),
+                );
             }
             let mut changed = picked_object || picked_component;
             ui.label("field");
@@ -507,7 +512,7 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
             changed |= pick(ui, "field", field, &names);
             if let Some(found) = fields.iter().find(|found| found.name == field) {
                 if *field != before {
-                    *value = field_value(found);
+                    *value = field_value(lists, object, component, found);
                 }
                 ui.label("value");
                 changed |= crate::fields::show(ui, &found.kind, value, &|_| Vec::new());
@@ -611,7 +616,12 @@ fn new_command(
                 .and_then(|fields| fields.first());
             let (field, value) = fields.map_or_else(
                 || (String::new(), Value::Null),
-                |found| (found.name.to_owned(), field_value(found)),
+                |found| {
+                    (
+                        found.name.to_owned(),
+                        field_value(lists, &object, &component, found),
+                    )
+                },
             );
             Builtin::SetField(object, component, field, value)
         }
@@ -736,16 +746,10 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
         lights: with(&["light"]),
         movers: with(&["door", "mover"]),
         rooms: std::iter::once(own).chain(other_rooms).collect(),
-        // Each component here; `live_lists` keeps those with a value in the game.
-        objects: room
-            .objects
-            .iter()
-            .filter_map(|object| {
-                let components = object.components.keys().cloned().collect();
-                Some((object.name.clone()?, components))
-            })
-            .collect(),
+        // `live_lists` fills the objects, the fields, and their values.
+        objects: Vec::new(),
         fields: BTreeMap::new(),
+        current: BTreeMap::new(),
         functions: registry
             .functions()
             .into_iter()
@@ -769,37 +773,56 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     (lists, problems)
 }
 
-/// Keeps the components of the objects that have a value in the game, and adds the
-/// fields of their types.
-fn live_lists(world: &World, lists: &mut Lists) {
-    let (types, tables) = (
+/// Fills the objects that `SetField` can change (`RoomDef::live_objects`, prefab
+/// instances too) with their live components, the fields of their types, and the
+/// value that each field has now. `directory`: of the room file.
+fn live_lists(world: &World, room: &RoomDef, directory: &std::path::Path, lists: &mut Lists) {
+    let (Some(types), tables) = (
         world.get_resource::<ComponentTypes>(),
         world.get_resource::<FieldTypes>(),
-    );
-    let live = |name: &String| {
-        types
-            .and_then(|types| types.get(name))
-            .is_some_and(|found| found.live.is_some())
+    ) else {
+        return;
     };
-    for (_, components) in &mut lists.objects {
-        components.retain(live);
-    }
-    lists
+    let names = room.live_objects(directory, types);
+    for object in room
         .objects
-        .retain(|(_, components)| !components.is_empty());
-    for (_, components) in &lists.objects {
-        for name in components {
-            let table = tables.and_then(|tables| tables.get(name));
+        .iter()
+        .filter(|o| o.name.as_ref().is_some_and(|n| names.contains(n)))
+    {
+        let name = object.name.clone().unwrap_or_default();
+        let reached = object.reached_components(directory, types);
+        let live: Vec<String> = reached
+            .keys()
+            .filter(|c| types.is_live(c))
+            .cloned()
+            .collect();
+        for component in &live {
+            let table = tables.and_then(|tables| tables.get(component));
             if let Some(Kind::Group(fields)) = table.map(|table| &table.kind) {
-                lists.fields.insert(name.clone(), fields.clone());
+                lists.fields.insert(component.clone(), fields.clone());
+                for field in fields {
+                    let now = types.field(component, &reached[component], field.name);
+                    if let Some(now) = now {
+                        let key = (name.clone(), component.clone(), field.name.to_owned());
+                        lists.current.insert(key, now);
+                    }
+                }
             }
         }
+        lists.objects.push((name, live));
     }
 }
 
-/// The value of a new `SetField` row or of another field: the default of the field.
-fn field_value(field: &Field) -> Value {
-    field.default.clone().unwrap_or_else(|| field.kind.zero())
+/// The value of a new `SetField` row or of another field: the value that the field
+/// has now in the document, else its default.
+fn field_value(lists: &Lists, object: &str, component: &str, field: &Field) -> Value {
+    let key = (
+        object.to_owned(),
+        component.to_owned(),
+        field.name.to_owned(),
+    );
+    let now = lists.current.get(&key).cloned();
+    now.unwrap_or_else(|| field.default.clone().unwrap_or_else(|| field.kind.zero()))
 }
 
 /// What the property panel shows of the event of an object: the problems of the
@@ -825,7 +848,12 @@ pub(crate) fn event_panel(
 ) -> Option<bool> {
     let registry = editor.registry.clone();
     let (mut lists, problems) = lists_and_problems(editor, index);
-    live_lists(world, &mut lists);
+    let room_directory = editor
+        .document
+        .path
+        .parent()
+        .unwrap_or(std::path::Path::new(""));
+    live_lists(world, &editor.document.room, room_directory, &mut lists);
     let actions = [crate::DELETE, crate::DUPLICATE, crate::COPY, crate::PASTE];
     lists.row_keys = actions.map(|action| maki_ui::key_label(world, action));
     let problems: Vec<&Problem> = problems.iter().collect();
@@ -1389,20 +1417,26 @@ mod tests {
     use super::*;
 
     /// The pickers of `SetField`: the objects with a component that has a value in
-    /// the game, and the fields of its table.
+    /// the game (the light), the fields of its table, and a new row
+    /// that starts with the value the field has now.
     #[test]
     fn the_set_field_pickers_offer_the_live_components_and_their_fields() {
         let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(maki_platform::PlatformModule)
             .add_module(maki_scene::SceneModule)
             .add_module(maki_events::EventsModule);
-        let objects = |list: &[(&str, &[&str])]| {
-            let to_owned = |(name, components): &(&str, &[&str])| {
-                let components = components.iter().map(|name| (*name).to_owned());
-                ((*name).to_owned(), components.collect())
-            };
-            list.iter().map(to_owned).collect()
-        };
+        let text = maki_scene::room_text(
+            6.0,
+            6.0,
+            3.0,
+            &[
+                r#"(name: "lamp", components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})"#,
+                r#"(name: "crate", components: {"prop": (mesh: Cube(1.0))})"#,
+                r#"(name: "gate", components: {"door": (seconds: 1.0, color: (0.3, 0.2, 0.1), open: false)})"#,
+                r#"(name: "sign", components: {"event": (pages: [])})"#,
+            ],
+        );
+        let room = maki_scene::parse_room(&text).unwrap();
         let mut lists = Lists {
             flags: Vec::new(),
             variables: Vec::new(),
@@ -1411,30 +1445,38 @@ mod tests {
             lights: Vec::new(),
             movers: Vec::new(),
             rooms: Vec::new(),
-            // A light is made into another component: it has no value to set.
-            objects: objects(&[("lamp", &["light"]), ("sign", &["area", "event", "light"])]),
+            objects: Vec::new(),
             fields: BTreeMap::new(),
+            current: BTreeMap::new(),
             functions: Vec::new(),
             outputs: Vec::new(),
             own_outputs: Vec::new(),
             row_keys: Default::default(),
         };
-        live_lists(app.world(), &mut lists);
-        assert_eq!(lists.objects, objects(&[("sign", &["area"])]));
-        let fields: Vec<&str> = lists.fields["area"]
-            .iter()
-            .map(|field| field.name)
-            .collect();
-        assert_eq!(fields, ["width", "depth"]);
-        // A new row: the first field, with its default value.
+        live_lists(app.world(), &room, std::path::Path::new(""), &mut lists);
+        let names: Vec<&str> = lists.objects.iter().map(|found| found.0.as_str()).collect();
+        // Only the light has a live form so far; a prop and a door join when they get one.
+        assert_eq!(names, ["lamp"]);
+        assert_eq!(lists.objects[0].1, ["light"]);
+        let fields: Vec<&str> = lists.fields["light"].iter().map(|f| f.name).collect();
+        assert!(fields.contains(&"intensity"), "{fields:?}");
+        // A new row: the first field of the first object, with the value it has now.
         let registry = app.world().resource::<CommandRegistry>().clone();
-        let new = new_command("SetField", &lists, &registry, &RoomDef::default()).unwrap();
-        let wanted = Builtin::SetField(
-            "sign".to_owned(),
-            "area".to_owned(),
-            "width".to_owned(),
-            maki_core::fields::number(1.0, false),
+        let new = new_command("SetField", &lists, &registry, &room).unwrap();
+        let Some(Builtin::SetField(object, component, field, value)) = new.get() else {
+            panic!("not a SetField row");
+        };
+        assert_eq!((object.as_str(), component.as_str()), ("lamp", "light"));
+        let key = (object.clone(), component.clone(), field.clone());
+        assert_eq!(Some(value), lists.current.get(&key));
+        let intensity = (
+            "lamp".to_owned(),
+            "light".to_owned(),
+            "intensity".to_owned(),
         );
-        assert_eq!(new.get(), Some(&wanted));
+        assert_eq!(
+            lists.current[&intensity],
+            maki_core::fields::number(8.0, false)
+        );
     }
 }
