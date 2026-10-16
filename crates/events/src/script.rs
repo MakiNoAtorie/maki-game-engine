@@ -32,7 +32,7 @@ use maki_scene::{Name, add_object_component};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::command::CommandSet;
+use crate::command::{Command, CommandSet};
 use crate::interpreter::{RunningEvent, faces};
 use crate::model::{Area, Trigger};
 use crate::{CommandRegistry, EventRunner, GameState};
@@ -105,19 +105,33 @@ impl ScriptContext<'_> {
         self.world.get_mut::<C>(self.entity)
     }
 
-    /// Runs a command of the registry (`maki_events::Builtin`, or the commands of
-    /// any module), with the same handler as a row of an event. Its first step runs
-    /// now. A command that waits (a message, a door that turns) goes on as a running
-    /// event with the name of the object: it blocks the player as an event does.
-    pub fn call<T: CommandSet>(&mut self, value: T) {
+    /// A command of the registry (`maki_events::Builtin`, or the commands of any
+    /// module) from a value of its enum: for a list, or a branch of a `Choice`.
+    /// `None`: no module added the enum; the log has an error.
+    pub fn command<T: CommandSet>(&self, value: T) -> Option<Command> {
         let text = format!("{value:?}");
-        let Some(command) = self.world.resource::<CommandRegistry>().command(value) else {
+        let command = self.world.resource::<CommandRegistry>().command(value);
+        if command.is_none() {
             tracing::error!("{}: no module added the command {text}", self.name());
-            return;
-        };
+        }
+        command
+    }
+
+    /// Runs a command of the registry, with the same handler as a row of an event.
+    /// See [`Self::run`].
+    pub fn call<T: CommandSet>(&mut self, value: T) {
+        if let Some(command) = self.command(value) {
+            self.run(vec![command]);
+        }
+    }
+
+    /// Runs a list of commands as an event runs a page. The first step runs now. A
+    /// command that waits (a message, a door that turns) goes on as a running event
+    /// with the name of the object: it blocks the player as an event does.
+    pub fn run(&mut self, commands: Vec<Command>) {
         let name = self.name().to_owned();
         // `Interact`: the player started it, so it blocks the player.
-        let mut running = RunningEvent::new(&name, Trigger::Interact, &[command]);
+        let mut running = RunningEvent::new(&name, Trigger::Interact, &commands);
         // ponytail: the step mode of a tool is not for script calls.
         if !running.step(self.world, &mut None) {
             self.world.resource_mut::<EventRunner>().running.push(running);

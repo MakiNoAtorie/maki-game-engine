@@ -11,6 +11,7 @@ use maki_core::{App, ConfigFile};
 use maki_editor::Session;
 use maki_ui::{NoticeLevel, Notices};
 
+use crate::new_script::NewScriptModule;
 use crate::reload::{BuildReport, ProjectModule, build};
 use crate::{Project, Result, add_modules, config_path, init_logging, load_project};
 
@@ -94,6 +95,9 @@ pub(crate) fn editor_app(
         .add_module(ProjectModule {
             setup: setup.clone(),
             report,
+        })
+        .add_module(NewScriptModule {
+            project: project.dir.clone(),
         });
     app.check_config()?;
     Ok((app, failure))

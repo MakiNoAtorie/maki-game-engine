@@ -377,7 +377,7 @@ fn shell(line: &str) -> std::io::Result<()> {
 
 /// "Open in editor": runs the command of the `[editor] code_editor` setting for a
 /// file and a line. `file`: as cargo names it, from the workspace folder.
-fn open_in_code_editor(world: &mut World, file: &Path, line: u32) {
+pub(crate) fn open_in_code_editor(world: &mut World, file: &Path, line: u32) {
     let template = world.resource::<EditorSettings>().code_editor.clone();
     let file = world.resource::<ProjectBuild>().setup.workspace.join(file);
     let command = template

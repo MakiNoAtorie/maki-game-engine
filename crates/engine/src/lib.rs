@@ -23,6 +23,8 @@
 mod editor_program;
 #[cfg(feature = "dynamic")]
 mod loader;
+#[cfg(any(feature = "dynamic", test))]
+mod new_script;
 mod project;
 #[cfg(feature = "dynamic")]
 mod reload;
@@ -46,6 +48,8 @@ pub use maki_platform as platform;
 pub use maki_render as render;
 pub use maki_scene as scene;
 pub use maki_ui as ui;
+/// The log of the engine, for the scripts of a project: `maki_engine::tracing::info!`.
+pub use tracing;
 
 #[cfg(feature = "dynamic")]
 pub use editor_program::{BUILD, run_editor, script_dll};
