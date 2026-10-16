@@ -187,6 +187,13 @@ impl<'w> ScriptContext<'w> {
         }
     }
 
+    /// Runs a routine file (from the directory of the room file) with a number for
+    /// each of its arguments, as a row `CallRoutine` does. See [`Self::run`].
+    pub fn routine(&mut self, file: &str, arguments: &[i32]) {
+        let arguments = crate::Arguments(arguments.to_vec());
+        self.call(crate::RoutineCommand::CallRoutine(file.into(), arguments));
+    }
+
     /// Runs a list of commands as an event runs a page. The first step runs now. A
     /// command that waits (a message, a door that turns) goes on as a running event
     /// with the name of the object: it blocks the player as an event does. In a

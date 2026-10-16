@@ -71,13 +71,10 @@ pub enum Builtin {
 pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool {
     match command {
         Builtin::SetFlag(name, value) => world.resource_mut::<GameState>().set_flag(name, *value),
-        Builtin::SetVariable(name, value) => {
-            world.resource_mut::<GameState>().set_variable(name, *value);
-        }
+        Builtin::SetVariable(name, value) => step.set_variable(world, name, *value),
         Builtin::AddVariable(name, value) => {
-            let mut state = world.resource_mut::<GameState>();
-            let sum = state.variable(name).saturating_add(*value);
-            state.set_variable(name, sum);
+            let sum = step.state(world).variable(name).saturating_add(*value);
+            step.set_variable(world, name, sum);
         }
         Builtin::Wait(seconds) => {
             let passed = world.resource::<Time>().fixed_delta.as_secs_f32();
@@ -91,7 +88,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             return *left <= 1e-5;
         }
         Builtin::If(conditions, then, otherwise) => {
-            let branch = if all_hold(conditions, world.resource::<GameState>()) {
+            let branch = if all_hold(conditions, &step.state(world)) {
                 then
             } else {
                 otherwise

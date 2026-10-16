@@ -20,7 +20,7 @@ use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
 use maki_scene::{ComponentText, CurrentRoom, Name, ObjectId, Player, RoomItem};
 
-use crate::command::{Command, CommandRegistry, Step};
+use crate::command::{Command, CommandRegistry, Scope, Step};
 use crate::model::{EventDef, EventPages, Trigger, active_page};
 use crate::script::{ScriptRunners, TriggerArea};
 use crate::{GameState, INTERACT};
@@ -75,8 +75,9 @@ pub struct RunningEvent {
     pub(crate) entity: Option<Entity>,
     pub start: Start,
     /// The command lists that are open: the page, and in it the branch of each `If`
-    /// that was taken. With each list, the index of its next command.
-    stack: Vec<(Vec<Command>, usize)>,
+    /// that was taken. With each list, the index of its next command, and the
+    /// variables of the routine call that opened the list.
+    stack: Vec<(Vec<Command>, usize, Option<Scope>)>,
     /// True: the current command ran in a step before and waits.
     waiting: bool,
     /// What the current command keeps between its steps (`Step::memory`).
@@ -90,7 +91,7 @@ impl RunningEvent {
             id: None,
             entity: None,
             start,
-            stack: vec![(commands.to_vec(), 0)],
+            stack: vec![(commands.to_vec(), 0, None)],
             waiting: false,
             memory: None,
         }
@@ -105,7 +106,7 @@ impl RunningEvent {
 
     /// The command that runs or waits now.
     pub fn current(&self) -> Option<&Command> {
-        let (list, index) = self.stack.last()?;
+        let (list, index, _) = self.stack.last()?;
         list.get(*index)
     }
 
@@ -116,11 +117,11 @@ impl RunningEvent {
             while self
                 .stack
                 .last()
-                .is_some_and(|(list, index)| *index >= list.len())
+                .is_some_and(|(list, index, _)| *index >= list.len())
             {
                 self.stack.pop();
             }
-            let Some((list, index)) = self.stack.last() else {
+            let Some((list, index, _)) = self.stack.last() else {
                 return true;
             };
             let command = list[*index].clone();
@@ -136,6 +137,12 @@ impl RunningEvent {
                 self.memory = None;
             }
             let mut opened = None;
+            // The variables of the nearest routine call.
+            let scope = self
+                .stack
+                .iter_mut()
+                .rev()
+                .find_map(|frame| frame.2.as_mut());
             let mut step = Step {
                 start,
                 event: &self.name,
@@ -143,15 +150,16 @@ impl RunningEvent {
                 entity: self.entity,
                 memory: &mut self.memory,
                 opened: &mut opened,
+                scope,
             };
             if !command.run(&mut step, world) {
                 return false;
             }
             self.waiting = false;
             self.stack.last_mut().expect("tested above").1 += 1;
-            // The branch of an `If`.
-            if let Some(list) = opened {
-                self.stack.push((list, 0));
+            // The branch of an `If`, or a routine.
+            if let Some((list, scope)) = opened {
+                self.stack.push((list, 0, scope));
             }
         }
         tracing::warn!(
