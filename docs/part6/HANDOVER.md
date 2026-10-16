@@ -103,7 +103,6 @@ Open from stage 48 (report, sections 3 and 6): the names of the component types 
 - **The shake script** of the benchmark needs room B: a config with `[rooms] start = "game/assets/rooms/room_b.ron"`, `start_spawn = "west"`, and `[save] enabled = false`.
 - **Git Bash has no `bc`**: time with `date +%s%3N`.
 - **The memory note `reference-verify-running-game`** has the method to run, drive, and look at the game and the editor on this machine, with the places of the shell of stage 42.
-- **The engine DLL after stage 43**: 54,858 symbols of 65,535.
 - **The symbol limit, measured** (`symbol-limit.md`): `opt-level = 2` for the engine crates in the profile `dynamic` takes the engine DLL from 61,823 to 16,460 names. Clean build 155 s to 215 s; rebuild after a line of `maki-core` 13 s to 15 s; after a line of a script 2 s to 3 s. Count: `python tools/symbol_count.py` (also a step of `check.sh`, fails above 60,000).
 - **Line endings**: git warns "LF will be replaced by CRLF" for new files. It is not an error.
 
