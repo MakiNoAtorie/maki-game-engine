@@ -31,19 +31,19 @@ State: written by the session from the plan and the code at commit `737d106`. No
 
 ## Tickets
 
-Proposal; the owner approves the breakdown (`/to-tickets`).
+Approved by the owner (2026-10-16). GitHub issues #50 to #56.
 
 | Ticket | Blocked by |
 |---|---|
-| A. Conditions from the field table (prefactor) | none |
-| B. Object state | A |
-| C. Routines | none |
-| D. Flow: "or", "else if", loop and break, "wait until" | A |
-| E. A random number, a compare of two variables | D |
-| F. An autorun that runs again | none |
-| G. Show, hide, and move any object | none |
+| #50 Conditions from the field table (prefactor) | none |
+| #51 Object state | #50 |
+| #52 Routines | none |
+| #53 Flow: "or", "else if", loop and break, "wait until" | #50 |
+| #54 A random number, a compare of two variables | #53 |
+| #55 An autorun that runs again | none |
+| #56 Show, hide, and move any object | none |
 
-A, C, F, G can start at once. B and D after A; E after D (both add condition forms and commands in the same files).
+#50, #52, #55, #56 can start at once. #51 and #53 after #50; #54 after #53 (both add condition forms and commands in the same files).
 
 ## Done when
 
@@ -59,5 +59,5 @@ A, C, F, G can start at once. B and D after A; E after D (both add condition for
 3. **The script DLL**: `ScriptContext` gets new functions. The reload test passes; the templates of "New script" build.
 4. **The step limit**: a loop or a `repeat` autorun with no wait must not hold a frame; the limit of the interpreter stops it in each step.
 5. **Ids**: object state is keyed by `ObjectId`, never by a name; an object with no id has no state (the check reports a `state` component on it).
-6. **Two lanes in one file**: B, D, and E add condition forms. After A, each adds variants only; E waits for D.
+6. **Two lanes in one file**: #51, #53, and #54 add condition forms. After #50, each adds variants only; #54 waits for #53.
 7. **Not in this stage**: animate an object (the timeline, stage 64), "Convert to script", data assets (stage 57), the UI of the game (stage 59).
