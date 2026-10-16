@@ -198,35 +198,6 @@ fn value(
             *tree = set.unwrap_or(Value::Null);
             changed
         }
-        Kind::List(inner) => {
-            if !tree.is_array() {
-                *tree = Value::Array(Vec::new());
-            }
-            let items = tree.as_array_mut().expect("set above");
-            let rows = |ui: &mut Ui| {
-                let (mut changed, mut remove) = (false, None);
-                for (index, item) in items.iter_mut().enumerate() {
-                    ui.push_id(index, |ui| {
-                        changed |= value(ui, "", "", inner, item, None, lists);
-                        if ui.small_button("Remove").clicked() {
-                            remove = Some(index);
-                        }
-                    });
-                    ui.separator();
-                }
-                if let Some(index) = remove {
-                    items.remove(index);
-                    changed = true;
-                }
-                if ui.small_button("Add").clicked() {
-                    items.push(inner.zero());
-                    changed = true;
-                }
-                changed
-            };
-            row(ui, label, |_| {});
-            ui.indent((label, "list"), rows).inner
-        }
         Kind::Group(table) => {
             let mut rows = |ui: &mut Ui| {
                 let mut changed = false;
@@ -274,6 +245,37 @@ fn value(
                 changed |= ui.indent((label, "fields"), rows).inner;
             }
             changed
+        }
+        Kind::List(item) => {
+            let item = item.get();
+            if !tree.is_array() {
+                *tree = Value::Array(Vec::new());
+            }
+            let items = tree.as_array_mut().expect("set above");
+            if !label.is_empty() {
+                row(ui, label, |_| {});
+            }
+            let rows = |ui: &mut Ui| {
+                let (mut changed, mut removed) = (false, None);
+                for (index, part) in items.iter_mut().enumerate() {
+                    ui.push_id(index, |ui| {
+                        if ui.small_button("x").on_hover_text("Remove").clicked() {
+                            removed = Some(index);
+                        }
+                        changed |= value(ui, "", "", &item, part, None, lists);
+                    });
+                }
+                if let Some(index) = removed {
+                    items.remove(index);
+                    changed = true;
+                }
+                if ui.button("Add").clicked() {
+                    items.push(item.zero());
+                    changed = true;
+                }
+                changed
+            };
+            ui.indent((label, "items"), rows).inner
         }
     }
 }

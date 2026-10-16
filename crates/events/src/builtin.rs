@@ -298,8 +298,13 @@ pub(crate) fn with_lists(command: &Builtin, lists: Vec<Vec<Command>>) -> Builtin
     }
 }
 
-/// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
-pub(crate) fn row_text(command: &Builtin) -> Option<String> {
+/// Conditions as words for a reader, joined by `and` or `or`.
+pub(crate) fn conditions_text(conditions: &[Condition], join: &str) -> String {
+    let texts: Vec<String> = conditions.iter().map(condition_text).collect();
+    texts.join(join)
+}
+
+fn condition_text(condition: &Condition) -> String {
     let sign = |compare: &Compare| match compare {
         Compare::Equals => "=",
         Compare::NotEquals => "!=",
@@ -307,7 +312,7 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Compare::AtLeast => ">=",
     };
     let object = crate::state::object_text;
-    let condition = |condition: &Condition| match condition {
+    match condition {
         Condition::Flag(name) => name.clone(),
         Condition::NotFlag(name) => format!("not {name}"),
         Condition::Variable(name, compare, value) => {
@@ -318,7 +323,12 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Condition::Number(id, name, compare, value) => {
             format!("{}.{name} {} {value}", object(id), sign(compare))
         }
-    };
+        Condition::Any(conditions) => format!("({})", conditions_text(conditions, " or ")),
+    }
+}
+
+/// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
+pub(crate) fn row_text(command: &Builtin) -> Option<String> {
     Some(match command {
         Builtin::SetFlag(name, true) => format!("Flag {name}: set"),
         Builtin::SetFlag(name, false) => format!("Flag {name}: not set"),
@@ -326,10 +336,7 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Builtin::AddVariable(name, value) => format!("Variable {name}: add {value}"),
         Builtin::Wait(seconds) => format!("Wait {seconds} s"),
         Builtin::If(conditions, ..) if conditions.is_empty() => "If (no condition)".to_owned(),
-        Builtin::If(conditions, ..) => {
-            let texts: Vec<String> = conditions.iter().map(condition).collect();
-            format!("If {}", texts.join(" and "))
-        }
+        Builtin::If(conditions, ..) => format!("If {}", conditions_text(conditions, " and ")),
         Builtin::OpenDoor(object) => format!("Open {object}"),
         Builtin::CloseDoor(object) => format!("Close {object}"),
         Builtin::LightOn(object) => format!("Light {object}: on"),

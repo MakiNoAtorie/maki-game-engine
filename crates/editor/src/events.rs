@@ -20,7 +20,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use maki_events::{Builtin, CheckContext, Command, CommandRegistry, EventDef, Problem};
+use maki_events::{
+    Builtin, CheckContext, Command, CommandRegistry, Condition, EventDef, Flow, Problem,
+};
 use maki_scene::{ObjectId, RoomDef};
 
 use crate::Document;
@@ -159,9 +161,11 @@ pub fn rows(
     registry: &CommandRegistry,
     objects: &[(ObjectId, String)],
 ) -> Vec<(Row, usize, String)> {
+    /// `else_if`: the list is the else list of an `If` and holds only an `If`, which
+    /// shows as one "Else if" row at the depth of the outer `If`, with no `End`.
     fn walk(
         commands: &[Command],
-        path: &ListPath,
+        (path, depth, else_if): (&ListPath, usize, bool),
         (registry, objects): (&CommandRegistry, &[(ObjectId, String)]),
         out: &mut Vec<(Row, usize, String)>,
     ) {
@@ -171,26 +175,45 @@ pub fn rows(
                 index,
                 kind,
             };
-            let text = with_names(&command_text(command, registry), objects);
-            out.push((row(RowKind::Command), path.len(), text));
+            let mut text = with_names(&command_text(command, registry), objects);
+            if else_if && let Some(rest) = text.strip_prefix("If") {
+                text = format!("Else if{rest}");
+            }
+            out.push((row(RowKind::Command), depth, text));
             let lists = registry.lists(command);
             if lists.is_empty() {
                 continue;
             }
+            let is_if = matches!(command.get(), Some(Builtin::If(..)));
             for (list_index, (label, list)) in lists.into_iter().enumerate() {
-                // An empty label: the list starts with no line (the first of an `If`).
-                if !label.is_empty() {
-                    out.push((row(RowKind::Branch(list_index)), path.len(), label));
-                }
                 let mut inner = path.clone();
                 inner.push((index, list_index));
-                walk(list, &inner, (registry, objects), out);
+                let alone_if = is_if
+                    && list_index == 1
+                    && matches!(list, [only] if matches!(only.get(), Some(Builtin::If(..))));
+                if alone_if {
+                    walk(list, (&inner, depth, true), (registry, objects), out);
+                    continue;
+                }
+                // An empty label: the list starts with no line (the first of an `If`).
+                if !label.is_empty() {
+                    out.push((row(RowKind::Branch(list_index)), depth, label));
+                }
+                walk(list, (&inner, depth + 1, false), (registry, objects), out);
             }
-            out.push((row(RowKind::End), path.len(), "End".to_owned()));
+            // The `End` of the outer `If` closes an "Else if".
+            if !else_if {
+                out.push((row(RowKind::End), depth, "End".to_owned()));
+            }
         }
     }
     let mut out = Vec::new();
-    walk(commands, &Vec::new(), (registry, objects), &mut out);
+    walk(
+        commands,
+        (&Vec::new(), 0, false),
+        (registry, objects),
+        &mut out,
+    );
     out
 }
 
@@ -278,28 +301,28 @@ impl Names {
                     });
                 };
                 for condition in &page.conditions {
-                    let text = format!("if {condition:?}");
-                    if let Some(name) = condition.name() {
-                        place(condition.is_variable(), name, text, false);
+                    for (variable, name) in condition.names() {
+                        place(variable, name, format!("if {condition:?}"), false);
                     }
                 }
-                registry.each_command(&page.commands, &mut |command| match command.get() {
-                    Some(Builtin::If(conditions, ..)) => {
-                        for condition in conditions {
-                            let variable = condition.is_variable();
-                            let text = command_text(command, registry);
-                            if let Some(name) = condition.name() {
-                                place(variable, name, text, false);
-                            }
+                registry.each_command(&page.commands, &mut |command| {
+                    let read = match (command.get(), command.get()) {
+                        (Some(Builtin::If(conditions, ..)), _)
+                        | (_, Some(Flow::WaitUntil(conditions))) => conditions.as_slice(),
+                        _ => &[],
+                    };
+                    for (variable, name) in read.iter().flat_map(Condition::names) {
+                        place(variable, name, command_text(command, registry), false);
+                    }
+                    match command.get() {
+                        Some(Builtin::SetFlag(name, _)) => {
+                            place(false, name, format!("{command:?}"), true);
                         }
+                        Some(Builtin::SetVariable(name, _) | Builtin::AddVariable(name, _)) => {
+                            place(true, name, format!("{command:?}"), true);
+                        }
+                        _ => {}
                     }
-                    Some(Builtin::SetFlag(name, _)) => {
-                        place(false, name, format!("{command:?}"), true);
-                    }
-                    Some(Builtin::SetVariable(name, _) | Builtin::AddVariable(name, _)) => {
-                        place(true, name, format!("{command:?}"), true);
-                    }
-                    _ => {}
                 });
             }
         }
@@ -552,6 +575,75 @@ mod tests {
         let events = registry.parse_events(&text).unwrap();
         assert_eq!(events, document.events(&registry));
         assert_eq!(events[0].pages, event.pages);
+    }
+
+    /// An `If` alone in the else list of an `If` is one "Else if" row; the file keeps
+    /// the two `If`s.
+    #[test]
+    fn an_if_alone_in_the_else_list_of_an_if_shows_and_edits_as_else_if() {
+        let registry = registry();
+        let event = r#"(name: "door", pages: [(trigger: Interact, commands: [
+            If([Flag("a")], [Wait(1.0)], [If([Any([Flag("b"), Flag("c")])], [Wait(2.0)], [If([Flag("d")], [], [Wait(3.0)])])]),
+            If([Flag("e")], [], [If([Flag("f")], [], []), Wait(4.0)]),
+        ])])"#;
+        let mut document = document(&registry, "a.ron", event);
+        let mut event = document.event(3, &registry).unwrap().unwrap();
+        let commands = &mut event.pages[0].commands;
+        assert_eq!(
+            texts(commands, &registry),
+            [
+                "If a",
+                "  Wait 1 s",
+                "Else if (b or c)",
+                "  Wait 2 s",
+                "Else if d",
+                "Else",
+                "  Wait 3 s",
+                "End",
+                // Not alone in its else list: an `If` in the list.
+                "If e",
+                "Else",
+                "  If f",
+                "  Else",
+                "  End",
+                "  Wait 4 s",
+                "End",
+            ]
+        );
+        // The "Else if" row is the inner `If`: its first list and its conditions.
+        let all = rows(commands, &registry, &[]);
+        let else_if = &all.iter().find(|row| row.2 == "Else if d").unwrap().0;
+        assert_eq!(else_if.kind, RowKind::Command);
+        assert_eq!(else_if.list, [(0, 1), (0, 1)]);
+        let (list, index) = else_if.insert_place(commands, &registry);
+        let light = registry.command(Builtin::LightOff(ObjectId(2))).unwrap();
+        edit_list(commands, &list, &registry, |list| list.insert(index, light)).unwrap();
+        edit_list(commands, &else_if.list, &registry, |list| {
+            let flag = Builtin::If(
+                vec![maki_events::Condition::Flag("g".to_owned())],
+                Vec::new(),
+                Vec::new(),
+            );
+            let lists = registry
+                .lists(&list[0])
+                .into_iter()
+                .map(|list| list.1.to_vec())
+                .collect();
+            let flag = registry.command(flag).unwrap();
+            list[0] = registry.with_lists(&flag, lists).unwrap();
+        })
+        .unwrap();
+        assert_eq!(
+            texts(commands, &registry)[4..8],
+            ["Else if g", "  Light lamp: off", "Else", "  Wait 3 s"]
+        );
+        // The file has the `If`s as before.
+        document.set_event(3, &event);
+        let text = document.text();
+        assert!(
+            text.contains(r#"[If([Flag("g")], [LightOff(2)], [Wait(3.0)])]"#),
+            "{text}"
+        );
     }
 
     #[test]

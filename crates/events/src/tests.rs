@@ -17,7 +17,9 @@ use maki_scene::{
 
 use super::*;
 
+mod flow;
 mod objects;
+mod repeat;
 mod state;
 
 /// 50 Hz: one fixed step of 20 ms for each frame.

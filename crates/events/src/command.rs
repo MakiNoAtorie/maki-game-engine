@@ -139,6 +139,18 @@ pub struct Step<'a> {
     /// The variables of the routine that runs the command (`Step::call`). `None`: no
     /// routine.
     pub(crate) scope: Option<&'a mut Scope>,
+    pub(crate) jump: &'a mut Jump,
+}
+
+/// What a command of the flow asks of the open lists when it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Jump {
+    #[default]
+    None,
+    /// The opened list runs again each time it ends (`Loop`).
+    Loop,
+    /// The lists close up to the innermost loop, and that loop too (`Break`).
+    Break,
 }
 
 /// The variables of a call of a routine: its arguments, by name.

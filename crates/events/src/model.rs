@@ -135,6 +135,9 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
     pub trigger: Trigger,
+    /// Autorun only: starts again, one step after its run ends, while the page is active.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repeat: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<Command>,
 }
@@ -176,6 +179,9 @@ pub enum Condition {
         #[field(label = "is")] Compare,
         #[field(label = "value")] i32,
     ),
+    /// One of the conditions holds ("or"). With no condition: it does not hold.
+    #[field(label = "any of")]
+    Any(Vec<Condition>),
 }
 
 /// How a variable is compared with a number.
@@ -221,23 +227,20 @@ impl Condition {
                 let number = state.object(*object).map_or(0, |o| o.number(name));
                 compare.holds(number, *value)
             }
+            Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
         }
     }
 
-    /// The name of the flag or the variable that the condition reads. `None`: it
-    /// reads the state of an object.
-    pub fn name(&self) -> Option<&str> {
+    /// The flags and the variables that the condition reads: for each, true for a
+    /// variable, and the name.
+    pub fn names(&self) -> Vec<(bool, &str)> {
         match self {
-            Condition::Flag(name) | Condition::NotFlag(name) | Condition::Variable(name, ..) => {
-                Some(name)
-            }
-            Condition::Switch(..) | Condition::NotSwitch(..) | Condition::Number(..) => None,
+            Condition::Flag(name) | Condition::NotFlag(name) => vec![(false, name)],
+            Condition::Variable(name, ..) => vec![(true, name)],
+            Condition::Any(conditions) => conditions.iter().flat_map(Condition::names).collect(),
+            // The state of an object: no flag, no variable.
+            Condition::Switch(..) | Condition::NotSwitch(..) | Condition::Number(..) => Vec::new(),
         }
-    }
-
-    /// True: the name is of a variable. False: of a flag.
-    pub fn is_variable(&self) -> bool {
-        matches!(self, Condition::Variable(..))
     }
 }
 
@@ -436,6 +439,7 @@ mod tests {
         Page {
             conditions: conditions.to_vec(),
             trigger: Trigger::Interact,
+            repeat: false,
             commands: Vec::new(),
         }
     }
