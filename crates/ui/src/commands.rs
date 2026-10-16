@@ -121,6 +121,29 @@ pub fn run_command(world: &mut World, id: &str) -> bool {
     true
 }
 
+/// Commands that a menu or the command search started during the egui frame.
+#[derive(Resource, Default)]
+pub struct QueuedCommands(Vec<&'static str>);
+
+/// Starts a command from inside the egui frame. `run_ui` holds `Panels` out of the world,
+/// so the command runs after the frame (`run_queued`), when the panel list is back.
+pub fn queue_command(world: &mut World, id: &'static str) {
+    world
+        .get_resource_or_insert_with(QueuedCommands::default)
+        .0
+        .push(id);
+}
+
+/// Runs in `Update`, after the egui frame: the commands that `queue_command` kept.
+pub fn run_queued(world: &mut World) {
+    let Some(mut queued) = world.get_resource_mut::<QueuedCommands>() else {
+        return;
+    };
+    for id in std::mem::take(&mut queued.0) {
+        run_command(world, id);
+    }
+}
+
 /// Runs in `Update`, before the egui frame: the key of a command starts it.
 pub fn command_keys(world: &mut World) {
     let Some(commands) = world.get_resource::<ToolCommands>().cloned() else {
@@ -141,7 +164,7 @@ pub fn command_keys(world: &mut World) {
 pub fn command_item(ui: &mut egui::Ui, world: &mut World, command: &ToolCommand) {
     let button = egui::Button::new(command.name).shortcut_text(command.key(world));
     if ui.add_enabled((command.can_run)(world), button).clicked() {
-        (command.run)(world);
+        queue_command(world, command.id);
         ui.close();
     }
 }
