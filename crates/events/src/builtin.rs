@@ -12,8 +12,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomItem, RoomRequest,
-    RoomTarget, ScreenFade,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomRequest, RoomTarget,
+    ScreenFade,
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,13 +71,10 @@ pub enum Builtin {
 pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool {
     match command {
         Builtin::SetFlag(name, value) => world.resource_mut::<GameState>().set_flag(name, *value),
-        Builtin::SetVariable(name, value) => {
-            world.resource_mut::<GameState>().set_variable(name, *value);
-        }
+        Builtin::SetVariable(name, value) => step.set_variable(world, name, *value),
         Builtin::AddVariable(name, value) => {
-            let mut state = world.resource_mut::<GameState>();
-            let sum = state.variable(name).saturating_add(*value);
-            state.set_variable(name, sum);
+            let sum = step.state(world).variable(name).saturating_add(*value);
+            step.set_variable(world, name, sum);
         }
         Builtin::Wait(seconds) => {
             let passed = world.resource::<Time>().fixed_delta.as_secs_f32();
@@ -91,7 +88,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             return *left <= 1e-5;
         }
         Builtin::If(conditions, then, otherwise) => {
-            let branch = if all_hold(conditions, world.resource::<GameState>()) {
+            let branch = if all_hold(conditions, &step.state(world)) {
                 then
             } else {
                 otherwise
@@ -241,19 +238,7 @@ fn set_field(
         return;
     };
     // The entities of the reference first: an instance has its id and the prefab names.
-    let def = &world.resource::<CurrentRoom>().def;
-    let item = def.find(object).map(|(index, _)| index);
-    let mut entities = world.query::<(Entity, Option<&ObjectId>, Option<&RoomItem>)>();
-    let mut named = Vec::new();
-    let mut of_item = Vec::new();
-    for (entity, id, room_item) in entities.iter(world) {
-        if id == Some(object) {
-            named.push(entity);
-        } else if item.is_some() && room_item.map(|room_item| room_item.0) == item {
-            of_item.push(entity);
-        }
-    }
-    let mut candidates = named.into_iter().chain(of_item);
+    let mut candidates = crate::objects::entities_of(world, object).into_iter();
     let target = candidates.find_map(|entity| Some((entity, get(world, entity)?)));
     let Some((entity, mut tree)) = target else {
         tracing::warn!(
@@ -313,21 +298,41 @@ pub(crate) fn with_lists(command: &Builtin, lists: Vec<Vec<Command>>) -> Builtin
     }
 }
 
-/// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
-pub(crate) fn row_text(command: &Builtin) -> Option<String> {
-    let condition = |condition: &Condition| match condition {
+/// Conditions as words for a reader, joined by `and` or `or`.
+pub(crate) fn conditions_text(conditions: &[Condition], join: &str) -> String {
+    let texts: Vec<String> = conditions.iter().map(condition_text).collect();
+    texts.join(join)
+}
+
+fn compare_sign(compare: Compare) -> &'static str {
+    match compare {
+        Compare::Equals => "=",
+        Compare::NotEquals => "!=",
+        Compare::Less => "<",
+        Compare::AtLeast => ">=",
+    }
+}
+
+fn condition_text(condition: &Condition) -> String {
+    let object = crate::state::object_text;
+    match condition {
         Condition::Flag(name) => name.clone(),
         Condition::NotFlag(name) => format!("not {name}"),
         Condition::Variable(name, compare, value) => {
-            let sign = match compare {
-                Compare::Equals => "=",
-                Compare::NotEquals => "!=",
-                Compare::Less => "<",
-                Compare::AtLeast => ">=",
-            };
-            format!("{name} {sign} {value}")
+            format!("{name} {} {value}", compare_sign(*compare))
         }
-    };
+        Condition::Switch(id, name) => format!("{}.{name}", object(id)),
+        Condition::NotSwitch(id, name) => format!("not {}.{name}", object(id)),
+        Condition::Number(id, name, compare, value) => {
+            format!("{}.{name} {} {value}", object(id), compare_sign(*compare))
+        }
+        Condition::Variables(a, compare, b) => format!("{a} {} {b}", compare_sign(*compare)),
+        Condition::Any(conditions) => format!("({})", conditions_text(conditions, " or ")),
+    }
+}
+
+/// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
+pub(crate) fn row_text(command: &Builtin) -> Option<String> {
     Some(match command {
         Builtin::SetFlag(name, true) => format!("Flag {name}: set"),
         Builtin::SetFlag(name, false) => format!("Flag {name}: not set"),
@@ -335,10 +340,7 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Builtin::AddVariable(name, value) => format!("Variable {name}: add {value}"),
         Builtin::Wait(seconds) => format!("Wait {seconds} s"),
         Builtin::If(conditions, ..) if conditions.is_empty() => "If (no condition)".to_owned(),
-        Builtin::If(conditions, ..) => {
-            let texts: Vec<String> = conditions.iter().map(condition).collect();
-            format!("If {}", texts.join(" and "))
-        }
+        Builtin::If(conditions, ..) => format!("If {}", conditions_text(conditions, " and ")),
         Builtin::OpenDoor(object) => format!("Open {object}"),
         Builtin::CloseDoor(object) => format!("Close {object}"),
         Builtin::LightOn(object) => format!("Light {object}: on"),

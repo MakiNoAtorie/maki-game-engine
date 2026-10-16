@@ -1,9 +1,9 @@
-//! Save and load: one file with the room, the pose of the player, and the flags and
-//! variables. The event command `SavePoint` writes it; the start of the game and a
+//! Save and load: one file with the room, the pose of the player, the flags and
+//! variables, and the state of the objects. The event command `SavePoint` writes it; the start of the game and a
 //! debug key read it.
 //!
-//! The state of a room is not in the file: the room file gives it, and an `Autorun`
-//! page with a flag condition sets right what an event changed (a lamp that is off).
+//! The rest of a room is not in the file: the room file gives it, and an `Autorun`
+//! page with a condition sets right what an event changed (a lamp that is off).
 
 use std::path::{Path, PathBuf};
 
@@ -11,11 +11,13 @@ use anyhow::{Context, Result};
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Query, Res, ResMut};
+use bevy_ecs::system::{Local, Query, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::Quat;
-use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Startup, Update};
-use maki_events::{CommandRegistry, EventRunner, GameState, RunningEvent, run_events};
+use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Update};
+use maki_events::{
+    CommandRegistry, EventRunner, GameState, ObjectStates, RunningEvent, run_events,
+};
 use maki_platform::{Action, ActionState, Key, add_bindings};
 use maki_scene::{
     CurrentRoom, ObjectId, Player, RoomRequest, RoomTarget, RoomValidators, load_requested_room,
@@ -69,6 +71,9 @@ pub struct SaveData {
     pub rotation: [f32; 4],
     pub flags: std::collections::BTreeMap<String, bool>,
     pub variables: std::collections::BTreeMap<String, i32>,
+    /// The switches and numbers of the objects of each room. An old save has none.
+    #[serde(default)]
+    pub objects: ObjectStates,
 }
 
 /// The event commands of this module.
@@ -121,16 +126,6 @@ impl Module for SaveModule {
         registry.add_defaults(|_, _| Some(SaveCommand::SavePoint));
         app.insert_resource(SaveFile(file))
             .init_resource::<SaveRequest>()
-            .add_systems(
-                Startup,
-                // After the start room: the room of the save takes its place. After
-                // the player: it gets the pose of the save.
-                load_at_start
-                    .after(crate::rooms::request_start_room)
-                    .after(crate::player::spawn_player)
-                    // It has the world: these two orders are the ones that count.
-                    .ambiguous_with_all(),
-            )
             // It reads `Controller::home` only; `apply_rules` writes `active`.
             .add_systems(
                 FixedUpdate,
@@ -142,7 +137,7 @@ impl Module for SaveModule {
             // counts.
             .add_systems(
                 Update,
-                load_on_action
+                load_at_start_or_on_action
                     .before(load_requested_room)
                     .ambiguous_with_all(),
             )
@@ -162,7 +157,7 @@ fn save_when_the_event_ends(
     file: Res<SaveFile>,
     runner: Res<EventRunner>,
     room: Res<CurrentRoom>,
-    state: Res<GameState>,
+    (state, objects): (Res<GameState>, Res<ObjectStates>),
     controller: Option<Res<Controller>>,
     poses: Query<&Interpolated>,
 ) {
@@ -190,6 +185,7 @@ fn save_when_the_event_ends(
         rotation: player.current.rotation.into(),
         flags: state.flags.clone(),
         variables: state.variables.clone(),
+        objects: objects.clone(),
     };
     match write(file, &save) {
         Ok(()) => tracing::info!(file = %file.display(), room = %save.room.display(), "game saved"),
@@ -248,6 +244,7 @@ pub fn apply(world: &mut World, save: &SaveData) -> Result<()> {
         flags: save.flags.clone(),
         variables: save.variables.clone(),
     };
+    *world.resource_mut::<ObjectStates>() = save.objects.clone();
     // No spawn point: the player stays where this puts it.
     world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
         path: save.room.clone(),
@@ -266,12 +263,11 @@ pub fn apply(world: &mut World, save: &SaveData) -> Result<()> {
     Ok(())
 }
 
-fn load_at_start(world: &mut World) {
-    load(world);
-}
-
-fn load_on_action(world: &mut World) {
-    if world.resource::<ActionState>().just_pressed(LOAD_GAME) {
+/// The load at the start is in the first frame, not in `Startup`: the `ResetPlay`
+/// of the start of the game runs after `Startup` and would clear the object state.
+fn load_at_start_or_on_action(world: &mut World, mut started: Local<bool>) {
+    let start = !std::mem::replace(&mut *started, true);
+    if start || world.resource::<ActionState>().just_pressed(LOAD_GAME) {
         load(world);
     }
 }
@@ -409,6 +405,111 @@ mod tests {
         });
         let save = read(&directory.join("save.ron")).unwrap().unwrap();
         assert_eq!(save.variables["count"], 3);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// The switch `open` of the chest (2) in room `a.ron`.
+    fn open(app: &App, directory: &Path) -> bool {
+        let states = app.world().resource::<ObjectStates>();
+        let room = maki_events::room_key(&directory.join("a.ron"));
+        let chest = states.get(&room, ObjectId(2));
+        chest.is_some_and(|chest| chest.switch("open"))
+    }
+
+    #[test]
+    fn the_state_of_an_object_goes_into_the_save_and_an_old_save_loads() {
+        let directory = std::env::temp_dir().join(format!("maki-save-st-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let room = room(&[
+            START,
+            r#"(id: 2, name: "chest", components: {"state": (switches: [(name: "open")]), "event": (pages: [
+                (conditions: [Flag("go")], trigger: Autorun, commands: [SetSwitch(0, "open", true), SavePoint]),
+            ])})"#,
+        ]);
+        std::fs::write(directory.join("a.ron"), room).unwrap();
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(!open(&app, &directory));
+            app.resource_mut::<GameState>().set_flag("go", true);
+            state(&mut app);
+            assert!(open(&app, &directory));
+        });
+        let save = read(&directory.join("save.ron")).unwrap().unwrap();
+        // The next start: the chest is open, though its first value is closed.
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(open(&app, &directory));
+        });
+
+        // A save file of before the object state: the first values.
+        let mut old = ron_options()
+            .to_string_pretty(&save, ron::ser::PrettyConfig::default())
+            .unwrap();
+        let start = old.find("objects:").unwrap();
+        old.truncate(start);
+        old.push(')');
+        // The flag "go" would open the chest again.
+        let old = old.replace("\"go\": true", "\"go\": false");
+        std::fs::write(directory.join("save.ron"), old).unwrap();
+        assert_eq!(
+            read(&directory.join("save.ron")).unwrap().unwrap().objects,
+            ObjectStates::default()
+        );
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(!open(&app, &directory));
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// The gate of stage 56: a chest opens by an interact, and stays open after a
+    /// transfer to another room and back, and after a save and a load.
+    #[test]
+    fn a_chest_opened_by_an_interact_stays_open_over_a_transfer_and_a_save() {
+        use maki_platform::RawInput;
+        let directory = std::env::temp_dir().join(format!("review-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        // The chest is in front of the player (+Z); room B sends the player back at once.
+        let room_a = room(&[
+            START,
+            r#"(id: 2, name: "chest", pose: (position: (1.0, 0.0, 1.6)), components: {
+                "area": (width: 0.5, depth: 0.5),
+                "state": (switches: [(name: "open")]),
+                "event": (pages: [(trigger: Interact, commands: [SetSwitch(0, "open", true)])])})"#,
+            r#"(name: "leave", components: {"event": (pages: [(conditions: [Flag("leave")],
+                trigger: Autorun, commands: [SetFlag("leave", false), Transfer("b.ron", 1)])])})"#,
+            r#"(name: "save", components: {"event": (pages: [(conditions: [Flag("save")],
+                trigger: Autorun, commands: [SetFlag("save", false), SavePoint])])})"#,
+        ]);
+        let room_b = room(&[
+            START,
+            r#"(name: "back", components: {"event": (pages: [(trigger: Autorun, commands: [
+                AddVariable("count", 1), Transfer("a.ron", 1)])])})"#,
+        ]);
+        std::fs::write(directory.join("a.ron"), room_a).unwrap();
+        std::fs::write(directory.join("b.ron"), room_b).unwrap();
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(!open(&app, &directory));
+            app.write_message(RawInput::KeyDown(Key::Z))
+                .write_message(RawInput::KeyUp(Key::Z));
+            state(&mut app);
+            assert!(open(&app, &directory));
+
+            app.resource_mut::<GameState>().set_flag("leave", true);
+            let (room, _, count, _) = state(&mut app);
+            // In room B and back.
+            assert_eq!((room, count), (directory.join("a.ron"), 1));
+            assert!(open(&app, &directory));
+
+            app.resource_mut::<GameState>().set_flag("save", true);
+            state(&mut app);
+        });
+        // The next start loads the save: no flag opens the chest, only its state.
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(open(&app, &directory));
+        });
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

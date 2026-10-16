@@ -112,6 +112,31 @@ pub enum Kind {
     Group(Vec<Field>),
     /// An enum.
     Choice(Vec<Variant>),
+    /// A list of values of one kind: an array in the tree.
+    List(ItemKind),
+}
+
+/// The kind of the items of a list. A function, not a value: a type can hold a list
+/// of itself (a condition "any of" holds conditions), and a value would never end.
+#[derive(Clone, Copy)]
+pub struct ItemKind(pub fn() -> Kind);
+
+impl ItemKind {
+    pub fn get(&self) -> Kind {
+        (self.0)()
+    }
+}
+
+impl PartialEq for ItemKind {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::fn_addr_eq(self.0, other.0)
+    }
+}
+
+impl std::fmt::Debug for ItemKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ItemKind")
+    }
 }
 
 /// One field of a struct, or of a variant of an enum.
@@ -238,6 +263,7 @@ impl Kind {
             Kind::Optional { .. } => Value::Null,
             Kind::Group(fields) => Value::Object(zero_map(fields)),
             Kind::Choice(variants) => variants.first().map_or(Value::Null, Variant::zero),
+            Kind::List(_) => Value::Array(Vec::new()),
         }
     }
 }
@@ -395,6 +421,16 @@ impl<T: Fields> Fields for Option<T> {
 
     fn tree(&self) -> Value {
         self.as_ref().map_or(Value::Null, Fields::tree)
+    }
+}
+
+impl<T: Fields> Fields for Vec<T> {
+    fn kind() -> Kind {
+        Kind::List(ItemKind(T::kind))
+    }
+
+    fn tree(&self) -> Value {
+        Value::Array(self.iter().map(Fields::tree).collect())
     }
 }
 

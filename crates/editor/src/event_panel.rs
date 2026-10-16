@@ -12,18 +12,19 @@ use std::sync::Arc;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_core::fields::{Field, Kind, Value};
-use maki_core::{App, FieldTypes};
+use maki_core::{App, FieldTypes, Fields};
 use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, EventPages, GameState, Page,
-    Problem, Trigger, Wire, active_page,
+    Builtin, Command, CommandRegistry, CommandSet, Condition, EventPages, Page, Problem, Trigger,
+    Wire, active_page,
 };
 use maki_scene::{ComponentTypes, ObjectId, RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
+use serde::de::DeserializeOwned;
 
 use crate::events::{
     ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, object_names, object_pick, object_ref, row, same_kind};
+use crate::widgets::{choice, drag, number, object_names, object_pick, object_ref, row};
 use crate::{Command as EditorCommand, Editor};
 
 pub(crate) const ERROR: Color32 = maki_ui::THEME.error;
@@ -56,12 +57,12 @@ pub struct EventUi {
     shown: (usize, usize),
     /// The `SetField` lists and the room and directory they are of: a prefab file is
     /// read again only when the document changes.
-    live: Option<(RoomDef, std::path::PathBuf, LiveLists)>,
+    pub(crate) live: Option<(RoomDef, std::path::PathBuf, LiveLists)>,
 }
 
 /// The parts of [`Lists`] that `live_lists` fills.
 #[derive(Clone, Default)]
-struct LiveLists {
+pub(crate) struct LiveLists {
     objects: Vec<(String, Vec<String>)>,
     fields: BTreeMap<String, Vec<Field>>,
     current: BTreeMap<(String, String, String), Value>,
@@ -230,7 +231,8 @@ pub fn add_argument_editor<T: CommandSet>(
 type ObjectNames = Vec<(ObjectId, String)>;
 
 /// The names that the pickers offer.
-struct Lists {
+#[derive(Default)]
+pub(crate) struct Lists {
     flags: Vec<String>,
     variables: Vec<String>,
     /// The flags and the variables that an event reads and no event writes.
@@ -422,7 +424,7 @@ fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
 /// The name of a flag or a variable: one that an event of the game uses, or a new
 /// one ("New..."). `unset`: the names that no event writes. Such a name has a mark:
 /// it can be a name with a wrong letter.
-fn pick_or_new(
+pub(crate) fn pick_or_new(
     ui: &mut Ui,
     salt: &str,
     value: &mut String,
@@ -676,57 +678,14 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
     let mut removed = None;
     for (index, condition) in conditions.iter_mut().enumerate() {
         ui.push_id(("condition", index), |ui| {
-            // One line for each part: the column is narrow.
-            ui.horizontal(|ui| {
-                if ui
-                    .small_button("x")
-                    .on_hover_text("Remove the condition")
-                    .clicked()
-                {
-                    removed = Some(index);
-                }
-                // Another kind keeps the name if it is of the same list (flags or
-                // variables), else it takes the first name of the other list.
-                let name = |variable: bool| {
-                    let names = if variable {
-                        &lists.variables
-                    } else {
-                        &lists.flags
-                    };
-                    let first = || names.first().map_or("name", String::as_str).to_owned();
-                    if condition.is_variable() == variable {
-                        condition.name().to_owned()
-                    } else {
-                        first()
-                    }
-                };
-                let kinds = [
-                    ("flag is set", Condition::Flag(name(false))),
-                    ("flag is not set", Condition::NotFlag(name(false))),
-                    (
-                        "variable",
-                        Condition::Variable(name(true), Compare::AtLeast, 1),
-                    ),
-                ];
-                changed |= choice(ui, "", condition, &kinds, same_kind);
-            });
-            changed |= match condition {
-                Condition::Flag(name) | Condition::NotFlag(name) => pick_flag(ui, name, lists),
-                Condition::Variable(name, compare, value) => {
-                    let compares = [
-                        ("equal to", Compare::Equals),
-                        ("not equal to", Compare::NotEquals),
-                        ("less than", Compare::Less),
-                        ("at least", Compare::AtLeast),
-                    ];
-                    let picked = pick_variable(ui, name, lists);
-                    let compared = ui.horizontal(|ui| {
-                        choice(ui, "is", compare, &compares, PartialEq::eq)
-                            | ui.add(drag(value)).changed()
-                    });
-                    picked | compared.inner
-                }
-            };
+            if ui
+                .small_button("x")
+                .on_hover_text("Remove the condition")
+                .clicked()
+            {
+                removed = Some(index);
+            }
+            changed |= condition_row(ui, condition, lists);
         });
     }
     if let Some(index) = removed {
@@ -745,14 +704,60 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
     changed
 }
 
+/// The widgets of one condition, from the field table of its type: its kind and its
+/// values. A name field with `pick = "flags"` or `"variables"` picks a known name or
+/// a new one. True: the user changed the condition.
+fn condition_row<T: Fields + DeserializeOwned>(
+    ui: &mut Ui,
+    condition: &mut T,
+    lists: &Lists,
+) -> bool {
+    let mut tree = condition.tree();
+    if !with_picks(lists, |picks| {
+        crate::fields::show(ui, &T::kind(), &mut tree, picks)
+    }) {
+        return false;
+    }
+    match maki_core::fields::read::<T>(tree) {
+        Ok(changed) => {
+            *condition = changed;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Calls `draw` with what the picks of the field rows offer: the flags and the
+/// variables (`pick = "flags"`, `"variables"`) and the objects.
+fn with_picks<R>(lists: &Lists, draw: impl FnOnce(crate::fields::Lists) -> R) -> R {
+    let names = |list: &str| match list {
+        "flags" => lists.flags.clone(),
+        "variables" => lists.variables.clone(),
+        _ => Vec::new(),
+    };
+    let open = |list: &str| match list {
+        "flags" => Some(lists.unset_flags.clone()),
+        "variables" => Some(lists.unset_variables.clone()),
+        _ => None,
+    };
+    draw(crate::fields::Lists {
+        names: &names,
+        open: &open,
+        objects: &lists.ids,
+    })
+}
+
 /// The names that the pickers offer for the open room, and what the checks find in
-/// one event.
-fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>) {
+/// one event (`None`: no event).
+pub(crate) fn lists_and_problems(
+    editor: &mut Editor,
+    index: Option<usize>,
+) -> (Lists, Vec<Problem>) {
     let registry = editor.registry.clone();
     let others = editor.others().to_vec();
     let used = names(&editor.document, &others, &registry);
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
-    problems.retain(|problem| problem.object == index);
+    problems.retain(|problem| Some(problem.object) == index);
     let room = &editor.document.room;
     let ids = object_names(&room.objects);
     let own = (file_name(&editor.document), room.spawn_names(), ids.clone());
@@ -797,17 +802,20 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
                 (!outputs.is_empty()).then(|| Some((object.name.clone()?, outputs)))?
             })
             .collect(),
-        own_outputs: room.objects.get(index).map_or_else(Vec::new, |object| {
-            let outputs = registry.outputs_of(object).into_iter();
-            outputs.map(str::to_owned).collect()
-        }),
+        own_outputs: index.and_then(|index| room.objects.get(index)).map_or_else(
+            Vec::new,
+            |object| {
+                let outputs = registry.outputs_of(object).into_iter();
+                outputs.map(str::to_owned).collect()
+            },
+        ),
         row_keys: Default::default(),
     };
     (lists, problems)
 }
 
 /// Fills `lists` from the cache, made again when the room or its directory changed.
-fn cached_live_lists(
+pub(crate) fn cached_live_lists(
     world: &World,
     room: &RoomDef,
     directory: &std::path::Path,
@@ -873,7 +881,7 @@ fn field_value(lists: &Lists, object: &str, component: &str, field: &Field) -> V
 /// event itself (a name that another event has). The name is that of the object;
 /// the area is its component `area`.
 pub(crate) fn event_properties(ui: &mut Ui, editor: &mut Editor, index: usize) {
-    let (_, problems) = lists_and_problems(editor, index);
+    let (_, problems) = lists_and_problems(editor, Some(index));
     for problem in problems.iter().filter(|problem| problem.command.is_none()) {
         ui.colored_label(color(problem), problem.text.as_str());
     }
@@ -891,7 +899,7 @@ pub(crate) fn event_panel(
     index: usize,
 ) -> Option<bool> {
     let registry = editor.registry.clone();
-    let (mut lists, problems) = lists_and_problems(editor, index);
+    let (mut lists, problems) = lists_and_problems(editor, Some(index));
     let room_directory = editor
         .document
         .path
@@ -902,7 +910,6 @@ pub(crate) fn event_panel(
     let actions = [crate::DELETE, crate::DUPLICATE, crate::COPY, crate::PASTE];
     lists.row_keys = actions.map(|action| maki_ui::key_label(world, action));
     let problems: Vec<&Problem> = problems.iter().collect();
-    let state = world.resource::<GameState>().clone();
     let editors = world
         .get_resource::<ArgumentEditors>()
         .cloned()
@@ -919,6 +926,7 @@ pub(crate) fn event_panel(
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
     let mut event = document.event(index, &registry)?.ok()?;
     let id = document.room.objects[index].id;
+    let facts = maki_events::Facts::new(world, id);
     let room = &document.room;
     let mut changed = false;
     if event.pages.is_empty() && event.wires.is_empty() {
@@ -940,7 +948,7 @@ pub(crate) fn event_panel(
     };
     part(egui::Panel::left("event pages")).show(ui, |ui| {
         scroll("pages").show(ui, |ui| {
-            changed |= pages(ui, &mut event.pages, id, event_ui, &state, &lists, queue);
+            changed |= pages(ui, &mut event.pages, id, event_ui, &facts, &lists, queue);
             ui.separator();
             changed |= wires(ui, &mut event, event_ui, &lists);
         });
@@ -984,7 +992,7 @@ fn pages(
     pages: &mut Vec<Page>,
     id: Option<ObjectId>,
     event_ui: &mut EventUi,
-    state: &GameState,
+    facts: &maki_events::Facts,
     lists: &Lists,
     queue: &mut Vec<EditorCommand>,
 ) -> bool {
@@ -999,7 +1007,7 @@ fn pages(
     }
     // The pages, as tabs. The one that the game would run now has a star.
     let count = pages.len();
-    let active = active_page(pages, state);
+    let active = active_page(pages, facts);
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
         for page in 0..count {
@@ -1086,7 +1094,11 @@ fn pages(
     ];
     changed |= choice(ui, "trigger", &mut page.trigger, &triggers, PartialEq::eq);
     if page.trigger == Trigger::Autorun {
-        ui.weak("Autorun runs one time when the page gets active (also when the room loads), not again and again as in RPG Maker.");
+        ui.weak("Autorun runs one time when the page gets active (also when the room loads).");
+        changed |= ui
+            .checkbox(&mut page.repeat, "repeat")
+            .on_hover_text("Runs again, one step after the run ends, while this page is active")
+            .changed();
     }
     ui.separator();
     // The editor gives each object an id: `None` only in a room it did not open.
@@ -1157,12 +1169,13 @@ pub(crate) fn empty_page() -> Page {
     Page {
         conditions: Vec::new(),
         trigger: Trigger::Interact,
+        repeat: false,
         commands: Vec::new(),
     }
 }
 
 /// The middle part of the event panel: the command rows of a page.
-fn command_rows(
+pub(crate) fn command_rows(
     ui: &mut Ui,
     list: &mut Vec<Command>,
     event_ui: &mut EventUi,
@@ -1250,10 +1263,8 @@ fn command_rows(
                 let of_problem = problem.command.as_ref();
                 command.is_some_and(|command| of_problem == Some(&(page_index, command.clone())))
             });
-            // A line for a reader, if the module of the command gives one. The text
-            // of the room file is the hover text.
-            let shown = command.and_then(|command| registry.row_text(command));
-            let label = egui::RichText::new(shown.as_deref().unwrap_or(text));
+            // The text of `rows`: the line for a reader, with "Else if" and names.
+            let label = egui::RichText::new(text);
             let label = match bad {
                 Some(problem) => label.color(color(problem)),
                 None => label,
@@ -1345,7 +1356,7 @@ fn command_rows(
 
 /// The right part of the event panel: the arguments of the selected command row, or
 /// the text of a command that is typed.
-fn command_arguments(
+pub(crate) fn command_arguments(
     ui: &mut Ui,
     list: &mut Vec<Command>,
     event_ui: &mut EventUi,
@@ -1370,7 +1381,9 @@ fn command_arguments(
             .find_map(|edit| edit(ui, &command, registry, room))
         {
             new
-        } else if let Some(new) = field_arguments(ui, &command, registry, &lists.ids) {
+        } else if let Some(new) = with_picks(lists, |picks| {
+            field_arguments(ui, &command, registry, picks)
+        }) {
             new
         } else {
             // As a text. The buffer is the draft: it can be a text that is not a
@@ -1426,10 +1439,9 @@ pub(crate) fn field_arguments(
     ui: &mut Ui,
     command: &Command,
     registry: &CommandRegistry,
-    objects: &[(ObjectId, String)],
+    lists: crate::fields::Lists,
 ) -> Option<Option<Command>> {
     let (kind, mut tree) = registry.fields(command)?;
-    let lists = crate::fields::Lists::objects(objects);
     let changed = crate::fields::show_arguments(ui, &kind, &mut tree, lists);
     Some(changed.then(|| registry.from_tree(command, tree)).flatten())
 }
@@ -1461,6 +1473,153 @@ mod tests {
     use maki_core::ConfigFile;
 
     use super::*;
+
+    /// The texts that one frame of `draw` shows (`Shape::Text` galleys).
+    fn shown_texts(draw: impl FnMut(&mut Ui)) -> Vec<String> {
+        let mut output = egui::Context::default().run_ui(egui::RawInput::default(), draw);
+        // egui panics when texture changes are dropped unread.
+        output.textures_delta.clear();
+        let texts = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        });
+        texts.collect()
+    }
+
+    /// Each form of a condition is drawn from its field table: the kind, the picked
+    /// name, the compare, the number. With no input nothing changes.
+    #[test]
+    fn each_condition_form_is_drawn_from_its_field_table() {
+        let lists = Lists {
+            flags: vec!["lit".to_owned()],
+            variables: vec!["turns".to_owned()],
+            ..Lists::default()
+        };
+        let forms = [
+            (
+                Condition::Flag("lit".to_owned()),
+                vec!["flag is set", "lit"],
+            ),
+            (
+                Condition::NotFlag("lit".to_owned()),
+                vec!["flag is not set", "lit"],
+            ),
+            (
+                Condition::Variable("turns".to_owned(), maki_events::Compare::AtLeast, 2),
+                vec!["variable", "turns", "is", "at least", "value", "2"],
+            ),
+            (
+                Condition::Switch(ObjectId(20), "open".to_owned()),
+                vec!["switch is on", "object", "chest", "switch", "open"],
+            ),
+            (
+                Condition::NotSwitch(ObjectId(20), "open".to_owned()),
+                vec!["switch is off", "chest", "open"],
+            ),
+            (
+                Condition::Number(
+                    ObjectId(20),
+                    "coins".to_owned(),
+                    maki_events::Compare::Less,
+                    3,
+                ),
+                vec![
+                    "number of an object",
+                    "chest",
+                    "number",
+                    "coins",
+                    "less than",
+                    "3",
+                ],
+            ),
+            // A list of conditions in a condition: a row for each, and "Add".
+            (
+                Condition::Any(vec![Condition::NotFlag("lit".to_owned())]),
+                vec!["any of", "flag is not set", "lit", "Add"],
+            ),
+        ];
+        let lists = Lists {
+            ids: vec![(ObjectId(20), "chest".to_owned())],
+            ..lists
+        };
+        for (condition, expected) in forms {
+            let mut shown = condition.clone();
+            let texts = shown_texts(|ui| assert!(!condition_row(ui, &mut shown, &lists)));
+            for text in expected {
+                assert!(texts.iter().any(|found| found == text), "{text}: {texts:?}");
+            }
+            assert_eq!(shown, condition);
+        }
+    }
+
+    /// The component `state` in the inspector: its lists of named values, drawn from
+    /// its field table, with a button to add an item.
+    #[test]
+    fn the_state_component_is_drawn_from_its_field_table() {
+        let state = maki_events::ObjectState {
+            switches: vec![maki_events::NamedSwitch {
+                name: "open".to_owned(),
+                on: true,
+            }],
+            numbers: vec![maki_events::NamedNumber {
+                name: "coins".to_owned(),
+                value: 5,
+            }],
+        };
+        let kind = maki_events::ObjectState::kind();
+        let mut tree = state.tree();
+        let texts = shown_texts(|ui| {
+            assert!(!crate::fields::show(
+                ui,
+                &kind,
+                &mut tree,
+                crate::fields::Lists::objects(&[])
+            ));
+        });
+        for text in [
+            "switches", "open", "on", "numbers", "coins", "5", "Add", "x",
+        ] {
+            assert!(texts.iter().any(|found| found == text), "{text}: {texts:?}");
+        }
+        assert_eq!(
+            maki_core::fields::read::<maki_events::ObjectState>(tree).unwrap(),
+            state
+        );
+    }
+
+    /// A change of the kind keeps a value of the same kind at the same place: "flag
+    /// is set" to "flag is not set" keeps the flag; to "variable" it does not.
+    #[test]
+    fn a_change_of_the_kind_of_a_condition_keeps_the_name_of_the_same_list() {
+        let maki_core::fields::Kind::Choice(variants) = Condition::kind() else {
+            panic!("an enum has a choice");
+        };
+        let tree = Condition::Flag("lit".to_owned()).tree();
+        let change = |to: usize| {
+            let tree = crate::fields::change_variant(variants.first(), tree.clone(), &variants[to]);
+            maki_core::fields::read::<Condition>(tree).unwrap()
+        };
+        assert_eq!(change(1), Condition::NotFlag("lit".to_owned()));
+        let compare = maki_events::Compare::Equals;
+        assert_eq!(change(2), Condition::Variable(String::new(), compare, 0));
+    }
+
+    /// A new form of a condition is a variant: the panel draws its widgets with no
+    /// code of the editor.
+    #[test]
+    fn a_new_condition_form_has_widgets_with_no_editor_code() {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Fields)]
+        enum Test {
+            Flag(#[field(pick = "flags")] String),
+            #[field(label = "hour of the day")]
+            Hour(#[field(label = "after")] i32),
+        }
+        let mut hour = Test::Hour(20);
+        let texts = shown_texts(|ui| assert!(!condition_row(ui, &mut hour, &Lists::default())));
+        for text in ["hour of the day", "after", "20"] {
+            assert!(texts.iter().any(|found| found == text), "{text}: {texts:?}");
+        }
+    }
 
     /// The pickers of `SetField`: the objects with a component that has a value in
     /// the game (a light, a prop, a door), the fields that change in the game, and a
@@ -1540,5 +1699,32 @@ mod tests {
             lists.current[&intensity],
             maki_core::fields::number(8.0, false)
         );
+    }
+
+    /// The star of the active page reads the state of the object of the event.
+    #[test]
+    fn the_active_page_star_reads_object_state() {
+        let mut world = World::new();
+        world.insert_resource(maki_events::GameState::default());
+        let mut room = maki_scene::CurrentRoom::default();
+        room.path = "a.ron".into();
+        world.insert_resource(room);
+        let mut states = maki_events::ObjectStates::default();
+        states
+            .get_mut("a.ron", ObjectId(20))
+            .switches
+            .insert("open".into(), true);
+        world.insert_resource(states);
+        let open = Condition::Switch(ObjectId::default(), "open".to_owned());
+        let mut list = vec![empty_page(), empty_page()];
+        list[1].conditions.push(open);
+        let facts = maki_events::Facts::new(&world, Some(ObjectId(20)));
+        let texts = shown_texts(|ui| {
+            let mut event_ui = EventUi::default();
+            let (lists, mut queue) = (Lists::default(), Vec::new());
+            let id = Some(ObjectId(20));
+            pages(ui, &mut list, id, &mut event_ui, &facts, &lists, &mut queue);
+        });
+        assert!(texts.iter().any(|text| text == "2 *"), "{texts:?}");
     }
 }

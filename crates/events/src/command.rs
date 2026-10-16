@@ -39,6 +39,7 @@ use serde::de::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::GameState;
 use crate::check::{CheckContext, Finding};
 use crate::model::{EventDef, EventPages, RoomFile};
 use crate::script::ScriptContext;
@@ -134,8 +135,26 @@ pub struct Step<'a> {
     /// commands. `None`: a tool started them with no object.
     pub entity: Option<Entity>,
     pub(crate) memory: &'a mut Option<Box<dyn Any + Send + Sync>>,
-    pub(crate) opened: &'a mut Option<Vec<Command>>,
+    pub(crate) opened: &'a mut Option<(Vec<Command>, Option<Scope>)>,
+    /// The variables of the routine that runs the command (`Step::call`). `None`: no
+    /// routine.
+    pub(crate) scope: Option<&'a mut Scope>,
+    pub(crate) jump: &'a mut Jump,
 }
+
+/// What a command of the flow asks of the open lists when it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Jump {
+    #[default]
+    None,
+    /// The opened list runs again each time it ends (`Loop`).
+    Loop,
+    /// The lists close up to the innermost loop, and that loop too (`Break`).
+    Break,
+}
+
+/// The variables of a call of a routine: its arguments, by name.
+pub(crate) type Scope = BTreeMap<String, i32>;
 
 impl Step<'_> {
     /// A value that the command keeps from one of its steps to the next: the seconds
@@ -151,7 +170,38 @@ impl Step<'_> {
     /// When this command ends, the event runs these commands, then the command after
     /// this one. This is how `If` runs one of its two lists.
     pub fn open(&mut self, commands: Vec<Command>) {
-        *self.opened = Some(commands);
+        *self.opened = Some((commands, None));
+    }
+
+    /// As [`Self::open`], with variables of the call: in the list they hide the
+    /// variables of the game of the same name. This is how a routine runs.
+    pub fn call(&mut self, commands: Vec<Command>, variables: BTreeMap<String, i32>) {
+        *self.opened = Some((commands, Some(variables)));
+    }
+
+    /// The flags and variables as the command sees them: in a routine, its
+    /// arguments in place of the variables of the same name. A command that reads a
+    /// condition or a variable reads it here. With the state of the objects, and the
+    /// object of the event as object 0.
+    pub fn state<'w>(&self, world: &'w World) -> crate::model::Facts<'w> {
+        let mut facts = crate::model::Facts::new(world, self.object);
+        if let Some(scope) = self.scope.as_deref().filter(|scope| !scope.is_empty()) {
+            facts.game.to_mut().variables.extend(scope.clone());
+        }
+        facts
+    }
+
+    /// Sets a variable: an argument of the routine that runs, else a variable of the
+    /// game.
+    pub fn set_variable(&mut self, world: &mut World, name: &str, value: i32) {
+        match self
+            .scope
+            .as_deref_mut()
+            .and_then(|scope| scope.get_mut(name))
+        {
+            Some(argument) => *argument = value,
+            None => world.resource_mut::<GameState>().set_variable(name, value),
+        }
     }
 }
 
@@ -564,7 +614,7 @@ impl CommandRegistry {
         self.parse(text.as_str(), None)
     }
 
-    fn parse<T: DeserializeOwned>(
+    pub(crate) fn parse<T: DeserializeOwned>(
         &self,
         text: &str,
         stop: Option<Stop>,

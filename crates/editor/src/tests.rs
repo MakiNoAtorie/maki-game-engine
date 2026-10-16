@@ -59,7 +59,7 @@ const ROOM_B: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [(id: 1, 
 
 /// A directory with the two rooms, and an app with the modules of a game and the
 /// editor.
-fn editor_app(name: &str) -> (App, PathBuf) {
+pub(crate) fn editor_app(name: &str) -> (App, PathBuf) {
     session_app(name, None)
 }
 
@@ -97,7 +97,7 @@ output = false",
     (app, directory)
 }
 
-fn frames(app: &mut App, count: usize) {
+pub(crate) fn frames(app: &mut App, count: usize) {
     for _ in 0..count {
         app.advance(Duration::from_millis(20));
     }
@@ -494,6 +494,7 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
         let pages = vec![Page {
             conditions: Vec::new(),
             trigger: Trigger::Autorun,
+            repeat: false,
             commands: vec![
                 command(Builtin::OpenDoor(mover_id)),
                 command(Builtin::SetFlag("up".to_owned(), true)),
@@ -638,7 +639,12 @@ fn a_script_command_with_fields_has_widgets_and_a_pick_of_names() {
     let wait = registry.parse_command("Wait(1.0)").unwrap();
     let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
         let edit = |ui: &mut egui::Ui, command| {
-            crate::event_panel::field_arguments(ui, command, &registry, &objects)
+            crate::event_panel::field_arguments(
+                ui,
+                command,
+                &registry,
+                crate::fields::Lists::objects(&objects),
+            )
         };
         // A command with no table: not this path. With no input: no change.
         assert_eq!(edit(ui, &wait), None);

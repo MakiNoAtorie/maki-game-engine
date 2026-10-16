@@ -17,7 +17,9 @@ use maki_scene::{ComponentTypes, ObjectId, RoomCheck, RoomDef, RoomProblem, Room
 
 use crate::builtin::Builtin;
 use crate::command::{Command, CommandRegistry, Stop};
-use crate::model::{EventDef, Wire};
+use crate::flow::Flow;
+use crate::model::{Condition, EventDef, Wire};
+use crate::state::condition_problem;
 
 /// What the check of a command knows of the room that the command is in.
 pub struct CheckContext<'a> {
@@ -160,6 +162,16 @@ fn is_transfer(command: &Command) -> bool {
     matches!(command.get(), Some(Builtin::Transfer(..)))
 }
 
+/// The conditions of a row: of an `If` and of a "wait until".
+fn conditions_of(command: &Command) -> &[Condition] {
+    match (command.get(), command.get()) {
+        (Some(Builtin::If(conditions, ..)), _) | (_, Some(Flow::WaitUntil(conditions))) => {
+            conditions
+        }
+        _ => &[],
+    }
+}
+
 impl CommandRegistry {
     /// The checks of the events of a room: two events of one object (an error: the
     /// save point and a test find an event by the id of its object; by its name in a
@@ -197,6 +209,18 @@ impl CommandRegistry {
                     });
                 }
             }
+            // The conditions of the pages: object 0 is the object of the event.
+            for condition in event.pages.iter().flat_map(|page| &page.conditions) {
+                if let Some(text) = condition_problem(condition, event.id, context) {
+                    problems.push(Problem {
+                        event: index,
+                        object: event.object,
+                        command: None,
+                        warning: false,
+                        text,
+                    });
+                }
+            }
             // The command lists: the pages, then the wires.
             let pages = event.pages.iter().map(|page| &page.commands);
             let lists = pages.chain(event.wires.iter().map(|wire| &wire.commands));
@@ -209,7 +233,11 @@ impl CommandRegistry {
                         return;
                     }
                     left = is_transfer(command);
-                    if let Some(finding) = self.check(command, context) {
+                    let conditions = conditions_of(command).iter();
+                    let state = conditions
+                        .filter_map(|condition| condition_problem(condition, event.id, context));
+                    let findings = self.check(command, context).into_iter();
+                    for finding in findings.chain(state.map(Finding::error)) {
                         problems.push(Problem {
                             event: index,
                             object: event.object,

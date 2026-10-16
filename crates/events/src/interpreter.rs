@@ -11,19 +11,19 @@
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::query::{QueryState, With};
+use bevy_ecs::query::{Has, QueryState, With};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{EntityCommands, Res, ResMut};
 use bevy_ecs::world::{EntityWorldMut, Mut, World};
 use glam::Vec3;
 use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
-use maki_scene::{ComponentText, CurrentRoom, Name, ObjectId, Player, RoomItem};
+use maki_scene::{ComponentText, CurrentRoom, Hidden, Name, ObjectId, Player, RoomItem};
 
-use crate::command::{Command, CommandRegistry, Step};
-use crate::model::{EventDef, EventPages, Trigger, active_page};
+use crate::INTERACT;
+use crate::command::{Command, CommandRegistry, Jump, Scope, Step};
+use crate::model::{EventDef, EventPages, Facts, Trigger, active_page};
 use crate::script::{ScriptRunners, TriggerArea};
-use crate::{GameState, INTERACT};
 
 /// An interact event starts if its area is not farther from the player than this, in
 /// meters, and the player faces it.
@@ -34,6 +34,8 @@ const INTERACT_FACING: f32 = 0.3;
 /// An event runs at most this many commands in one step. More are a loop with no
 /// wait in it: the rest runs in the next step, and the game goes on.
 const MAX_COMMANDS_PER_STEP: usize = 256;
+/// Routine calls in one another: more is a call with no end.
+const MAX_CALL_DEPTH: usize = 64;
 
 /// The text that the game shows to the player. `None`: no message. The command
 /// `Message` writes it and waits; the game draws it.
@@ -75,8 +77,9 @@ pub struct RunningEvent {
     pub(crate) entity: Option<Entity>,
     pub start: Start,
     /// The command lists that are open: the page, and in it the branch of each `If`
-    /// that was taken. With each list, the index of its next command.
-    stack: Vec<(Vec<Command>, usize)>,
+    /// that was taken. With each list, the index of its next command, the variables
+    /// of the routine call that opened the list, and true for the list of a `Loop`.
+    stack: Vec<(Vec<Command>, usize, Option<Scope>, bool)>,
     /// True: the current command ran in a step before and waits.
     waiting: bool,
     /// What the current command keeps between its steps (`Step::memory`).
@@ -90,7 +93,7 @@ impl RunningEvent {
             id: None,
             entity: None,
             start,
-            stack: vec![(commands.to_vec(), 0)],
+            stack: vec![(commands.to_vec(), 0, None, false)],
             waiting: false,
             memory: None,
         }
@@ -105,22 +108,24 @@ impl RunningEvent {
 
     /// The command that runs or waits now.
     pub fn current(&self) -> Option<&Command> {
-        let (list, index) = self.stack.last()?;
+        let (list, index, ..) = self.stack.last()?;
         list.get(*index)
     }
 
     /// One fixed step. True: the event has ended. `steps`: see `EventRunner::steps`.
     pub(crate) fn step(&mut self, world: &mut World, steps: &mut Option<u32>) -> bool {
         for _ in 0..MAX_COMMANDS_PER_STEP {
-            // A list at its end is closed: the list around it goes on.
-            while self
-                .stack
-                .last()
-                .is_some_and(|(list, index)| *index >= list.len())
+            // A closed list: the outer list goes on. A loop starts again; an empty one closes.
+            while let Some((list, index, _, looping)) = self.stack.last_mut()
+                && *index >= list.len()
             {
+                if *looping && !list.is_empty() {
+                    *index = 0;
+                    break;
+                }
                 self.stack.pop();
             }
-            let Some((list, index)) = self.stack.last() else {
+            let Some((list, index, ..)) = self.stack.last() else {
                 return true;
             };
             let command = list[*index].clone();
@@ -136,6 +141,13 @@ impl RunningEvent {
                 self.memory = None;
             }
             let mut opened = None;
+            let mut jump = Jump::None;
+            // The variables of the nearest routine call.
+            let scope = self
+                .stack
+                .iter_mut()
+                .rev()
+                .find_map(|frame| frame.2.as_mut());
             let mut step = Step {
                 start,
                 event: &self.name,
@@ -143,15 +155,40 @@ impl RunningEvent {
                 entity: self.entity,
                 memory: &mut self.memory,
                 opened: &mut opened,
+                scope,
+                jump: &mut jump,
             };
             if !command.run(&mut step, world) {
                 return false;
             }
             self.waiting = false;
+            if jump == Jump::Break {
+                // The search stops at a routine call: a break never leaves a routine.
+                let stack = &self.stack;
+                let inner = stack
+                    .iter()
+                    .rposition(|(_, _, call, looping)| *looping || call.is_some());
+                match inner.filter(|at| stack[*at].3) {
+                    // The index of the list around the loop is already after it.
+                    Some(at) => {
+                        self.stack.truncate(at);
+                        continue;
+                    }
+                    None => tracing::warn!(event = self.name, "Break with no loop around it"),
+                }
+            }
             self.stack.last_mut().expect("tested above").1 += 1;
-            // The branch of an `If`.
-            if let Some(list) = opened {
-                self.stack.push((list, 0));
+            // The branch of an `If`, a routine, or the list of a loop.
+            if let Some((list, scope)) = opened {
+                let calls = self.stack.iter().filter(|frame| frame.2.is_some()).count();
+                if scope.is_some() && calls >= MAX_CALL_DEPTH {
+                    tracing::warn!(
+                        event = self.name,
+                        "{MAX_CALL_DEPTH} routine calls in one another: the call does not run"
+                    );
+                } else {
+                    self.stack.push((list, 0, scope, jump == Jump::Loop));
+                }
             }
         }
         tracing::warn!(
@@ -277,13 +314,15 @@ impl EventRunner {
             Option<&Interpolated>,
             Option<&RoomItem>,
             Option<&EventMemory>,
+            Has<Hidden>,
         )>();
         let mut events: Vec<_> = events.iter(world).collect();
         events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
 
-        let state = world.resource::<GameState>();
         let mut memories = Vec::new();
-        for (entity, pages, name, area, pose, _, memory) in events {
+        for (entity, pages, name, area, pose, _, memory, hidden) in events {
+            // The area of a hidden object gives no output.
+            let area = area.filter(|_| !hidden);
             let name = name.map_or("", |name| name.0.as_str());
             let at = pose.map_or(Vec3::ZERO, |pose| pose.current.translation);
             let area = area.map(|area| EventDef::area_at(area, at.to_array()));
@@ -293,7 +332,8 @@ impl EventRunner {
             let inside = area.is_some_and(inside);
             let entered = inside && !before.0 && !self.new_room;
 
-            let page_index = active_page(&pages.pages, state);
+            let facts = Facts::new(world, world.get::<ObjectId>(entity).copied());
+            let page_index = active_page(&pages.pages, &facts);
             let page = page_index.map(|page| &pages.pages[page]);
             // An autorun page starts again if another page was active in between.
             let mut autorun = before.1;
@@ -309,7 +349,10 @@ impl EventRunner {
                 };
                 match page.trigger {
                     Trigger::Parallel => !runs(Trigger::Parallel),
-                    Trigger::Autorun => !blocked && autorun != page_index,
+                    Trigger::Autorun => {
+                        !blocked
+                            && (autorun != page_index || (page.repeat && !runs(Trigger::Autorun)))
+                    }
                     Trigger::Touch => !blocked && entered,
                     Trigger::Interact => {
                         interact

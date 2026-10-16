@@ -5,13 +5,14 @@ use std::f32::consts::PI;
 
 use bevy_ecs::change_detection::{DetectChanges, Ref};
 use bevy_ecs::lifecycle::RemovedComponents;
+use bevy_ecs::query::{Added, With, Without};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, ResMut};
 use glam::Vec3;
 use maki_core::{App, Extract, Startup, Transform};
 use maki_gpu::{BufferDesc, BufferHandle, FRAMES_IN_FLIGHT};
-use maki_scene::Light;
+use maki_scene::{Hidden, Light};
 
 use crate::{RenderGpu, RenderWorld, setup_renderer};
 
@@ -96,8 +97,10 @@ fn setup_lights(mut gpu: ResMut<RenderGpu>, mut render_world: ResMut<RenderWorld
 }
 
 fn extract_lights(
-    lights: Query<(Ref<Transform>, Ref<Light>)>,
+    lights: Query<(Ref<Transform>, Ref<Light>), Without<Hidden>>,
     mut removed: RemovedComponents<Light>,
+    hidden: Query<(), (Added<Hidden>, With<Light>)>,
+    mut shown: RemovedComponents<Hidden>,
     mut render_world: ResMut<RenderWorld>,
 ) {
     // A light is new, was written, moved, or went away: the old samples show other
@@ -105,7 +108,9 @@ fn extract_lights(
     let changed = |(transform, light): (Ref<Transform>, Ref<Light>)| {
         transform.is_changed() || light.is_changed()
     };
-    if removed.read().count() > 0 || lights.iter().any(changed) {
+    // A hide or a show is as a despawn or a spawn.
+    let shown = shown.read().count() > 0;
+    if removed.read().count() > 0 || shown || !hidden.is_empty() || lights.iter().any(changed) {
         tracing::trace!("a light changed");
         render_world.soften_accumulation();
     }
@@ -203,6 +208,24 @@ mod tests {
             let places: Vec<f32> = lights.iter().map(|light| light.position.x).collect();
             assert_eq!(places, [0.0, 1.0, 2.0]);
         });
+    }
+
+    #[test]
+    fn a_hidden_light_is_not_extracted_and_a_show_brings_it_back() {
+        let mut world = bevy_ecs::world::World::new();
+        world.init_resource::<RenderWorld>();
+        let hidden = (Transform::IDENTITY, Light::default(), maki_scene::Hidden {});
+        let lamp = world.spawn(hidden).id();
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(extract_lights);
+        let mut count = |world: &mut bevy_ecs::world::World| {
+            schedule.run(world);
+            let render_world = &world.resource::<RenderWorld>().0;
+            render_world.resource::<ExtractedLights>().0.len()
+        };
+        assert_eq!(count(&mut world), 0);
+        world.entity_mut(lamp).remove::<maki_scene::Hidden>();
+        assert_eq!(count(&mut world), 1);
     }
 
     /// The sample count of each frame.

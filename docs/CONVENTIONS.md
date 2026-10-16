@@ -9,7 +9,7 @@ Never pull full logs into context. Filter to errors and failures.
 - Benchmark: `tools/bench.py` writes CSV. `compare A B --total` gives one row per scenario.
 - A step of the GPU time with equal pictures: `bench.py confirm COMMIT SCENARIO...` runs the build of the commit before and this tree back to back (two rounds) and drops its runs. Equal within a few percent: the machine.
 - Run by hand with no input of the desktop: `maki-editor game CONFIG --input-script FILE --input-shots DIR` (format in `crates/devtools/src/input_script.rs`, example `tools/editor_scripts/stage54.txt`); read the PNGs.
-- Picture gate: `bench.py gate` runs the build of the merge-base with `origin/main` and this tree back to back and compares the pictures (`equal`, `noise`, or `CHANGED`); it drops its runs. A label such as `s52` is a base for the GPU time only: `main` can have other pictures than the run of a label. Run the gate after a change of a room file or of the renderer, and in each stage loop, before the full run (20 minutes). `bench.py drop X` removes a side run.
+- Picture gate: `bench.py gate` runs the merge-base with `origin/main` and this tree back to back and compares the pictures (`equal`, `noise`, `CHANGED`); it drops its runs. A label (`s52`) is a base for the GPU time only. Run the gate after a change of a room file or of the renderer, and in each stage loop before the full run (20 minutes). `bench.py drop X` removes a side run.
 
 ## Editing files
 - A room file in the form of the editor (a test compares them): `MAKI_WRITE_ROOMS=1 cargo test -q -p maki-game-scripts the_editor_writes`, then `git diff game/assets/rooms`.
@@ -23,40 +23,37 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - Haiku or Explore: read-only searches.
 
 ## Subagents
-- Parallel implementers may each have a worktree and a branch from the stage branch (owner, 2026-10-15); one implementer works on the stage branch. Two writers never touch the same files. A parallel branch is merged into the stage branch when its checks pass, then its worktree and branch go. Each lane is reviewed (`/code-review`) before or after its merge, in the same stage.
+- Parallel implementers each have a worktree and a branch from the stage branch (owner, 2026-10-15). Two writers never touch the same files. A branch is merged into the stage branch when its checks pass, then its worktree and branch go. The stage is reviewed (`/code-review`) after the merges, in the same stage.
 - A lane keeps the stage branch green: it fixes a test outside its scope that its own change breaks.
-- A lane in a worktree builds into the `target/` of its worktree; the first build there is cold (about 4 minutes for the dynamic form). `tools/reload_test.py` reads the `target/` of its own checkout, so it runs in a worktree too. GPU tools run in the main checkout.
+- A lane builds into the `target/` of its worktree (first build cold, about 4 minutes dynamic); `tools/reload_test.py` runs there too. GPU tools run in the main checkout.
 - In a worktree agent, a Bash command with `$(...)` or `python -c` near `git` is refused: write the commands to a scratchpad script and run it with `sh`.
 - The scratchpad is shared by the lanes: the name of each scratchpad file starts with the lane (`l42_edit.py`).
 - A session or subagent whose work ends in its own branch or pull request gets its own worktree (`use_worktree: true`): the main checkout stays on the branch of the orchestrator.
 - Implementers run the local checks above, do not edit shared notes, and end their report with at most 10 bullet points of new conventions. The orchestrator folds them into this file.
-- Prompt template:
-
-      You are an implementer subagent. Implement <task> of stage <NN>.
-      Read: docs/part6/stage-NN.md, docs/CONVENTIONS.md.
-      Stay inside <crates>; edit shared files only by adding lines.
-      Seams agreed (do not ask the owner): <seams>.
-      Local checks: <commands from "Quiet output">. Keep output filtered.
-      Report: files changed, status of each "Done when" line, anything
-      unverified, at most 10 bullet points of new conventions.
+- A prompt names: the ticket and the stage file, the base commit of the lane, what merged lanes changed, the parallel lanes and their files, the checks, and a report of at most 20 lines (files, each acceptance line, what is not verified, new conventions).
 
 ## Engine facts that bind code
 - A game or a test app with `PlayerModule` adds `GameModule`: the rules give the controller the control. Find the player with `With<Player>`; move the control only with `give_control`.
 - `maki_core::PlayState` is the state of the game, changed along `can_change`; `Time::paused` is of the editor.
-- A test that writes a room builds the text with `maki_scene::room_text` and its events with `maki_events::short_events`: the form of the file is in one place. The tests of the format itself (`crates/scene/src/room.rs`) keep their literal texts.
+- A test room: `maki_scene::room_text` and `maki_events::short_events` (the tests of the format itself keep literal texts).
 - A command started inside the egui frame (menu, palette, command button) goes through `maki_ui::queue_command`: it runs after `run_ui`, when `Panels` is back in the world.
 - A script function called by a `CallScript` row queues its commands in `ScriptContext`; the row runs them as an opened list, as `If` runs a branch.
 - Output names of a component are `pub const` on its type (`TriggerArea::USED`); the registration uses its `OUTPUTS`.
 - A component that `SetField` can change has a live form (`add_live_component_type` with a `Live` constant that lists the live fields). A live write uses `set_if_neq`.
 - The room check reads the component types from a copy in `CommandRegistry`: a check test runs one `app.update()` first.
 - An editor-only change of a game module's key goes in a Startup system of the editor that edits `Bindings`.
-- A reference to an object of the room is an `ObjectId` (`Kind::Object`), never a name. Ids start at 1; `ObjectId::default()` (0) is "no object" (`GiveControl(0)`: the player). The editor makes a new reference with `object_ref` or `object_pick` over `object_names`.
+- A reference to an object is an `ObjectId` (`Kind::Object`), never a name. Ids start at 1; 0 is "no object" (`GiveControl(0)`: the player; in a state command: the object of the event). The editor makes a reference with `object_ref` or `object_pick`.
 - A running event carries the id of its object: `RunningEvent::new(..).of(world, entity)`. A prefab change key is `change_key` (`id/component`); the editor reads a prefab file to edit with `ops::prefab_to_edit`.
-- Code that loads a file that a room names calls `FileRef::resolve(directory)`, never `directory.join(path)`. Only `FileId::write` writes an id file, only from the scan thread of the editor (`sources::scan`); after a change of the file list, `maki_assets::forget_id_tables()`. Only `ids::correct_paths` changes the file references of a document.
+- A file that a room names loads by `FileRef::resolve(directory)`. Only `FileId::write` writes an id file, only from `sources::scan`; after a change of the file list, `forget_id_tables()`. Only `ids::correct_paths` changes the file references of a document.
 - A command enum of a script crate derives `Fields` and calls `registry.add_fields::<T>()`: its arguments then get widgets with no editor code.
 - A paste keeps object ids only for a cut into its own room. `History` keeps the highest `next_id`: an id once given is not given again.
 - A headless egui test checks a shown text through the `egui::Shape::Text` galleys of `FullOutput.shapes`.
+- A condition form: one `Condition` variant (`#[field(label, pick = "flags"|"variables")]`), its arm in `names()`, and in `conditions_of` if it names an object. A list field is `Vec<T: Fields>`.
+- A command reads through `step.state(world)` (`Facts`) and writes with `step.set_variable`, never `GameState`: routine arguments hide game variables. Flow: `Step::jump`; a stack search stops at a routine call frame.
+- A command module has its own `add(app, &registry)`; a command with a command list uses `add_lists`.
+- A command reaches an object and its children (`tree_entities`). Readers of meshes, lights, colliders, areas filter `Without<Hidden>`.
+- Play state goes back on `ResetPlay`; code that sets it at the start runs after that `ResetPlay`, not in `Startup`.
+- Lane tests in a shared crate: `src/tests/<lane>.rs`, one `mod` line; temp directories prefixed by the lane.
 
 ## Code intelligence
-- Use `rust-analyzer-lsp` (`/plugin install rust-analyzer-lsp@claude-plugins-official`, `rust-analyzer` on PATH) in local sessions: lookup by symbol and errors after each edit save build round trips.
-- No index tool (Serena, vector index) until searches for the same things repeat.
+- `rust-analyzer-lsp` in local sessions (lookup by symbol, errors after each edit). No index tool until searches repeat.

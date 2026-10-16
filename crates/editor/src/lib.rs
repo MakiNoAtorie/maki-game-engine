@@ -39,6 +39,7 @@ mod overlay;
 mod panels;
 mod pictures;
 mod ron_text;
+mod routine_panel;
 pub mod sources;
 mod view;
 pub mod widgets;
@@ -318,6 +319,8 @@ pub struct Editor {
     /// The file and the pose of the prefab that was unpacked last: "Make prefab"
     /// with this file puts the prefab back at this pose.
     unpacked: Option<(PathBuf, maki_scene::PoseDef)>,
+    /// The routine file that the event panel shows in place of an event.
+    pub routine: Option<routine_panel::RoutineEdit>,
 }
 
 impl Editor {
@@ -1388,6 +1391,7 @@ impl Module for EditorModule {
             item_buffer: None,
             prefab_name: String::new(),
             unpacked: None,
+            routine: None,
         })
         .add_systems(Startup, camera::spawn)
         .add_systems(Input, take_quit_request)

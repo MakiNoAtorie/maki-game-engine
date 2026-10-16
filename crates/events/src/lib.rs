@@ -16,9 +16,14 @@
 mod builtin;
 mod check;
 mod command;
+mod flow;
 mod interpreter;
 mod model;
+mod numbers;
+mod objects;
+mod routine;
 mod script;
+mod state;
 
 use std::collections::BTreeMap;
 
@@ -32,16 +37,26 @@ use maki_scene::{RoomValidators, load_requested_room, move_movers};
 pub use builtin::Builtin;
 pub use check::{CheckContext, Finding, Problem};
 pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, ScriptFunction, Step};
+pub use flow::{Flow, Loop};
 pub use interpreter::{
     ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, Signals, Start, load_room_events,
     run_events, start_event,
 };
 pub use model::{
-    Area, Compare, Condition, EventDef, EventPages, Page, Trigger, Wire, active_page, all_hold,
-    short_events,
+    Area, Compare, Condition, EventDef, EventPages, Facts, Page, Trigger, Wire, active_page,
+    all_hold, short_events,
+};
+pub use numbers::{EventsSettings, Numbers, Random};
+pub use objects::ObjectCommand;
+pub use routine::{
+    Arguments, ROUTINE_EXTENSION, RoutineCommand, RoutineDef, Routines, read_routine, routine_text,
 };
 pub use script::{
     Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
+};
+pub use state::{
+    NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,
+    room_key,
 };
 
 /// Starts the event that the player faces, closes a message, and takes the marked
@@ -90,6 +105,9 @@ impl Module for EventsModule {
         registry.add_check(builtin::check);
         registry.add_texts(builtin::row_text, builtin::help);
         registry.add_lists(builtin::lists, builtin::with_lists);
+        flow::add(&registry);
+        numbers::add(app, &registry);
+        routine::add(app, &registry);
         add_bindings(
             app,
             &[
@@ -115,6 +133,10 @@ impl Module for EventsModule {
         maki_scene::add_component_reader(app, "event", interpreter::insert_event);
         // A room with a bad event is not loaded. The check has the registry, with
         // the commands and the checks that other modules add later.
+        // Show, hide, and move of any object.
+        objects::add(app, &registry);
+        // The switches and numbers of an object.
+        state::add(app, &registry);
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)
