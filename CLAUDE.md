@@ -4,6 +4,7 @@ Top-down 3D horror game engine with path-traced lighting, written in Rust.
 
 ## Current target (part 6: a general engine)
 Make the engine a general engine with the workflow of Unity, Godot, and Unreal, in which a game in the style of RPG Maker can be made. It must not copy the workflow of RPG Maker: parts 4 and 5 made the event (pages, triggers, command rows) the only way to write logic, and the item kinds of a room a closed set. Part 6 corrects the two: objects with components that modules register, kinds as prefabs, scripts in Rust in a script crate of the project (loaded as a DLL, so a script change does not close the editor), and the editor as a program of its own that opens a project. The events stay, as a way with no code on the same system.
+This is a project that builds an engine, not a game: a stage builds the engine and the tools with which the owner makes a game (`docs/part6/README.md`, 2.15). The content in `game/` is test content of the engine; the owner makes the content of a real game.
 The plan, the decisions of the owner, and the stage files are in `docs/part6/`. Start with `docs/part6/HANDOVER.md`, then `docs/part6/README.md`. Parts 2 (`docs/part2/`), 3 (`docs/part3/`), 4 (`docs/part4/`), and 5 (`docs/part5/`) are done.
 The architecture must let later features plug in without rework (upscaling, software tracer backend, Metal backend, skinned characters, baked lighting). Favor correct seams over feature breadth.
 Picture quality and GPU time must not regress: compare `tools/bench.py` runs before and after each stage.
