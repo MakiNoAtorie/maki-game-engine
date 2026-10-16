@@ -216,10 +216,10 @@ pub type ScriptFunction = fn(&mut ScriptContext);
 // Shared, with a lock: the check of the room files (`maki_scene::RoomValidators`)
 // holds a clone, and sees the commands that modules add after it was made.
 #[derive(Resource, Clone, Default)]
-pub struct CommandRegistry(
-    Arc<RwLock<Vec<Set>>>,
-    Arc<RwLock<BTreeMap<&'static str, ScriptFunction>>>,
-);
+pub struct CommandRegistry {
+    sets: Arc<RwLock<Vec<Set>>>,
+    functions: Arc<RwLock<BTreeMap<&'static str, ScriptFunction>>>,
+}
 
 impl CommandRegistry {
     /// Adds the commands of the enum `T`. Call from `Module::build`:
@@ -236,7 +236,7 @@ impl CommandRegistry {
         handler: impl Fn(&T, &mut Step, &mut World) -> bool + Send + Sync + 'static,
     ) {
         let names = variant_names::<T>();
-        let mut sets = self.0.write().expect("no writer panics");
+        let mut sets = self.sets.write().expect("no writer panics");
         for name in names {
             assert!(
                 sets.iter().all(|set| !set.names.contains(name)),
@@ -273,7 +273,7 @@ impl CommandRegistry {
         get: for<'a> fn(&'a T) -> LabeledLists<'a>,
         set: fn(&T, Vec<Vec<Command>>) -> T,
     ) {
-        let mut sets = self.0.write().expect("no writer panics");
+        let mut sets = self.sets.write().expect("no writer panics");
         let found = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
         let found = found.expect("add the commands before their lists");
         fn of<T: CommandSet>(command: &dyn Any) -> &T {
@@ -287,7 +287,7 @@ impl CommandRegistry {
 
     fn lists_of(&self, command: &Command) -> Option<(Lists, Handler)> {
         let value = command.as_any();
-        let sets = self.0.read().expect("no writer panics");
+        let sets = self.sets.read().expect("no writer panics");
         let set = sets.iter().find(|set| set.type_id == value.type_id())?;
         Some((set.lists.clone()?, set.run.clone()))
     }
@@ -334,7 +334,7 @@ impl CommandRegistry {
         row: impl Fn(&T) -> Option<String> + Send + Sync + 'static,
         help: fn(&str) -> Option<&'static str>,
     ) {
-        let mut sets = self.0.write().expect("no writer panics");
+        let mut sets = self.sets.write().expect("no writer panics");
         let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
         let set = set.expect("add the commands before their texts");
         let row = Arc::new(move |command: &dyn Any| {
@@ -346,7 +346,7 @@ impl CommandRegistry {
     /// A command as a line for a reader, if its module gave one (`add_texts`).
     pub fn row_text(&self, command: &Command) -> Option<String> {
         let value = command.as_any();
-        let sets = self.0.read().expect("no writer panics");
+        let sets = self.sets.read().expect("no writer panics");
         let set = sets.iter().find(|set| set.type_id == value.type_id())?;
         let texts = set.texts.clone()?;
         drop(sets);
@@ -369,7 +369,7 @@ impl CommandRegistry {
         &self,
         check: impl Fn(&T, &CheckContext) -> Option<Finding> + Send + Sync + 'static,
     ) {
-        let mut sets = self.0.write().expect("no writer panics");
+        let mut sets = self.sets.write().expect("no writer panics");
         let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
         let set = set.expect("add the commands before their check");
         set.check = Some(Arc::new(move |command, context| {
@@ -386,7 +386,7 @@ impl CommandRegistry {
     ///
     /// Panics if the enum `T` was not added.
     pub fn add_defaults<T: CommandSet>(&self, new: fn(&str, &RoomDef) -> Option<T>) {
-        let mut sets = self.0.write().expect("no writer panics");
+        let mut sets = self.sets.write().expect("no writer panics");
         let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
         let set = set.expect("add the commands before their defaults");
         set.defaults = Some(Arc::new(move |name, room| {
@@ -408,7 +408,7 @@ impl CommandRegistry {
     /// What the check of its module finds in a command.
     pub(crate) fn check(&self, command: &Command, context: &CheckContext) -> Option<Finding> {
         let value = command.as_any();
-        let sets = self.0.read().expect("no writer panics");
+        let sets = self.sets.read().expect("no writer panics");
         let set = sets.iter().find(|set| set.type_id == value.type_id())?;
         // The lock is free while the check runs.
         let check = set.check.clone()?;
@@ -419,7 +419,7 @@ impl CommandRegistry {
     /// A command from a value of its enum: for a tool that makes or changes events
     /// (an editor). `None`: no module added the enum `T`.
     pub fn command<T: CommandSet>(&self, value: T) -> Option<Command> {
-        let sets = self.0.read().expect("no writer panics");
+        let sets = self.sets.read().expect("no writer panics");
         let set = sets.iter().find(|set| set.type_id == TypeId::of::<T>())?;
         Some(Command {
             value: Arc::new(value),
@@ -431,18 +431,22 @@ impl CommandRegistry {
     /// Adds a function that the row `CallScript` calls by its name. A name that is in
     /// use gets the new function: a new build of the script DLL adds them again.
     pub fn add_function(&self, name: &'static str, function: ScriptFunction) {
-        let mut functions = self.1.write().expect("no writer panics");
+        let mut functions = self.functions.write().expect("no writer panics");
         functions.insert(name, function);
     }
 
     /// The script function of a name.
     pub fn function(&self, name: &str) -> Option<ScriptFunction> {
-        self.1.read().expect("no writer panics").get(name).copied()
+        self.functions
+            .read()
+            .expect("no writer panics")
+            .get(name)
+            .copied()
     }
 
     /// The names of the script functions, in the order of the names.
     pub fn functions(&self) -> Vec<&'static str> {
-        self.1
+        self.functions
             .read()
             .expect("no writer panics")
             .keys()
@@ -452,12 +456,12 @@ impl CommandRegistry {
 
     /// The names of all commands, in the order in which they were added.
     pub fn names(&self) -> Vec<&'static str> {
-        let sets = self.0.read().expect("no writer panics");
+        let sets = self.sets.read().expect("no writer panics");
         sets.iter().flat_map(|set| set.names).copied().collect()
     }
 
     fn find(&self, name: &str) -> Option<Set> {
-        let sets = self.0.read().expect("no writer panics");
+        let sets = self.sets.read().expect("no writer panics");
         sets.iter().find(|set| set.names.contains(&name)).cloned()
     }
 

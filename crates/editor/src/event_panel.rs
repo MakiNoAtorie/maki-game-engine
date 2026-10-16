@@ -472,23 +472,31 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
         Builtin::SetField(object, component, field, value) => {
             let objects: Vec<String> = lists.objects.iter().map(|found| found.0.clone()).collect();
             ui.label("object");
-            let mut changed = pick(ui, "object", object, &objects);
+            let picked_object = pick(ui, "object", object, &objects);
             let of_object = lists.objects.iter().find(|found| found.0 == *object);
             let components = of_object.map_or(&[][..], |found| &found.1);
-            // Another object: its first component, if it has not the one of before.
-            if let (false, Some(first)) = (components.contains(component), components.first()) {
+            // Another object picked: its first component, if it has not the one of
+            // before. A row that is only shown does not change.
+            if let (true, false, Some(first)) = (
+                picked_object,
+                components.contains(component),
+                components.first(),
+            ) {
                 component.clone_from(first);
-                changed = true;
             }
             ui.label("component");
-            changed |= pick(ui, "component", component, components);
+            let picked_component = pick(ui, "component", component, components);
             let fields = lists.fields.get(component.as_str());
             let fields = fields.map_or(&[][..], Vec::as_slice);
             let names: Vec<String> = fields.iter().map(|found| found.name.to_owned()).collect();
-            if let (false, Some(first)) = (names.contains(field), fields.first()) {
+            if let (true, false, Some(first)) = (
+                picked_object || picked_component,
+                names.contains(field),
+                fields.first(),
+            ) {
                 (*field, *value) = (first.name.to_owned(), field_value(first));
-                changed = true;
             }
+            let mut changed = picked_object || picked_component;
             ui.label("field");
             let before = field.clone();
             changed |= pick(ui, "field", field, &names);

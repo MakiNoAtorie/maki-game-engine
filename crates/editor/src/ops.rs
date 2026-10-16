@@ -162,6 +162,9 @@ impl Document {
                 }
                 Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
                 Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
+                Builtin::SetField(name, component, field, value) if name == old => Some(
+                    Builtin::SetField(new.clone(), component.clone(), field.clone(), value.clone()),
+                ),
                 _ => None,
             });
             users += self.rename_in_events(registry, |command: &AudioCommand| match command {
@@ -808,6 +811,7 @@ mod tests {
                 (name: "start", components: {"spawn": ()}),
                 (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
                     LightOff("lamp"),
+                    SetField("lamp", "light", "intensity", 2.0),
                     If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
                     Transfer("room.ron", "start"),
                 ])])}),
@@ -825,9 +829,10 @@ mod tests {
 
         document.room.objects[2].name = Some("bulb".to_owned());
         let status = document.renamed(&lamp, Some("lamp".to_owned()), &registry);
-        assert!(status.contains("2 event commands"), "{status}");
+        assert!(status.contains("3 event commands"), "{status}");
         let text = document.text();
         assert!(text.contains(r#"LightOff("bulb")"#) && text.contains(r#"LightOn("bulb")"#));
+        assert!(text.contains(r#"SetField("bulb", "light", "intensity", 2.0)"#));
         assert!(!text.contains("\"lamp\""), "{text}");
 
         // A door with the name of the other door gets a number, and the events
