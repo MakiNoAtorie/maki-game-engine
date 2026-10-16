@@ -1026,6 +1026,54 @@ fn items_go_to_another_room_and_a_prefab_is_made_unpacked_and_changed() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+/// A command of a menu or the command search reads `Panels`, which `run_ui` holds out
+/// of the world during the frame.
+#[test]
+fn a_command_that_reads_the_panels_runs_from_the_palette_and_from_a_menu() {
+    use bevy_ecs::resource::Resource;
+    #[derive(Resource, Default)]
+    struct Seen(u32);
+    /// 1: start from the palette, 2: from a menu. Taken by `drive`.
+    #[derive(Resource, Default)]
+    struct Press(u32);
+    // As a click in the egui frame: `Panels` is out of the world.
+    fn drive(world: &mut World) {
+        let press = std::mem::take(&mut world.resource_mut::<Press>().0);
+        world.resource_scope(|world, mut panels: Mut<Panels>| match press {
+            1 => {
+                let row = panels.search(world, "reads panels").remove(0);
+                panels.run_row(world, &row);
+            }
+            2 => maki_ui::queue_command(world, "test.reads_panels"),
+            _ => {}
+        });
+    }
+    let (mut app, directory) = editor_app("panel_commands");
+    app.init_resource::<Seen>().init_resource::<Press>();
+    app.add_systems(Update, drive.ambiguous_with_all());
+    let read = |world: &mut World| {
+        // Panics if `Panels` is not in the world.
+        assert!(world.resource::<Panels>().is_open(panels::OUTLINER));
+        world.resource_mut::<Seen>().0 += 1;
+    };
+    maki_ui::add_command(
+        &mut app,
+        maki_ui::ToolCommand {
+            menu: "File",
+            ..maki_ui::ToolCommand::new("test.reads_panels", "Reads panels", read)
+        },
+    );
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        for press in [1, 2] {
+            app.resource_mut::<Press>().0 = press;
+            frames(&mut app, 2);
+            assert_eq!(app.world().resource::<Seen>().0, press);
+        }
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
 #[test]
 fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
     let (app, directory) = editor_app("shell");
