@@ -5,7 +5,7 @@ use bevy_ecs::system::Commands;
 use maki_core::{ConfigFile, Interpolated, Startup};
 use maki_events::{EventsModule, GameState};
 use maki_platform::PlatformModule;
-use maki_scene::{RoomRequest, RoomTarget, RoomValidators, SceneModule, read_room};
+use maki_scene::{ObjectId, RoomRequest, RoomTarget, RoomValidators, SceneModule, read_room};
 
 use super::*;
 
@@ -42,14 +42,14 @@ fn room_directory(name: &str, events: &str) -> (PathBuf, PathBuf) {
     write_wav(&directory.join("click.wav"), 0.05);
     write_wav(&directory.join("hum.wav"), 0.5);
     write_wav(&directory.join("music.wav"), 1.0);
-    let room = format!(
-        r#"(width: 8, depth: 8, height: 3, objects: [
-            (name: "start", components: {{"spawn": ()}}),
-            (name: "lamp", pose: (position: (2, 2, 0)), components: {{"light": (radius: 0.1,
-                color: (1, 1, 1), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5, reach: 9.0))}}),
-            {}])"#,
-        maki_events::short_events(events)
-    );
+    let events = maki_events::short_events(events);
+    let objects = [
+        r#"(id: 1, name: "start", components: {"spawn": ()})"#,
+        r#"(id: 2, name: "lamp", pose: (position: (2, 2, 0)), components: {"light": (radius: 0.1,
+            color: (1, 1, 1), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5, reach: 9.0))})"#,
+        &events,
+    ];
+    let room = maki_scene::room_text(8.0, 8.0, 3.0, &objects);
     let path = directory.join("room.ron");
     std::fs::write(&path, room).unwrap();
     (directory, path)
@@ -64,7 +64,7 @@ fn app(room: &Path) -> App {
         .add_module(AudioModule);
     let target = RoomTarget {
         path: room.to_owned(),
-        spawn: Some("start".to_owned()),
+        spawn: Some(ObjectId(1)),
         text: None,
     };
     app.add_systems(
@@ -102,8 +102,8 @@ fn plays(app: &App) -> (Vec<String>, Option<String>, Vec<String>) {
 fn the_commands_of_a_room_file_start_and_stop_sounds_with_no_device() {
     let events = r#"(name: "start", pages: [(trigger: Autorun, commands: [
         PlaySound("click.wav", 1.0), PlayMusic("music.wav", 0.5), Wait(0.5),
-        SoundOff("lamp"), StopMusic, Wait(0.2),
-        SoundOn("lamp"), SetFlag("done", true)])])"#;
+        SoundOff(2), StopMusic, Wait(0.2),
+        SoundOn(2), SetFlag("done", true)])])"#;
     let (directory, room) = room_directory("commands", events);
     let click = |file: &str| vec![file.to_owned()];
     let none = Vec::<String>::new;
@@ -184,15 +184,15 @@ fn the_loader_checks_the_names_and_the_files_of_the_audio_commands() {
     assert_eq!(
         check(
             "good",
-            &event(r#"SoundOff("lamp"), PlaySound("click.wav", 1.0)"#)
+            &event(r#"SoundOff(2), PlaySound("click.wav", 1.0)"#)
         ),
         Ok(())
     );
     // A file that is not there is a warning: the room loads.
     assert_eq!(check("file", &event(r#"PlayMusic("no.ogg", 1.0)"#)), Ok(()));
     // A name with no sound is an error, with the line of the command.
-    let error = check("name", &event(r#"SoundOn("lamb")"#)).unwrap_err();
-    let wanted = "5: event `a`: the room has no light `lamb` with a sound";
+    let error = check("name", &event(r#"SoundOn(8)"#)).unwrap_err();
+    let wanted = "5: event `a`: the room has no light `id 8` with a sound";
     assert!(error.ends_with(wanted), "{error}");
 }
 

@@ -27,6 +27,7 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - A lane keeps the stage branch green: it fixes a test outside its scope that its own change breaks.
 - A lane in a worktree builds into the `target/` of its worktree; the first build there is cold (about 4 minutes for the dynamic form). `tools/reload_test.py` reads the `target/` of its own checkout, so it runs in a worktree too. GPU tools run in the main checkout.
 - In a worktree agent, a Bash command with `$(...)` or `python -c` near `git` is refused: write the commands to a scratchpad script and run it with `sh`.
+- The scratchpad is shared by the lanes: the name of each scratchpad file starts with the lane (`l42_edit.py`).
 - A session or subagent whose work ends in its own branch or pull request gets its own worktree (`use_worktree: true`): the main checkout stays on the branch of the orchestrator.
 - Implementers run the local checks above, do not edit shared notes, and end their report with at most 10 bullet points of new conventions. The orchestrator folds them into this file.
 - Prompt template:
@@ -49,6 +50,12 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - A component that `SetField` can change has a live form (`add_live_component_type` with a `Live` constant that lists the live fields). A live write uses `set_if_neq`.
 - The room check reads the component types from a copy in `CommandRegistry`: a check test runs one `app.update()` first.
 - An editor-only change of a game module's key goes in a Startup system of the editor that edits `Bindings`.
+- A reference to an object of the room is an `ObjectId` (`Kind::Object`), never a name. Ids start at 1; `ObjectId::default()` (0) is "no object" (`GiveControl(0)`: the player). The editor makes a new reference with `object_ref` or `object_pick` over `object_names`.
+- A running event carries the id of its object: `RunningEvent::new(..).of(world, entity)`. A prefab change key is `change_key` (`id/component`); the editor reads a prefab file to edit with `ops::prefab_to_edit`.
+- Code that loads a file that a room names calls `FileRef::resolve(directory)`, never `directory.join(path)`. Only `FileId::write` writes an id file, only from the scan thread of the editor (`sources::scan`); after a change of the file list, `maki_assets::forget_id_tables()`. Only `ids::correct_paths` changes the file references of a document.
+- A command enum of a script crate derives `Fields` and calls `registry.add_fields::<T>()`: its arguments then get widgets with no editor code.
+- A paste keeps object ids only for a cut into its own room. `History` keeps the highest `next_id`: an id once given is not given again.
+- A headless egui test checks a shown text through the `egui::Shape::Text` galleys of `FullOutput.shapes`.
 
 ## Code intelligence
 - Use `rust-analyzer-lsp` (`/plugin install rust-analyzer-lsp@claude-plugins-official`, `rust-analyzer` on PATH) in local sessions: lookup by symbol and errors after each edit save build round trips.

@@ -29,20 +29,61 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::room::{PoseDef, ron_options};
 
+/// The id of an object of a room: unique in its room, and it does not change with
+/// a new name or a move (ADR 0001). In the file a number. Also the component of the
+/// entity of the object, beside its `Name`. The ids of a room start at 1: the
+/// default, 0, is no object (a new command before a pick).
+#[derive(
+    Component, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct ObjectId(pub u32);
+
+/// The field of a script that names an object of the room: the editor picks it by its
+/// name and stores the id.
+impl Fields for ObjectId {
+    fn kind() -> maki_core::fields::Kind {
+        maki_core::fields::Kind::Object
+    }
+
+    fn tree(&self) -> Value {
+        Value::from(self.0)
+    }
+}
+
+/// `id 7`: for a log and a problem of the check.
+impl std::fmt::Display for ObjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "id {}", self.0)
+    }
+}
+
+/// As in the file, `3`: the debug text of a command is its RON form.
+impl std::fmt::Debug for ObjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// One thing of a room.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 #[fields(default)]
 pub struct ObjectDef {
+    /// The editor gives it. `None`: a room file of a person or a tool; no command
+    /// can name the object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[field(skip)]
+    pub id: Option<ObjectId>,
     /// Events and scripts find the object by its name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "is_default_pose")]
     pub pose: PoseDef,
-    /// The name of the object that this one belongs to. The pose is in the space of
-    /// the room all the same (stage 49 changes that).
+    /// The object that this one belongs to. The pose is in the space of the room all
+    /// the same (stage 49 changes that).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
+    pub parent: Option<ObjectId>,
     /// By the name of the type of each component.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[field(skip)]
@@ -357,13 +398,35 @@ mod tests {
     use crate::room::{LightDef, MeshDef, Prop, parse_room};
 
     const ROOM: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [
-        (name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
+        (id: 1, name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
             // A comment in a component.
             "prop": (mesh: Sphere(radius: 0.5, segments: 8, rings: 4), collider: false, ),
             "swing": (angle: 12.5, axis: Y, label: "a \"b\" // c"),
         }),
-        (parent: "ball"),
+        (id: 2, parent: 1),
     ])"#;
+
+    #[test]
+    fn a_parent_by_id_stays_after_a_rename_and_the_check_finds_an_id_with_no_object() {
+        let room = |parent: &str| {
+            format!(
+                r#"(width: 4, depth: 4, height: 3, objects: [(id: 3, name: "ball_2"), (id: 4, parent: {parent})])"#
+            )
+        };
+        let path = std::path::Path::new("a.ron");
+        let check = |text: &str| crate::check_room(path, text, &Default::default());
+        // Id 3 was named `ball` when the parent was set.
+        let def = check(&room("3")).unwrap();
+        let parent = def.objects[1].parent.as_ref().unwrap();
+        assert_eq!(*parent, ObjectId(3));
+        assert_eq!(def.find(parent).unwrap().1.name.as_deref(), Some("ball_2"));
+        // A name is not a parent.
+        assert!(check(&room(r#""ball_2""#)).is_err());
+        let text = crate::room::ron_options().to_string(&def).unwrap();
+        assert!(text.contains("parent:3"), "{text}");
+        let error = check(&room("7")).unwrap_err().to_string();
+        assert!(error.contains("no parent object `id 7`"), "{error}");
+    }
 
     #[test]
     fn an_object_keeps_each_component_as_its_text() {
@@ -371,7 +434,7 @@ mod tests {
         let ball = &room.objects[0];
         assert_eq!(ball.name.as_deref(), Some("ball"));
         assert_eq!(ball.pose.position, [1.0, 0.5, 0.0]);
-        assert_eq!(room.objects[1].parent.as_deref(), Some("ball"));
+        assert_eq!(room.objects[1].parent, Some(ObjectId(1)));
         // No type reads "swing": its text stays, compact.
         assert_eq!(
             ball.components["swing"].as_str(),

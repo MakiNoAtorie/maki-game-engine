@@ -177,7 +177,7 @@ fn add_modules(
         .add_module(maki_gameplay::CameraModule)
         .add_module(maki_gameplay::RoomsModule {
             start_room: project.start_room.clone(),
-            start_spawn: project.start_spawn.clone(),
+            start_spawn: project.start_spawn,
         })
         // Not with the editor: it plays a room that is not on disk, and its play
         // must not write the save of the game.

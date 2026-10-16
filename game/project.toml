@@ -6,9 +6,10 @@ rooms = "assets/rooms"
 # Where the game starts if the config file names no room: a file of `rooms`, and a
 # spawn point of it.
 start_room = "room_a.ron"
-start_spawn = "start"
+# The spawn point "start".
+start_spawn = 11
 save = "save.ron"
 # The prefab file of the player, from `rooms`.
-player = "prefabs/player.prefab"
+player = { path = "prefabs/player.prefab", id = "86520338f7517f25" }
 # The cargo package that the editor builds and loads: the script crate as a DLL.
 scripts = "maki-game-dll"

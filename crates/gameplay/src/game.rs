@@ -13,7 +13,7 @@ use bevy_ecs::world::World;
 use maki_core::{App, FixedUpdate, Interpolated, Module, PlayState, ResetPlay, Settings, Update};
 use maki_events::{CommandRegistry, EventRunner, run_events};
 use maki_platform::{Action, ActionState, Key, add_bindings};
-use maki_scene::Name;
+use maki_scene::ObjectId;
 use serde::{Deserialize, Serialize};
 
 use crate::control::{Controller, give_control};
@@ -59,9 +59,9 @@ pub enum GameCommand {
     /// allows it; else a warning, and no change. `Pause` needs the pause action on
     /// (`GameRules::pause`): only the action ends a pause.
     SetPlayState(PlayState),
-    /// The control goes to the first object with this name. An empty name: back to
+    /// The control goes to the object. No object (`ObjectId::default()`, 0): back to
     /// the body of the player prefab.
-    GiveControl(String),
+    GiveControl(ObjectId),
 }
 
 /// The rules of the game, the pause action, and the commands `SetPlayState` and
@@ -86,9 +86,9 @@ impl Module for GameModule {
                         );
                     }
                 }
-                GameCommand::GiveControl(name) => match named(world, name) {
+                GameCommand::GiveControl(object) => match entity_of(world, object) {
                     Some(target) => drop(give_control(world, target)),
-                    None => tracing::warn!(event = step.event, "GiveControl: no object `{name}`"),
+                    None => tracing::warn!(event = step.event, "GiveControl: no object `{object}`"),
                 },
             }
             true
@@ -97,10 +97,10 @@ impl Module for GameModule {
             |command: &GameCommand| {
                 Some(match command {
                     GameCommand::SetPlayState(state) => format!("State: {state:?}"),
-                    GameCommand::GiveControl(name) if name.is_empty() => {
+                    GameCommand::GiveControl(object) if *object == ObjectId::default() => {
                         "Control: the player".to_owned()
                     }
-                    GameCommand::GiveControl(name) => format!("Control: {name}"),
+                    GameCommand::GiveControl(object) => format!("Control: {object}"),
                 })
             },
             |name| match name {
@@ -115,7 +115,7 @@ impl Module for GameModule {
         );
         registry.add_defaults(|name, _| match name {
             "SetPlayState" => Some(GameCommand::SetPlayState(PlayState::Cutscene)),
-            "GiveControl" => Some(GameCommand::GiveControl(String::new())),
+            "GiveControl" => Some(GameCommand::GiveControl(ObjectId::default())),
             _ => None,
         });
         app.init_resource::<Controller>()
@@ -128,15 +128,15 @@ impl Module for GameModule {
     }
 }
 
-/// The first object with the name; the home body for an empty name.
-fn named(world: &mut World, name: &str) -> Option<Entity> {
-    if name.is_empty() {
+/// The first entity of the object; the home body for no object.
+fn entity_of(world: &mut World, object: &ObjectId) -> Option<Entity> {
+    if *object == ObjectId::default() {
         return world.resource::<Controller>().home;
     }
-    let mut objects = world.query_filtered::<(Entity, &Name), With<Interpolated>>();
+    let mut objects = world.query_filtered::<(Entity, &ObjectId), With<Interpolated>>();
     objects
         .iter(world)
-        .find_map(|(entity, other)| (other.0 == name).then_some(entity))
+        .find_map(|(entity, id)| (id == object).then_some(entity))
 }
 
 /// Runs in `FixedUpdate`: the rule of the control. The pawn takes the move actions
@@ -182,7 +182,7 @@ mod tests {
     use maki_core::{ConfigFile, Fields, Startup, Time, Transform};
     use maki_events::{EventsModule, GameState, Script, ScriptContext, add_script};
     use maki_platform::{PlatformModule, RawInput};
-    use maki_scene::{Player, SceneModule};
+    use maki_scene::{Name, Player, SceneModule};
 
     use super::*;
     use crate::{ControlsModule, PlayerModule};
@@ -193,12 +193,12 @@ mod tests {
     /// an index into this list, plus one.
     fn calls() -> [GameCommand; 7] {
         [
-            GameCommand::GiveControl("box".to_owned()),
-            GameCommand::GiveControl(String::new()),
+            GameCommand::GiveControl(ObjectId(5)),
+            GameCommand::GiveControl(ObjectId::default()),
             GameCommand::SetPlayState(PlayState::Play),
             GameCommand::SetPlayState(PlayState::Cutscene),
             GameCommand::SetPlayState(PlayState::Title),
-            GameCommand::GiveControl("nothing".to_owned()),
+            GameCommand::GiveControl(ObjectId(99)),
             GameCommand::SetPlayState(PlayState::Pause),
         ]
     }
@@ -234,7 +234,12 @@ mod tests {
         add_script::<Driver>(&mut app, "driver");
         app.add_systems(Startup, |mut commands: Commands| {
             let at = Transform::from_translation(Vec3::new(3.0, 0.0, 0.0));
-            commands.spawn((Driver {}, Name("box".to_owned()), Interpolated::at(at)));
+            commands.spawn((
+                Driver {},
+                Name("box".to_owned()),
+                ObjectId(5),
+                Interpolated::at(at),
+            ));
         });
         app
     }
@@ -378,12 +383,18 @@ pause = false",
     fn the_pawn_stands_while_an_event_blocks_it() {
         let directory = std::env::temp_dir().join(format!("maki-rules-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let room = r#"(width: 8, depth: 8, height: 3, objects: [(name: "start", components: {"spawn": ()}),
-            (name: "wait", components: {"event": (pages: [
-                (trigger: Autorun, commands: [Wait(0.2), SetFlag("done", true)]),
-                (conditions: [Flag("done")], trigger: Interact, commands: []),
-            ])}),
-        ])"#;
+        let room = maki_scene::room_text(
+            8.0,
+            8.0,
+            3.0,
+            &[
+                r#"(id: 1, name: "start", components: {"spawn": ()})"#,
+                r#"(name: "wait", components: {"event": (pages: [
+                    (trigger: Autorun, commands: [Wait(0.2), SetFlag("done", true)]),
+                    (conditions: [Flag("done")], trigger: Interact, commands: []),
+                ])})"#,
+            ],
+        );
         std::fs::write(directory.join("a.ron"), room).unwrap();
         let mut app = game(
             "[assets]
@@ -391,7 +402,7 @@ background = false",
         );
         app.add_module(crate::RoomsModule {
             start_room: directory.join("a.ron"),
-            start_spawn: "start".to_owned(),
+            start_spawn: ObjectId(1),
         });
         app.run(|mut app| {
             let z = |app: &App| {

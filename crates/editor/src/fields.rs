@@ -6,21 +6,50 @@
 
 use std::path::PathBuf;
 
-use maki_core::fields::{Kind, Value, Variant, number, variant_of};
+use maki_core::Fields;
+use maki_core::fields::{Kind, Value, Variant, number, read, variant_of};
+use maki_scene::ObjectId;
 use maki_ui::egui::Ui;
 use maki_ui::widgets::help;
 
 use crate::widgets::{
-    MODELS, PICTURES, PREFABS, SOUNDS, choice, color, file, number_or, optional, pick, row, text,
-    toggle, vector,
+    MODELS, PICTURES, PREFABS, SOUNDS, choice, color, file, number_or, object_pick, optional, pick,
+    row, text, toggle, vector,
 };
 
-/// The names of a list of the document, for a field with `pick`.
-pub type Lists<'a> = &'a dyn Fn(&str) -> Vec<String>;
+/// What the picks of the rows offer.
+#[derive(Clone, Copy)]
+pub struct Lists<'a> {
+    /// The names of a list of the document, for a field with `pick`.
+    pub names: &'a dyn Fn(&str) -> Vec<String>,
+    /// The objects of the room, for a field of the kind `Object`
+    /// (`crate::widgets::object_names`).
+    pub objects: &'a [(ObjectId, String)],
+}
+
+impl<'a> Lists<'a> {
+    /// No names, and these objects.
+    pub fn objects(objects: &'a [(ObjectId, String)]) -> Self {
+        Self {
+            names: &|_| Vec::new(),
+            objects,
+        }
+    }
+}
 
 /// Draws the rows of a tree of this kind. True: the user changed a value.
 pub fn show(ui: &mut Ui, kind: &Kind, tree: &mut Value, lists: Lists) -> bool {
     value(ui, "", "", kind, tree, None, lists)
+}
+
+/// Draws the rows of the fields of the variant that a tree of an enum has: the
+/// arguments of a command. The variant does not change. True: the user changed a value.
+pub fn show_arguments(ui: &mut Ui, kind: &Kind, tree: &mut Value, lists: Lists) -> bool {
+    let Kind::Choice(variants) = kind else {
+        return show(ui, kind, tree, lists);
+    };
+    let variant = variant_of(variants, tree).and_then(|index| variants.get(index));
+    variant.is_some_and(|variant| variant_fields(ui, variant, tree, lists))
 }
 
 /// The extensions of a group of files (`#[field(file = "model")]`).
@@ -97,7 +126,9 @@ fn value(
             changed
         }
         Kind::File(group) => {
-            let mut path = PathBuf::from(tree.as_str().unwrap_or_default());
+            // A reference with an id is `{path, id}`; a new file drops the id of the old one.
+            let shown = tree.as_str().or_else(|| tree.get("path")?.as_str());
+            let mut path = PathBuf::from(shown.unwrap_or_default());
             let changed = file(ui, label, &mut path, extensions(group));
             if changed {
                 *tree = Value::String(path.to_string_lossy().replace('\\', "/"));
@@ -106,19 +137,32 @@ fn value(
         }
         Kind::Pick { list, text: true } => {
             let mut name = tree.as_str().unwrap_or_default().to_owned();
-            let changed = pick(ui, label, &mut name, &lists(list));
+            let changed = pick(ui, label, &mut name, &(lists.names)(list));
             if changed {
                 *tree = Value::String(name);
             }
             changed
         }
         Kind::Pick { list, text: false } => {
-            let names = lists(list);
+            let names = (lists.names)(list);
             let options: Vec<(&str, u64)> = names.iter().map(String::as_str).zip(0..).collect();
             let mut index = tree.as_u64().unwrap_or(0);
             let changed = choice(ui, label, &mut index, &options, PartialEq::eq);
             if changed {
                 *tree = Value::from(index);
+            }
+            changed
+        }
+        Kind::Object => {
+            let Ok(mut object) = read::<ObjectId>(tree.clone()) else {
+                return false;
+            };
+            let names: Vec<String> = lists.objects.iter().map(|(_, name)| name.clone()).collect();
+            let changed = object_pick(&mut object, lists.objects, |name| {
+                pick(ui, label, name, &names)
+            });
+            if changed {
+                *tree = object.tree();
             }
             changed
         }

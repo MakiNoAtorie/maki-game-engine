@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from bench import config_text
+from bench import config_text, start_spawn
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "shot"
@@ -19,7 +19,7 @@ WORK = ROOT / "target" / "shot"
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument("out")
 parser.add_argument("--room", default="room_a.ron", help="a file in game/assets/rooms")
-parser.add_argument("--spawn", default="start")
+parser.add_argument("--spawn", default="start", help="the name of a spawn point of the room")
 parser.add_argument("--frames", type=int, default=300)
 parser.add_argument("--script", help="walk: the light then does not move")
 parser.add_argument("--set", nargs="*", default=[], metavar="TABLE.KEY=VALUE", help="config keys (JSON values), for example render.exposure=2")
@@ -31,9 +31,10 @@ def value(text):
     except ValueError:
         return text
 
+room = ROOT / "game" / "assets" / "rooms" / args.room
 keys = {
-    "rooms.start": (ROOT / "game" / "assets" / "rooms" / args.room).as_posix(),
-    "rooms.start_spawn": args.spawn,
+    "rooms.start": room.as_posix(),
+    "rooms.start_spawn": start_spawn(room.read_text(), args.spawn),
     "render.samples_per_frame": 1,
     **{key: value(text) for key, text in (pair.split("=", 1) for pair in args.set)},
 }

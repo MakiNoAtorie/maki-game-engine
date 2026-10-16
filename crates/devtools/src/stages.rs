@@ -13,7 +13,7 @@ use bevy_ecs::system::{Res, ResMut};
 use maki_core::{App, Module, Startup, Update};
 use maki_gameplay::StartRoom;
 use maki_platform::{Action, ActionState, Key, add_bindings};
-use maki_scene::{CurrentRoom, RoomRequest, RoomTarget, load_requested_room, parse_room};
+use maki_scene::{CurrentRoom, ObjectId, RoomRequest, RoomTarget, load_requested_room, parse_room};
 use maki_ui::{add_panel, egui};
 
 /// Debug: goes to the next or the previous room file of the stage list.
@@ -125,20 +125,22 @@ fn label(path: &Path) -> String {
     parts.join("/")
 }
 
-/// The request for a stage. The player goes to the spawn point of the start room if
-/// the room has one of that name, else to the first spawn point of the room. A room with no spawn
-/// point, or a bad file: the player stays (the loader logs the error of a bad file).
-fn stage_target(path: &Path, start_spawn: &str) -> RoomTarget {
-    let spawns = std::fs::read_to_string(path)
+/// The request for a stage. The player goes to the start spawn point if the room has
+/// it, else to the first spawn point with an id of the room in name order. A room with no spawn point, or a bad file: the player stays (the loader
+/// logs the error of a bad file).
+fn stage_target(path: &Path, start_spawn: &ObjectId) -> RoomTarget {
+    let room = std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| parse_room(&text).ok())
-        .map(|room| room.spawn_names())
-        .unwrap_or_default();
-    let spawn = if spawns.iter().any(|name| name == start_spawn) {
-        Some(start_spawn.to_owned())
-    } else {
-        spawns.into_iter().next()
-    };
+        .and_then(|text| parse_room(&text).ok());
+    let spawn = room.and_then(|room| match room.spawn(start_spawn) {
+        Some(_) => Some(*start_spawn),
+        None => {
+            let names = room.spawn_names().into_iter();
+            names
+                .filter_map(|name| room.object_named(&name)?.1.id)
+                .next()
+        }
+    });
     RoomTarget {
         path: path.to_owned(),
         spawn,

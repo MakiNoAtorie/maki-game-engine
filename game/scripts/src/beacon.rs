@@ -1,19 +1,21 @@
 //! A script of this game: a light pulses while the player stands in an area, and the
 //! area says how often it was touched. It uses each hook of a script.
 //!
-//! The beacon is an object of its own with an area, and names the light:
+//! The beacon is an object of its own with an area, and names the light by its id
+//! (the editor shows the name):
 //!
 //! ```ron
-//! (name: "beacon", components: {"beacon": (light: "spot"), "area": (width: 1.6, depth: 1.6)})
+//! (name: "beacon", components: {"beacon": (light: 3), "area": (width: 1.6, depth: 1.6)})
 //! ```
 //!
 //! Not on the entity of the light: a component more there changes the order of the
 //! lights for the renderer, and so the picture of the benchmark.
 
 use bevy_ecs::component::Component;
+use bevy_ecs::world::Mut;
 use maki_engine::core::{App, Fields};
 use maki_engine::events::{Builtin, Script, ScriptContext, add_script, add_script_function};
-use maki_engine::scene::Light;
+use maki_engine::scene::{Light, ObjectId};
 use serde::{Deserialize, Serialize};
 
 /// The variable that counts the presses of interact at the beacon.
@@ -23,8 +25,8 @@ const TOUCHES: &str = "beacon_touches";
 #[serde(default, deny_unknown_fields)]
 #[fields(default)]
 pub struct Beacon {
-    /// The name of the light object.
-    pub light: String,
+    /// The light object. The editor picks it by its name and stores its id.
+    pub light: ObjectId,
     /// Pulses in a second.
     #[field(range = 0.1..=10.0, step = 0.1)]
     pub pulses: f32,
@@ -44,7 +46,7 @@ pub struct Beacon {
 impl Default for Beacon {
     fn default() -> Self {
         Self {
-            light: String::new(),
+            light: ObjectId::default(),
             pulses: 1.5,
             strength: 0.6,
             base: 0.0,
@@ -54,8 +56,12 @@ impl Default for Beacon {
 }
 
 impl Beacon {
+    fn light<'a>(&self, context: &'a mut ScriptContext) -> Option<Mut<'a, Light>> {
+        context.object_mut::<Light>(self.light)
+    }
+
     fn set_intensity(&self, context: &mut ScriptContext, intensity: f32) {
-        if let Some(mut light) = context.named_mut::<Light>(&self.light) {
+        if let Some(mut light) = self.light(context) {
             light.intensity = intensity;
         }
     }
@@ -63,8 +69,7 @@ impl Beacon {
 
 impl Script for Beacon {
     fn start(&mut self, context: &mut ScriptContext) {
-        let light = context.named_mut::<Light>(&self.light);
-        self.base = light.map_or(0.0, |light| light.intensity);
+        self.base = self.light(context).map_or(0.0, |light| light.intensity);
     }
 
     fn step(&mut self, context: &mut ScriptContext) {
@@ -123,10 +128,10 @@ mod tests {
     #[test]
     fn the_lamp_pulses_while_the_player_is_under_it_and_counts_the_touches() {
         let room = r#"(width: 8, depth: 8, height: 3, objects: [
-            (name: "lamp", pose: (position: (0.0, 2.3, 1.0)), components: {
+            (id: 1, name: "lamp", pose: (position: (0.0, 2.3, 1.0)), components: {
                 "light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 10.0)}),
             (pose: (position: (0.0, 0.0, 1.0)), components: {
-                "beacon": (light: "lamp", pulses: 1.0, strength: 0.5),
+                "beacon": (light: 1, pulses: 1.0, strength: 0.5),
                 "area": (width: 1.0, depth: 1.0)})])"#;
         let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.add_module(PlatformModule)

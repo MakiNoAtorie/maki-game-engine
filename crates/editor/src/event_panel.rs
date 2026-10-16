@@ -17,13 +17,13 @@ use maki_events::{
     Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, EventPages, GameState, Page,
     Problem, Trigger, Wire, active_page,
 };
-use maki_scene::{ComponentTypes, RoomDef, ron_options};
+use maki_scene::{ComponentTypes, ObjectId, RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
 
 use crate::events::{
     ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, row, same_kind};
+use crate::widgets::{choice, drag, number, object_names, object_pick, object_ref, row, same_kind};
 use crate::{Command as EditorCommand, Editor};
 
 pub(crate) const ERROR: Color32 = maki_ui::THEME.error;
@@ -207,8 +207,9 @@ pub struct ArgumentEditors(pub(crate) Vec<ArgumentEditor>);
 /// Gives the event panel widgets for the arguments of the commands of the enum `T`
 /// (a command enum of the game). `edit` draws them for one value and returns true if
 /// it changed the value. It gets the open room, for a list of the names that the
-/// command can have; `crate::widgets` has the widgets. Without this, such a command
-/// has a text field.
+/// command can have; `crate::widgets` has the widgets. Without this, a command of an
+/// enum with a field table (`CommandRegistry::add_fields`) has the widgets of the
+/// table, and else a text field.
 ///
 /// The "Add" list makes a new command of a module with
 /// `CommandRegistry::add_defaults`.
@@ -225,6 +226,9 @@ pub fn add_argument_editor<T: CommandSet>(
     app.resource_mut::<ArgumentEditors>().0.push(editor);
 }
 
+/// The objects of a room with an id, and their names (`object_names`).
+type ObjectNames = Vec<(ObjectId, String)>;
+
 /// The names that the pickers offer.
 struct Lists {
     flags: Vec<String>,
@@ -235,8 +239,11 @@ struct Lists {
     lights: Vec<String>,
     /// Doors and movers: `OpenDoor` finds the two.
     movers: Vec<String>,
-    /// Each room file with its spawn points, the open room too.
-    rooms: Vec<(String, Vec<String>)>,
+    /// Each room file with its spawn points and its objects with an id, the open
+    /// room too.
+    rooms: Vec<(String, Vec<String>, ObjectNames)>,
+    /// The objects of the open room with an id: a pick of a name stores the id.
+    ids: ObjectNames,
     /// The objects with a name, each with its components that have a value in the
     /// game (`maki_scene::Live`): what `SetField` changes.
     objects: Vec<(String, Vec<String>)>,
@@ -460,12 +467,17 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
         }
         Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {
             ui.label("door or mover");
-            pick(ui, "mover", name, &lists.movers)
+            object_pick(name, &lists.ids, |name| {
+                pick(ui, "mover", name, &lists.movers)
+            })
         }
-        Builtin::LightOn(name) | Builtin::LightOff(name) => pick(ui, "light", name, &lists.lights),
-        Builtin::LightIntensity(name, value) => {
+        Builtin::LightOn(name) | Builtin::LightOff(name) => object_pick(name, &lists.ids, |name| {
             pick(ui, "light", name, &lists.lights)
-                | number(ui, "intensity", value, 0.1, 0.0..=10000.0)
+        }),
+        Builtin::LightIntensity(name, value) => {
+            object_pick(name, &lists.ids, |name| {
+                pick(ui, "light", name, &lists.lights)
+            }) | number(ui, "intensity", value, 0.1, 0.0..=10000.0)
         }
         Builtin::Message(message) => {
             let field = egui::TextEdit::multiline(message)
@@ -476,65 +488,70 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
         Builtin::Transfer(room, spawn) => {
             let files: Vec<String> = lists.rooms.iter().map(|room| room.0.clone()).collect();
             ui.label("room file");
-            let mut changed = pick(ui, "room", room, &files);
-            let spawns = lists.rooms.iter().find(|other| other.0 == *room);
-            let spawns = spawns.map_or(&[][..], |room| &room.1);
-            // Another room: its first spawn point, if it has not the one of before.
-            if let (true, false, Some(first)) = (changed, spawns.contains(spawn), spawns.first()) {
-                spawn.clone_from(first);
-            }
-            ui.label("spawn point");
-            changed |= pick(ui, "spawn", spawn, spawns);
-            changed
+            let picked = pick(ui, "room", room, &files);
+            let found = lists.rooms.iter().find(|other| other.0 == *room);
+            let (spawns, ids) = found.map_or((&[][..], &[][..]), |room| (&room.1, &room.2));
+            object_pick(spawn, ids, |spawn| {
+                // Another room: its first spawn point, if it has not the one of before.
+                if let (true, false, Some(first)) = (picked, spawns.contains(spawn), spawns.first())
+                {
+                    spawn.clone_from(first);
+                }
+                ui.label("spawn point");
+                picked | pick(ui, "spawn", spawn, spawns)
+            })
         }
         Builtin::SetField(object, component, field, value) => {
-            let objects: Vec<String> = lists.objects.iter().map(|found| found.0.clone()).collect();
-            ui.label("object");
-            let picked_object = pick(ui, "object", object, &objects);
-            let of_object = lists.objects.iter().find(|found| found.0 == *object);
-            let components = of_object.map_or(&[][..], |found| &found.1);
-            // Another object picked: its first component, if it has not the one of
-            // before. A row that is only shown does not change.
-            if let (true, false, Some(first)) = (
-                picked_object,
-                components.contains(component),
-                components.first(),
-            ) {
-                component.clone_from(first);
-            }
-            ui.label("component");
-            let picked_component = pick(ui, "component", component, components);
-            let fields = lists.fields.get(component.as_str());
-            let fields = fields.map_or(&[][..], Vec::as_slice);
-            let names: Vec<String> = fields.iter().map(|found| found.name.to_owned()).collect();
-            if let (true, false, Some(first)) = (
-                picked_object || picked_component,
-                names.contains(field),
-                fields.first(),
-            ) {
-                (*field, *value) = (
-                    first.name.to_owned(),
-                    field_value(lists, object, component, first),
-                );
-            }
-            let mut changed = picked_object || picked_component;
-            ui.label("field");
-            let before = field.clone();
-            changed |= pick(ui, "field", field, &names);
-            if let Some(found) = fields.iter().find(|found| found.name == field) {
-                if *field != before {
-                    *value = field_value(lists, object, component, found);
+            object_pick(object, &lists.ids, |object| {
+                let objects: Vec<String> =
+                    lists.objects.iter().map(|found| found.0.clone()).collect();
+                ui.label("object");
+                let picked_object = pick(ui, "object", object, &objects);
+                let of_object = lists.objects.iter().find(|found| found.0 == *object);
+                let components = of_object.map_or(&[][..], |found| &found.1);
+                // Another object: its first component, unless it has the one of before.
+                if let (true, false, Some(first)) = (
+                    picked_object,
+                    components.contains(component),
+                    components.first(),
+                ) {
+                    component.clone_from(first);
                 }
-                ui.label("value");
-                changed |= crate::fields::show(ui, &found.kind, value, &|_| Vec::new());
-            }
-            changed
+                ui.label("component");
+                let picked_component = pick(ui, "component", component, components);
+                let fields = lists.fields.get(component.as_str());
+                let fields = fields.map_or(&[][..], Vec::as_slice);
+                let names: Vec<String> = fields.iter().map(|found| found.name.to_owned()).collect();
+                if let (true, false, Some(first)) = (
+                    picked_object || picked_component,
+                    names.contains(field),
+                    fields.first(),
+                ) {
+                    (*field, *value) = (
+                        first.name.to_owned(),
+                        field_value(lists, object, component, first),
+                    );
+                }
+                let mut changed = picked_object || picked_component;
+                ui.label("field");
+                let before = field.clone();
+                changed |= pick(ui, "field", field, &names);
+                if let Some(found) = fields.iter().find(|found| found.name == field) {
+                    if *field != before {
+                        *value = field_value(lists, object, component, found);
+                    }
+                    ui.label("value");
+                    let objects = crate::fields::Lists::objects(&lists.ids);
+                    changed |= crate::fields::show(ui, &found.kind, value, objects);
+                }
+                changed
+            })
         }
         Builtin::CallScript(name) => {
             ui.label("script function");
             pick(ui, "function", name, &lists.functions)
         }
-        Builtin::Signal(object, output) => {
+        Builtin::Signal(object, output) => object_pick(object, &lists.ids, |object| {
             let objects: Vec<String> = lists.outputs.iter().map(|found| found.0.clone()).collect();
             ui.label("object");
             let picked = pick(ui, "object", object, &objects);
@@ -547,7 +564,7 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
             }
             ui.label("output");
             picked | pick(ui, "output", output, outputs)
-        }
+        }),
         Builtin::Choice(question, answers) => {
             ui.label("question");
             let field = egui::TextEdit::multiline(question)
@@ -594,7 +611,9 @@ fn new_command(
 ) -> Option<Command> {
     let first =
         |names: &[String], or: &str| names.first().cloned().unwrap_or_else(|| or.to_owned());
-    let (file, spawns) = lists.rooms.first().cloned().unwrap_or_default();
+    let (file, spawns, spawn_ids) = lists.rooms.first().cloned().unwrap_or_default();
+    // The id of the first object of a list of names.
+    let first_object = |names: &[String]| object_ref(&first(names, ""), &lists.ids);
     let builtin = match name {
         "SetFlag" => Builtin::SetFlag(first(&lists.flags, "flag"), true),
         "SetVariable" => Builtin::SetVariable(first(&lists.variables, "variable"), 0),
@@ -608,15 +627,15 @@ fn new_command(
             let answer = |text: &str| (text.to_owned(), Vec::new());
             Builtin::Choice("Question?".to_owned(), vec![answer("Yes"), answer("No")])
         }
-        "OpenDoor" => Builtin::OpenDoor(first(&lists.movers, "")),
-        "CloseDoor" => Builtin::CloseDoor(first(&lists.movers, "")),
-        "LightOn" => Builtin::LightOn(first(&lists.lights, "")),
-        "LightOff" => Builtin::LightOff(first(&lists.lights, "")),
-        "LightIntensity" => Builtin::LightIntensity(first(&lists.lights, ""), 1.0),
+        "OpenDoor" => Builtin::OpenDoor(first_object(&lists.movers)),
+        "CloseDoor" => Builtin::CloseDoor(first_object(&lists.movers)),
+        "LightOn" => Builtin::LightOn(first_object(&lists.lights)),
+        "LightOff" => Builtin::LightOff(first_object(&lists.lights)),
+        "LightIntensity" => Builtin::LightIntensity(first_object(&lists.lights), 1.0),
         "Message" => Builtin::Message(String::new()),
         "FadeOut" => Builtin::FadeOut(0.4),
         "FadeIn" => Builtin::FadeIn(0.4),
-        "Transfer" => Builtin::Transfer(file, first(&spawns, "")),
+        "Transfer" => Builtin::Transfer(file, object_ref(&first(&spawns, ""), &spawn_ids)),
         // The first field of the first object with a value in the game.
         "SetField" => {
             let (object, components) = lists.objects.first().cloned().unwrap_or_default();
@@ -634,12 +653,12 @@ fn new_command(
                     )
                 },
             );
-            Builtin::SetField(object, component, field, value)
+            Builtin::SetField(object_ref(&object, &lists.ids), component, field, value)
         }
         "CallScript" => Builtin::CallScript(first(&lists.functions, "")),
         "Signal" => {
             let (object, outputs) = lists.outputs.first().cloned().unwrap_or_default();
-            Builtin::Signal(object, first(&outputs, ""))
+            Builtin::Signal(object_ref(&object, &lists.ids), first(&outputs, ""))
         }
         // A command of another module: what the module gives for the name, or the
         // name alone for a command with no argument.
@@ -735,10 +754,12 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
     problems.retain(|problem| problem.object == index);
     let room = &editor.document.room;
-    let own = (file_name(&editor.document), room.spawn_names());
-    let other_rooms = others
-        .iter()
-        .map(|room| (room.file.clone(), room.spawns.iter().cloned().collect()));
+    let ids = object_names(&room.objects);
+    let own = (file_name(&editor.document), room.spawn_names(), ids.clone());
+    let other_rooms = others.iter().map(|other| {
+        let ids = object_names(&other.room.objects);
+        (other.file.clone(), other.room.spawn_names(), ids)
+    });
     // The objects with a component, by name: what a command can name.
     let with = |kinds: &[&str]| -> Vec<String> {
         let objects = room.objects.iter();
@@ -757,6 +778,7 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
         lights: with(&["light"]),
         movers: with(&["door", "mover"]),
         rooms: std::iter::once(own).chain(other_rooms).collect(),
+        ids,
         // `live_lists` fills the objects, the fields, and their values.
         objects: Vec::new(),
         fields: BTreeMap::new(),
@@ -896,10 +918,7 @@ pub(crate) fn event_panel(
     let directory = document.path.parent().unwrap_or(std::path::Path::new(""));
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
     let mut event = document.event(index, &registry)?.ok()?;
-    let name = document.room.objects[index]
-        .name
-        .clone()
-        .unwrap_or_default();
+    let id = document.room.objects[index].id;
     let room = &document.room;
     let mut changed = false;
     if event.pages.is_empty() && event.wires.is_empty() {
@@ -921,7 +940,7 @@ pub(crate) fn event_panel(
     };
     part(egui::Panel::left("event pages")).show(ui, |ui| {
         scroll("pages").show(ui, |ui| {
-            changed |= pages(ui, &mut event.pages, &name, event_ui, &state, &lists, queue);
+            changed |= pages(ui, &mut event.pages, id, event_ui, &state, &lists, queue);
             ui.separator();
             changed |= wires(ui, &mut event, event_ui, &lists);
         });
@@ -963,7 +982,7 @@ const SIDE_WIDTH: f32 = 340.0;
 fn pages(
     ui: &mut Ui,
     pages: &mut Vec<Page>,
-    name: &str,
+    id: Option<ObjectId>,
     event_ui: &mut EventUi,
     state: &GameState,
     lists: &Lists,
@@ -1070,12 +1089,14 @@ fn pages(
         ui.weak("Autorun runs one time when the page gets active (also when the room loads), not again and again as in RPG Maker.");
     }
     ui.separator();
-    if ui
-        .button("Test this page")
-        .on_hover_text("Plays the room and runs this page, one command for each step")
-        .clicked()
+    // The editor gives each object an id: `None` only in a room it did not open.
+    if let Some(id) = id
+        && ui
+            .button("Test this page")
+            .on_hover_text("Plays the room and runs this page, one command for each step")
+            .clicked()
     {
-        queue.push(EditorCommand::Test(name.to_owned(), at));
+        queue.push(EditorCommand::Test(id, at));
     }
     changed
 }
@@ -1149,7 +1170,7 @@ fn command_rows(
     problems: &[&Problem],
     page_index: usize,
 ) -> bool {
-    let all = rows(list, registry);
+    let all = rows(list, registry, &lists.ids);
     // A row that is not there after a change of the list is not selected.
     if event_ui
         .row
@@ -1349,6 +1370,8 @@ fn command_arguments(
             .find_map(|edit| edit(ui, &command, registry, room))
         {
             new
+        } else if let Some(new) = field_arguments(ui, &command, registry, &lists.ids) {
+            new
         } else {
             // As a text. The buffer is the draft: it can be a text that is not a
             // command while the user types.
@@ -1396,6 +1419,21 @@ fn command_arguments(
     changed
 }
 
+/// The widgets of the arguments of a command from the field table of its enum
+/// (`CommandRegistry::add_fields`). `None`: its module gave no table. `Some(new)`:
+/// the changed command, if the user changed it.
+pub(crate) fn field_arguments(
+    ui: &mut Ui,
+    command: &Command,
+    registry: &CommandRegistry,
+    objects: &[(ObjectId, String)],
+) -> Option<Option<Command>> {
+    let (kind, mut tree) = registry.fields(command)?;
+    let lists = crate::fields::Lists::objects(objects);
+    let changed = crate::fields::show_arguments(ui, &kind, &mut tree, lists);
+    Some(changed.then(|| registry.from_tree(command, tree)).flatten())
+}
+
 /// The text field of a command as a room file has it, checked with each key.
 /// Returns the command if the text reads as one.
 fn draft_field(ui: &mut Ui, draft: &mut Draft, registry: &CommandRegistry) -> Option<Command> {
@@ -1438,8 +1476,8 @@ mod tests {
             6.0,
             3.0,
             &[
-                r#"(name: "lamp", components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})"#,
-                r#"(name: "crate", components: {"prop": (mesh: Cube(1.0))})"#,
+                r#"(id: 1, name: "lamp", components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})"#,
+                r#"(id: 2, name: "crate", components: {"prop": (mesh: Cube(1.0))})"#,
                 r#"(name: "gate", components: {"door": (seconds: 1.0, color: (0.3, 0.2, 0.1), open: false)})"#,
                 r#"(name: "sign", components: {"event": (pages: [])})"#,
             ],
@@ -1453,6 +1491,7 @@ mod tests {
             lights: Vec::new(),
             movers: Vec::new(),
             rooms: Vec::new(),
+            ids: Vec::new(),
             objects: Vec::new(),
             fields: BTreeMap::new(),
             current: BTreeMap::new(),
@@ -1484,12 +1523,13 @@ mod tests {
         assert_eq!(fields("door"), ["seconds", "open"]);
         // A new row: the first field of the first object, with the value it has now.
         let registry = app.world().resource::<CommandRegistry>().clone();
+        lists.ids = crate::widgets::object_names(&room.objects);
         let new = new_command("SetField", &lists, &registry, &room).unwrap();
         let Some(Builtin::SetField(object, component, field, value)) = new.get() else {
             panic!("not a SetField row");
         };
-        assert_eq!((object.as_str(), component.as_str()), ("lamp", "light"));
-        let key = (object.clone(), component.clone(), field.clone());
+        assert_eq!((*object, component.as_str()), (ObjectId(1), "light"));
+        let key = ("lamp".to_owned(), component.clone(), field.clone());
         assert_eq!(Some(value), lists.current.get(&key));
         let intensity = (
             "lamp".to_owned(),

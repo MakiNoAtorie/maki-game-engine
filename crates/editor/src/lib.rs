@@ -33,6 +33,7 @@ mod event_panel;
 mod events;
 pub mod fields;
 mod gizmo;
+mod ids;
 mod ops;
 mod overlay;
 mod panels;
@@ -66,8 +67,8 @@ use maki_platform::{
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
-    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, Player, RoomDef, RoomOverride,
-    RoomRequest, RoomTarget, load_requested_room, patch_room,
+    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, ObjectId, Player, RoomDef,
+    RoomOverride, RoomRequest, RoomTarget, load_requested_room, patch_room,
 };
 use maki_ui::{COMMAND_SEARCH, NoticeLevel, Panels, TOGGLE_HELP, ToolCommand, notify};
 use serde::{Deserialize, Serialize};
@@ -78,7 +79,8 @@ use event_panel::row_command;
 pub use event_panel::{ArgumentEditors, EventUi, RowCommand, add_argument_editor};
 pub use events::{Names, OtherRoom, Row, RowKind, Use, names, other_rooms, problems};
 pub use gizmo::{Drag, Gizmo, Handle, Tool};
-pub use ops::{History, Kind, spawn_users};
+pub use ids::correct_paths;
+pub use ops::{History, Kind};
 pub use ron_text::{Notes, pretty, read_notes};
 pub use view::{Ray, View, pick};
 
@@ -104,6 +106,7 @@ pub const DUPLICATE: Action = Action("editor_duplicate");
 pub const SAVE: Action = Action("editor_save");
 pub const COPY: Action = Action("editor_copy");
 pub const PASTE: Action = Action("editor_paste");
+pub const CUT: Action = Action("editor_cut");
 /// Puts the selection in the middle of the view.
 pub const FRAME: Action = Action("editor_frame");
 /// Ends a drag with no change. With no drag: selects nothing.
@@ -130,13 +133,14 @@ const BINDINGS: [(Key, Action, &str); 12] = [
     (Key::Escape, CANCEL, "Cancel a drag, or select nothing"),
 ];
 
-const CHORDS: [(Chord, Action, &str); 7] = [
+const CHORDS: [(Chord, Action, &str); 8] = [
     (Chord::ctrl(Key::P), COMMAND_SEARCH, "Search a command"),
     (Chord::ctrl(Key::Z), UNDO, "Undo"),
     (Chord::ctrl(Key::Y), REDO, "Redo"),
     (Chord::ctrl(Key::D), DUPLICATE, "Duplicate"),
     (Chord::ctrl(Key::C), COPY, "Copy the selected command rows"),
     (Chord::ctrl(Key::V), PASTE, "Paste command rows"),
+    (Chord::ctrl(Key::X), CUT, "Cut the selected items"),
     (Chord::ctrl(Key::S), SAVE, "Save"),
 ];
 
@@ -197,9 +201,9 @@ pub enum Command {
     SaveAs(PathBuf),
     Play,
     Stop,
-    /// Plays the room in step mode and starts a page of an event (its name, the
-    /// index of the page), whatever its trigger and conditions are.
-    Test(String, usize),
+    /// Plays the room in step mode and starts a page of an event (the id of its
+    /// object, the index of the page), whatever its trigger and conditions are.
+    Test(ObjectId, usize),
     /// A new item, on the floor at the point that the view looks at.
     Add(Kind),
     /// Removes the selected items, or the selected command rows: what had the last
@@ -213,6 +217,8 @@ pub enum Command {
     /// The command rows of the buffer, after the selected row; or the items of the
     /// buffer, into the room that is open now.
     Paste,
+    /// Copy, then Delete. A paste of cut items into their room keeps their ids.
+    Cut,
     /// The selected props and lights become the prefab file of this name
     /// (`prefabs/<name>.prefab`) and one prefab of the room.
     MakePrefab(String),
@@ -260,6 +266,9 @@ pub struct Editor {
     /// The panels write it in each frame: a mouse button is down or a widget has the
     /// keyboard, so a change can go on. The history makes no step then.
     pub(crate) busy: bool,
+    /// The files of the asset folder changed: the file references of the document
+    /// are corrected at the next step of the history.
+    pub(crate) paths_due: bool,
     /// The event commands of the game: to change the events with a name.
     pub(crate) registry: CommandRegistry,
     /// The handle that the pointer drags.
@@ -270,10 +279,10 @@ pub struct Editor {
     /// The other room files beside the open one. `None`: read them again.
     others: Option<Vec<OtherRoom>>,
     /// The page that a test waits to start, when the room of the game is loaded.
-    test: Option<(String, usize)>,
-    /// The spawn point where the game starts on `Play`. `None`, or a name that the
-    /// room does not have: the first one.
-    pub play_from: Option<String>,
+    test: Option<(ObjectId, usize)>,
+    /// The spawn point where the game starts on `Play`. `None`, or one that the room
+    /// does not have: the first one ([`play_spawn`]).
+    pub play_from: Option<ObjectId>,
     /// One line for the user: what the last command did. The status row shows it.
     pub status: String,
     /// Why a command did not do its work. It becomes a notice in the same frame.
@@ -300,9 +309,10 @@ pub struct Editor {
     playing: Option<GameState>,
     /// The room that the world shows. `None`: load the document.
     shown: Option<(PathBuf, RoomDef)>,
-    /// The items that "Copy" took, in the document that had them. It stays when
-    /// another room is opened: "Paste" puts the items into that room.
-    item_buffer: Option<(Document, Vec<Item>)>,
+    /// The items that "Copy" or "Cut" took, in the document that had them, and true
+    /// for a cut. It stays when another room is opened: "Paste" puts the items into
+    /// that room.
+    item_buffer: Option<(Document, Vec<Item>, bool)>,
     /// The name in the "Make prefab" field of the "Edit" menu.
     pub prefab_name: String,
     /// The file and the pose of the prefab that was unpacked last: "Make prefab"
@@ -517,6 +527,10 @@ impl Editor {
         // The list that had the last click gets the command: the command rows of
         // the event panel, or the items.
         let on_rows = self.event_ui.focused && self.selected_event().is_some();
+        if on_rows && command == Command::Cut {
+            self.rows(RowCommand::Copy);
+            return self.rows(RowCommand::Delete);
+        }
         let row = match command {
             Command::Delete => Some(RowCommand::Delete),
             Command::Duplicate => Some(RowCommand::Duplicate),
@@ -625,14 +639,26 @@ impl Editor {
             Command::Copy => {
                 let items = self.selection.clone();
                 self.status = format!("{} items copied", items.len());
-                self.item_buffer = Some((self.document.clone(), items));
+                self.item_buffer = Some((self.document.clone(), items, false));
             }
-            Command::Paste => match &self.item_buffer {
-                Some((source, items)) => {
-                    // In the room that they came from: beside the items.
+            Command::Cut => {
+                let items = self.selection.clone();
+                self.status = format!("{} items cut", items.len());
+                self.item_buffer = Some((self.document.clone(), items.clone(), true));
+                self.document.delete(&items);
+            }
+            Command::Paste => match &mut self.item_buffer {
+                Some((source, items, cut)) => {
+                    // In the room that they came from: beside the items; a cut goes back to its place.
                     let same = source.path == self.document.path;
-                    let offset = if same { ops::DUPLICATE_OFFSET } else { 0.0 };
-                    let copies = self.document.copy_from(source, items, offset);
+                    let offset = if same && !*cut {
+                        ops::DUPLICATE_OFFSET
+                    } else {
+                        0.0
+                    };
+                    let copies = self.document.copy_from(source, items, offset, *cut);
+                    // Only the first paste of a cut keeps the ids.
+                    *cut &= !same;
                     self.status = format!("{} items pasted", copies.len());
                     if !copies.is_empty() {
                         self.selection = copies;
@@ -727,6 +753,8 @@ impl Editor {
         self.document = document;
         self.selection.clear();
         self.shown = None;
+        // A file that moved while the room was closed: the room gets its new path.
+        ids::correct_paths(&mut self.document);
         self.history.reset(&self.document);
         self.others = None;
         self.event_ui.row = None;
@@ -753,36 +781,19 @@ impl Editor {
         self.error = Some(error);
     }
 
-    /// Gives an item a new name, as the name field of the inspector does: the
-    /// events that name the item follow. An empty name is no name.
+    /// Gives an item a new name, as the name field of the inspector does. Commands
+    /// name the item by its id: they do not change. An empty name is no name.
     pub fn rename(&mut self, item: &Item, new: String) {
-        let registry = self.registry.clone();
-        // The name that the item had.
-        let old = match item {
+        match item {
             Item::Object(index) => match self.document.room.objects.get_mut(*index) {
-                Some(object) => {
-                    std::mem::replace(&mut object.name, (!new.is_empty()).then_some(new))
-                }
+                Some(object) => object.name = (!new.is_empty()).then_some(new),
                 None => return,
             },
             Item::Room => return,
-        };
-        let spawn = match item {
-            Item::Object(index) => self.document.room.objects[*index].is_spawn(),
-            _ => false,
-        };
-        let old_spawn = old.clone().filter(|_| spawn);
-        let more = self.document.renamed(item, old, &registry);
+        }
+        let more = self.document.keep_name_unique(item);
         if !more.is_empty() {
             self.status = more;
-        }
-        // The rooms that go to the spawn point by its old name.
-        if let Some(old) = old_spawn {
-            let users = spawn_users(&self.rooms, &self.document.path, &old, &registry);
-            if !users.is_empty() {
-                let users = users.join(", ");
-                self.status = format!("{users}: a Transfer still names `{old}`");
-            }
         }
         self.document.dirty = true;
     }
@@ -815,9 +826,8 @@ impl Editor {
     fn play(&mut self, world: &mut World) {
         self.playing = Some(world.resource::<GameState>().clone());
         reset_play_state(world);
-        let spawns = self.document.room.spawn_names();
-        let chosen = self.play_from.as_ref().filter(|name| spawns.contains(name));
-        let spawn = chosen.or_else(|| spawns.first()).cloned();
+        let spawns = spawn_points(&self.document.room);
+        let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| *spawn);
         if spawn.is_none() {
             // A room with no spawn point: the player starts where the editor looks.
             let mut cameras = world.query::<&EditorCamera>();
@@ -1050,6 +1060,14 @@ fn add_commands(app: &mut App) {
         Command::Copy,
     );
     add(
+        "editor.cut",
+        "Cut",
+        "Edit",
+        Some(CUT),
+        selected,
+        Command::Cut,
+    );
+    add(
         "editor.paste",
         "Paste",
         "Edit",
@@ -1215,9 +1233,28 @@ pub struct Session {
     /// The selected items.
     pub selection: Vec<Item>,
     /// The spawn point where the game starts on "Play".
-    pub play_from: Option<String>,
+    pub play_from: Option<ObjectId>,
     /// The view of the editor camera.
     pub view: Option<EditorCamera>,
+}
+
+/// The spawn points of a room in name order: the id of each, and its name. A spawn
+/// point with no id is left out.
+pub(crate) fn spawn_points(room: &RoomDef) -> Vec<(ObjectId, String)> {
+    let names = room.spawn_names().into_iter();
+    names
+        .filter_map(|name| Some((room.object_named(&name)?.1.id?, name)))
+        .collect()
+}
+
+/// The spawn point where "Play" starts: `wanted` if the room has it, else the first
+/// one.
+pub(crate) fn play_spawn<'a>(
+    spawns: &'a [(ObjectId, String)],
+    wanted: Option<&ObjectId>,
+) -> Option<&'a (ObjectId, String)> {
+    let is = |(spawn, _): &&(ObjectId, String)| wanted == Some(spawn);
+    spawns.iter().find(is).or(spawns.first())
 }
 
 /// The session of an app with the editor. `None`: the app has no editor.
@@ -1229,7 +1266,7 @@ pub fn session(world: &World) -> Option<Session> {
         text: editor.document.text(),
         dirty: editor.document.dirty,
         selection: editor.selection.clone(),
-        play_from: editor.play_from.clone(),
+        play_from: editor.play_from,
         view: cameras.iter(world).next().copied(),
     })
 }
@@ -1322,6 +1359,7 @@ impl Module for EditorModule {
             local: false,
             second_pose: false,
             busy: false,
+            paths_due: false,
             registry,
             drag: None,
             history: History::default(),
@@ -1481,8 +1519,13 @@ pub fn run_commands(world: &mut World) {
                 history,
                 document,
                 selection,
+                paths_due,
                 ..
             } = &mut *editor;
+            // A new reference gets its id in the step of its change; a moved file is a step of its own.
+            if !busy && (std::mem::take(paths_due) || history.changed(document)) {
+                ids::correct_paths(document);
+            }
             history.track(document, selection, busy);
         }
         editor.sync(world);
@@ -1502,8 +1545,8 @@ pub fn run_commands(world: &mut World) {
             notify(world, NoticeLevel::Error, error);
         }
         // A test: its page starts when the events of the room are loaded.
-        if let Some((event, page)) = &editor.test
-            && maki_events::start_event(world, event, *page)
+        if let Some((event, page)) = editor.test
+            && maki_events::start_event(world, event, page)
         {
             editor.test = None;
         }

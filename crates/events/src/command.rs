@@ -29,6 +29,8 @@ use std::sync::{Arc, RwLock};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
+use maki_core::Fields;
+use maki_core::fields::{Kind, Value};
 use maki_scene::{ComponentText, ObjectDef, RoomDef};
 use serde::de::value::EnumAccessDeserializer;
 use serde::de::{
@@ -126,6 +128,8 @@ pub struct Step<'a> {
     pub start: bool,
     /// The name of the event, for log lines.
     pub event: &'a str,
+    /// The id of the object of the event (`RunningEvent::id`).
+    pub object: Option<maki_scene::ObjectId>,
     /// The entity of the object of the event, or of the script that runs the
     /// commands. `None`: a tool started them with no object.
     pub entity: Option<Entity>,
@@ -169,6 +173,17 @@ struct Set {
     lists: Option<Lists>,
     /// A new command for a name of the enum (`add_defaults`).
     defaults: Option<Defaults>,
+    /// The field table of the enum, for the widgets of a tool (`add_fields`).
+    fields: Option<FieldTable>,
+}
+
+/// The field table of a command enum (`#[derive(Fields)]`): its kind, the tree of a
+/// value, and a value read from a tree.
+#[derive(Clone)]
+struct FieldTable {
+    kind: Kind,
+    tree: fn(&dyn Any) -> Value,
+    read: fn(Value) -> Option<Arc<dyn AnyCommand>>,
 }
 
 /// A new command for a name, with arguments from the room. `None`: the module gives
@@ -260,7 +275,56 @@ impl CommandRegistry {
             texts: None,
             lists: None,
             defaults: None,
+            fields: None,
         });
+    }
+
+    /// Gives a tool the field table of the enum `T` (`#[derive(Fields)]`): the event
+    /// panel of the editor draws the arguments of its commands from it, with no code
+    /// of the editor. A field `ObjectId` gets a pick of the objects.
+    /// Call after `add::<T>`.
+    ///
+    /// Panics if the enum `T` was not added.
+    pub fn add_fields<T: CommandSet + Fields>(&self) {
+        let mut sets = self.sets.write().expect("no writer panics");
+        let set = sets.iter_mut().find(|set| set.type_id == TypeId::of::<T>());
+        let set = set.expect("add the commands before their fields");
+        set.fields = Some(FieldTable {
+            kind: T::kind(),
+            tree: |command| {
+                let command: &T = command.downcast_ref().expect("a value of this enum");
+                command.tree()
+            },
+            read: |tree| {
+                let command = maki_core::fields::read::<T>(tree).ok()?;
+                Some(Arc::new(command))
+            },
+        });
+    }
+
+    fn field_table(&self, command: &Command) -> Option<(FieldTable, Handler)> {
+        let value = command.as_any();
+        let sets = self.sets.read().expect("no writer panics");
+        let set = sets.iter().find(|set| set.type_id == value.type_id())?;
+        Some((set.fields.clone()?, set.run.clone()))
+    }
+
+    /// The field table of the enum of a command, and the command as a tree. `None`:
+    /// its module gave no table (`add_fields`).
+    pub fn fields(&self, command: &Command) -> Option<(Kind, Value)> {
+        let (table, _) = self.field_table(command)?;
+        Some((table.kind, (table.tree)(command.as_any())))
+    }
+
+    /// A command of the enum of `command`, read from a changed tree. `None`: no
+    /// table, or the enum does not read the tree.
+    pub fn from_tree(&self, command: &Command, tree: Value) -> Option<Command> {
+        let (table, run) = self.field_table(command)?;
+        Some(Command {
+            value: (table.read)(tree)?,
+            run,
+            order: 0,
+        })
     }
 
     /// Tells which command lists the commands of the enum `T` hold: an `If` has

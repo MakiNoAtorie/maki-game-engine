@@ -7,18 +7,21 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_engine::core::{App, Module, ResetPlay, Time, Update};
+use maki_engine::core::{App, Fields, Module, ResetPlay, Time, Update};
 use maki_engine::events::{CommandRegistry, Finding};
 use maki_engine::gameplay::{FollowCamera, follow_player};
 use maki_engine::scene::Camera;
 use serde::{Deserialize, Serialize};
 
-/// The event commands of this game.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The event commands of this game. `Fields`: the editor draws their arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum GameCommand {
     /// Shakes the camera for this many seconds. The second number is the largest
     /// offset, in meters. The event does not wait for the end of the shake.
-    ShakeCamera(f32, f32),
+    ShakeCamera(
+        #[field(label = "seconds", range = 0.0..=10.0, step = 0.05)] f32,
+        #[field(label = "meters", range = 0.0..=1.0, step = 0.01)] f32,
+    ),
 }
 
 /// The shake that runs. `left` at zero: none.
@@ -63,6 +66,8 @@ impl Module for ShakeModule {
             },
             |_| Some("Shakes the camera for some seconds. The event does not wait for the end."),
         );
+        // The widgets of the arguments in the event panel, from the table of the derive.
+        registry.add_fields::<GameCommand>();
         // What the "Add" list of the editor makes.
         registry.add_defaults(|_, _| Some(GameCommand::ShakeCamera(0.5, 0.05)));
         // The proof that a module checks its own commands: the room loader runs
@@ -112,7 +117,7 @@ mod tests {
     #[test]
     fn an_event_of_a_room_file_shakes_the_camera_and_the_camera_comes_back() {
         let path = std::env::temp_dir().join(format!("maki-shake-{}.ron", std::process::id()));
-        let room = r#"(width: 8, depth: 8, height: 3, objects: [(name: "start", components: {"spawn": ()}),
+        let room = r#"(width: 8, depth: 8, height: 3, objects: [(id: 1, name: "start", components: {"spawn": ()}),
             (name: "quake", components: {"event": (pages: [(trigger: Autorun, commands: [
                 ShakeCamera(0.1, 0.5), SetFlag("after", true)])])})])"#;
         std::fs::write(&path, room).unwrap();
@@ -125,7 +130,7 @@ mod tests {
             .add_module(ShakeModule);
         let target = RoomTarget {
             path: path.clone(),
-            spawn: Some("start".to_owned()),
+            spawn: Some(maki_engine::scene::ObjectId(1)),
             text: None,
         };
         app.add_systems(

@@ -7,37 +7,42 @@
     width: 6.0,
     depth: 6.0,
     height: 3.0,
+    next_id: 6,
     objects: [
         (
+            id: 1,
             name: "lamp",
             pose: (position: (0.0, 2.3, 0.0)),
             components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0)},
         ),
         // In the back wall. The passage behind it leads nowhere.
         (
+            id: 2,
             name: "door",
             components: {
                 "door": (),
                 "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.1, depth: 1.2),
             },
         ),
-        (name: "start", components: {"spawn": ()}),
+        (id: 3, name: "start", components: {"spawn": ()}),
         // In front of the start: the player faces it and presses interact.
         (
+            id: 4,
             name: "button",
             pose: (position: (0.0, 0.15, 0.9), scale: (0.3, 0.3, 0.3)),
             components: {
                 "area": (width: 0.8, depth: 0.8),
-                "event": (wires: [(output: "used", commands: [OpenDoor("door")])]),
+                "event": (wires: [(output: "used", commands: [OpenDoor(2)])]),
                 "prop": (mesh: Cube(1.0)),
             },
         ),
         (
+            id: 5,
             name: "pad",
             pose: (position: (-2.0, 0.0, 0.0)),
             components: {
                 "area": (width: 1.0, depth: 1.0),
-                "event": (pages: [(trigger: Touch, commands: [Signal("button", "used")])]),
+                "event": (pages: [(trigger: Touch, commands: [Signal(4, "used")])]),
             },
         ),
     ],

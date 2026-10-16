@@ -29,13 +29,13 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::{Mut, World};
 use glam::{EulerRot, Quat, Vec3};
 use maki_assets::{
-    AssetChanged, AssetWatch, Assets, Doorway, Handle, LoadState, Material, Mesh, Model,
+    AssetChanged, AssetWatch, Assets, Doorway, FileRef, Handle, LoadState, Material, Mesh, Model,
     ModelLoads, TextureRef, Textures,
 };
 use maki_core::{Fields, Interpolated, Transform};
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef};
+use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
@@ -58,6 +58,10 @@ pub struct RoomDef {
     /// The same for the walls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walls: Option<TextureDef>,
+    /// The id that the editor gives to the next new object. An id is not given
+    /// again: the saved state of a deleted object cannot go to a new one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_id: u32,
     /// The things of the room: each a name, a pose, and components.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDef>,
@@ -79,18 +83,59 @@ pub struct RoomShell {
     pub walls: Option<TextureDef>,
 }
 
+pub(crate) fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// A new id of a list of objects (a room, a prefab file) whose next id is `next_id`.
+pub(crate) fn new_id(objects: &[ObjectDef], next_id: &mut u32) -> ObjectId {
+    let used = objects.iter().filter_map(|object| object.id);
+    let next = used.map(|id| id.0 + 1).fold((*next_id).max(1), u32::max);
+    *next_id = next + 1;
+    ObjectId(next)
+}
+
+/// Gives an id to each object with none, in the order. True if one had none.
+pub(crate) fn give_ids(objects: &mut [ObjectDef], next_id: &mut u32) -> bool {
+    let mut given = false;
+    for index in 0..objects.len() {
+        if objects[index].id.is_none() {
+            objects[index].id = Some(new_id(objects, next_id));
+            given = true;
+        }
+    }
+    given
+}
+
 impl RoomDef {
+    /// A new id, not given before in this room.
+    pub fn new_id(&mut self) -> ObjectId {
+        new_id(&self.objects, &mut self.next_id)
+    }
+
+    /// Gives an id to each object with none, in the order of the objects. Returns
+    /// true if one had none.
+    pub fn give_ids(&mut self) -> bool {
+        give_ids(&mut self.objects, &mut self.next_id)
+    }
+
     /// The first object of the name, with its index (its `RoomItem`).
     pub fn object_named(&self, name: &str) -> Option<(usize, &ObjectDef)> {
         let named = |(_, object): &(usize, &ObjectDef)| object.name.as_deref() == Some(name);
         self.objects.iter().enumerate().find(named)
     }
 
-    /// The position of the spawn point `name`: of the object of that name with the
+    /// The first object of the reference, with its index (its `RoomItem`).
+    pub fn find(&self, object: &ObjectId) -> Option<(usize, &ObjectDef)> {
+        let found = |(_, def): &(usize, &ObjectDef)| def.id == Some(*object);
+        self.objects.iter().enumerate().find(found)
+    }
+
+    /// The position of a spawn point: of the object of the reference with the
     /// component `spawn`.
-    pub fn spawn(&self, name: &str) -> Option<[f32; 3]> {
-        let named = |object: &&ObjectDef| object.is_spawn() && object.name.as_deref() == Some(name);
-        Some(self.objects.iter().find(named)?.pose.position)
+    pub fn spawn(&self, spawn: &ObjectId) -> Option<[f32; 3]> {
+        let found = |object: &&ObjectDef| object.is_spawn() && object.id == Some(*spawn);
+        Some(self.objects.iter().find(found)?.pose.position)
     }
 
     /// The names of the spawn points, in name order.
@@ -277,7 +322,7 @@ pub enum MeshDef {
     },
     /// A glTF file (`.gltf` or `.glb`). A path that is not absolute starts at the
     /// directory of the room file. The point lights of the file become lights.
-    File(#[field(label = "glTF file", file = "model")] PathBuf),
+    File(#[field(label = "glTF file", file = "model")] FileRef),
     /// A cylinder with a half sphere at each end, standing on the origin: `height`
     /// from the bottom to the top.
     #[field(default = MeshDef::Capsule { radius: 0.3, height: 1.7 })]
@@ -314,7 +359,7 @@ pub struct TextureDef {
     /// An image file (PNG or JPEG). A path that is not absolute starts at the
     /// directory of the room file.
     #[field(label = "file", file = "picture")]
-    pub path: PathBuf,
+    pub path: FileRef,
     /// The texture coordinates are multiplied by this: 2.0 shows the image two times
     /// where it showed one time. The coordinates of the room box, a cube, and a
     /// cuboid are meters; those of a sphere go one time around it.
@@ -348,7 +393,7 @@ impl TextureDef {
     fn apply(&self, mesh: Mesh, directory: &Path, textures: &mut Textures) -> Mesh {
         mesh.with_uv_scale(self.scale)
             .with_base_color_texture(TextureRef {
-                texture: textures.load(&directory.join(&self.path)),
+                texture: textures.load(&self.path.resolve(directory)),
                 nearest: self.filter == Filter::Nearest,
             })
     }
@@ -440,6 +485,7 @@ impl PropDef {
             light_radius: self.light_radius,
         };
         ObjectDef {
+            id: None,
             name: self.name,
             pose: self.pose,
             parent: None,
@@ -549,7 +595,7 @@ pub struct SoundDef {
     /// A sound file (WAV or Ogg Vorbis). A path that is not absolute starts at the
     /// directory of the room file.
     #[field(label = "sound file", file = "sound")]
-    pub file: PathBuf,
+    pub file: FileRef,
     /// 1.0: as loud as the file is.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     #[field(range = 0.0..=4.0)]
@@ -567,7 +613,7 @@ pub struct SoundDef {
 impl Default for SoundDef {
     fn default() -> Self {
         Self {
-            file: PathBuf::new(),
+            file: FileRef::default(),
             volume: 1.0,
             reach: default_reach(),
             on: true,
@@ -587,7 +633,7 @@ impl SoundDef {
     /// The component of the sound. `directory`: of the room file.
     pub fn source(&self, directory: &Path) -> SoundSource {
         SoundSource {
-            path: directory.join(&self.file),
+            path: self.file.resolve(directory),
             volume: self.volume,
             reach: self.reach,
             on: self.on,
@@ -753,6 +799,7 @@ impl LightDef {
             sound,
         };
         ObjectDef {
+            id: None,
             name,
             pose: PoseDef {
                 position,
@@ -994,7 +1041,7 @@ pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, S
     // that the name can be set right. The loader then shows the room without it.
     let directory = path.parent().unwrap_or(Path::new(""));
     for (_, prefab) in room.each_prefab() {
-        read_prefab(&directory.join(&prefab.file))
+        read_prefab(&prefab.file.resolve(directory))
             .with_context(|| format!("{}: a prefab of the room", path.display()))?;
     }
     Ok((room, text))
@@ -1027,8 +1074,16 @@ pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Resul
         }
     }
     for (index, object) in room.objects.iter().enumerate() {
+        let name = object.name.as_deref().unwrap_or("");
+        if let Some(parent) = &object.parent
+            && room.find(parent).is_none()
+        {
+            return Err(anyhow!(
+                "{}: object {index} {name}: no parent object `{parent}`",
+                path.display()
+            ));
+        }
         if object.door().is_some() && object.doorway().is_none() {
-            let name = object.name.as_deref().unwrap_or("");
             return Err(anyhow!(
                 "{}: object {index} {name}: a door needs a doorway in the same object",
                 path.display()
@@ -1102,7 +1157,7 @@ pub struct RoomTarget {
     pub path: PathBuf,
     /// The spawn point of the room where the player goes. `None`: the player stays
     /// where it is (a reload of the same room).
-    pub spawn: Option<String>,
+    pub spawn: Option<ObjectId>,
     /// `Some`: the text of the room, in place of the text of the file (a tool shows a
     /// room that is not saved). `path` then is the name of the room, and its
     /// directory is where the files that the room names are. The validators do not
@@ -1259,7 +1314,9 @@ pub(crate) fn watch_models(
 fn prefab_files(current: &CurrentRoom) -> Vec<PathBuf> {
     let directory = current.path.parent().unwrap_or(Path::new(""));
     let prefabs = current.def.each_prefab().into_iter();
-    prefabs.map(|(_, used)| directory.join(used.file)).collect()
+    prefabs
+        .map(|(_, used)| used.file.resolve(directory))
+        .collect()
 }
 
 /// A model of a prop while it loads. `spawn_loaded_models` replaces the entity with
@@ -1308,8 +1365,8 @@ pub fn load_requested_room(
     let loaded = read.and_then(|(def, source)| {
         let spawn =
             match &target.spawn {
-                Some(name) => Some(def.spawn(name).with_context(|| {
-                    format!("{}: no spawn point `{name}`", target.path.display())
+                Some(spawn) => Some(def.spawn(spawn).with_context(|| {
+                    format!("{}: no spawn point `{spawn}`", target.path.display())
                 })?),
                 None => None,
             };
@@ -1336,7 +1393,7 @@ pub fn load_requested_room(
         .iter()
         .filter_map(|object| object.prop()?.ok())
         .filter_map(|prop| match &prop.mesh {
-            MeshDef::File(path) => Some(directory.join(path)),
+            MeshDef::File(path) => Some(path.resolve(directory)),
             _ => None,
         })
         .collect();
@@ -1372,6 +1429,7 @@ pub fn load_requested_room(
         old,
         owned: Vec::new(),
         made: 0,
+        id: None,
     };
     spawner.room(&def);
     let (owned, unused) = (spawner.owned, spawner.old);
@@ -1423,6 +1481,9 @@ struct Spawner<'a, 'w, 's> {
     owned: Vec<(String, Handle<Mesh>)>,
     /// How many of `owned` were made, not taken from `old`.
     made: usize,
+    /// The id of the room object whose entities are made now. The entities of a
+    /// prefab instance get the id of the instance.
+    id: Option<ObjectId>,
 }
 
 impl Spawner<'_, '_, '_> {
@@ -1490,6 +1551,7 @@ impl Spawner<'_, '_, '_> {
     /// generated mesh, of its light, door, or mover, else a new one. It has the pose
     /// of the object as `Interpolated`, so a script that moves it moves the mesh.
     fn object(&mut self, object: &ObjectDef, item: RoomItem, width: f32, depth: f32) {
+        self.id = object.id;
         let mut main = None;
         if let Some(Ok(prop)) = object.prop() {
             main = self.prop(&prop, item);
@@ -1524,6 +1586,9 @@ impl Spawner<'_, '_, '_> {
                 if let Some(name) = &object.name {
                     entity.insert(Name(name.clone()));
                 }
+                if let Some(id) = self.id {
+                    entity.insert(id);
+                }
                 entity
             }
         };
@@ -1551,6 +1616,9 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = &light.name {
             entity.insert(Name(name.clone()));
         }
+        if let Some(id) = self.id {
+            entity.insert(id);
+        }
         if let Some(sound) = &light.sound {
             entity.insert(sound.source(self.directory));
         }
@@ -1565,14 +1633,16 @@ impl Spawner<'_, '_, '_> {
     // ponytail: the file is read at each load of the room. A store by path when a
     // room names many prefabs.
     fn prefab(&mut self, used: &PrefabUse, item: RoomItem, width: f32, depth: f32) {
-        let prefab = match read_prefab(&self.directory.join(&used.file)) {
+        let prefab = match read_prefab(&used.file.resolve(self.directory)) {
             Ok(prefab) => prefab,
             Err(error) => {
                 tracing::error!("prefab not shown: {error:#}");
                 return;
             }
         };
-        for object in instance_objects(used, &prefab, self.types) {
+        let id = self.id;
+        for mut object in instance_objects(used, &prefab, self.types) {
+            object.id = id;
             self.object(&object, item, width, depth);
         }
     }
@@ -1583,7 +1653,7 @@ impl Spawner<'_, '_, '_> {
         let file = matches!(prop.mesh, MeshDef::File(_));
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
-                let path = self.directory.join(path);
+                let path = path.resolve(self.directory);
                 let (models, meshes) = (&mut *self.models, &mut *self.meshes);
                 let (textures, loads) = (&mut *self.textures, &mut *self.loads);
                 let model = *self
@@ -1621,6 +1691,9 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = &prop.name {
             entity.insert(Name(name.clone()));
         }
+        if let Some(id) = self.id {
+            entity.insert(id);
+        }
         (!file).then(|| entity.id())
     }
 
@@ -1643,6 +1716,9 @@ impl Spawner<'_, '_, '_> {
         ));
         if let Some(name) = &mover.name {
             entity.insert(Name(name.clone()));
+        }
+        if let Some(id) = self.id {
+            entity.insert(id);
         }
         Some(entity.id())
     }
@@ -1714,6 +1790,9 @@ impl Spawner<'_, '_, '_> {
         ));
         if let Some(name) = name {
             entity.insert(Name(name.clone()));
+        }
+        if let Some(id) = self.id {
+            entity.insert(id);
         }
         entity.id()
     }
@@ -1935,7 +2014,7 @@ mod tests {
                 material: Some(Material::Glass { ior: 1.5 }),
                 emissive: None,
                 texture: Some(TextureDef {
-                    path: PathBuf::from("ball.png"),
+                    path: "ball.png".into(),
                     scale: 2.0,
                     filter: Filter::Nearest,
                 }),
@@ -1953,7 +2032,7 @@ mod tests {
             direction: None,
             cone: None,
             sound: Some(SoundDef {
-                file: PathBuf::from("hum.wav"),
+                file: "hum.wav".into(),
                 volume: 0.5,
                 reach: 6.0,
                 on: false,
@@ -1992,6 +2071,7 @@ mod tests {
             width: 6.0,
             depth: 5.0,
             height: 3.0,
+            next_id: 0,
             objects: vec![
                 PropDef {
                     name: Some("crate".to_owned()),
@@ -2168,6 +2248,7 @@ mod tests {
                 old: Vec::new(),
                 owned: Vec::new(),
                 made: 0,
+                id: None,
             };
             let leaf = door.door().unwrap().unwrap();
             spawner.door(
@@ -2199,12 +2280,18 @@ mod tests {
             std::fs::write(directory.join(name), text).unwrap();
             directory.join(name)
         };
-        let room_a = write("a.ron", &sample());
+        let mut sample = sample();
+        sample.give_ids();
+        let start = sample.object_named("start").unwrap().1.id.unwrap();
+        let room_a = write("a.ron", &sample);
         let small = RoomDef {
             width: 3.0,
             depth: 3.0,
             height: 2.0,
-            objects: vec![ObjectDef::spawn_point("door".to_owned(), [1.0, 0.0, 1.0])],
+            objects: vec![ObjectDef {
+                id: Some(ObjectId(1)),
+                ..ObjectDef::spawn_point("door".to_owned(), [1.0, 0.0, 1.0])
+            }],
             ..RoomDef::default()
         };
         let room_b = write("b.ron", &small);
@@ -2223,10 +2310,10 @@ mod tests {
                 })
                 .before(load_requested_room),
             );
-        let load = |app: &mut App, path: &Path, spawn: Option<&str>| {
+        let load = |app: &mut App, path: &Path, spawn: Option<ObjectId>| {
             app.write_message(RequestRoom(RoomTarget {
                 path: path.to_owned(),
-                spawn: spawn.map(str::to_owned),
+                spawn,
                 text: None,
             }));
             app.advance(Duration::from_millis(16));
@@ -2247,19 +2334,19 @@ mod tests {
         app.run(|mut app| {
             // Room A: the shell, 6 wall boxes, a door, an object, a prop, a mover, a
             // light. Meshes: the shell, the door leaf, the object, the prop, the mover.
-            let (entities, meshes, spawn) = load(&mut app, &room_a, Some("start"));
+            let (entities, meshes, spawn) = load(&mut app, &room_a, Some(start));
             assert_eq!((entities, meshes), (12, 5));
             assert_eq!(spawn, Some([0.0, 0.0, 1.0]));
 
             // Room B: the shell and 4 wall boxes. The meshes of room A are gone.
-            let (entities, meshes, spawn) = load(&mut app, &room_b, Some("door"));
+            let (entities, meshes, spawn) = load(&mut app, &room_b, Some(ObjectId(1)));
             assert_eq!((entities, meshes), (5, 1));
             assert_eq!(spawn, Some([1.0, 0.0, 1.0]));
 
             // A reload with no spawn point: the same room again, no place to go to.
             assert_eq!(load(&mut app, &room_b, None), (5, 1, None));
             // A spawn point that the room does not have: nothing changes.
-            assert_eq!(load(&mut app, &room_a, Some("nowhere")), (5, 1, None));
+            assert_eq!(load(&mut app, &room_a, Some(ObjectId(99))), (5, 1, None));
             assert_eq!(app.world().resource::<CurrentRoom>().path, room_b);
         });
         std::fs::remove_dir_all(&directory).unwrap();
@@ -2401,6 +2488,40 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
+    #[test]
+    fn a_file_moved_with_its_id_file_loads_by_its_id() {
+        use maki_assets::Textures;
+
+        let directory = std::env::temp_dir().join(format!("maki-moved-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("new")).unwrap();
+        let moved = directory.join("new/floor.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 255]))
+            .save(&moved)
+            .unwrap();
+        std::fs::write(maki_assets::FileId::file_of(&moved), "00000000000000a1").unwrap();
+        let room = |floor: &str| format!("(width: 4, depth: 4, height: 3, floor: (path: {floor}))");
+        let by_id = room(r#"(path: "old/floor.png", id: "00000000000000a1")"#);
+        std::fs::write(directory.join("by_id.ron"), by_id).unwrap();
+        std::fs::write(directory.join("by_path.ron"), room(r#""old/floor.png""#)).unwrap();
+
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        let mut textures = |name: &str| {
+            app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+                path: directory.join(name),
+                spawn: None,
+                text: None,
+            });
+            app.advance(Duration::from_millis(16));
+            app.world().resource::<Textures>().iter().count()
+        };
+        // A path alone does not look for the file; the id finds it.
+        assert_eq!(textures("by_path.ron"), 0);
+        assert_eq!(textures("by_id.ron"), 1);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
     /// A glTF file with one triangle: the corners (0, 0, 0), (1, 0, 0), (0, 1, 0).
     const TRIANGLE: &str = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
 "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
@@ -2427,7 +2548,7 @@ mod tests {
         std::fs::write(&model, TRIANGLE).unwrap();
         let room = r#"(width: 4, depth: 4, height: 3, floor: (path: "floor.png"),
             objects: [
-                (name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
+                (id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
                 (components: {"prop": (mesh: Cube(1.0))}),
                 (components: {"prop": (mesh: File("models/triangle.gltf"))}),
             ])"#;
@@ -2444,7 +2565,7 @@ watch = true",
             .add_module(SceneModule);
         app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
             path: directory.join("room.ron"),
-            spawn: Some("start".to_owned()),
+            spawn: Some(ObjectId(1)),
             text: None,
         });
         // The color of the floor texture, the mesh of the cube, the model, and the
@@ -2813,6 +2934,45 @@ watch = true",
             // A component that no module registered stays text: no entity.
             let mut items = world.try_query::<&RoomItem>().unwrap();
             assert!(items.iter(world).all(|item| item.0 != 3));
+        });
+    }
+
+    #[test]
+    fn an_object_with_an_id_has_it_on_its_entity_and_one_with_none_loads_as_before() {
+        let room = r#"(width: 6.0, depth: 6.0, height: 3.0, next_id: 8, objects: [
+            (id: 7, name: "box", components: {"prop": (mesh: Cube(0.5))}),
+            (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 1.0)}),
+        ])"#;
+        let def = parse_room(room).unwrap();
+        assert_eq!(def.next_id, 8);
+        assert_eq!(def.objects[0].id, Some(ObjectId(7)));
+        // The id is the first field, and a number.
+        let text = ron_options().to_string(&def).unwrap();
+        assert!(text.contains("next_id:8"), "{text}");
+        assert!(text.contains("(id:7,name:\"box\""), "{text}");
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(SceneModule);
+        app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+            path: PathBuf::from("ids.ron"),
+            spawn: None,
+            text: Some(room.to_owned()),
+        });
+        app.run(|mut app| {
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let mut named = world.try_query::<(&Name, Option<&ObjectId>)>().unwrap();
+            let mut found: Vec<_> = named
+                .iter(world)
+                .map(|(name, id)| (name.0.clone(), id.copied()))
+                .collect();
+            found.sort();
+            assert_eq!(
+                found,
+                [
+                    ("box".to_owned(), Some(ObjectId(7))),
+                    ("lamp".to_owned(), None)
+                ]
+            );
         });
     }
 }

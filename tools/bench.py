@@ -38,6 +38,7 @@ import array
 import csv
 import json
 import platform
+import re
 import statistics
 import struct
 import subprocess
@@ -121,7 +122,7 @@ MODEL_ROOM = """(
         (components: {"door": (), "doorway": (wall: NegZ, offset: 3.0, width: 1.0, height: 2.1, depth: 1.2)}),
         (components: {"prop": (mesh: File(MODEL), collider: false)}),
         (pose: (position: (0.0, 2.0, 2.0)), components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)}),
-        (name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
+        (id: 1, name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
     ],
 )
 """
@@ -139,10 +140,18 @@ TEXTURED_ROOM = """(
         (pose: (position: (-3.0, 0.5, 0.6)), components: {"prop": (mesh: Sphere(radius: 0.5, segments: 48, rings: 24), look: (color: (0.9, 0.9, 0.9), material: Mirror))}),
         (pose: (position: (0.9, 0.45, 2.2)), components: {"prop": (mesh: Sphere(radius: 0.45, segments: 48, rings: 24), look: (color: (1.0, 1.0, 1.0), material: Glass(ior: 1.5)))}),
         (pose: (position: (0.0, 2.3, 1.0)), components: {"light": (radius: 0.15, color: (1.0, 0.92, 0.82), intensity: 12.0)}),
-        (name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
+        (id: 1, name: "start", pose: (position: (-0.5, 0.0, 2.6)), components: {"spawn": ()}),
     ],
 )
 """
+
+
+def start_spawn(room_text, name="start"):
+    """The id of a spawn point of a room file by its name: the game names a spawn point by its id."""
+    found = re.search(r'id: (\d+),\s*name: "' + re.escape(name) + '"', room_text)
+    if not found:
+        raise SystemExit(f'the room has no spawn point "{name}" with an id')
+    return int(found[1])
 
 
 def summarize(values):
@@ -234,6 +243,7 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
     else:
         room_path = ROOT / "game" / "assets" / "rooms" / room_name
     config["rooms.start"] = room_path.resolve().as_posix()
+    config["rooms.start_spawn"] = start_spawn(room_path.read_text())
     (work / "config.toml").write_text(config_text(config))
     output = work / "bench.csv"
     output.unlink(missing_ok=True)

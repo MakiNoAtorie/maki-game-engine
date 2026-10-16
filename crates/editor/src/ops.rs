@@ -1,22 +1,16 @@
 //! Changes of the document that are more than one value: add, delete, and duplicate
-//! an item, names and the events that use them, and the history for undo and redo.
+//! an item, names, and the history for undo and redo.
 //!
-//! Names: events find an object (a light, a door, a mover, a spawn point) by name.
-//! So a new or changed name is made unique among the objects (an event has the name
-//! of its object), and a change of a name changes the commands of this room that use it. A command of another
-//! module, and a `Transfer` in another room file, are not changed: see
-//! [`spawn_users`].
+//! Names: a command names an object by its id, so a new name changes no command. A
+//! name is made unique among the objects all the same, so that a pick by name is
+//! clear.
 
 use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use maki_assets::{Doorway, Wall};
-use maki_audio::AudioCommand;
 use maki_core::Transform;
-use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, EventPages, Page, Trigger, TriggerArea,
-};
-use maki_gameplay::GameCommand;
+use maki_events::{EventPages, Page, Trigger, TriggerArea};
 use maki_scene::{
     ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef,
     PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
@@ -24,6 +18,18 @@ use maki_scene::{
 
 use crate::ron_text::Notes;
 use crate::{Document, Item};
+
+/// Reads a prefab file to change an instance of it. A file with an object that has
+/// no id gets the ids and is written: a change of an instance is keyed by the id.
+// ponytail: the file is written again from its value, so its comments go; keep them as the notes of a room if a person writes prefab files.
+pub(crate) fn prefab_to_edit(path: &Path) -> anyhow::Result<PrefabDef> {
+    let mut prefab = read_prefab(path)?;
+    if prefab.give_ids() {
+        std::fs::write(path, prefab_text(&prefab))?;
+        tracing::info!(file = %path.display(), "the objects of the prefab file got ids");
+    }
+    Ok(prefab)
+}
 
 /// A thing that "Add" makes.
 #[derive(Debug, Clone, PartialEq)]
@@ -132,134 +138,23 @@ impl Document {
         }
     }
 
-    /// Call after the name of an object was changed from `old`. The new
-    /// name is made unique, and the commands of the events of this room that name the
-    /// object (built-in, of the audio module, and of the game module) get the new name. Returns a text for
-    /// the user if something more than the name itself was changed.
-    pub fn renamed(
-        &mut self,
-        item: &Item,
-        old: Option<String>,
-        registry: &CommandRegistry,
-    ) -> String {
-        let index = match item {
-            Item::Object(index) => *index,
-            Item::Room => return String::new(),
+    /// Call after the name of an object was changed: the name is made unique in the
+    /// room. A command names the object by its id, so nothing else changes. Returns a
+    /// text for the user if the name was changed.
+    pub fn keep_name_unique(&mut self, item: &Item) -> String {
+        let Item::Object(index) = item else {
+            return String::new();
         };
-        let Some(typed) = self.room.objects[index].name.take() else {
-            // Events that still name the object give a warning when they run.
+        let Some(typed) = self.room.objects[*index].name.take() else {
             return String::new();
         };
         let new = self.unique_name(item, &typed);
-        let mut status = String::new();
-        if new != typed {
-            status = "The name was in use: a number was added. ".to_owned();
-        }
-        let mut users = 0;
-        if let Some(old) = &old {
-            // A command names the object by the kind that it wants; an object can
-            // be each kind.
-            users += self.rename_in_events(registry, |command: &Builtin| match command {
-                Builtin::LightOn(name) if name == old => Some(Builtin::LightOn(new.clone())),
-                Builtin::LightOff(name) if name == old => Some(Builtin::LightOff(new.clone())),
-                Builtin::LightIntensity(name, value) if name == old => {
-                    Some(Builtin::LightIntensity(new.clone(), *value))
-                }
-                Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
-                Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
-                Builtin::Signal(name, output) if name == old => {
-                    Some(Builtin::Signal(new.clone(), output.clone()))
-                }
-                Builtin::SetField(name, component, field, value) if name == old => Some(
-                    Builtin::SetField(new.clone(), component.clone(), field.clone(), value.clone()),
-                ),
-                _ => None,
-            });
-            users += self.rename_in_events(registry, |command: &AudioCommand| match command {
-                AudioCommand::SoundOn(name) if name == old => {
-                    Some(AudioCommand::SoundOn(new.clone()))
-                }
-                AudioCommand::SoundOff(name) if name == old => {
-                    Some(AudioCommand::SoundOff(new.clone()))
-                }
-                _ => None,
-            });
-            users += self.rename_in_events(registry, |command: &GameCommand| match command {
-                GameCommand::GiveControl(name) if name == old => {
-                    Some(GameCommand::GiveControl(new.clone()))
-                }
-                _ => None,
-            });
-            // A `Transfer` of this room to itself names the spawn point.
-            if self.room.objects[index].is_spawn() {
-                let file = self.path.file_name().unwrap_or_default();
-                let file = file.to_string_lossy().into_owned();
-                users += self.rename_in_events(registry, |command: &Builtin| match command {
-                    Builtin::Transfer(room, to) if *room == file && to == old => {
-                        Some(Builtin::Transfer(room.clone(), new.clone()))
-                    }
-                    _ => None,
-                });
-            }
-        }
-        if users > 0 {
-            status += &format!("{users} event commands now name `{new}`");
-        }
-        self.room.objects[index].name = Some(new);
+        let status = match new == typed {
+            true => String::new(),
+            false => "The name was in use: a number was added.".to_owned(),
+        };
+        self.room.objects[*index].name = Some(new);
         status
-    }
-
-    /// Replaces each command of the enum `T` in the events for which `change` gives
-    /// a new one. Returns the number of the commands that were replaced.
-    pub(crate) fn rename_in_events<T: CommandSet>(
-        &mut self,
-        registry: &CommandRegistry,
-        change: impl Fn(&T) -> Option<T>,
-    ) -> usize {
-        fn walk<T: CommandSet>(
-            commands: &mut [Command],
-            registry: &CommandRegistry,
-            change: &dyn Fn(&T) -> Option<T>,
-        ) -> usize {
-            let mut count = 0;
-            for command in commands {
-                // The lists of a command hold commands too.
-                let lists = registry.lists(command);
-                let mut lists: Vec<Vec<Command>> =
-                    lists.into_iter().map(|list| list.1.to_vec()).collect();
-                let inner: usize = lists
-                    .iter_mut()
-                    .map(|list| walk(list, registry, change))
-                    .sum();
-                count += inner;
-                let new = if inner > 0 {
-                    registry.with_lists(command, lists)
-                } else {
-                    let new = command.get::<T>().and_then(change);
-                    new.inspect(|_| count += 1)
-                        .and_then(|new| registry.command(new))
-                };
-                if let Some(new) = new {
-                    *command = new;
-                }
-            }
-            count
-        }
-        let mut count = 0;
-        for index in 0..self.room.objects.len() {
-            let Some(Ok(mut event)) = self.event(index, registry) else {
-                continue;
-            };
-            let pages = event.pages.iter_mut();
-            let changed: usize = pages
-                .map(|page| walk(&mut page.commands, registry, &change))
-                .sum();
-            if changed > 0 {
-                self.set_event(index, &event);
-                count += changed;
-            }
-        }
-        count
     }
 
     /// Adds an item at a point of the floor. Returns the new item. `Err`: why not.
@@ -293,7 +188,7 @@ impl Document {
                             on_floor(0.5),
                         )
                     }
-                    Kind::Model(path) => prop(MeshDef::File(path), on_floor(0.0)),
+                    Kind::Model(path) => prop(MeshDef::File(path.into()), on_floor(0.0)),
                     _ => unreachable!("the outer arm has the four kinds of a prop"),
                 };
                 // A name of its own: the outliner lists the object by it, and a
@@ -320,7 +215,7 @@ impl Document {
                 let stem = stem.to_string_lossy().into_owned();
                 let used = PrefabUse {
                     name: None,
-                    file,
+                    file: file.into(),
                     pose: on_floor(0.0),
                     changes: Default::default(),
                 };
@@ -434,11 +329,8 @@ impl Document {
                     object.components.contains_key("door")
                         || object.components.contains_key("mover")
                 };
-                let door = room
-                    .objects
-                    .iter()
-                    .find(moves)
-                    .and_then(|object| object.name.clone());
+                let door = room.objects.iter().find(moves);
+                let door = door.and_then(|door| door.id);
                 let mut pose = on_floor(0.15);
                 pose.scale = [0.3; 3];
                 let mut object = PropDef {
@@ -468,6 +360,7 @@ impl Document {
                 item
             }
         };
+        self.room.give_ids();
         self.dirty = true;
         Ok(item)
     }
@@ -494,14 +387,21 @@ impl Document {
     /// Returns the copies. The room has no copy.
     pub fn duplicate(&mut self, items: &[Item]) -> Vec<Item> {
         let source = self.clone();
-        self.copy_from(&source, items, DUPLICATE_OFFSET)
+        self.copy_from(&source, items, DUPLICATE_OFFSET, false)
     }
 
     /// Makes in this document a copy of each of `items` of the document `source`
     /// (another room, or this one), `offset` meters beside its place, with a name
     /// that this room does not have and with its notes. Returns the copies. The
-    /// room has no copy.
-    pub fn copy_from(&mut self, source: &Document, items: &[Item], offset: f32) -> Vec<Item> {
+    /// room has no copy. `cut`: the items were cut from `source`; in that room they
+    /// keep their ids.
+    pub fn copy_from(
+        &mut self,
+        source: &Document,
+        items: &[Item],
+        offset: f32,
+        cut: bool,
+    ) -> Vec<Item> {
         let shift = |position: &mut [f32; 3]| {
             position[0] += offset;
             position[2] += offset;
@@ -527,6 +427,13 @@ impl Document {
                     if let Some(Ok(mut mover)) = object.mover() {
                         shift(&mut mover.b.position);
                         object.set_mover(mover);
+                    }
+                    // A paste of a cut object into its own room keeps the id.
+                    let keep = cut
+                        && source.path == self.path
+                        && room.objects.iter().all(|other| other.id != object.id);
+                    if !keep || object.id.is_none() {
+                        object.id = Some(room.new_id());
                     }
                     let copy = Item::Object(room.objects.len());
                     let name = object.name.take();
@@ -582,11 +489,13 @@ impl Document {
         let objects = parts
             .iter()
             .map(|item| self.object(item).expect("`parts` has objects"));
-        let prefab = PrefabDef {
+        let mut prefab = PrefabDef {
             objects: objects
                 .map(|object| into_space(object.clone(), &space))
                 .collect(),
+            ..PrefabDef::default()
         };
+        prefab.give_ids();
         let path = self.path.parent().unwrap_or(Path::new("")).join(file);
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))
             .and_then(|()| std::fs::write(&path, prefab_text(&prefab)))
@@ -597,12 +506,16 @@ impl Document {
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
         let used = PrefabUse {
             name: None,
-            // Forward slashes: the same room file on each system.
-            file: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
+            // Forward slashes: the same room file on each system. An old prefab file keeps its id.
+            file: maki_assets::FileRef {
+                path: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
+                id: maki_assets::FileId::read(&path),
+            },
             pose: outer,
             changes: Default::default(),
         };
         self.room.objects.push(used.into_object());
+        self.room.give_ids();
         let name = self.unique_name(&item, &stem);
         self.room.objects.last_mut().expect("pushed above").name = Some(name);
         self.dirty = true;
@@ -621,10 +534,15 @@ impl Document {
         let Some(used) = self.prefab_use(item) else {
             return Err("Select a prefab first".to_owned());
         };
-        let path = self.path.parent().unwrap_or(Path::new("")).join(&used.file);
-        let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
+        let path = used
+            .file
+            .resolve(self.path.parent().unwrap_or(Path::new("")));
+        let prefab = prefab_to_edit(&path).map_err(|error| format!("{error:#}"))?;
         let mut items = Vec::new();
+        // The first object keeps the id of the instance, so a command still names it.
+        let mut id = self.object(item).and_then(|instance| instance.id);
         for mut object in instance_objects(&used, &prefab, types) {
+            object.id = id.take().or_else(|| Some(self.room.new_id()));
             object.pose = tidy(object.pose);
             let item = Item::Object(self.room.objects.len());
             let name = object.name.take();
@@ -645,7 +563,7 @@ impl Document {
             }
         }
         self.dirty = true;
-        Ok((items, used.file, used.pose))
+        Ok((items, used.file.path, used.pose))
     }
 
     /// What undo and redo keep: all of the document but the path.
@@ -666,6 +584,8 @@ impl Document {
 /// An object of the room in the space of a prefab at `space`: the inverse of the
 /// place that `maki_scene::instance_objects` gives it.
 fn into_space(mut object: ObjectDef, space: &Transform) -> ObjectDef {
+    // The ids of a prefab file are of the file, not of a room.
+    object.id = None;
     object.pose = tidy(PoseDef::of(&pose_out(space, &object.pose.transform())));
     if let Some(Ok(mut light)) = object.light() {
         let back = space.rotation.inverse();
@@ -701,6 +621,9 @@ pub struct History {
     base: Option<Step>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// The highest `next_id` of the room: undo and redo keep it, so that an id that
+    /// was given is not given again.
+    next_id: u32,
 }
 
 /// Older steps are dropped.
@@ -711,6 +634,7 @@ impl History {
     pub fn reset(&mut self, document: &Document) {
         *self = Self {
             base: Some((document.content(), Vec::new())),
+            next_id: document.room.next_id,
             ..Self::default()
         };
     }
@@ -724,6 +648,7 @@ impl History {
         let Some(base) = &mut self.base else {
             return self.reset(document);
         };
+        self.next_id = self.next_id.max(document.room.next_id);
         if busy {
             return;
         }
@@ -742,6 +667,11 @@ impl History {
         self.redo.clear();
     }
 
+    /// True: the document differs from the last step.
+    pub fn changed(&self, document: &Document) -> bool {
+        self.base.as_ref().is_some_and(|base| !document.is(&base.0))
+    }
+
     /// The document goes one step back. False: no step to undo.
     pub fn undo(&mut self, document: &mut Document, selection: &mut Vec<Item>) -> bool {
         self.track(document, selection, false);
@@ -751,6 +681,7 @@ impl History {
             &mut self.redo,
             document,
             selection,
+            self.next_id,
         )
     }
 
@@ -762,6 +693,7 @@ impl History {
             &mut self.undo,
             document,
             selection,
+            self.next_id,
         )
     }
 
@@ -771,10 +703,12 @@ impl History {
         to: &mut Vec<Step>,
         document: &mut Document,
         selection: &mut Vec<Item>,
+        next_id: u32,
     ) -> bool {
-        let Some(step) = from.pop() else {
+        let Some(mut step) = from.pop() else {
             return false;
         };
+        step.0.0.next_id = next_id;
         to.extend(base.replace(step.clone()));
         document.set_content(step.0);
         *selection = step.1;
@@ -787,57 +721,10 @@ impl History {
     }
 }
 
-/// The room files of a directory with a `Transfer` to a spawn point of a room file:
-/// their names. The editor does not change other room files: a rename of a spawn
-/// point that this finds users of gets a warning with the files.
-pub fn spawn_users(
-    directory: &Path,
-    room: &Path,
-    spawn: &str,
-    registry: &CommandRegistry,
-) -> Vec<String> {
-    let names = |commands: &[Command], target: (&str, &str)| -> bool {
-        let mut found = false;
-        registry.each_command(commands, &mut |command| {
-            if let Some(Builtin::Transfer(room, spawn)) = command.get() {
-                found |= (room.as_str(), spawn.as_str()) == target;
-            }
-        });
-        found
-    };
-    let Some(room_name) = room.file_name().and_then(|name| name.to_str()) else {
-        return Vec::new();
-    };
-    let files = std::fs::read_dir(directory).into_iter().flatten().flatten();
-    let mut users = Vec::new();
-    for path in files.map(|entry| entry.path()) {
-        let other = path.file_name() != room.file_name();
-        let events = std::fs::read_to_string(&path)
-            .ok()
-            .filter(|_| other && path.extension().is_some_and(|extension| extension == "ron"))
-            .and_then(|text| registry.parse_events(&text).ok());
-        // The command lists of the pages and of the wires.
-        let events = events.iter().flatten();
-        let mut lists = events.flat_map(|event| {
-            let pages = event.pages.iter().map(|page| &page.commands);
-            pages.chain(event.wires.iter().map(|wire| &wire.commands))
-        });
-        if lists.any(|commands| names(commands, (room_name, spawn))) {
-            users.push(
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-    }
-    users.sort();
-    users
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maki_events::CommandRegistry;
 
     fn registry() -> CommandRegistry {
         // The built-in commands, as `EventsModule` adds them.
@@ -850,58 +737,61 @@ mod tests {
     }
 
     fn document(registry: &CommandRegistry) -> Document {
-        let text = r#"(
-            width: 8.0, depth: 8.0, height: 3.0,
-            objects: [
-                (name: "door", components: {
-                    "door": (),
-                    "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
-                }),
-                // The east one.
-                // To the east.
-                (name: "east", components: {
-                    "door": (),
-                    "doorway": (wall: PosX, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
-                }),
-                (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {
-                    "light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
-                }),
-                (name: "start", components: {"spawn": ()}),
-                (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
-                    LightOff("lamp"),
-                    GiveControl("lamp"),
-                    SetField("lamp", "light", "intensity", 2.0),
-                    If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
-                    Transfer("room.ron", "start"),
-                ])])}),
-            ],
-        )"#;
-        Document::parse(Path::new("room.ron"), text, registry).unwrap()
+        let objects = [
+            r#"(name: "door", components: {
+                "door": (),
+                "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+            })"#,
+            r#"// The east one.
+            // To the east.
+            (name: "east", components: {
+                "door": (),
+                "doorway": (wall: PosX, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+            })"#,
+            r#"(name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {
+                "light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
+            })"#,
+            r#"(name: "start", components: {"spawn": ()})"#,
+            r#"(name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
+                LightOff(3),
+                GiveControl(3),
+                SetField(3, "light", "intensity", 2.0),
+                If([Flag("open")], [OpenDoor(2), LightOn(3)], [CloseDoor(1)]),
+                Transfer("room.ron", 4),
+            ])])})"#,
+        ];
+        let text = maki_scene::room_text(8.0, 8.0, 3.0, &objects);
+        Document::parse(Path::new("room.ron"), &text, registry).unwrap()
     }
 
     #[test]
-    fn a_rename_changes_the_events_and_a_name_stays_unique() {
+    fn a_rename_changes_the_name_only_and_a_name_stays_unique() {
         let registry = registry();
         let mut document = document(&registry);
         // Objects: two doorways with their doors, the light, the spawn point.
         let lamp = Item::Object(2);
 
+        // The commands name the lamp by its id: one line of the file changes.
+        let before = document.text();
         document.room.objects[2].name = Some("bulb".to_owned());
-        let status = document.renamed(&lamp, Some("lamp".to_owned()), &registry);
-        assert!(status.contains("4 event commands"), "{status}");
+        assert_eq!(document.keep_name_unique(&lamp), "");
         let text = document.text();
-        assert!(text.contains(r#"LightOff("bulb")"#) && text.contains(r#"LightOn("bulb")"#));
-        assert!(text.contains(r#"GiveControl("bulb")"#));
-        assert!(text.contains(r#"SetField("bulb", "light", "intensity", 2.0)"#));
-        assert!(!text.contains("\"lamp\""), "{text}");
+        let changed: Vec<(&str, &str)> = before
+            .lines()
+            .zip(text.lines())
+            .filter(|(old, new)| old != new)
+            .collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert!(changed[0].1.contains("\"bulb\""), "{changed:?}");
+        assert_eq!(before.lines().count(), text.lines().count());
+        assert!(text.contains("LightOff(3)") && text.contains("GiveControl(3)"));
 
-        // A door with the name of the other door gets a number, and the events
-        // follow the door that was renamed.
+        // A door with the name of the other door gets a number.
         document.room.objects[1].name = Some("door".to_owned());
-        document.renamed(&Item::Object(1), Some("east".to_owned()), &registry);
+        let status = document.keep_name_unique(&Item::Object(1));
+        assert!(status.contains("a number was added"), "{status}");
         assert_eq!(document.room.objects[1].name.as_deref(), Some("door_2"));
-        let text = document.text();
-        assert!(text.contains(r#"OpenDoor("door_2")"#) && text.contains(r#"CloseDoor("door")"#));
+        assert!(document.text().contains("OpenDoor(2)"));
 
         // A new light and a copy of a light have names of their own.
         let Ok(Item::Object(new)) = document.add(Kind::Light, Vec3::ZERO) else {
@@ -917,14 +807,110 @@ mod tests {
             ("bulb_2".to_owned(), "light_2".to_owned())
         );
         assert_eq!(free_name("bulb_2", |name| name == "bulb_2"), "bulb_3");
+    }
 
-        // A spawn point: the `Transfer` to it in this room follows.
-        let start = Item::Object(3);
-        assert!(document.room.objects[3].is_spawn());
-        document.room.objects[3].name = Some("begin".to_owned());
-        let status = document.renamed(&start, Some("start".to_owned()), &registry);
-        assert!(status.contains("1 event commands"), "{status}");
-        assert!(document.text().contains(r#"Transfer("room.ron", "begin")"#));
+    #[test]
+    fn a_prefab_file_with_no_ids_gets_them_when_the_editor_reads_it() {
+        let file =
+            std::env::temp_dir().join(format!("maki-prefab-ids-{}.prefab", std::process::id()));
+        let text = r#"(objects: [(name: "a", components: {"prop": (mesh: Cube(1.0))}), (components: {"prop": (mesh: Cube(1.0))})])"#;
+        std::fs::write(&file, text).unwrap();
+        let ids = |prefab: &PrefabDef| {
+            prefab
+                .objects
+                .iter()
+                .map(|object| object.id)
+                .collect::<Vec<_>>()
+        };
+        let given = [Some(maki_scene::ObjectId(1)), Some(maki_scene::ObjectId(2))];
+        assert_eq!(ids(&prefab_to_edit(&file).unwrap()), given);
+        assert_eq!(ids(&read_prefab(&file).unwrap()), given);
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn an_id_given_before_an_undo_is_not_given_again() {
+        let registry = registry();
+        let mut document = document(&registry);
+        let (mut history, mut selection) = (History::default(), Vec::new());
+        history.reset(&document);
+        let add = |document: &mut Document| {
+            let Ok(Item::Object(cube)) = document.add(Kind::Cube, Vec3::ZERO) else {
+                panic!("a cube");
+            };
+            document.room.objects[cube].id
+        };
+        let first = add(&mut document);
+        history.track(&document, &selection, false);
+        assert!(history.undo(&mut document, &mut selection));
+        // The undo keeps the redo.
+        assert!(history.redo(&mut document, &mut selection));
+        assert!(history.undo(&mut document, &mut selection));
+        assert_ne!(add(&mut document), first);
+    }
+
+    #[test]
+    fn an_object_keeps_its_id_and_a_new_object_or_a_copy_gets_a_new_one() {
+        let registry = registry();
+        let mut document = document(&registry);
+        let id = |document: &Document, index: usize| document.room.objects[index].id.unwrap().0;
+        let ids = |document: &Document| {
+            let ids = document
+                .room
+                .objects
+                .iter()
+                .map(|object| object.id.unwrap().0);
+            ids.collect::<Vec<_>>()
+        };
+
+        // A room with no ids gets them in the order of its objects; a save writes them.
+        assert_eq!(ids(&document), [1, 2, 3, 4, 5]);
+        let text = document.text();
+        assert!(text.contains("next_id: 6"), "{text}");
+        let again = Document::parse(Path::new("room.ron"), &text, &registry).unwrap();
+        assert_eq!(again.room, document.room);
+        assert_eq!(again.text(), text);
+
+        // A rename, a move, and the undo keep the id.
+        let (mut history, mut selection) = (History::default(), Vec::new());
+        history.reset(&document);
+        document.room.objects[2].name = Some("bulb".to_owned());
+        document.keep_name_unique(&Item::Object(2));
+        document.room.objects[2].pose.position[0] = 1.0;
+        history.track(&document, &selection, false);
+        assert_eq!(id(&document, 2), 3);
+        assert!(history.undo(&mut document, &mut selection));
+        assert_eq!(document.room.objects[2].name.as_deref(), Some("lamp"));
+        assert_eq!(id(&document, 2), 3);
+
+        // A deleted id is not given again: a new object gets the next one.
+        document.delete(&[Item::Object(4)]);
+        let Ok(Item::Object(cube)) = document.add(Kind::Cube, Vec3::ZERO) else {
+            panic!("a cube");
+        };
+        assert_eq!(id(&document, cube), 6);
+        // A duplicate gets a new id.
+        let copies = document.duplicate(&[Item::Object(2)]);
+        assert_eq!(copies, [Item::Object(5)]);
+        assert_eq!(id(&document, 5), 7);
+
+        // A copy, a delete of the object, and a paste: a new id.
+        let source = document.clone();
+        document.delete(&[Item::Object(0)]);
+        let pasted = document.copy_from(&source, &[Item::Object(0)], DUPLICATE_OFFSET, false);
+        assert_eq!(pasted, [Item::Object(5)]);
+        assert_eq!(id(&document, 5), 8);
+        // A cut and a paste in the same room keep the id.
+        let source = document.clone();
+        document.delete(&[Item::Object(1)]);
+        document.copy_from(&source, &[Item::Object(1)], DUPLICATE_OFFSET, true);
+        assert_eq!(id(&document, 5), 3);
+
+        // A paste of a cut into another room gets an id of that room.
+        let mut other = Document::new_room(PathBuf::from("other.ron"));
+        assert_eq!(ids(&other), [1, 2]);
+        other.copy_from(&source, &[Item::Object(1)], 0.0, true);
+        assert_eq!(ids(&other), [1, 2, 3]);
     }
 
     #[test]
@@ -978,11 +964,13 @@ mod tests {
         history.track(&document, &selection, false);
         assert_eq!(history.steps(), (2, 0));
 
+        // The undo keeps the next id: the id of the cube is not given again.
+        let given = |text: String| text.replace("next_id: 6", "next_id: 7");
         assert!(history.undo(&mut document, &mut selection));
-        assert_eq!(document.text(), dragged);
+        assert_eq!(document.text(), given(dragged));
         assert_eq!(selection, [Item::Object(2)]);
         assert!(history.undo(&mut document, &mut selection));
-        assert_eq!(document.text(), start);
+        assert_eq!(document.text(), given(start));
         assert!(!history.undo(&mut document, &mut selection));
         assert!(
             history.redo(&mut document, &mut selection)
@@ -999,41 +987,6 @@ mod tests {
         document.room.width = 9.0;
         history.undo(&mut document, &mut selection);
         assert_eq!((document.room.width, document.room.objects.len()), (8.0, 4));
-    }
-
-    #[test]
-    fn the_users_of_a_spawn_point_in_other_room_files_are_found() {
-        let registry = registry();
-        let directory = std::env::temp_dir().join(format!("maki-users-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let room = |commands: &str| {
-            format!(
-                "(width: 4, depth: 4, height: 3, objects: [(name: \"go\", components: {{\"event\": (pages: [(trigger: Touch, commands: [{commands}])])}})])"
-            )
-        };
-        std::fs::write(
-            directory.join("a.ron"),
-            room(r#"Transfer("b.ron", "west")"#),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("c.ron"),
-            room(r#"If([Flag("x")], [], [Transfer("b.ron", "west")])"#),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("d.ron"),
-            room(r#"Transfer("b.ron", "north")"#),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("b.ron"),
-            room(r#"Transfer("b.ron", "west")"#),
-        )
-        .unwrap();
-        let users = spawn_users(&directory, &directory.join("b.ron"), "west", &registry);
-        assert_eq!(users, ["a.ron", "c.ron"]);
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -1058,7 +1011,7 @@ mod tests {
             .collect();
         assert_eq!(
             (event.wires[0].output.as_str(), texts),
-            ("used", vec![r#"OpenDoor("door")"#.to_owned()])
+            ("used", vec!["OpenDoor(1)".to_owned()])
         );
 
         // A change of the output, then a delete: each a step of the history.

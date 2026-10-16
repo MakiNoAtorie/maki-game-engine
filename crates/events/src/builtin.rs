@@ -6,12 +6,13 @@
 //! commands wrote.
 
 use bevy_ecs::entity::Entity;
+use bevy_ecs::query::With;
 use bevy_ecs::world::World;
 use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, RoomItem, RoomRequest,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomItem, RoomRequest,
     RoomTarget, ScreenFade,
 };
 use serde::{Deserialize, Serialize};
@@ -24,8 +25,8 @@ use crate::model::{Compare, Condition, EventPages, all_hold};
 use crate::script::ScriptContext;
 use crate::{CHOICE_DOWN, CHOICE_UP, GameState, INTERACT, MessageBox};
 
-/// Text arguments are names: of a flag, a variable, or an entity of the room file
-/// (`name:` of a door, a mover, a light).
+/// Text arguments are names: of a flag or a variable. An object of the room file (a
+/// door, a mover, a light) is its [`ObjectId`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Builtin {
     SetFlag(String, bool),
@@ -36,12 +37,12 @@ pub enum Builtin {
     /// The first list if all conditions hold, else the second one.
     If(Vec<Condition>, Vec<Command>, Vec<Command>),
     /// Sends a door or a mover to its pose B (a door: open) and waits until it is there.
-    OpenDoor(String),
+    OpenDoor(ObjectId),
     /// To pose A (a door: closed).
-    CloseDoor(String),
-    LightOn(String),
-    LightOff(String),
-    LightIntensity(String, f32),
+    CloseDoor(ObjectId),
+    LightOn(ObjectId),
+    LightOff(ObjectId),
+    LightIntensity(ObjectId, f32),
     /// Shows the text until the player presses interact.
     Message(String),
     /// A question: the text, and for each answer its text and the commands that run
@@ -51,19 +52,19 @@ pub enum Builtin {
     FadeOut(f32),
     /// Back to the picture.
     FadeIn(f32),
-    /// To a spawn point of another room. The first text is the room file, from the
+    /// To a spawn point of another room. The text is the room file, from the
     /// directory of the current room file. The event goes on in the new room.
-    Transfer(String, String),
+    Transfer(String, ObjectId),
     /// Changes a field of a component of an object: the object, the component, the
     /// field, and the value in the form of the tree of the fields (a number, `true`,
     /// a text, a list for a vector or a color).
-    SetField(String, String, String, Value),
+    SetField(ObjectId, String, String, Value),
     /// Calls a function of the script crate (`add_script_function`) with the object
     /// of the event.
     CallScript(String),
     /// Sends an output of an object: the object, the output. Its wires start in the
     /// step of the interpreter after the commands that run.
-    Signal(String, String),
+    Signal(ObjectId, String),
 }
 
 /// One step of a built-in command. False: the command waits.
@@ -97,14 +98,14 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             };
             step.open(branch.clone());
         }
-        Builtin::OpenDoor(name) => return send_mover(world, name, true, step.start),
-        Builtin::CloseDoor(name) => return send_mover(world, name, false, step.start),
-        Builtin::LightOn(name) => set_light(world, name, |light| Light { on: true, ..*light }),
-        Builtin::LightOff(name) => set_light(world, name, |light| Light {
+        Builtin::OpenDoor(object) => return send_mover(world, object, true, step.start),
+        Builtin::CloseDoor(object) => return send_mover(world, object, false, step.start),
+        Builtin::LightOn(object) => set_light(world, object, |light| Light { on: true, ..*light }),
+        Builtin::LightOff(object) => set_light(world, object, |light| Light {
             on: false,
             ..*light
         }),
-        Builtin::LightIntensity(name, intensity) => set_light(world, name, |light| Light {
+        Builtin::LightIntensity(object, intensity) => set_light(world, object, |light| Light {
             intensity: *intensity,
             ..*light
         }),
@@ -176,7 +177,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
                 let path = directory.join(room);
                 world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
                     path,
-                    spawn: Some(spawn.clone()),
+                    spawn: Some(*spawn),
                     text: None,
                 });
                 // `CurrentRoom::loads` when the room was asked for.
@@ -193,14 +194,17 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             }
         }
         Builtin::SetField(object, component, field, value) => {
-            set_field(world, [object, component, field], value);
+            set_field(world, object, [component, field], value);
         }
         Builtin::Signal(object, output) => {
-            let mut events = world.query::<(Entity, &Name, &EventPages)>();
-            let found = events.iter(world).find(|(_, name, _)| name.0 == *object);
-            match found.map(|(entity, ..)| entity) {
+            let mut events =
+                world.query_filtered::<(Entity, Option<&ObjectId>), With<EventPages>>();
+            let found = events.iter(world).find(|(_, id)| *id == Some(object));
+            match found.map(|(entity, _)| entity) {
                 Some(entity) => crate::interpreter::Signals::send(world, entity, output),
-                None => tracing::warn!(event = step.event, object, "Signal: no object with wires"),
+                None => {
+                    tracing::warn!(event = step.event, %object, "Signal: no object with wires");
+                }
             }
         }
         Builtin::CallScript(name) => {
@@ -219,7 +223,12 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
 
 /// Writes `value` into the field of the component of the first entity of the object
 /// that has the component. A name that the game does not have is a warning.
-fn set_field(world: &mut World, [object, component, field]: [&String; 3], value: &Value) {
+fn set_field(
+    world: &mut World,
+    object: &ObjectId,
+    [component, field]: [&String; 2],
+    value: &Value,
+) {
     let types = world.resource::<ComponentTypes>();
     let live = types
         .get(component)
@@ -231,14 +240,14 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
         );
         return;
     };
-    // The entities of the name first: a prefab instance has its item, and names of the prefab.
+    // The entities of the reference first: an instance has its id and the prefab names.
     let def = &world.resource::<CurrentRoom>().def;
-    let item = def.object_named(object).map(|(index, _)| index);
-    let mut entities = world.query::<(Entity, Option<&Name>, Option<&RoomItem>)>();
+    let item = def.find(object).map(|(index, _)| index);
+    let mut entities = world.query::<(Entity, Option<&ObjectId>, Option<&RoomItem>)>();
     let mut named = Vec::new();
     let mut of_item = Vec::new();
-    for (entity, name, room_item) in entities.iter(world) {
-        if name.is_some_and(|name| name.0 == *object) {
+    for (entity, id, room_item) in entities.iter(world) {
+        if id == Some(object) {
             named.push(entity);
         } else if item.is_some() && room_item.map(|room_item| room_item.0) == item {
             of_item.push(entity);
@@ -248,7 +257,7 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
     let target = candidates.find_map(|entity| Some((entity, get(world, entity)?)));
     let Some((entity, mut tree)) = target else {
         tracing::warn!(
-            object,
+            %object,
             component,
             "SetField: no such object with the component"
         );
@@ -256,7 +265,7 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
     };
     let Some(slot) = tree.get_mut(field.as_str()) else {
         tracing::warn!(
-            object,
+            %object,
             component,
             field,
             "SetField: the component has no such field"
@@ -269,8 +278,8 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
     }
     *slot = value.clone();
     match set(world, entity, tree) {
-        Ok(()) => tracing::debug!(object, component, field, %value, "SetField"),
-        Err(error) => tracing::warn!(object, component, field, "SetField: {error}"),
+        Ok(()) => tracing::debug!(%object, component, field, %value, "SetField"),
+        Err(error) => tracing::warn!(%object, component, field, "SetField: {error}"),
     }
 }
 
@@ -330,11 +339,11 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
             let texts: Vec<String> = conditions.iter().map(condition).collect();
             format!("If {}", texts.join(" and "))
         }
-        Builtin::OpenDoor(name) => format!("Open {name}"),
-        Builtin::CloseDoor(name) => format!("Close {name}"),
-        Builtin::LightOn(name) => format!("Light {name}: on"),
-        Builtin::LightOff(name) => format!("Light {name}: off"),
-        Builtin::LightIntensity(name, value) => format!("Light {name}: intensity {value}"),
+        Builtin::OpenDoor(object) => format!("Open {object}"),
+        Builtin::CloseDoor(object) => format!("Close {object}"),
+        Builtin::LightOn(object) => format!("Light {object}: on"),
+        Builtin::LightOff(object) => format!("Light {object}: off"),
+        Builtin::LightIntensity(object, value) => format!("Light {object}: intensity {value}"),
         Builtin::Message(text) => format!("Message: {text}"),
         Builtin::Choice(question, _) => format!("Question: {question}"),
         Builtin::FadeOut(seconds) => format!("Fade to black, {seconds} s"),
@@ -373,29 +382,19 @@ pub(crate) fn help(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The check of the built-in commands (`CommandRegistry::add_check`): each name of a
-/// command is a name that the room has.
+/// The check of the built-in commands (`CommandRegistry::add_check`): each object of
+/// a command is an object that the room has.
 pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding> {
-    let room = context.room;
-    let named = |name: &Option<String>, wanted: &str| name.as_deref() == Some(wanted);
     match command {
-        Builtin::LightOn(name) | Builtin::LightOff(name) | Builtin::LightIntensity(name, _) => {
-            let found = room
-                .each_light()
-                .iter()
-                .any(|light| named(&light.name, name));
-            (!found).then(|| Finding::error(format!("the room has no light `{name}`")))
+        Builtin::LightOn(object)
+        | Builtin::LightOff(object)
+        | Builtin::LightIntensity(object, _) => {
+            let found = context.reaches(object, &["light"]);
+            (!found).then(|| Finding::error(format!("the room has no light `{object}`")))
         }
-        Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {
-            let moves = |object: &&maki_scene::ObjectDef| {
-                object.components.contains_key("door") || object.components.contains_key("mover")
-            };
-            let found = room
-                .objects
-                .iter()
-                .filter(moves)
-                .any(|object| named(&object.name, name));
-            (!found).then(|| Finding::error(format!("the room has no door or mover `{name}`")))
+        Builtin::OpenDoor(object) | Builtin::CloseDoor(object) => {
+            let found = context.reaches(object, &["door", "mover"]);
+            (!found).then(|| Finding::error(format!("the room has no door or mover `{object}`")))
         }
         Builtin::Choice(_, answers) if answers.is_empty() => {
             Some(Finding::error("a question needs an answer".to_owned()))
@@ -423,13 +422,13 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
     }
 }
 
-/// Sends each mover of this name to pose B or A (only `start`), and tells if all of
+/// Sends each mover of the object to pose B or A (only `start`), and tells if all of
 /// them are there.
-fn send_mover(world: &mut World, name: &str, to_b: bool, start: bool) -> bool {
+fn send_mover(world: &mut World, object: &ObjectId, to_b: bool, start: bool) -> bool {
     let (mut found, mut arrived) = (false, true);
-    let mut movers = world.query::<(&Name, &mut Mover)>();
-    for (mover_name, mut mover) in movers.iter_mut(world) {
-        if mover_name.0 != name {
+    let mut movers = world.query::<(Option<&ObjectId>, &mut Mover)>();
+    for (id, mut mover) in movers.iter_mut(world) {
+        if id != Some(object) {
             continue;
         }
         found = true;
@@ -453,18 +452,18 @@ fn send_mover(world: &mut World, name: &str, to_b: bool, start: bool) -> bool {
     }
     if !found && start {
         tracing::warn!(
-            name,
+            %object,
             "an event names a door or mover that the room does not have"
         );
     }
     arrived
 }
 
-fn set_light(world: &mut World, name: &str, change: impl Fn(&Light) -> Light) {
+fn set_light(world: &mut World, object: &ObjectId, change: impl Fn(&Light) -> Light) {
     let mut found = false;
-    let mut lights = world.query::<(&Name, &mut Light)>();
-    for (light_name, mut light) in lights.iter_mut(world) {
-        if light_name.0 == name {
+    let mut lights = world.query::<(Option<&ObjectId>, &mut Light)>();
+    for (id, mut light) in lights.iter_mut(world) {
+        if id == Some(object) {
             found = true;
             let new = change(&light);
             // A write is a change of the lighting for the renderer.
@@ -474,6 +473,6 @@ fn set_light(world: &mut World, name: &str, change: impl Fn(&Light) -> Light) {
         }
     }
     if !found {
-        tracing::warn!(name, "an event names a light that the room does not have");
+        tracing::warn!(%object, "an event names a light that the room does not have");
     }
 }

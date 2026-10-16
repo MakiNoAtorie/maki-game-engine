@@ -11,16 +11,17 @@
 //! ```text
 //! SetFlag("seen", true)
 //! If Flag("open")
-//!     OpenDoor("door")
+//!     OpenDoor(3)
 //! Else
 //!     Message("Locked.")
 //! End
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use maki_events::{Builtin, CheckContext, Command, CommandRegistry, EventDef, Problem};
+use maki_scene::{ObjectId, RoomDef};
 
 use crate::Document;
 
@@ -123,13 +124,45 @@ pub fn command_text(command: &Command, registry: &CommandRegistry) -> String {
     text.unwrap_or_else(|| format!("{command:?}"))
 }
 
+/// The text of a row with the name of each object in place of its id (`id 7`, the
+/// text of an `ObjectId`). An id with no object stays.
+// ponytail: a text replace also changes the words "id 7" of a message; give the row texts the room if that matters.
+pub fn with_names(text: &str, objects: &[(ObjectId, String)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("id ") {
+        let (before, after) = rest.split_at(start);
+        out.push_str(before);
+        let digits = after[3..].bytes().take_while(u8::is_ascii_digit).count();
+        let word = !before.ends_with(|c: char| c.is_alphanumeric());
+        let number = after[3..3 + digits].parse::<u32>().ok().filter(|_| word);
+        let found = number.and_then(|number| objects.iter().find(|(id, _)| id.0 == number));
+        match found {
+            Some((_, name)) => {
+                out.push_str(name);
+                rest = &after[3 + digits..];
+            }
+            None => {
+                out.push_str("id ");
+                rest = &after[3..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The rows of a command list, with the depth of each (the number of commands with
-/// lists around it) and its text.
-pub fn rows(commands: &[Command], registry: &CommandRegistry) -> Vec<(Row, usize, String)> {
+/// lists around it) and its text, with the names of `objects` in place of their ids.
+pub fn rows(
+    commands: &[Command],
+    registry: &CommandRegistry,
+    objects: &[(ObjectId, String)],
+) -> Vec<(Row, usize, String)> {
     fn walk(
         commands: &[Command],
         path: &ListPath,
-        registry: &CommandRegistry,
+        (registry, objects): (&CommandRegistry, &[(ObjectId, String)]),
         out: &mut Vec<(Row, usize, String)>,
     ) {
         for (index, command) in commands.iter().enumerate() {
@@ -138,7 +171,7 @@ pub fn rows(commands: &[Command], registry: &CommandRegistry) -> Vec<(Row, usize
                 index,
                 kind,
             };
-            let text = command_text(command, registry);
+            let text = with_names(&command_text(command, registry), objects);
             out.push((row(RowKind::Command), path.len(), text));
             let lists = registry.lists(command);
             if lists.is_empty() {
@@ -151,13 +184,13 @@ pub fn rows(commands: &[Command], registry: &CommandRegistry) -> Vec<(Row, usize
                 }
                 let mut inner = path.clone();
                 inner.push((index, list_index));
-                walk(list, &inner, registry, out);
+                walk(list, &inner, (registry, objects), out);
             }
             out.push((row(RowKind::End), path.len(), "End".to_owned()));
         }
     }
     let mut out = Vec::new();
-    walk(commands, &Vec::new(), registry, &mut out);
+    walk(commands, &Vec::new(), (registry, objects), &mut out);
     out
 }
 
@@ -274,7 +307,8 @@ impl Names {
 pub struct OtherRoom {
     /// The file name: what a `Transfer` names.
     pub file: String,
-    pub spawns: BTreeSet<String>,
+    /// What a `Transfer` into the room can name.
+    pub room: RoomDef,
     pub events: Vec<EventDef>,
 }
 
@@ -302,7 +336,7 @@ pub fn other_rooms(room: &Path, registry: &CommandRegistry) -> Vec<OtherRoom> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            spawns: def.spawn_names().into_iter().collect(),
+            room: def,
             events,
         });
     }
@@ -337,9 +371,9 @@ pub fn problems(
     others: &[OtherRoom],
     registry: &CommandRegistry,
 ) -> Vec<Problem> {
-    let spawn = |file: &str, spawn: &str| {
-        let room = others.iter().find(|room| room.file == file)?;
-        Some(room.spawns.contains(spawn))
+    let spawn = |file: &str, spawn: &ObjectId| {
+        let other = others.iter().find(|other| other.file == file)?;
+        Some(other.room.spawn(spawn).is_some())
     };
     let context = CheckContext {
         room: &document.room,
@@ -364,24 +398,41 @@ mod tests {
     }
 
     fn document(registry: &CommandRegistry, name: &str, events: &str) -> Document {
-        let text = format!(
-            r#"(width: 8.0, depth: 8.0, height: 3.0,
-                objects: [
-                    (name: "door", components: {{"door": (), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
-                    (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {{"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)}}),
-                    (name: "start", components: {{"spawn": ()}}),
-                    {},
-                ])"#,
-            maki_events::short_events(events)
-        );
+        let events = maki_events::short_events(events);
+        let objects = [
+            r#"(id: 1, name: "door", components: {"door": (), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)})"#,
+            r#"(id: 2, name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)})"#,
+            r#"(id: 3, name: "start", components: {"spawn": ()})"#,
+            &events,
+        ];
+        let text = maki_scene::room_text(8.0, 8.0, 3.0, &objects);
         Document::parse(Path::new(name), &text, registry).unwrap()
     }
 
     fn texts(commands: &[Command], registry: &CommandRegistry) -> Vec<String> {
-        rows(commands, registry)
+        // The objects of `document`.
+        let objects = [
+            (ObjectId(1), "door".to_owned()),
+            (ObjectId(2), "lamp".to_owned()),
+        ];
+        rows(commands, registry, &objects)
             .into_iter()
             .map(|(_, depth, text)| format!("{}{text}", "  ".repeat(depth)))
             .collect()
+    }
+
+    #[test]
+    fn a_row_shows_the_name_of_an_object_in_place_of_its_id() {
+        let objects = [
+            (ObjectId(1), "door".to_owned()),
+            (ObjectId(12), "lamp".to_owned()),
+        ];
+        assert_eq!(with_names("Open id 1", &objects), "Open door");
+        assert_eq!(
+            with_names("Light id 12: off, id 7", &objects),
+            "Light lamp: off, id 7"
+        );
+        assert_eq!(with_names("Squid 1, id x", &objects), "Squid 1, id x");
     }
 
     #[test]
@@ -389,7 +440,7 @@ mod tests {
         let registry = registry();
         let event = r#"(name: "door", pages: [(trigger: Interact, commands: [
             SetFlag("seen", true),
-            If([Flag("open")], [OpenDoor("door"), If([Flag("late"), Variable("turns", Less, 3)], [], [Wait(1.0)])], [Message("Locked.")]),
+            If([Flag("open")], [OpenDoor(1), If([Flag("late"), Variable("turns", Less, 3)], [], [Wait(1.0)])], [Message("Locked.")]),
             FadeIn(0.5),
         ])])"#;
         let mut document = document(&registry, "a.ron", event);
@@ -413,16 +464,14 @@ mod tests {
                 "Fade to the picture, 0.5 s",
             ]
         );
-        let all = rows(commands, &registry);
+        let all = rows(commands, &registry, &[]);
         let row = |text: &str| all.iter().find(|row| row.2 == text).unwrap().0.clone();
 
         // A new command after `Wait`, in the second list of the inner `If`.
         let wait = row("Wait 1 s");
         assert_eq!(wait.list, [(1, 0), (1, 1)]);
         let (list, index) = wait.insert_place(commands, &registry);
-        let light = registry
-            .command(Builtin::LightOff("lamp".to_owned()))
-            .unwrap();
+        let light = registry.command(Builtin::LightOff(ObjectId(2))).unwrap();
         edit_list(commands, &list, &registry, |list| list.insert(index, light)).unwrap();
         assert_eq!(texts(commands)[6], "    Light lamp: off");
         // The first line of an `If`: into its first list. `Else`: into the second.
@@ -469,7 +518,7 @@ mod tests {
         let answer = |text: &str| (text.to_owned(), Vec::new());
         let question = Builtin::Choice("Open it?".to_owned(), vec![answer("Yes"), answer("No")]);
         commands.push(registry.command(question).unwrap());
-        let all = rows(commands, &registry);
+        let all = rows(commands, &registry, &[]);
         let no = all.iter().find(|row| row.2 == "Answer: No").unwrap();
         assert_eq!(no.0.kind, RowKind::Branch(1));
         let (list, index) = no.0.insert_place(commands, &registry);
@@ -506,21 +555,27 @@ mod tests {
         let registry = registry();
         let directory = std::env::temp_dir().join(format!("maki-names-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let other = r#"(width: 4, depth: 4, height: 3, objects: [(name: "west", components: {"spawn": ()}),
-            (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])])}),
-        ])"#;
+        let other = maki_scene::room_text(
+            4.0,
+            4.0,
+            3.0,
+            &[
+                r#"(id: 1, name: "west", components: {"spawn": ()})"#,
+                r#"(name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])])})"#,
+            ],
+        );
         std::fs::write(directory.join("b.ron"), other).unwrap();
         std::fs::write(directory.join("notes.ron"), "not a room").unwrap();
         let events = r#"
-            (name: "door", pages: [
-                (trigger: Interact, commands: [If([Flag("power_off"), Variable("tries", Less, 3)], [OpenDoor("door")], [LightOff("lamp")])]),
+            (id: 5, name: "door", pages: [
+                (trigger: Interact, commands: [If([Flag("power_off"), Variable("tries", Less, 3)], [OpenDoor(1)], [LightOff(2)])]),
                 (conditions: [Flag("power_off"), Variable("presses", AtLeast, 2)], trigger: Autorun,
-                    commands: [Transfer("b.ron", "west")]),
+                    commands: [Transfer("b.ron", 1)]),
             ]),
-            (name: "door", pages: [
-                (trigger: Touch, commands: [LightOn("lamb"), If([Flag("x")], [CloseDoor("gate")], []), Transfer("b.ron", "east")]),
-                (trigger: Touch, commands: [Transfer("c.ron", "west")]),
-                (trigger: Touch, commands: [Transfer("a.ron", "start")]),
+            (id: 5, name: "door", pages: [
+                (trigger: Touch, commands: [LightOn(8), If([Flag("x")], [CloseDoor(9)], []), Transfer("b.ron", 7)]),
+                (trigger: Touch, commands: [Transfer("c.ron", 1)]),
+                (trigger: Touch, commands: [Transfer("a.ron", 3)]),
             ]),"#;
         let mut document = document(&registry, "a.ron", events);
         document.path = directory.join("a.ron");
@@ -557,10 +612,10 @@ mod tests {
         assert_eq!(
             found,
             [
-                (1, false, "another event has the name `door`"),
-                (1, false, "the room has no light `lamb`"),
-                (1, false, "the room has no door or mover `gate`"),
-                (1, true, "`b.ron` has no spawn point `east`"),
+                (1, false, "another event has the id 5"),
+                (1, false, "the room has no light `id 8`"),
+                (1, false, "the room has no door or mover `id 9`"),
+                (1, true, "`b.ron` has no spawn point `id 7`"),
                 (1, true, "no room file `c.ron`"),
             ]
         );

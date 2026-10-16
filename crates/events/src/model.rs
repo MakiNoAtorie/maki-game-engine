@@ -13,7 +13,7 @@
 use std::fmt;
 
 use bevy_ecs::component::Component;
-use maki_scene::PoseDef;
+use maki_scene::{ObjectId, PoseDef};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -44,7 +44,7 @@ impl EventPages {
 
 /// A wire, as in Source: when an output of the object is sent (the area: `used`,
 /// `entered`, `left`; a script or the row `Signal`: its own), the commands run. A
-/// command is the input: `OpenDoor("door")`.
+/// command is the input: `OpenDoor(3)`, the door by its id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Wire {
@@ -68,10 +68,13 @@ impl Wire {
 }
 
 /// One event of a room, as the checks and the tools see it: the component `event` of
-/// an object, with the name and the area of the object.
+/// an object, with the id, the name and the area of the object.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventDef {
-    /// The name of the object. Empty: it has none.
+    /// The id of the object: what names the event. `None`: a room file with no ids;
+    /// the name names it.
+    pub id: Option<ObjectId>,
+    /// The name of the object, for the log and the panels. Empty: it has none.
     pub name: String,
     /// The index of the object in the list `objects` of the room.
     pub object: usize,
@@ -208,13 +211,15 @@ pub fn active_page(pages: &[Page], state: &GameState) -> Option<usize> {
     pages.iter().rposition(holds)
 }
 
-/// Events in a short form, `(name: "x", area: (center: (x, z), size: (x, z)), pages:
-/// [...])`, as the objects of a room file: an object with the name, the center of the
-/// area as its position, the components `area` and `event`. For tests that write a
-/// room. Panics if the text is not of that form.
+/// Events in a short form, `(id: 3, name: "x", area: (center: (x, z), size: (x, z)),
+/// pages: [...])`, as the objects of a room file: an object with the id (optional),
+/// the name, the center of the area as its position, the components `area` and
+/// `event`. For tests that write a room. Panics if the text is not of that form.
 pub fn short_events(events: &str) -> String {
     #[derive(serde::Deserialize)]
     struct Short {
+        #[serde(default)]
+        id: Option<u32>,
         name: String,
         #[serde(default)]
         area: Option<Area>,
@@ -232,8 +237,9 @@ pub fn short_events(events: &str) -> String {
             None => ("(0.0, 0.0, 0.0)".to_owned(), String::new()),
         };
         let (name, pages) = (&event.name, event.pages.get_ron());
+        let id = event.id.map(|id| format!("id: {id}, ")).unwrap_or_default();
         format!(
-            r#"(name: "{name}", pose: (position: {position}), components: {{{area}"event": (pages: {pages})}})"#
+            r#"({id}name: "{name}", pose: (position: {position}), components: {{{area}"event": (pages: {pages})}})"#
         )
     };
     events.iter().map(object).collect::<Vec<_>>().join(",\n")
@@ -250,6 +256,8 @@ pub(crate) struct RoomFile {
 
 #[derive(Deserialize)]
 pub(crate) struct RoomObject {
+    #[serde(default)]
+    pub id: Option<ObjectId>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -273,6 +281,7 @@ impl RoomFile {
             let EventPages { pages, wires } = object.components.event?;
             let area = object.components.area;
             Some(EventDef {
+                id: object.id,
                 name: object.name.unwrap_or_default(),
                 object: index,
                 area: area.map(|area| EventDef::area_at(&area, object.pose.position)),
@@ -382,6 +391,7 @@ mod tests {
             objects: [
                 (components: {"prop": (mesh: Cube(1.0))}),
                 (
+                    id: 2,
                     name: "door",
                     pose: (position: (3.0, 0.0, -3.3)),
                     components: {
@@ -393,8 +403,8 @@ mod tests {
                                 trigger: Interact,
                                 commands: [
                                     If([Flag("seen"), Variable("turns", Less, 3)], [Wait(0.5)], [SetFlag("seen", true)]),
-                                    OpenDoor("door"),
-                                    Transfer("room_b.ron", "west"),
+                                    OpenDoor(2),
+                                    Transfer("room_b.ron", 9),
                                 ],
                             ),
                         ]),
