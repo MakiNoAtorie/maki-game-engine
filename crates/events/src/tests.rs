@@ -590,7 +590,14 @@ fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
 
 /// A script that counts its hooks in variables of the game state, and goes along X
 /// by `speed` meters in each second.
-#[derive(bevy_ecs::component::Component, Debug, Default, serde::Serialize, serde::Deserialize, maki_core::Fields)]
+#[derive(
+    bevy_ecs::component::Component,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    maki_core::Fields,
+)]
 #[serde(default)]
 struct Counter {
     speed: f32,

@@ -261,7 +261,9 @@ impl EventRunner {
                 Trigger::Interact => {
                     interact
                         && !blocked
-                        && player.zip(event.area).is_some_and(|(player, area)| faces(player, area))
+                        && player
+                            .zip(event.area)
+                            .is_some_and(|(player, area)| faces(player, area))
                 }
             };
             if !start {
@@ -363,8 +365,8 @@ pub fn run_events(world: &mut World, players: &mut QueryState<&Interpolated, Wit
         });
     }
     // The scripts, after the events: a press that started an event starts no script.
-    let scripts = world.resource::<ScriptRunners>().0.clone();
-    for run in scripts {
+    for index in 0..world.resource::<ScriptRunners>().0.len() {
+        let run = world.resource::<ScriptRunners>().0[index];
         run(world, player);
     }
 }

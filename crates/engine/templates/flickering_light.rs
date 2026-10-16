@@ -40,7 +40,9 @@ impl Default for ScriptName {
 impl Script for ScriptName {
     fn start(&mut self, context: &mut ScriptContext) {
         // The light of the object is on the entity of the object.
-        self.base = context.get_mut::<Light>().map_or(0.0, |light| light.intensity);
+        self.base = context
+            .get_mut::<Light>()
+            .map_or(0.0, |light| light.intensity);
     }
 
     fn step(&mut self, context: &mut ScriptContext) {

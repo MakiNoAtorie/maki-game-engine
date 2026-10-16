@@ -78,11 +78,7 @@
         (
             name: "lamp",
             pose: (position: (0.5, 2.3, 1.8)),
-            components: {
-                "area": (width: 1.6, depth: 1.6),
-                "beacon": (pulses: 1.5, strength: 0.6),
-                "light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0),
-            },
+            components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0)},
         ),
         // A cone light from above the right wall, down to the two plastic spheres.
         (
@@ -99,5 +95,15 @@
             },
         ),
         (name: "start", pose: (position: (-3.2, 0.0, 2.6)), components: {"spawn": ()}),
+        // The spot light pulses while the player stands under it (the script of the
+        // game). Not the first light: the benchmark moves that one.
+        (
+            name: "beacon",
+            pose: (position: (3.4, 0.0, -2.6)),
+            components: {
+                "area": (width: 1.6, depth: 1.6),
+                "beacon": (light: "spot", pulses: 1.5, strength: 0.6),
+            },
+        ),
     ],
 )

@@ -2583,12 +2583,26 @@ watch = true",
             app.advance(Duration::from_millis(16));
             let world = app.world();
             let mut spins = world
-                .try_query::<(&RoomItem, &Spin, &Name, &Interpolated, Has<MeshInstance>, Has<Light>)>()
+                .try_query::<(
+                    &RoomItem,
+                    &Spin,
+                    &Name,
+                    &Interpolated,
+                    Has<MeshInstance>,
+                    Has<Light>,
+                )>()
                 .unwrap();
             let mut found: Vec<_> = spins
                 .iter(world)
                 .map(|(item, spin, name, pose, mesh, light)| {
-                    (item.0, spin.speed, name.0.clone(), pose.current.translation, mesh, light)
+                    (
+                        item.0,
+                        spin.speed,
+                        name.0.clone(),
+                        pose.current.translation,
+                        mesh,
+                        light,
+                    )
                 })
                 .collect();
             found.sort_by_key(|found| found.0);
@@ -2596,9 +2610,30 @@ watch = true",
                 found,
                 [
                     // The mesh of the prop is on the object entity: a script moves it.
-                    (0, 2.0, "top".to_owned(), Vec3::new(1.0, 0.5, 0.0), true, false),
-                    (1, 3.0, "empty".to_owned(), Vec3::new(-1.0, 0.0, 2.0), false, false),
-                    (2, 0.0, "lamp".to_owned(), Vec3::new(0.0, 2.0, 0.0), false, true),
+                    (
+                        0,
+                        2.0,
+                        "top".to_owned(),
+                        Vec3::new(1.0, 0.5, 0.0),
+                        true,
+                        false
+                    ),
+                    (
+                        1,
+                        3.0,
+                        "empty".to_owned(),
+                        Vec3::new(-1.0, 0.0, 2.0),
+                        false,
+                        false
+                    ),
+                    (
+                        2,
+                        0.0,
+                        "lamp".to_owned(),
+                        Vec3::new(0.0, 2.0, 0.0),
+                        false,
+                        true
+                    ),
                 ]
             );
             // A component that no module registered stays text: no entity.

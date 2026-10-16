@@ -85,7 +85,9 @@ impl ScriptContext<'_> {
 
     /// True in the step after the action started.
     pub fn pressed(&self, action: Action) -> bool {
-        self.world.resource::<FixedActionState>().just_pressed(action)
+        self.world
+            .resource::<FixedActionState>()
+            .just_pressed(action)
     }
 
     /// The flags and variables of the game: the store of the events too.
@@ -103,6 +105,19 @@ impl ScriptContext<'_> {
     /// A component of the object: of another script, a light.
     pub fn get_mut<C: Component<Mutability = Mutable>>(&mut self) -> Option<Mut<'_, C>> {
         self.world.get_mut::<C>(self.entity)
+    }
+
+    /// A component of another object, by the name of the object: the first entity
+    /// with the name and the component.
+    pub fn named_mut<C: Component<Mutability = Mutable>>(
+        &mut self,
+        name: &str,
+    ) -> Option<Mut<'_, C>> {
+        let mut named = self.world.query_filtered::<(Entity, &Name), With<C>>();
+        let entity = named
+            .iter(self.world)
+            .find_map(|(entity, other)| (other.0 == name).then_some(entity))?;
+        self.world.get_mut::<C>(entity)
     }
 
     /// A command of the registry (`maki_events::Builtin`, or the commands of any
@@ -134,7 +149,10 @@ impl ScriptContext<'_> {
         let mut running = RunningEvent::new(&name, Trigger::Interact, &commands);
         // ponytail: the step mode of a tool is not for script calls.
         if !running.step(self.world, &mut None) {
-            self.world.resource_mut::<EventRunner>().running.push(running);
+            self.world
+                .resource_mut::<EventRunner>()
+                .running
+                .push(running);
         }
     }
 }
@@ -196,17 +214,16 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
         .collect();
     for (entity, before) in entities {
         let area = world.get::<TriggerArea>(entity).map(|area| {
-            let center = world.get::<Interpolated>(entity).map_or(Vec3::ZERO, |pose| {
-                pose.current.translation
-            });
+            let center = world
+                .get::<Interpolated>(entity)
+                .map_or(Vec3::ZERO, |pose| pose.current.translation);
             Area {
                 center: [center.x, center.z],
                 size: [area.width, area.depth],
             }
         });
-        let inside = area.is_some_and(|area| {
-            player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0)
-        });
+        let inside =
+            area.is_some_and(|area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0));
         // A hook before could have despawned the entity.
         let Some(mut value) = world.get_mut::<T>(entity) else {
             continue;
@@ -226,8 +243,11 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
             }
         }
         let runner = context.world.resource::<EventRunner>();
-        let faced = area.zip(player).is_some_and(|(area, player)| faces(player, area));
-        if faced && runner.interact_free && !runner.blocks_player() {
+        let faced = area
+            .zip(player)
+            .is_some_and(|(area, player)| faces(player, area));
+        // Not in the first step, as the events.
+        if before.is_some() && faced && runner.interact_free && !runner.blocks_player() {
             // One press starts one thing.
             let mut runner = context.world.resource_mut::<EventRunner>();
             runner.bypass_change_detection().interact_free = false;

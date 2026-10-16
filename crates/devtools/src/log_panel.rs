@@ -57,15 +57,23 @@ impl LogStore {
     }
 
     pub fn clear(&self) {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).clear();
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 
     /// The lines that pass a filter, oldest first.
     // ponytail: a copy of the lines in each frame that the panel shows; a cache by
     // the number of pushes if it shows in a profile.
     pub fn lines(&self, filter: &LogFilter) -> Vec<LogLine> {
+        let search = filter.search.trim().to_lowercase();
         let lines = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        lines.iter().filter(|line| filter.passes(line)).cloned().collect()
+        lines
+            .iter()
+            .filter(|line| filter.passes(line, &search))
+            .cloned()
+            .collect()
     }
 }
 
@@ -90,17 +98,22 @@ impl Default for LogFilter {
     }
 }
 
-const LEVELS: [Level; 5] = [Level::ERROR, Level::WARN, Level::INFO, Level::DEBUG, Level::TRACE];
+/// The levels in the order of [`LogFilter::levels`], with their names in the panel.
+const LEVELS: [(Level, &str); 5] = [
+    (Level::ERROR, "Errors"),
+    (Level::WARN, "Warnings"),
+    (Level::INFO, "Info"),
+    (Level::DEBUG, "Debug"),
+    (Level::TRACE, "Trace"),
+];
 
 impl LogFilter {
-    fn passes(&self, line: &LogLine) -> bool {
-        let level = LEVELS.iter().position(|level| *level == line.level);
+    /// `search`: the search text in small letters.
+    fn passes(&self, line: &LogLine, search: &str) -> bool {
+        let level = LEVELS.iter().position(|level| level.0 == line.level);
         level.is_some_and(|level| self.levels[level])
             && line.target.starts_with(self.source.trim())
-            && line
-                .text
-                .to_lowercase()
-                .contains(&self.search.trim().to_lowercase())
+            && line.text.to_lowercase().contains(search)
     }
 }
 
@@ -134,14 +147,21 @@ impl Module for LogPanelModule {
 /// The filters, and the lines. `Some`: the place of a line that was clicked.
 fn log_panel(ui: &mut egui::Ui, filter: &mut LogFilter) -> Option<(PathBuf, u32)> {
     ui.horizontal(|ui| {
-        let names = ["Errors", "Warnings", "Info", "Debug", "Trace"];
-        for (shown, name) in filter.levels.iter_mut().zip(names) {
+        for (shown, (_, name)) in filter.levels.iter_mut().zip(LEVELS) {
             ui.toggle_value(shown, name);
         }
         ui.separator();
-        ui.add(egui::TextEdit::singleline(&mut filter.source).hint_text("source").desired_width(140.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut filter.source)
+                .hint_text("source")
+                .desired_width(140.0),
+        );
         ui.label(icon::SEARCH);
-        ui.add(egui::TextEdit::singleline(&mut filter.search).hint_text("search").desired_width(180.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut filter.search)
+                .hint_text("search")
+                .desired_width(180.0),
+        );
         if ui.button("Clear").clicked() {
             LOG.clear();
         }

@@ -15,7 +15,8 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 46 (source files of other programs) is done: the table of converters in the editor crate (`sources.rs`), `.blend` and `.obj` to `.glb` by Blender with no window, `.psd` to `.png` by own code, one thread that looks at the folder of the room files. Report: `stage-46.md`.
 - Stage 47 (fields that describe themselves) is done: the derive `Fields` (`crates/macros`), `maki_core::fields` (the table of the fields of a type, its value as a tree of `serde_json::Value`, the registry `FieldTypes`), the derive on the item kinds of a room, and the inspector of the editor from the table (`crates/editor/src/fields.rs`). The room file did not change. Stage file `stage-47-fields.md` (written by the session), report `stage-47.md`.
 - Stage 48 (the room file is a list of objects) is done: GitHub issues #1 to #5, closed. Objects with components as RON text, the registry of component types, the editor on objects only (room, object, event). Report: `stage-48.md`; its sections 3 and 6 list what is open.
-- Stage 49 (prefabs with changes, the player as data) is done: issues #6 and #7, closed. Report: `stage-49.md`. The benchmark base is now `s49`.
+- Stage 49 (prefabs with changes, the player as data) is done: issues #6 and #7, closed. Report: `stage-49.md`.
+- Stage 50 (script components with hooks, commands as functions, "New script", the log panel) is done: issues #8 to #11. Report: `stage-50.md`. The benchmark base is now `s50`.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
@@ -56,7 +57,7 @@ The blocking edges:
 #11 log panel: no edge
 ```
 
-After stage 49, lane A has #15 left (it needs #7, done). Three lanes can start now, each in its own worktree:
+After stage 50: lane A has #15 left; lane B has #12, #13, #14 (one chain) and #16; lane C is done. The table below is as it was written after stage 49:
 
 | Lane | Tickets, in order | Files it mostly writes |
 |---|---|---|

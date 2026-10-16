@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, bail};
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Res};
 use maki_core::{App, ConfigFile, Update};
 use maki_editor::Session;
@@ -106,12 +107,15 @@ pub(crate) fn editor_app(
         // The log panel shows the lines of one game: it is empty at "Play".
         .add_systems(
             Update,
-            |editor: Res<maki_editor::Editor>, mut played: Local<bool>| {
+            (|editor: Res<maki_editor::Editor>, mut played: Local<bool>| {
                 if editor.playing() && !*played {
                     maki_devtools::LOG.clear();
                 }
                 *played = editor.playing();
-            },
+            })
+            // After "Play", before the room of the game loads and logs.
+            .after(maki_editor::run_commands)
+            .before(maki_scene::load_requested_room),
         );
     app.check_config()?;
     Ok((app, failure))

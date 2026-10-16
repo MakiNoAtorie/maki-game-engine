@@ -16,10 +16,22 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("Movement", include_str!("../templates/movement.rs")),
     ("Patrol", include_str!("../templates/patrol.rs")),
     ("Talker", include_str!("../templates/talker.rs")),
-    ("State machine", include_str!("../templates/state_machine.rs")),
-    ("Flickering light", include_str!("../templates/flickering_light.rs")),
-    ("Event command", include_str!("../templates/event_command.rs")),
-    ("Engine module", include_str!("../templates/engine_module.rs")),
+    (
+        "State machine",
+        include_str!("../templates/state_machine.rs"),
+    ),
+    (
+        "Flickering light",
+        include_str!("../templates/flickering_light.rs"),
+    ),
+    (
+        "Event command",
+        include_str!("../templates/event_command.rs"),
+    ),
+    (
+        "Engine module",
+        include_str!("../templates/engine_module.rs"),
+    ),
 ];
 
 /// The function of `src/lib.rs` that the new line goes into.
@@ -90,12 +102,14 @@ pub fn names(input: &str) -> Result<(String, String), String> {
     // ponytail: the keywords that a word of a name can be; `r#` names are not made.
     const KEYWORDS: &[&str] = &[
         "as", "async", "await", "box", "break", "const", "continue", "crate", "dyn", "else",
-        "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match",
-        "mod", "move", "mut", "pub", "ref", "return", "self", "static", "struct", "super",
-        "trait", "true", "type", "unsafe", "use", "where", "while", "yield", "lib", "main",
+        "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+        "move", "mut", "pub", "ref", "return", "self", "static", "struct", "super", "trait",
+        "true", "type", "unsafe", "use", "where", "while", "yield", "lib", "main",
     ];
     if KEYWORDS.contains(&snake.as_str()) {
-        return Err(format!("`{snake}` is a word of Rust, or a file of the crate."));
+        return Err(format!(
+            "`{snake}` is a word of Rust, or a file of the crate."
+        ));
     }
     let pascal = words
         .iter()
@@ -162,11 +176,20 @@ pub fn create(crate_dir: &Path, input: &str, template: &str) -> Result<Created, 
     let lib = std::fs::read_to_string(&lib_path).unwrap_or_default();
     let crlf = lib.contains("\r\n");
     let registered = register(&lib.replace("\r\n", "\n"), &snake)
-        .map(|text| if crlf { text.replace('\n', "\r\n") } else { text })
+        .map(|text| {
+            if crlf {
+                text.replace('\n', "\r\n")
+            } else {
+                text
+            }
+        })
         .and_then(|text| std::fs::write(&lib_path, text).ok());
     let to_add = match registered {
         Some(()) => String::new(),
-        None => format!("add `mod {snake};` and `{snake}::add(app);` to {}", lib_path.display()),
+        None => format!(
+            "add `mod {snake};` and `{snake}::add(app);` to {}",
+            lib_path.display()
+        ),
     };
     Ok(Created { file, to_add })
 }
@@ -181,12 +204,12 @@ mod panel {
 
     use bevy_ecs::resource::Resource;
     use bevy_ecs::world::World;
-    use maki_core::{App, Module};
+    use maki_core::{App, FieldTypes, Module};
     use maki_ui::egui;
     use maki_ui::theme::icon;
     use maki_ui::{
-        NoticeLevel, Panels, THEME, ToolCommand, ToolPanel, ToolPlace, add_command,
-        add_tool_panel, notify,
+        NoticeLevel, Panels, THEME, ToolCommand, ToolPanel, ToolPlace, add_command, add_tool_panel,
+        notify,
     };
 
     use super::{create, names, templates};
@@ -247,6 +270,12 @@ mod panel {
     /// A name, a template, and "Create": the file goes into the script crate and
     /// opens in the code editor. The watch of the build sees it.
     fn new_script_panel(ui: &mut egui::Ui, world: &mut World) {
+        // A new type under the name of another would take its place in each room.
+        let taken: Vec<&str> = world
+            .resource::<FieldTypes>()
+            .iter()
+            .map(|(name, _)| name)
+            .collect();
         let mut form = world.resource_mut::<Form>();
         let form = &mut *form;
         if form.templates.is_empty() {
@@ -255,7 +284,10 @@ mod panel {
         ui.horizontal(|ui| {
             ui.label("Name");
             ui.add(egui::TextEdit::singleline(&mut form.name).hint_text("door bell"));
-            let chosen = form.templates.get(form.template).map_or("", |t| t.0.as_str());
+            let chosen = form
+                .templates
+                .get(form.template)
+                .map_or("", |t| t.0.as_str());
             egui::ComboBox::from_id_salt("new_script_template")
                 .selected_text(chosen)
                 .show_ui(ui, |ui| {
@@ -264,14 +296,22 @@ mod panel {
                     }
                 });
         });
-        let named = names(&form.name);
+        let named =
+            names(&form.name).and_then(|(snake, pascal)| match taken.contains(&snake.as_str()) {
+                true => Err(format!("A component `{snake}` is there already.")),
+                false => Ok((snake, pascal)),
+            });
         match &named {
-            Ok((snake, pascal)) => ui.weak(format!("src/{snake}.rs, the component `{snake}`, the type `{pascal}`")),
+            Ok((snake, pascal)) => ui.weak(format!(
+                "src/{snake}.rs, the component `{snake}`, the type `{pascal}`"
+            )),
             Err(why) if !form.name.trim().is_empty() => ui.colored_label(THEME.warning, why),
             Err(_) => ui.weak("A name of letters and numbers."),
         };
         let mut done = None;
-        if ui.add_enabled(named.is_ok(), egui::Button::new("Create")).clicked()
+        if ui
+            .add_enabled(named.is_ok(), egui::Button::new("Create"))
+            .clicked()
             && let Some((_, text)) = form.templates.get(form.template)
         {
             let crate_dir = form.project.join(SCRIPT_CRATE);
@@ -357,7 +397,10 @@ mod tests {
         let list = templates(&dir);
         assert_eq!(list.len(), TEMPLATES.len() + 1);
         assert_eq!(list[0], ("Empty".to_owned(), "// mine".to_owned()));
-        assert_eq!(list.last().unwrap(), &("Door bell".to_owned(), "// bell".to_owned()));
+        assert_eq!(
+            list.last().unwrap(),
+            &("Door bell".to_owned(), "// bell".to_owned())
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

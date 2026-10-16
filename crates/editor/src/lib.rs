@@ -1454,7 +1454,7 @@ fn take_quit_request(mut quit: ResMut<QuitRequested>, mut editor: ResMut<Editor>
 }
 
 /// Runs in `Update`: the commands of the queue, then the world follows the document.
-fn run_commands(world: &mut World) {
+pub fn run_commands(world: &mut World) {
     world.resource_scope(|world, mut editor: Mut<Editor>| {
         // The cancel key is up: its next press is a cancel again.
         if !world.resource::<ActionState>().pressed(CANCEL) {
