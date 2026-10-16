@@ -127,11 +127,17 @@ pub fn pick(ui: &mut Ui, text: &str, value: &mut String, known: &[String]) -> bo
 }
 
 /// The objects of a room (or of a prefab file) that a pick of objects offers: each
-/// with an id and a name.
+/// with an id, and its name or "object 7".
 pub fn object_names(objects: &[ObjectDef]) -> Vec<(ObjectId, String)> {
+    let name = |object: &ObjectDef, id: ObjectId| {
+        object
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("object {}", id.0))
+    };
     objects
         .iter()
-        .filter_map(|object| Some((object.id?, object.name.clone()?)))
+        .filter_map(|object| Some((object.id?, name(object, object.id?))))
         .collect()
 }
 
@@ -200,5 +206,21 @@ mod tests {
         assert_eq!(object_label(&missing, &objects), "missing (id 7)");
         assert!(!object_pick(&mut missing, &objects, |_| false));
         assert_eq!(missing, ObjectId(7));
+    }
+
+    #[test]
+    fn an_object_with_an_id_and_no_name_is_in_the_pick() {
+        let objects: Vec<ObjectDef> = maki_scene::ron_options()
+            .from_str(r#"[(id: 2, name: "lamp"), (id: 4), ()]"#)
+            .unwrap();
+        let names = object_names(&objects);
+        assert_eq!(
+            names,
+            [
+                (ObjectId(2), "lamp".to_owned()),
+                (ObjectId(4), "object 4".to_owned())
+            ]
+        );
+        assert_eq!(object_label(&ObjectId(4), &names), "object 4");
     }
 }

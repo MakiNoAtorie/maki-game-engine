@@ -233,11 +233,14 @@ fn needs_id(path: &Path) -> bool {
         || ["id", "bin"].contains(&extension.to_lowercase().as_str()))
 }
 
-/// Writes an id file for each file of `files` that has none. `files`: all files of
-/// the folder, the id files too.
-fn write_ids(files: &[PathBuf]) {
+/// Writes an id file for each file of `files` that had none in the look before
+/// (`known`) too: a move in Explorer can bring the file before its id file.
+/// `files`, `known`: all files of the folder, the id files too, sorted.
+fn write_ids(files: &[PathBuf], known: &[PathBuf]) {
     for file in files.iter().filter(|file| needs_id(file)) {
-        if files.binary_search(&FileId::file_of(file)).is_ok() {
+        let id_file = FileId::file_of(file);
+        let has = |list: &[PathBuf], path: &PathBuf| list.binary_search(path).is_ok();
+        if !has(known, file) || has(known, &id_file) || has(files, &id_file) {
             continue;
         }
         match FileId::random(file).write(file) {
@@ -250,17 +253,19 @@ fn write_ids(files: &[PathBuf]) {
 }
 
 /// One look at the folder: the conversions that are due ([`convert_due`]), then an
-/// id file for each file that has none, the new results too. Returns the files of
-/// the folder after the look. The ids are written here only: one thread writes them.
+/// id file for each file that has none in this look and in the look before
+/// (`known`, the files that it returned). Returns the files of the folder after the
+/// look. The ids are written here only: one thread writes them.
 pub fn scan(
     directory: &Path,
+    known: &[PathBuf],
     converters: &Converters,
     tools: &Tools,
     failed: &mut HashMap<PathBuf, SystemTime>,
     report: &mut dyn FnMut(Report),
 ) -> Vec<PathBuf> {
     convert_due(directory, converters, tools, failed, report);
-    write_ids(&files_below(directory));
+    write_ids(&files_below(directory), known);
     files_below(directory)
 }
 
@@ -277,7 +282,14 @@ fn run(
     while !stop.load(Ordering::Relaxed) {
         // No receiver: the app has ended, and `stop` is set.
         let mut send = |report| drop(reports.send(report));
-        let files = scan(&directory, &converters, &tools, &mut failed, &mut send);
+        let files = scan(
+            &directory,
+            &known,
+            &converters,
+            &tools,
+            &mut failed,
+            &mut send,
+        );
         if files != known {
             known = files;
             send(Report::Files);
@@ -375,10 +387,7 @@ pub(crate) fn tell_reports(
             // The table of ids is of the files before: a moved file is found again.
             Report::Files => {
                 maki_assets::forget_id_tables();
-                let moved = crate::ids::correct_paths(&mut editor.document);
-                if moved > 0 {
-                    editor.status = format!("{moved} moved files: the room has their new paths");
-                }
+                editor.paths_due = true;
             }
             Report::Started(source) => {
                 jobs.0.push(job(&source));
@@ -762,10 +771,12 @@ mod tests {
             &at("models/b.src"),
             SystemTime::now() - Duration::from_secs(100),
         );
-        let look = || {
+        let mut known = Vec::new();
+        let mut look = || {
             let mut failed = HashMap::new();
-            scan(
+            known = scan(
                 &directory,
+                &known,
                 &converters,
                 &Tools::default(),
                 &mut failed,
@@ -773,8 +784,16 @@ mod tests {
             );
         };
 
+        // A file seen once gets no id yet: its id file can come in the next moment.
         look();
         let id = |name: &str| FileId::read(&at(name));
+        assert!(id("models/a.glb").is_none());
+        // A move in Explorer: the id file comes after its file.
+        let moved = FileId(0x1234);
+        moved.write(&at("models/a.glb")).unwrap();
+        look();
+        assert_eq!(id("models/a.glb"), Some(moved));
+        look();
         // Each file but the buffer of a glTF file, and the new result too.
         assert!(id("models/a.glb").is_some());
         assert!(id("models/b.src").is_some());

@@ -875,7 +875,7 @@ fn instance(
         return false;
     };
     let directory = editor.document.path.parent().unwrap_or(Path::new(""));
-    let prefab = match maki_scene::read_prefab(&used.file.resolve(directory)) {
+    let prefab = match crate::ops::prefab_to_edit(&used.file.resolve(directory)) {
         Ok(prefab) => prefab,
         Err(error) => {
             ui.weak(format!("{error:#}"));

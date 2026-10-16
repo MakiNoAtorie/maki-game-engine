@@ -331,18 +331,30 @@ mod tests {
         )
     }
 
+    /// The spawn point of the test rooms.
+    const START: &str =
+        r#"(id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()})"#;
+
+    /// A room of 4 x 4 m with these objects.
+    fn room(objects: &[&str]) -> String {
+        maki_scene::room_text(4.0, 4.0, 3.0, objects)
+    }
+
     #[test]
     fn a_save_point_writes_at_the_end_of_its_event_and_the_next_start_is_there() {
         let directory = std::env::temp_dir().join(format!("maki-save-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         // The event of room A goes to room B, saves, and sets a variable after the
         // save point.
-        let room_a = r#"(width: 4, depth: 4, height: 3, objects: [(id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
-            (name: "go", components: {"event": (pages: [(trigger: Autorun, commands: [
+        let room_a = room(&[
+            START,
+            r#"(name: "go", components: {"event": (pages: [(trigger: Autorun, commands: [
                 SetFlag("seen", true), Transfer("b.ron", 1), SavePoint, SetVariable("count", 3),
-            ])])}),
-        ])"#;
-        let room_b = r#"(width: 4, depth: 4, height: 3, objects: [(id: 1, name: "in", pose: (position: (-1.0, 0.0, 0.5)), components: {"spawn": ()})])"#;
+            ])])})"#,
+        ]);
+        let room_b = room(&[
+            r#"(id: 1, name: "in", pose: (position: (-1.0, 0.0, 0.5)), components: {"spawn": ()})"#,
+        ]);
         std::fs::write(directory.join("a.ron"), room_a).unwrap();
         std::fs::write(directory.join("b.ron"), room_b).unwrap();
         let (room_b, at) = (directory.join("b.ron"), Vec3::new(-1.0, 0.0, 0.5));
@@ -369,7 +381,7 @@ mod tests {
         // A save file that names a bad room, then one that is no save file: the
         // start room, with no flag.
         let start = (directory.join("a.ron"), false, 0, Vec3::new(1.0, 0.0, 1.0));
-        let room_a = r#"(width: 4, depth: 4, height: 3, objects: [(id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()})])"#;
+        let room_a = room(&[START]);
         std::fs::write(directory.join("a.ron"), room_a).unwrap();
         std::fs::write(&room_b, "not a room").unwrap();
         game(&directory).run(|mut app| assert_eq!(state(&mut app), start));
@@ -384,12 +396,13 @@ mod tests {
     fn a_save_point_waits_for_the_event_of_its_object_by_id() {
         let directory = std::env::temp_dir().join(format!("maki-save-id-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let room = r#"(width: 4, depth: 4, height: 3, next_id: 4, objects: [(id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
-            (id: 2, name: "go", components: {"event": (pages: [(trigger: Autorun, commands: [
+        let room = room(&[
+            START,
+            r#"(id: 2, name: "go", components: {"event": (pages: [(trigger: Autorun, commands: [
                 SavePoint, Wait(0.04), SetVariable("count", 3),
-            ])])}),
-            (id: 3, name: "go", components: {"event": (pages: [(trigger: Parallel, commands: [Wait(1.0)])])}),
-        ])"#;
+            ])])})"#,
+            r#"(id: 3, name: "go", components: {"event": (pages: [(trigger: Parallel, commands: [Wait(1.0)])])})"#,
+        ]);
         std::fs::write(directory.join("a.ron"), room).unwrap();
         game(&directory).run(|mut app| {
             state(&mut app);
@@ -403,13 +416,14 @@ mod tests {
     fn a_save_with_the_control_on_an_object_keeps_the_place_of_the_player() {
         let directory = std::env::temp_dir().join(format!("maki-save-pawn-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let room = r#"(width: 4, depth: 4, height: 3, objects: [(id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
-            (id: 2, name: "box", pose: (position: (-1.0, 0.0, -1.0)), components: {"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}),
-            (name: "go", components: {"event": (pages: [
+        let room = room(&[
+            START,
+            r#"(id: 2, name: "box", pose: (position: (-1.0, 0.0, -1.0)), components: {"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)})"#,
+            r#"(name: "go", components: {"event": (pages: [
                 (trigger: Autorun, commands: [SetFlag("seen", true), GiveControl(2), SavePoint]),
                 (conditions: [Flag("seen")], trigger: Interact, commands: []),
-            ])}),
-        ])"#;
+            ])})"#,
+        ]);
         std::fs::write(directory.join("a.ron"), room).unwrap();
         game(&directory).run(|mut app| {
             state(&mut app);

@@ -1692,3 +1692,48 @@ fn two_wires_on_one_output_have_two_tab_labels() {
     assert_eq!(label(1), "hit");
     assert_eq!(label(2), "used 2");
 }
+
+/// A file reference that the user adds gets the id of its file in the same step; a
+/// correction after a move in Explorer is a step of its own.
+#[test]
+fn a_new_file_reference_gets_its_id_and_a_moved_path_is_a_step_to_undo() {
+    let (mut app, directory) = editor_app("file-ids");
+    frames(&mut app, 2);
+    let id = maki_assets::FileId(0x0123_4567_89ab_cdef);
+    std::fs::write(directory.join("x.glb"), "glb").unwrap();
+    id.write(&directory.join("x.glb")).unwrap();
+    let object = maki_scene::ron_options()
+        .from_str(r#"(name: "x", components: {"prop": (mesh: File("x.glb"))})"#)
+        .unwrap();
+    app.resource_mut::<Editor>()
+        .document
+        .room
+        .objects
+        .push(object);
+    frames(&mut app, 2);
+    let file = |app: &App| {
+        let editor = app.world().resource::<Editor>();
+        let object = editor.document.room.objects.last().unwrap();
+        let MeshDef::File(file) = object.prop().unwrap().unwrap().mesh else {
+            panic!("a model file")
+        };
+        file
+    };
+    assert_eq!(file(&app).id, Some(id));
+    let steps = app.world().resource::<Editor>().history.steps().0;
+
+    std::fs::create_dir_all(directory.join("sub")).unwrap();
+    std::fs::rename(directory.join("x.glb"), directory.join("sub/x.glb")).unwrap();
+    std::fs::rename(directory.join("x.glb.id"), directory.join("sub/x.glb.id")).unwrap();
+    maki_assets::forget_id_tables();
+    app.resource_mut::<Editor>().paths_due = true;
+    frames(&mut app, 2);
+    assert_eq!(file(&app).path, Path::new("sub/x.glb"));
+    assert_eq!(
+        app.world().resource::<Editor>().history.steps().0,
+        steps + 1
+    );
+    request(&mut app, Command::Undo);
+    assert_eq!(file(&app).path, Path::new("x.glb"));
+    std::fs::remove_dir_all(&directory).unwrap();
+}

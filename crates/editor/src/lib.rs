@@ -106,6 +106,7 @@ pub const DUPLICATE: Action = Action("editor_duplicate");
 pub const SAVE: Action = Action("editor_save");
 pub const COPY: Action = Action("editor_copy");
 pub const PASTE: Action = Action("editor_paste");
+pub const CUT: Action = Action("editor_cut");
 /// Puts the selection in the middle of the view.
 pub const FRAME: Action = Action("editor_frame");
 /// Ends a drag with no change. With no drag: selects nothing.
@@ -132,13 +133,14 @@ const BINDINGS: [(Key, Action, &str); 12] = [
     (Key::Escape, CANCEL, "Cancel a drag, or select nothing"),
 ];
 
-const CHORDS: [(Chord, Action, &str); 7] = [
+const CHORDS: [(Chord, Action, &str); 8] = [
     (Chord::ctrl(Key::P), COMMAND_SEARCH, "Search a command"),
     (Chord::ctrl(Key::Z), UNDO, "Undo"),
     (Chord::ctrl(Key::Y), REDO, "Redo"),
     (Chord::ctrl(Key::D), DUPLICATE, "Duplicate"),
     (Chord::ctrl(Key::C), COPY, "Copy the selected command rows"),
     (Chord::ctrl(Key::V), PASTE, "Paste command rows"),
+    (Chord::ctrl(Key::X), CUT, "Cut the selected items"),
     (Chord::ctrl(Key::S), SAVE, "Save"),
 ];
 
@@ -215,6 +217,8 @@ pub enum Command {
     /// The command rows of the buffer, after the selected row; or the items of the
     /// buffer, into the room that is open now.
     Paste,
+    /// Copy, then Delete. A paste of cut items into their room keeps their ids.
+    Cut,
     /// The selected props and lights become the prefab file of this name
     /// (`prefabs/<name>.prefab`) and one prefab of the room.
     MakePrefab(String),
@@ -262,6 +266,9 @@ pub struct Editor {
     /// The panels write it in each frame: a mouse button is down or a widget has the
     /// keyboard, so a change can go on. The history makes no step then.
     pub(crate) busy: bool,
+    /// The files of the asset folder changed: the file references of the document
+    /// are corrected at the next step of the history.
+    pub(crate) paths_due: bool,
     /// The event commands of the game: to change the events with a name.
     pub(crate) registry: CommandRegistry,
     /// The handle that the pointer drags.
@@ -302,9 +309,10 @@ pub struct Editor {
     playing: Option<GameState>,
     /// The room that the world shows. `None`: load the document.
     shown: Option<(PathBuf, RoomDef)>,
-    /// The items that "Copy" took, in the document that had them. It stays when
-    /// another room is opened: "Paste" puts the items into that room.
-    item_buffer: Option<(Document, Vec<Item>)>,
+    /// The items that "Copy" or "Cut" took, in the document that had them, and true
+    /// for a cut. It stays when another room is opened: "Paste" puts the items into
+    /// that room.
+    item_buffer: Option<(Document, Vec<Item>, bool)>,
     /// The name in the "Make prefab" field of the "Edit" menu.
     pub prefab_name: String,
     /// The file and the pose of the prefab that was unpacked last: "Make prefab"
@@ -519,6 +527,10 @@ impl Editor {
         // The list that had the last click gets the command: the command rows of
         // the event panel, or the items.
         let on_rows = self.event_ui.focused && self.selected_event().is_some();
+        if on_rows && command == Command::Cut {
+            self.rows(RowCommand::Copy);
+            return self.rows(RowCommand::Delete);
+        }
         let row = match command {
             Command::Delete => Some(RowCommand::Delete),
             Command::Duplicate => Some(RowCommand::Duplicate),
@@ -627,14 +639,26 @@ impl Editor {
             Command::Copy => {
                 let items = self.selection.clone();
                 self.status = format!("{} items copied", items.len());
-                self.item_buffer = Some((self.document.clone(), items));
+                self.item_buffer = Some((self.document.clone(), items, false));
             }
-            Command::Paste => match &self.item_buffer {
-                Some((source, items)) => {
-                    // In the room that they came from: beside the items.
+            Command::Cut => {
+                let items = self.selection.clone();
+                self.status = format!("{} items cut", items.len());
+                self.item_buffer = Some((self.document.clone(), items.clone(), true));
+                self.document.delete(&items);
+            }
+            Command::Paste => match &mut self.item_buffer {
+                Some((source, items, cut)) => {
+                    // In the room that they came from: beside the items; a cut goes back to its place.
                     let same = source.path == self.document.path;
-                    let offset = if same { ops::DUPLICATE_OFFSET } else { 0.0 };
-                    let copies = self.document.copy_from(source, items, offset);
+                    let offset = if same && !*cut {
+                        ops::DUPLICATE_OFFSET
+                    } else {
+                        0.0
+                    };
+                    let copies = self.document.copy_from(source, items, offset, *cut);
+                    // Only the first paste of a cut keeps the ids.
+                    *cut &= !same;
                     self.status = format!("{} items pasted", copies.len());
                     if !copies.is_empty() {
                         self.selection = copies;
@@ -1036,6 +1060,14 @@ fn add_commands(app: &mut App) {
         Command::Copy,
     );
     add(
+        "editor.cut",
+        "Cut",
+        "Edit",
+        Some(CUT),
+        selected,
+        Command::Cut,
+    );
+    add(
         "editor.paste",
         "Paste",
         "Edit",
@@ -1327,6 +1359,7 @@ impl Module for EditorModule {
             local: false,
             second_pose: false,
             busy: false,
+            paths_due: false,
             registry,
             drag: None,
             history: History::default(),
@@ -1486,8 +1519,13 @@ pub fn run_commands(world: &mut World) {
                 history,
                 document,
                 selection,
+                paths_due,
                 ..
             } = &mut *editor;
+            // A new reference gets its id in the step of its change; a moved file is a step of its own.
+            if !busy && (std::mem::take(paths_due) || history.changed(document)) {
+                ids::correct_paths(document);
+            }
             history.track(document, selection, busy);
         }
         editor.sync(world);

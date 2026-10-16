@@ -19,6 +19,18 @@ use maki_scene::{
 use crate::ron_text::Notes;
 use crate::{Document, Item};
 
+/// Reads a prefab file to change an instance of it. A file with an object that has
+/// no id gets the ids and is written: a change of an instance is keyed by the id.
+// ponytail: the file is written again from its value, so its comments go; keep them as the notes of a room if a person writes prefab files.
+pub(crate) fn prefab_to_edit(path: &Path) -> anyhow::Result<PrefabDef> {
+    let mut prefab = read_prefab(path)?;
+    if prefab.give_ids() {
+        std::fs::write(path, prefab_text(&prefab))?;
+        tracing::info!(file = %path.display(), "the objects of the prefab file got ids");
+    }
+    Ok(prefab)
+}
+
 /// A thing that "Add" makes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
@@ -375,14 +387,21 @@ impl Document {
     /// Returns the copies. The room has no copy.
     pub fn duplicate(&mut self, items: &[Item]) -> Vec<Item> {
         let source = self.clone();
-        self.copy_from(&source, items, DUPLICATE_OFFSET)
+        self.copy_from(&source, items, DUPLICATE_OFFSET, false)
     }
 
     /// Makes in this document a copy of each of `items` of the document `source`
     /// (another room, or this one), `offset` meters beside its place, with a name
     /// that this room does not have and with its notes. Returns the copies. The
-    /// room has no copy.
-    pub fn copy_from(&mut self, source: &Document, items: &[Item], offset: f32) -> Vec<Item> {
+    /// room has no copy. `cut`: the items were cut from `source`; in that room they
+    /// keep their ids.
+    pub fn copy_from(
+        &mut self,
+        source: &Document,
+        items: &[Item],
+        offset: f32,
+        cut: bool,
+    ) -> Vec<Item> {
         let shift = |position: &mut [f32; 3]| {
             position[0] += offset;
             position[2] += offset;
@@ -410,9 +429,10 @@ impl Document {
                         object.set_mover(mover);
                     }
                     // A paste of a cut object into its own room keeps the id.
-                    let cut = source.path == self.path
+                    let keep = cut
+                        && source.path == self.path
                         && room.objects.iter().all(|other| other.id != object.id);
-                    if !cut || object.id.is_none() {
+                    if !keep || object.id.is_none() {
                         object.id = Some(room.new_id());
                     }
                     let copy = Item::Object(room.objects.len());
@@ -517,7 +537,7 @@ impl Document {
         let path = used
             .file
             .resolve(self.path.parent().unwrap_or(Path::new("")));
-        let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
+        let prefab = prefab_to_edit(&path).map_err(|error| format!("{error:#}"))?;
         let mut items = Vec::new();
         // The first object keeps the id of the instance, so a command still names it.
         let mut id = self.object(item).and_then(|instance| instance.id);
@@ -601,6 +621,9 @@ pub struct History {
     base: Option<Step>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// The highest `next_id` of the room: undo and redo keep it, so that an id that
+    /// was given is not given again.
+    next_id: u32,
 }
 
 /// Older steps are dropped.
@@ -611,6 +634,7 @@ impl History {
     pub fn reset(&mut self, document: &Document) {
         *self = Self {
             base: Some((document.content(), Vec::new())),
+            next_id: document.room.next_id,
             ..Self::default()
         };
     }
@@ -624,6 +648,7 @@ impl History {
         let Some(base) = &mut self.base else {
             return self.reset(document);
         };
+        self.next_id = self.next_id.max(document.room.next_id);
         if busy {
             return;
         }
@@ -642,6 +667,11 @@ impl History {
         self.redo.clear();
     }
 
+    /// True: the document differs from the last step.
+    pub fn changed(&self, document: &Document) -> bool {
+        self.base.as_ref().is_some_and(|base| !document.is(&base.0))
+    }
+
     /// The document goes one step back. False: no step to undo.
     pub fn undo(&mut self, document: &mut Document, selection: &mut Vec<Item>) -> bool {
         self.track(document, selection, false);
@@ -651,6 +681,7 @@ impl History {
             &mut self.redo,
             document,
             selection,
+            self.next_id,
         )
     }
 
@@ -662,6 +693,7 @@ impl History {
             &mut self.undo,
             document,
             selection,
+            self.next_id,
         )
     }
 
@@ -671,10 +703,12 @@ impl History {
         to: &mut Vec<Step>,
         document: &mut Document,
         selection: &mut Vec<Item>,
+        next_id: u32,
     ) -> bool {
-        let Some(step) = from.pop() else {
+        let Some(mut step) = from.pop() else {
             return false;
         };
+        step.0.0.next_id = next_id;
         to.extend(base.replace(step.clone()));
         document.set_content(step.0);
         *selection = step.1;
@@ -703,33 +737,31 @@ mod tests {
     }
 
     fn document(registry: &CommandRegistry) -> Document {
-        let text = r#"(
-            width: 8.0, depth: 8.0, height: 3.0,
-            objects: [
-                (name: "door", components: {
-                    "door": (),
-                    "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
-                }),
-                // The east one.
-                // To the east.
-                (name: "east", components: {
-                    "door": (),
-                    "doorway": (wall: PosX, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
-                }),
-                (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {
-                    "light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
-                }),
-                (name: "start", components: {"spawn": ()}),
-                (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
-                    LightOff(3),
-                    GiveControl(3),
-                    SetField(3, "light", "intensity", 2.0),
-                    If([Flag("open")], [OpenDoor(2), LightOn(3)], [CloseDoor(1)]),
-                    Transfer("room.ron", 4),
-                ])])}),
-            ],
-        )"#;
-        Document::parse(Path::new("room.ron"), text, registry).unwrap()
+        let objects = [
+            r#"(name: "door", components: {
+                "door": (),
+                "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+            })"#,
+            r#"// The east one.
+            // To the east.
+            (name: "east", components: {
+                "door": (),
+                "doorway": (wall: PosX, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0),
+            })"#,
+            r#"(name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {
+                "light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0),
+            })"#,
+            r#"(name: "start", components: {"spawn": ()})"#,
+            r#"(name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
+                LightOff(3),
+                GiveControl(3),
+                SetField(3, "light", "intensity", 2.0),
+                If([Flag("open")], [OpenDoor(2), LightOn(3)], [CloseDoor(1)]),
+                Transfer("room.ron", 4),
+            ])])})"#,
+        ];
+        let text = maki_scene::room_text(8.0, 8.0, 3.0, &objects);
+        Document::parse(Path::new("room.ron"), &text, registry).unwrap()
     }
 
     #[test]
@@ -778,6 +810,46 @@ mod tests {
     }
 
     #[test]
+    fn a_prefab_file_with_no_ids_gets_them_when_the_editor_reads_it() {
+        let file =
+            std::env::temp_dir().join(format!("maki-prefab-ids-{}.prefab", std::process::id()));
+        let text = r#"(objects: [(name: "a", components: {"prop": (mesh: Cube(1.0))}), (components: {"prop": (mesh: Cube(1.0))})])"#;
+        std::fs::write(&file, text).unwrap();
+        let ids = |prefab: &PrefabDef| {
+            prefab
+                .objects
+                .iter()
+                .map(|object| object.id)
+                .collect::<Vec<_>>()
+        };
+        let given = [Some(maki_scene::ObjectId(1)), Some(maki_scene::ObjectId(2))];
+        assert_eq!(ids(&prefab_to_edit(&file).unwrap()), given);
+        assert_eq!(ids(&read_prefab(&file).unwrap()), given);
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn an_id_given_before_an_undo_is_not_given_again() {
+        let registry = registry();
+        let mut document = document(&registry);
+        let (mut history, mut selection) = (History::default(), Vec::new());
+        history.reset(&document);
+        let add = |document: &mut Document| {
+            let Ok(Item::Object(cube)) = document.add(Kind::Cube, Vec3::ZERO) else {
+                panic!("a cube");
+            };
+            document.room.objects[cube].id
+        };
+        let first = add(&mut document);
+        history.track(&document, &selection, false);
+        assert!(history.undo(&mut document, &mut selection));
+        // The undo keeps the redo.
+        assert!(history.redo(&mut document, &mut selection));
+        assert!(history.undo(&mut document, &mut selection));
+        assert_ne!(add(&mut document), first);
+    }
+
+    #[test]
     fn an_object_keeps_its_id_and_a_new_object_or_a_copy_gets_a_new_one() {
         let registry = registry();
         let mut document = document(&registry);
@@ -822,19 +894,22 @@ mod tests {
         assert_eq!(copies, [Item::Object(5)]);
         assert_eq!(id(&document, 5), 7);
 
-        // A cut and a paste in the same room keep the id; a second paste is a copy.
+        // A copy, a delete of the object, and a paste: a new id.
         let source = document.clone();
         document.delete(&[Item::Object(0)]);
-        let pasted = document.copy_from(&source, &[Item::Object(0)], DUPLICATE_OFFSET);
+        let pasted = document.copy_from(&source, &[Item::Object(0)], DUPLICATE_OFFSET, false);
         assert_eq!(pasted, [Item::Object(5)]);
-        assert_eq!(id(&document, 5), 1);
-        document.copy_from(&source, &[Item::Object(0)], DUPLICATE_OFFSET);
-        assert_eq!(id(&document, 6), 8);
+        assert_eq!(id(&document, 5), 8);
+        // A cut and a paste in the same room keep the id.
+        let source = document.clone();
+        document.delete(&[Item::Object(1)]);
+        document.copy_from(&source, &[Item::Object(1)], DUPLICATE_OFFSET, true);
+        assert_eq!(id(&document, 5), 3);
 
-        // A paste into another room gets an id of that room.
+        // A paste of a cut into another room gets an id of that room.
         let mut other = Document::new_room(PathBuf::from("other.ron"));
         assert_eq!(ids(&other), [1, 2]);
-        other.copy_from(&source, &[Item::Object(2)], 0.0);
+        other.copy_from(&source, &[Item::Object(1)], 0.0, true);
         assert_eq!(ids(&other), [1, 2, 3]);
     }
 
@@ -889,11 +964,13 @@ mod tests {
         history.track(&document, &selection, false);
         assert_eq!(history.steps(), (2, 0));
 
+        // The undo keeps the next id: the id of the cube is not given again.
+        let given = |text: String| text.replace("next_id: 6", "next_id: 7");
         assert!(history.undo(&mut document, &mut selection));
-        assert_eq!(document.text(), dragged);
+        assert_eq!(document.text(), given(dragged));
         assert_eq!(selection, [Item::Object(2)]);
         assert!(history.undo(&mut document, &mut selection));
-        assert_eq!(document.text(), start);
+        assert_eq!(document.text(), given(start));
         assert!(!history.undo(&mut document, &mut selection));
         assert!(
             history.redo(&mut document, &mut selection)

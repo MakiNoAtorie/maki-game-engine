@@ -49,9 +49,7 @@ impl FileId {
         FileId(hasher.finish())
     }
 
-    /// Writes the id file of `asset`. The only writer of id files: the text goes to
-    /// a second file first, so a reader never sees half of an id. The game never
-    /// calls it; the editor does.
+    /// Writes the id file of `asset` through a second file, so no reader sees half of an id.
     pub fn write(self, asset: &Path) -> std::io::Result<()> {
         let file = Self::file_of(asset);
         let mut new = file.as_os_str().to_owned();
@@ -101,9 +99,7 @@ pub struct FileRef {
 }
 
 impl FileRef {
-    /// The file of this reference, for a store. The path from `directory` if its file
-    /// is there with the id. Else the path of the id, in a table of the id files under
-    /// `directory`, with a warning. Else the path: the store reports the missing file.
+    /// The file of this reference under `directory`: its path, else the file of its id, else its path.
     pub fn resolve(&self, directory: &Path) -> PathBuf {
         let path = directory.join(&self.path);
         let Some(id) = self.id else {
@@ -142,14 +138,13 @@ fn find_by_id(folder: &Path, id: FileId) -> Option<PathBuf> {
     table.get(&id).cloned()
 }
 
-/// Forgets the tables of id files: the next look by id walks the folder again. The
-/// editor calls it when the files of the asset folder change.
+/// Forgets the tables of id files: the editor calls it when the asset files change.
 pub fn forget_id_tables() {
     *TABLES.lock().unwrap_or_else(PoisonError::into_inner) = None;
 }
 
-/// True if the table of id files of `folder` is built.
-pub fn has_id_table(folder: &Path) -> bool {
+#[cfg(test)]
+fn has_id_table(folder: &Path) -> bool {
     let tables = TABLES.lock().unwrap_or_else(PoisonError::into_inner);
     tables
         .as_ref()
@@ -177,12 +172,6 @@ impl Deref for FileRef {
     type Target = Path;
 
     fn deref(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl AsRef<Path> for FileRef {
-    fn as_ref(&self) -> &Path {
         &self.path
     }
 }

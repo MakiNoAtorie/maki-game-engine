@@ -18,7 +18,7 @@ Judgement rules for the review of a diff. The architecture rules are in `CLAUDE.
 - **A component of a project keeps its text** when no module reads it: no code path drops or rewrites a `ComponentText` that it cannot read.
 - **A new name of a component type** must not be one of the engine (`prop`, `light`, `area`, ...): the registry takes the last one, and each room reads the new type.
 - **A script hook leaves its value** in the entity: code that takes a component out of an entity puts it back, and a despawned entity is not an error.
-- **A command that names an object follows a rename**: each argument that is the name of an object (a light, a door, an object of `SetField` or `Signal`) has its arm in `Document::renamed` (`crates/editor/src/ops.rs`), with a test.
+- **An argument that names an object of the room is an `ObjectId`** (`Kind::Object`), never a name: a rename then changes no other line of the room file.
 
 ## The editor
 

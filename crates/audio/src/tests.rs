@@ -42,14 +42,14 @@ fn room_directory(name: &str, events: &str) -> (PathBuf, PathBuf) {
     write_wav(&directory.join("click.wav"), 0.05);
     write_wav(&directory.join("hum.wav"), 0.5);
     write_wav(&directory.join("music.wav"), 1.0);
-    let room = format!(
-        r#"(width: 8, depth: 8, height: 3, objects: [
-            (id: 1, name: "start", components: {{"spawn": ()}}),
-            (id: 2, name: "lamp", pose: (position: (2, 2, 0)), components: {{"light": (radius: 0.1,
-                color: (1, 1, 1), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5, reach: 9.0))}}),
-            {}])"#,
-        maki_events::short_events(events)
-    );
+    let events = maki_events::short_events(events);
+    let objects = [
+        r#"(id: 1, name: "start", components: {"spawn": ()})"#,
+        r#"(id: 2, name: "lamp", pose: (position: (2, 2, 0)), components: {"light": (radius: 0.1,
+            color: (1, 1, 1), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5, reach: 9.0))})"#,
+        &events,
+    ];
+    let room = maki_scene::room_text(8.0, 8.0, 3.0, &objects);
     let path = directory.join("room.ron");
     std::fs::write(&path, room).unwrap();
     (directory, path)

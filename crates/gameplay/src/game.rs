@@ -86,9 +86,9 @@ impl Module for GameModule {
                         );
                     }
                 }
-                GameCommand::GiveControl(name) => match named(world, name) {
+                GameCommand::GiveControl(object) => match entity_of(world, object) {
                     Some(target) => drop(give_control(world, target)),
-                    None => tracing::warn!(event = step.event, "GiveControl: no object `{name}`"),
+                    None => tracing::warn!(event = step.event, "GiveControl: no object `{object}`"),
                 },
             }
             true
@@ -100,7 +100,7 @@ impl Module for GameModule {
                     GameCommand::GiveControl(object) if *object == ObjectId::default() => {
                         "Control: the player".to_owned()
                     }
-                    GameCommand::GiveControl(name) => format!("Control: {name}"),
+                    GameCommand::GiveControl(object) => format!("Control: {object}"),
                 })
             },
             |name| match name {
@@ -129,7 +129,7 @@ impl Module for GameModule {
 }
 
 /// The first entity of the object; the home body for no object.
-fn named(world: &mut World, object: &ObjectId) -> Option<Entity> {
+fn entity_of(world: &mut World, object: &ObjectId) -> Option<Entity> {
     if *object == ObjectId::default() {
         return world.resource::<Controller>().home;
     }
@@ -383,12 +383,18 @@ pause = false",
     fn the_pawn_stands_while_an_event_blocks_it() {
         let directory = std::env::temp_dir().join(format!("maki-rules-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let room = r#"(width: 8, depth: 8, height: 3, objects: [(id: 1, name: "start", components: {"spawn": ()}),
-            (name: "wait", components: {"event": (pages: [
-                (trigger: Autorun, commands: [Wait(0.2), SetFlag("done", true)]),
-                (conditions: [Flag("done")], trigger: Interact, commands: []),
-            ])}),
-        ])"#;
+        let room = maki_scene::room_text(
+            8.0,
+            8.0,
+            3.0,
+            &[
+                r#"(id: 1, name: "start", components: {"spawn": ()})"#,
+                r#"(name: "wait", components: {"event": (pages: [
+                    (trigger: Autorun, commands: [Wait(0.2), SetFlag("done", true)]),
+                    (conditions: [Flag("done")], trigger: Interact, commands: []),
+                ])})"#,
+            ],
+        );
         std::fs::write(directory.join("a.ron"), room).unwrap();
         let mut app = game(
             "[assets]

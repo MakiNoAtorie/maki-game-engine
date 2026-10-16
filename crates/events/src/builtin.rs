@@ -98,14 +98,14 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             };
             step.open(branch.clone());
         }
-        Builtin::OpenDoor(name) => return send_mover(world, name, true, step.start),
-        Builtin::CloseDoor(name) => return send_mover(world, name, false, step.start),
-        Builtin::LightOn(name) => set_light(world, name, |light| Light { on: true, ..*light }),
-        Builtin::LightOff(name) => set_light(world, name, |light| Light {
+        Builtin::OpenDoor(object) => return send_mover(world, object, true, step.start),
+        Builtin::CloseDoor(object) => return send_mover(world, object, false, step.start),
+        Builtin::LightOn(object) => set_light(world, object, |light| Light { on: true, ..*light }),
+        Builtin::LightOff(object) => set_light(world, object, |light| Light {
             on: false,
             ..*light
         }),
-        Builtin::LightIntensity(name, intensity) => set_light(world, name, |light| Light {
+        Builtin::LightIntensity(object, intensity) => set_light(world, object, |light| Light {
             intensity: *intensity,
             ..*light
         }),
@@ -339,11 +339,11 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
             let texts: Vec<String> = conditions.iter().map(condition).collect();
             format!("If {}", texts.join(" and "))
         }
-        Builtin::OpenDoor(name) => format!("Open {name}"),
-        Builtin::CloseDoor(name) => format!("Close {name}"),
-        Builtin::LightOn(name) => format!("Light {name}: on"),
-        Builtin::LightOff(name) => format!("Light {name}: off"),
-        Builtin::LightIntensity(name, value) => format!("Light {name}: intensity {value}"),
+        Builtin::OpenDoor(object) => format!("Open {object}"),
+        Builtin::CloseDoor(object) => format!("Close {object}"),
+        Builtin::LightOn(object) => format!("Light {object}: on"),
+        Builtin::LightOff(object) => format!("Light {object}: off"),
+        Builtin::LightIntensity(object, value) => format!("Light {object}: intensity {value}"),
         Builtin::Message(text) => format!("Message: {text}"),
         Builtin::Choice(question, _) => format!("Question: {question}"),
         Builtin::FadeOut(seconds) => format!("Fade to black, {seconds} s"),
@@ -386,13 +386,15 @@ pub(crate) fn help(name: &str) -> Option<&'static str> {
 /// a command is an object that the room has.
 pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding> {
     match command {
-        Builtin::LightOn(name) | Builtin::LightOff(name) | Builtin::LightIntensity(name, _) => {
-            let found = context.reaches(name, &["light"]);
-            (!found).then(|| Finding::error(format!("the room has no light `{name}`")))
+        Builtin::LightOn(object)
+        | Builtin::LightOff(object)
+        | Builtin::LightIntensity(object, _) => {
+            let found = context.reaches(object, &["light"]);
+            (!found).then(|| Finding::error(format!("the room has no light `{object}`")))
         }
-        Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {
-            let found = context.reaches(name, &["door", "mover"]);
-            (!found).then(|| Finding::error(format!("the room has no door or mover `{name}`")))
+        Builtin::OpenDoor(object) | Builtin::CloseDoor(object) => {
+            let found = context.reaches(object, &["door", "mover"]);
+            (!found).then(|| Finding::error(format!("the room has no door or mover `{object}`")))
         }
         Builtin::Choice(_, answers) if answers.is_empty() => {
             Some(Finding::error("a question needs an answer".to_owned()))
@@ -422,11 +424,11 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
 
 /// Sends each mover of the object to pose B or A (only `start`), and tells if all of
 /// them are there.
-fn send_mover(world: &mut World, name: &ObjectId, to_b: bool, start: bool) -> bool {
+fn send_mover(world: &mut World, object: &ObjectId, to_b: bool, start: bool) -> bool {
     let (mut found, mut arrived) = (false, true);
     let mut movers = world.query::<(Option<&ObjectId>, &mut Mover)>();
     for (id, mut mover) in movers.iter_mut(world) {
-        if id != Some(name) {
+        if id != Some(object) {
             continue;
         }
         found = true;
@@ -450,18 +452,18 @@ fn send_mover(world: &mut World, name: &ObjectId, to_b: bool, start: bool) -> bo
     }
     if !found && start {
         tracing::warn!(
-            %name,
+            %object,
             "an event names a door or mover that the room does not have"
         );
     }
     arrived
 }
 
-fn set_light(world: &mut World, name: &ObjectId, change: impl Fn(&Light) -> Light) {
+fn set_light(world: &mut World, object: &ObjectId, change: impl Fn(&Light) -> Light) {
     let mut found = false;
     let mut lights = world.query::<(Option<&ObjectId>, &mut Light)>();
     for (id, mut light) in lights.iter_mut(world) {
-        if id == Some(name) {
+        if id == Some(object) {
             found = true;
             let new = change(&light);
             // A write is a change of the lighting for the renderer.
@@ -471,6 +473,6 @@ fn set_light(world: &mut World, name: &ObjectId, change: impl Fn(&Light) -> Ligh
         }
     }
     if !found {
-        tracing::warn!(%name, "an event names a light that the room does not have");
+        tracing::warn!(%object, "an event names a light that the room does not have");
     }
 }

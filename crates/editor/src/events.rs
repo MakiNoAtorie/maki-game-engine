@@ -126,7 +126,7 @@ pub fn command_text(command: &Command, registry: &CommandRegistry) -> String {
 
 /// The text of a row with the name of each object in place of its id (`id 7`, the
 /// text of an `ObjectId`). An id with no object stays.
-// ponytail: a text replace, so a message with the words "id 7" also gets the name; a room in the row texts of the modules if that matters.
+// ponytail: a text replace also changes the words "id 7" of a message; give the row texts the room if that matters.
 pub fn with_names(text: &str, objects: &[(ObjectId, String)]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -398,16 +398,14 @@ mod tests {
     }
 
     fn document(registry: &CommandRegistry, name: &str, events: &str) -> Document {
-        let text = format!(
-            r#"(width: 8.0, depth: 8.0, height: 3.0,
-                objects: [
-                    (id: 1, name: "door", components: {{"door": (), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
-                    (id: 2, name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {{"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)}}),
-                    (id: 3, name: "start", components: {{"spawn": ()}}),
-                    {},
-                ])"#,
-            maki_events::short_events(events)
-        );
+        let events = maki_events::short_events(events);
+        let objects = [
+            r#"(id: 1, name: "door", components: {"door": (), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)})"#,
+            r#"(id: 2, name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)})"#,
+            r#"(id: 3, name: "start", components: {"spawn": ()})"#,
+            &events,
+        ];
+        let text = maki_scene::room_text(8.0, 8.0, 3.0, &objects);
         Document::parse(Path::new(name), &text, registry).unwrap()
     }
 
@@ -557,9 +555,15 @@ mod tests {
         let registry = registry();
         let directory = std::env::temp_dir().join(format!("maki-names-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let other = r#"(width: 4, depth: 4, height: 3, objects: [(id: 1, name: "west", components: {"spawn": ()}),
-            (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])])}),
-        ])"#;
+        let other = maki_scene::room_text(
+            4.0,
+            4.0,
+            3.0,
+            &[
+                r#"(id: 1, name: "west", components: {"spawn": ()})"#,
+                r#"(name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [SetFlag("power_off", true), AddVariable("presses", 1)])])})"#,
+            ],
+        );
         std::fs::write(directory.join("b.ron"), other).unwrap();
         std::fs::write(directory.join("notes.ron"), "not a room").unwrap();
         let events = r#"

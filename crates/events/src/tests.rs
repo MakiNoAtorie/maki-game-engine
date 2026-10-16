@@ -22,17 +22,15 @@ const STEP: Duration = Duration::from_millis(20);
 
 /// A room of 8 x 8 m with a lamp, a door in the back wall, and these events.
 fn room(events: &str) -> String {
-    format!(
-        r#"(
-            width: 8, depth: 8, height: 3,
-            objects: [(id: 1, name: "door", components: {{"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
-                (id: 2, name: "lamp", pose: (position: (0, 2, 0)), components: {{"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}}),
-                (id: 3, name: "start", components: {{"spawn": ()}}),
-                (id: 4, name: "east", pose: (position: (2, 0, 0)), components: {{"spawn": ()}}),
-                {}],
-        )"#,
-        short_events(events)
-    )
+    let events = short_events(events);
+    let objects = [
+        r#"(id: 1, name: "door", components: {"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)})"#,
+        r#"(id: 2, name: "lamp", pose: (position: (0, 2, 0)), components: {"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)})"#,
+        r#"(id: 3, name: "start", components: {"spawn": ()})"#,
+        r#"(id: 4, name: "east", pose: (position: (2, 0, 0)), components: {"spawn": ()})"#,
+        &events,
+    ];
+    maki_scene::room_text(8.0, 8.0, 3.0, &objects)
 }
 
 /// The directory of the room files of one test.
@@ -529,7 +527,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     let validators = app.world().resource::<maki_scene::RoomValidators>();
     let check = |events: &str| maki_scene::check_room(&path, &room(events), validators);
 
-    // `room` has its event objects from line 8, each object in the line of its
+    // `room` has its event objects from line 7, each object in the line of its
     // name. Two equal commands: each has its own line. A problem of an event has
     // the line of its component `event`.
     let bad = r#"
@@ -547,11 +545,11 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     let lines: Vec<&str> = error.lines().collect();
     let file = path.display().to_string();
     let expected = [
+        "9: event `a`: the room has no door or mover `id 9`",
         "10: event `a`: the room has no door or mover `id 9`",
-        "11: event `a`: the room has no door or mover `id 9`",
-        "12: event `a`: a bell rings one time or more",
-        "15: event `a`: another event has the name `a`",
-        "15: event `a`: the room has no light `id 8`",
+        "11: event `a`: a bell rings one time or more",
+        "14: event `a`: another event has the name `a`",
+        "14: event `a`: the room has no light `id 8`",
     ];
     assert_eq!(lines, expected.map(|line| format!("{file}:{line}")));
 
@@ -647,7 +645,7 @@ fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
     assert!(
         error
             .to_string()
-            .ends_with(":12: event `ask`: the room has no door or mover `id 9`"),
+            .ends_with(":11: event `ask`: the room has no door or mover `id 9`"),
         "{error}"
     );
     let empty = r#"(name: "ask", pages: [(trigger: Autorun, commands: [Choice("?", [])])])"#;
