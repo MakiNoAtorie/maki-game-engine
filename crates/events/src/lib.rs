@@ -33,7 +33,7 @@ pub use builtin::Builtin;
 pub use check::{CheckContext, Finding, Problem};
 pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, ScriptFunction, Step};
 pub use interpreter::{
-    ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, Signals, load_room_events,
+    ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, Signals, Start, load_room_events,
     run_events, start_event,
 };
 pub use model::{
@@ -110,7 +110,7 @@ impl Module for EventsModule {
             .init_resource::<script::ScriptRunners>();
         // The area of an object, for the hooks of its scripts and for its event.
         maki_scene::add_object_component::<TriggerArea>(app, "area");
-        registry.add_outputs("area", &["used", "entered", "left"]);
+        registry.add_outputs("area", TriggerArea::OUTPUTS);
         // The pages of an event: commands of all modules, read with the registry.
         maki_scene::add_component_reader(app, "event", interpreter::insert_event);
         // A room with a bad event is not loaded. The check has the registry, with

@@ -33,7 +33,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::command::{Command, CommandSet, ScriptFunction};
-use crate::interpreter::{RunningEvent, faces};
+use crate::interpreter::{RunningEvent, Start, faces};
 use crate::model::{Area, Trigger};
 use crate::{CommandRegistry, EventRunner, GameState};
 
@@ -185,7 +185,7 @@ impl<'w> ScriptContext<'w> {
         }
         let name = self.name().to_owned();
         // `Interact`: the player started it, so it blocks the player.
-        let mut running = RunningEvent::new(&name, Trigger::Interact, &commands);
+        let mut running = RunningEvent::new(&name, Start::Page(Trigger::Interact), &commands);
         running.entity = Some(self.entity);
         // ponytail: the step mode of a tool is not for script calls.
         if !running.step(self.world, &mut None) {
@@ -209,6 +209,18 @@ pub struct TriggerArea {
     /// Length along Z, in meters.
     #[field(range = 0.05..=50.0, step = 0.05)]
     pub depth: f32,
+}
+
+/// The outputs of the area: the registration, the interpreter, the check, and the
+/// editor name them here.
+impl TriggerArea {
+    /// The player faces the area and presses interact.
+    pub const USED: &'static str = "used";
+    /// The player walks into the area.
+    pub const ENTERED: &'static str = "entered";
+    /// The player walks out of the area.
+    pub const LEFT: &'static str = "left";
+    pub const OUTPUTS: &'static [&'static str] = &[Self::USED, Self::ENTERED, Self::LEFT];
 }
 
 impl Default for TriggerArea {

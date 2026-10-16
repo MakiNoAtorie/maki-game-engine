@@ -1111,7 +1111,7 @@ fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
     assert_eq!(
         texts,
         [
-            "the object `button` has no output `pressed`",
+            "the wire `pressed`: the object `button` has no output `pressed`",
             "the object `button` has no output `pushed`",
             "the room has no object `knob`",
         ]
@@ -1145,4 +1145,91 @@ fn a_wire_that_sends_its_own_output_starts_once_in_a_step_and_an_event_goes_firs
         steps(&mut app, 2);
         assert!(flag(&app, "page") && !flag(&app, "wire"));
     });
+}
+
+#[test]
+fn a_signal_and_entered_start_wires_only_in_the_state_play() {
+    let wires = r#"(output: "used", commands: [AddVariable("used", 1)]),
+        (output: "entered", commands: [AddVariable("entered", 1)])"#;
+    let app = counter_game("wires-play-state", &button_room(wires));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        let button = {
+            let world = app.world();
+            let mut objects = world
+                .try_query::<(bevy_ecs::entity::Entity, &Name)>()
+                .unwrap();
+            let found = objects.iter(world).find(|(_, name)| name.0 == "button");
+            found.unwrap().0
+        };
+        // Out of the area, a signal `used`, and into the area: `entered`.
+        let signal_and_enter = |app: &mut App| {
+            place_player(app, [0.0, 0.0, -2.0]);
+            steps(app, 2);
+            let used = (button, TriggerArea::USED.to_owned());
+            app.resource_mut::<Signals>().0.push(used);
+            place_player(app, [0.0, 0.0, 1.4]);
+            steps(app, 3);
+        };
+        for state in [maki_core::PlayState::Cutscene, maki_core::PlayState::Title] {
+            *app.resource_mut::<maki_core::PlayState>() = state;
+            signal_and_enter(&mut app);
+            let counts = (variable(&app, "used"), variable(&app, "entered"));
+            assert_eq!(counts, (0, 0), "{state:?}");
+        }
+        *app.resource_mut::<maki_core::PlayState>() = maki_core::PlayState::Play;
+        signal_and_enter(&mut app);
+        assert_eq!((variable(&app, "used"), variable(&app, "entered")), (1, 1));
+    });
+}
+
+#[test]
+fn a_running_wire_has_the_start_of_a_wire_not_of_a_trigger() {
+    let wires = r#"(output: "used", commands: [Wait(1.0)])"#;
+    let app = counter_game("wire-start", &button_room(wires));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        interact(&mut app);
+        steps(&mut app, 1);
+        let runner = app.world().resource::<EventRunner>();
+        let starts: Vec<Start> = runner.running().iter().map(|event| event.start).collect();
+        assert_eq!(starts, [Start::Wire]);
+        // A wire blocks the player as an event that the player started.
+        assert!(runner.blocks_player());
+    });
+}
+
+#[test]
+fn a_problem_of_a_wire_names_the_wire_as_its_tab_does() {
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    let text = button_room(
+        r#"(output: "used", commands: []),
+        (output: "pressed", commands: []),
+        (output: "pressed", commands: [])"#,
+    );
+    let def = maki_scene::parse_room(&text).unwrap();
+    let context = CheckContext {
+        room: &def,
+        file: "a.ron",
+        directory: std::path::Path::new(""),
+        spawn: &|_, _| None,
+        registry: &registry,
+    };
+    let events = registry.parse_events(&text).unwrap();
+    let problems = registry.check_events(&events, &context);
+    let texts: Vec<&str> = problems
+        .iter()
+        .map(|problem| problem.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "the wire `pressed 1`: the object `button` has no output `pressed`",
+            "the wire `pressed 2`: the object `button` has no output `pressed`",
+        ]
+    );
 }
