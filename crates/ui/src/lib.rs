@@ -481,6 +481,15 @@ impl Drop for UiContext {
     }
 }
 
+/// egui input from a script, not from the OS (`maki_devtools::InputScriptModule`).
+/// `run_ui` adds it to the input of the next egui frame. The positions of the
+/// pointer events are in physical pixels of the window, as `RawInput` has them.
+#[derive(Resource, Default)]
+pub struct ScriptedUiInput {
+    /// Taken by the next egui frame.
+    pub events: Vec<egui::Event>,
+}
+
 /// Runs egui, draws the registered panels beside the picture, and adds the help
 /// panel. Needs `PlatformModule`. Without `RenderModule` the panels run but are not drawn.
 pub struct UiModule;
@@ -554,10 +563,25 @@ fn run_ui(world: &mut World) {
         world.resource_scope(|world, mut panels: Mut<Panels>| {
             let ui = &mut *ui;
             let panels = &mut *panels;
-            let input = match (&mut ui.winit, world.get_resource::<Window>()) {
+            let mut input = match (&mut ui.winit, world.get_resource::<Window>()) {
                 (Some(state), Some(window)) => state.take_egui_input(window.winit()),
                 _ => egui::RawInput::default(),
             };
+            if let Some(mut scripted) = world.get_resource_mut::<ScriptedUiInput>() {
+                let points = 1.0 / ui.ctx.pixels_per_point();
+                let events = scripted.events.drain(..).map(|mut event| {
+                    match &mut event {
+                        egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => {
+                            *pos = (pos.to_vec2() * points).to_pos2();
+                        }
+                        _ => {}
+                    }
+                    event
+                });
+                input.events.extend(events);
+                // A script drives a window that has no OS focus.
+                input.focused = true;
+            }
             // Where the renderer puts the picture: the marks and the windows of the
             // panels are drawn at the same place.
             let place = *world.resource::<Picture>();

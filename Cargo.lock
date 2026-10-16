@@ -1554,6 +1554,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "glam 0.34.1",
+ "image",
  "maki-core",
  "maki-events",
  "maki-gameplay",
