@@ -202,6 +202,16 @@ struct ProjectBuild {
     loaded: Option<SystemTime>,
     /// A new DLL waits for its load: a game runs.
     load: bool,
+    /// A new script: its file opens in the code editor when a build passes.
+    open_when_ok: Option<PathBuf>,
+}
+
+/// Asks for a build, and opens `file` in the code editor when it passes. A failed
+/// build opens the panel "Build" instead.
+pub(crate) fn open_after_build(world: &mut World, file: PathBuf) {
+    let mut build = world.resource_mut::<ProjectBuild>();
+    build.open_when_ok = Some(file);
+    build.request = true;
 }
 
 /// The watch, the build, and the load of the script crate of the project, and the
@@ -224,6 +234,7 @@ impl Module for ProjectModule {
             report: self.report.clone(),
             loaded: dll.as_deref().and_then(written),
             load: false,
+            open_when_ok: None,
         })
         .init_resource::<Jobs>()
         // It has the full world: the editor, the panels, the request for an app.
@@ -258,7 +269,9 @@ impl Module for ProjectModule {
 
 /// Runs in `Update`: the watch, the start and the end of a build, and the load.
 fn watch_build_load(world: &mut World) {
-    world.resource_scope(|world, mut build: Mut<ProjectBuild>| {
+    // `open_in_code_editor` reads `ProjectBuild`: it runs after the scope.
+    let open = world.resource_scope(|world, mut build: Mut<ProjectBuild>| {
+        let mut open = None;
         let now = Instant::now();
         if now >= build.next_scan {
             build.next_scan = now + SCAN;
@@ -301,7 +314,9 @@ fn watch_build_load(world: &mut World) {
                 // A change of another file of the project writes no new DLL.
                 let dll = script_dll(&build.setup.project).ok();
                 build.load = dll.as_deref().and_then(written) != build.loaded;
+                open = build.open_when_ok.take();
             } else {
+                build.open_when_ok = None;
                 world.resource_mut::<Panels>().show(PANEL);
                 let text = "The build of the script crate failed: see the panel \"Build\"";
                 notify(world, NoticeLevel::Warning, text);
@@ -321,7 +336,11 @@ fn watch_build_load(world: &mut World) {
             let make = move |old: &mut App| next_app(old, &setup, report);
             world.resource_mut::<NextApp>().0 = Some(Box::new(make));
         }
+        open
     });
+    if let Some(file) = open {
+        open_in_code_editor(world, &file, 1);
+    }
 }
 
 /// The app with the new code, for `NextApp`. `None`, with a notice in the old app:
