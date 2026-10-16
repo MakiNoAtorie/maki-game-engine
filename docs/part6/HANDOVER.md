@@ -93,7 +93,7 @@ Open from stage 48 (report, sections 3 and 6): the names of the component types 
 
 ## Facts that cost time to find
 
-- **The engine DLL does not link in the dev profile** (`LNK1189`, 65,535 symbols). Use `--profile dynamic` (the crates of others at `opt-level = 2`). A new crate in the engine can pass the limit: count again (a small Python reader of the export table of a DLL does it).
+- **The engine DLL does not link in the dev profile** (`LNK1189`, 65,535 symbols). Use `--profile dynamic` (all crates of the DLL at `opt-level = 2`). A new crate in the engine can pass the limit: count again (`python tools/symbol_count.py`).
 - **The build of the editor**: `cargo build --profile dynamic -p maki-editor-app -p maki-game-dll` (`editor.bat`, `maki_engine::BUILD`). Always the two packages: with another set, cargo can build the engine DLL again, and a program that runs has that file. `cargo test` with the same profile and packages builds only what a test needs.
 - **A program of the profile `dynamic` needs the DLL of the standard library** in `PATH`: `<rustc --print sysroot>/lib/rustlib/x86_64-pc-windows-msvc/lib`. `cargo run`, `cargo test`, and `editor.bat` set it. The output is in `target/dynamic`.
 - **A crate links the engine DLL only if it names it**: `maki-engine` does (`extern crate maki_engine_dylib as _`, feature `dynamic`). A DLL with its own copy of the engine loads with no error from the OS: the loader finds it by the symbol `MAKI_ENGINE_COPY`.
@@ -104,6 +104,7 @@ Open from stage 48 (report, sections 3 and 6): the names of the component types 
 - **Git Bash has no `bc`**: time with `date +%s%3N`.
 - **The memory note `reference-verify-running-game`** has the method to run, drive, and look at the game and the editor on this machine, with the places of the shell of stage 42.
 - **The engine DLL after stage 43**: 54,858 symbols of 65,535.
+- **The symbol limit, measured** (`symbol-limit.md`): `opt-level = 2` for the engine crates in the profile `dynamic` takes the engine DLL from 61,823 to 16,460 names. Clean build 155 s to 215 s; rebuild after a line of `maki-core` 13 s to 15 s; after a line of a script 2 s to 3 s. Count: `python tools/symbol_count.py` (also a step of `check.sh`, fails above 60,000).
 - **Line endings**: git warns "LF will be replaced by CRLF" for new files. It is not an error.
 
 ## When to stop and ask

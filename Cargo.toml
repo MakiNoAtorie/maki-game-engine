@@ -99,3 +99,34 @@ inherits = "dev"
 
 [profile.dynamic.package."*"]
 opt-level = 2
+
+# The engine crates at 2 too: `"*"` names only the crates of others. The count of the
+# engine DLL: `python tools/symbol_count.py`.
+[profile.dynamic.package.maki-core]
+opt-level = 2
+[profile.dynamic.package.maki-platform]
+opt-level = 2
+[profile.dynamic.package.maki-assets]
+opt-level = 2
+[profile.dynamic.package.maki-scene]
+opt-level = 2
+[profile.dynamic.package.maki-events]
+opt-level = 2
+[profile.dynamic.package.maki-audio]
+opt-level = 2
+[profile.dynamic.package.maki-gameplay]
+opt-level = 2
+[profile.dynamic.package.maki-gpu]
+opt-level = 2
+[profile.dynamic.package.maki-render]
+opt-level = 2
+[profile.dynamic.package.maki-ui]
+opt-level = 2
+[profile.dynamic.package.maki-devtools]
+opt-level = 2
+[profile.dynamic.package.maki-editor]
+opt-level = 2
+[profile.dynamic.package.maki-engine]
+opt-level = 2
+[profile.dynamic.package.maki-engine-dylib]
+opt-level = 2
