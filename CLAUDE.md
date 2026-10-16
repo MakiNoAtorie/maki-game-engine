@@ -57,6 +57,9 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 
 ## Working agreement
 - Work in stages, in the order of the stage table (`docs/part6/README.md`, 3.1). Implement only the stage at hand.
+- Each stage has a branch `stage/NN-<slug>` from `main`, and a draft pull request into `main` from its first push, titled `Stage NN: <name>`, with `Closes #N` for each ticket. A parallel lane works in a worktree on a branch from the stage branch and merges into it. The owner asks for this (2026-10-16): it overrides the rules of the global instructions to commit on the checked-out branch and to open no pull request.
+- Work outside a stage (tools, docs, a retro) goes the same way: a branch, a pull request, CI, a merge.
+- The tests of "Done when" in the stage file are the agreed seams of the `tdd` skill: no question to the owner about them.
 - At the end of each stage, always, in this order:
   1. Sanity check: tests and clippy (each build form), a validation run, the benchmark against the stage before, each line of "Done when" and each point of "What to watch for" of the stage file, and a run by hand of what the stage changed.
   2. Fill the gaps and fix the bugs that the check finds, in the same stage. Then check again.
@@ -66,10 +69,10 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
      3. Deviations from the spec and why.
      4. Decisions made where the spec was silent.
      5. Anything uncertain.
-  4. Commit on `main` as `Stage NN: <name>` and push.
+  4. Commit on the stage branch as `Stage NN: <name>` and push. Mark the pull request ready; when CI (`.github/workflows/ci.yml`) is green, merge it into `main` (a merge commit) and delete the branch.
   5. Go on with the next stage. Do not wait for the owner.
 - A next stage with no stage file: write the file first, in the form of the others, from the plan and the code as it is then. A proposal of a stage file that the owner did not change is taken as given.
-- Stop and ask: a gate that cannot be met; a decision of the plan that the code shows to be wrong; a regression of GPU time or picture that is the code; a dependency that the plan does not name; a stage that the plan marks "in discussion".
+- Stop and ask: a gate that cannot be met; a decision of the plan that the code shows to be wrong; a regression of GPU time or picture that is the code; a dependency that the plan does not name; a stage that the plan marks "in discussion"; CI red for a cause outside the code (the runner, the Vulkan SDK).
 - Where the spec is silent, choose the simplest option that respects the rules, and list it in the report.
 
 ## Agent skills

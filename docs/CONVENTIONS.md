@@ -4,7 +4,7 @@ Build, test and delegation rules that bind future work. Keep under 8 KB. Add a l
 
 ## Quiet output
 Never pull full logs into context. Filter to errors and failures.
-- All checks: `sh tools/check.sh` (format, clippy and tests of the static and the dynamic build, errors only). `sh tools/check.sh fast` is the pre-commit hook (`.githooks`; once per clone: `git config core.hooksPath .githooks`). No CI: this is the gate.
+- All checks: `sh tools/check.sh` (format, clippy and tests of the static and the dynamic build, errors only). `sh tools/check.sh fast` is the pre-commit hook (`.githooks`; once per clone: `git config core.hooksPath .githooks`). CI (`.github/workflows/ci.yml`, Windows) runs `tools/check.sh` on each pull request and each push to `main`; the GPU checks stay local. Read a red job with `gh run view --log-failed | rg -e '^(error|FAIL)' -A 5 | head -60`.
 - One build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`. Tests: `cargo test -q` runs the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit.
 - Benchmark: `tools/bench.py` writes CSV. `compare A B --total` gives one row per scenario.
 - Picture gate first: after a change of a room file or of the renderer, `bench.py run --label X --only trip_720p walk_720p test_1080p materials_720p` and `bench.py same SCENARIO sNN X` for each (2 minutes), before the full run (20 minutes). `bench.py drop X` removes a side run.
@@ -20,7 +20,7 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - Haiku or Explore: read-only searches.
 
 ## Subagents
-- Parallel implementers may each have a worktree and a branch (owner, 2026-10-15); one implementer works on the checked-out branch. Two writers never touch the same files. A parallel branch is merged back when its checks pass, then its worktree and branch go.
+- Parallel implementers may each have a worktree and a branch from the stage branch (owner, 2026-10-15); one implementer works on the stage branch. Two writers never touch the same files. A parallel branch is merged into the stage branch when its checks pass, then its worktree and branch go. Each lane is reviewed (`/code-review`) before or after its merge, in the same stage.
 - Implementers run the local checks above, do not edit shared notes, and end their report with at most 10 bullet points of new conventions. The orchestrator folds them into this file.
 - Prompt template:
 
