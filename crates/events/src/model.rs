@@ -132,6 +132,9 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
     pub trigger: Trigger,
+    /// Autorun only: starts again, one step after its run ends, while the page is active.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repeat: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<Command>,
 }
@@ -349,6 +352,7 @@ mod tests {
         Page {
             conditions: conditions.to_vec(),
             trigger: Trigger::Interact,
+            repeat: false,
             commands: Vec::new(),
         }
     }

@@ -1081,7 +1081,11 @@ fn pages(
     ];
     changed |= choice(ui, "trigger", &mut page.trigger, &triggers, PartialEq::eq);
     if page.trigger == Trigger::Autorun {
-        ui.weak("Autorun runs one time when the page gets active (also when the room loads), not again and again as in RPG Maker.");
+        ui.weak("Autorun runs one time when the page gets active (also when the room loads).");
+        changed |= ui
+            .checkbox(&mut page.repeat, "repeat")
+            .on_hover_text("Runs again, one step after the run ends, while this page is active")
+            .changed();
     }
     ui.separator();
     // The editor gives each object an id: `None` only in a room it did not open.
@@ -1152,6 +1156,7 @@ pub(crate) fn empty_page() -> Page {
     Page {
         conditions: Vec::new(),
         trigger: Trigger::Interact,
+        repeat: false,
         commands: Vec::new(),
     }
 }

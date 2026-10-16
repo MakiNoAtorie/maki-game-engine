@@ -478,6 +478,7 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
         let pages = vec![Page {
             conditions: Vec::new(),
             trigger: Trigger::Autorun,
+            repeat: false,
             commands: vec![
                 command(Builtin::OpenDoor(mover_id)),
                 command(Builtin::SetFlag("up".to_owned(), true)),

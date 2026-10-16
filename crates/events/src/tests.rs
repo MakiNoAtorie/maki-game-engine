@@ -18,6 +18,7 @@ use maki_scene::{
 use super::*;
 
 mod objects;
+mod repeat;
 
 /// 50 Hz: one fixed step of 20 ms for each frame.
 const STEP: Duration = Duration::from_millis(20);

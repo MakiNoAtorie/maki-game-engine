@@ -312,6 +312,7 @@ impl Document {
                 let page = Page {
                     conditions: Vec::new(),
                     trigger: Trigger::Interact,
+                    repeat: false,
                     commands: Vec::new(),
                 };
                 let pages = EventPages {
