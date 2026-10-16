@@ -29,7 +29,7 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::{Mut, World};
 use glam::{EulerRot, Quat, Vec3};
 use maki_assets::{
-    AssetChanged, AssetWatch, Assets, Doorway, Handle, LoadState, Material, Mesh, Model,
+    AssetChanged, AssetWatch, Assets, Doorway, FileRef, Handle, LoadState, Material, Mesh, Model,
     ModelLoads, TextureRef, Textures,
 };
 use maki_core::{Fields, Interpolated, Transform};
@@ -277,7 +277,7 @@ pub enum MeshDef {
     },
     /// A glTF file (`.gltf` or `.glb`). A path that is not absolute starts at the
     /// directory of the room file. The point lights of the file become lights.
-    File(#[field(label = "glTF file", file = "model")] PathBuf),
+    File(#[field(label = "glTF file", file = "model")] FileRef),
     /// A cylinder with a half sphere at each end, standing on the origin: `height`
     /// from the bottom to the top.
     #[field(default = MeshDef::Capsule { radius: 0.3, height: 1.7 })]
@@ -314,7 +314,7 @@ pub struct TextureDef {
     /// An image file (PNG or JPEG). A path that is not absolute starts at the
     /// directory of the room file.
     #[field(label = "file", file = "picture")]
-    pub path: PathBuf,
+    pub path: FileRef,
     /// The texture coordinates are multiplied by this: 2.0 shows the image two times
     /// where it showed one time. The coordinates of the room box, a cube, and a
     /// cuboid are meters; those of a sphere go one time around it.
@@ -348,7 +348,7 @@ impl TextureDef {
     fn apply(&self, mesh: Mesh, directory: &Path, textures: &mut Textures) -> Mesh {
         mesh.with_uv_scale(self.scale)
             .with_base_color_texture(TextureRef {
-                texture: textures.load(&directory.join(&self.path)),
+                texture: textures.load(&self.path.resolve(directory)),
                 nearest: self.filter == Filter::Nearest,
             })
     }
@@ -549,7 +549,7 @@ pub struct SoundDef {
     /// A sound file (WAV or Ogg Vorbis). A path that is not absolute starts at the
     /// directory of the room file.
     #[field(label = "sound file", file = "sound")]
-    pub file: PathBuf,
+    pub file: FileRef,
     /// 1.0: as loud as the file is.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     #[field(range = 0.0..=4.0)]
@@ -567,7 +567,7 @@ pub struct SoundDef {
 impl Default for SoundDef {
     fn default() -> Self {
         Self {
-            file: PathBuf::new(),
+            file: FileRef::default(),
             volume: 1.0,
             reach: default_reach(),
             on: true,
@@ -587,7 +587,7 @@ impl SoundDef {
     /// The component of the sound. `directory`: of the room file.
     pub fn source(&self, directory: &Path) -> SoundSource {
         SoundSource {
-            path: directory.join(&self.file),
+            path: self.file.resolve(directory),
             volume: self.volume,
             reach: self.reach,
             on: self.on,
@@ -994,7 +994,7 @@ pub fn read_room(path: &Path, validators: &RoomValidators) -> Result<(RoomDef, S
     // that the name can be set right. The loader then shows the room without it.
     let directory = path.parent().unwrap_or(Path::new(""));
     for (_, prefab) in room.each_prefab() {
-        read_prefab(&directory.join(&prefab.file))
+        read_prefab(&prefab.file.resolve(directory))
             .with_context(|| format!("{}: a prefab of the room", path.display()))?;
     }
     Ok((room, text))
@@ -1259,7 +1259,9 @@ pub(crate) fn watch_models(
 fn prefab_files(current: &CurrentRoom) -> Vec<PathBuf> {
     let directory = current.path.parent().unwrap_or(Path::new(""));
     let prefabs = current.def.each_prefab().into_iter();
-    prefabs.map(|(_, used)| directory.join(used.file)).collect()
+    prefabs
+        .map(|(_, used)| used.file.resolve(directory))
+        .collect()
 }
 
 /// A model of a prop while it loads. `spawn_loaded_models` replaces the entity with
@@ -1336,7 +1338,7 @@ pub fn load_requested_room(
         .iter()
         .filter_map(|object| object.prop()?.ok())
         .filter_map(|prop| match &prop.mesh {
-            MeshDef::File(path) => Some(directory.join(path)),
+            MeshDef::File(path) => Some(path.resolve(directory)),
             _ => None,
         })
         .collect();
@@ -1565,7 +1567,7 @@ impl Spawner<'_, '_, '_> {
     // ponytail: the file is read at each load of the room. A store by path when a
     // room names many prefabs.
     fn prefab(&mut self, used: &PrefabUse, item: RoomItem, width: f32, depth: f32) {
-        let prefab = match read_prefab(&self.directory.join(&used.file)) {
+        let prefab = match read_prefab(&used.file.resolve(self.directory)) {
             Ok(prefab) => prefab,
             Err(error) => {
                 tracing::error!("prefab not shown: {error:#}");
@@ -1583,7 +1585,7 @@ impl Spawner<'_, '_, '_> {
         let file = matches!(prop.mesh, MeshDef::File(_));
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
-                let path = self.directory.join(path);
+                let path = path.resolve(self.directory);
                 let (models, meshes) = (&mut *self.models, &mut *self.meshes);
                 let (textures, loads) = (&mut *self.textures, &mut *self.loads);
                 let model = *self
@@ -1935,7 +1937,7 @@ mod tests {
                 material: Some(Material::Glass { ior: 1.5 }),
                 emissive: None,
                 texture: Some(TextureDef {
-                    path: PathBuf::from("ball.png"),
+                    path: "ball.png".into(),
                     scale: 2.0,
                     filter: Filter::Nearest,
                 }),
@@ -1953,7 +1955,7 @@ mod tests {
             direction: None,
             cone: None,
             sound: Some(SoundDef {
-                file: PathBuf::from("hum.wav"),
+                file: "hum.wav".into(),
                 volume: 0.5,
                 reach: 6.0,
                 on: false,
@@ -2398,6 +2400,40 @@ mod tests {
         let (meshes, textures) = load("plain.ron");
         assert_eq!((meshes.len(), textures), (1, 0));
         assert_eq!(load("textured.ron").1, 2);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_file_moved_with_its_id_file_loads_by_its_id() {
+        use maki_assets::Textures;
+
+        let directory = std::env::temp_dir().join(format!("maki-moved-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("new")).unwrap();
+        let moved = directory.join("new/floor.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 255]))
+            .save(&moved)
+            .unwrap();
+        std::fs::write(maki_assets::FileId::file_of(&moved), "00000000000000a1").unwrap();
+        let room = |floor: &str| format!("(width: 4, depth: 4, height: 3, floor: (path: {floor}))");
+        let by_id = room(r#"(path: "old/floor.png", id: "00000000000000a1")"#);
+        std::fs::write(directory.join("by_id.ron"), by_id).unwrap();
+        std::fs::write(directory.join("by_path.ron"), room(r#""old/floor.png""#)).unwrap();
+
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_assets::AssetsModule)
+            .add_module(SceneModule);
+        let mut textures = |name: &str| {
+            app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+                path: directory.join(name),
+                spawn: None,
+                text: None,
+            });
+            app.advance(Duration::from_millis(16));
+            app.world().resource::<Textures>().iter().count()
+        };
+        // A path alone does not look for the file; the id finds it.
+        assert_eq!(textures("by_path.ron"), 0);
+        assert_eq!(textures("by_id.ron"), 1);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

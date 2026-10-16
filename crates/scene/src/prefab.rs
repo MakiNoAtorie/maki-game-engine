@@ -10,10 +10,11 @@
 //! a part of a struct with no type. Two trees merge with no type.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use glam::Vec3;
+use maki_assets::FileRef;
 use maki_core::Fields;
 use maki_core::Transform;
 use maki_core::fields::Value;
@@ -55,7 +56,7 @@ pub fn prefab_text(prefab: &PrefabDef) -> String {
 pub struct PrefabFile {
     /// From the directory of the room file.
     #[field(label = "prefab file", file = "prefab")]
-    pub file: PathBuf,
+    pub file: FileRef,
     /// The values that this instance changed: by `object/component` of the file
     /// ([`change_key`]), the changed fields as a tree.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -69,7 +70,7 @@ pub struct PrefabFile {
 pub struct PrefabUse {
     pub name: Option<String>,
     /// From the directory of the room file.
-    pub file: PathBuf,
+    pub file: FileRef,
     /// Where the origin of the prefab is in the room, and its turn and scale.
     pub pose: PoseDef,
     /// As [`PrefabFile::changes`].
@@ -122,7 +123,7 @@ impl ObjectDef {
         let Some(Ok(used)) = self.prefab() else {
             return components;
         };
-        let Ok(prefab) = read_prefab(&directory.join(&used.file)) else {
+        let Ok(prefab) = read_prefab(&used.file.resolve(directory)) else {
             return components;
         };
         for object in instance_objects(&used, &prefab, types) {
@@ -299,7 +300,7 @@ mod tests {
         let prefab: PrefabDef = ron_options().from_str(LAMP).unwrap();
         let mut used = PrefabUse {
             name: Some("lamp 2".to_owned()),
-            file: PathBuf::from("lamp.prefab"),
+            file: "lamp.prefab".into(),
             pose: PoseDef {
                 position: [3.0, 0.0, 1.0],
                 rotation: [0.0, 90.0, 0.0],

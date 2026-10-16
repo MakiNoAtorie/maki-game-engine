@@ -217,7 +217,7 @@ impl PlayerFile {
             .collect();
         if let MeshDef::File(model) = mesh {
             let check: maki_assets::Check = maki_assets::check_model;
-            files.push((self.rooms.join(model), check));
+            files.push((model.resolve(&self.rooms), check));
         }
         files
     }
@@ -261,7 +261,7 @@ fn give_mesh(
 ) {
     match mesh {
         MeshDef::File(path) => {
-            let path = rooms.join(path);
+            let path = path.resolve(rooms);
             let model = load_gltf(&path, models, meshes, textures);
             entity.insert((PendingPlayerModel(model), PlayerModel(model, path)));
         }

@@ -5,6 +5,7 @@
 //! returns `None` until the asset is ready. Code that obeys this rule does not change
 //! when a loader becomes asynchronous or reads a different file format.
 
+mod file_ref;
 mod mesh;
 mod model;
 mod texture;
@@ -20,6 +21,7 @@ use maki_core::{App, Module, Settings, Update};
 use serde::{Deserialize, Serialize};
 use slotmap::{DefaultKey, SlotMap};
 
+pub use file_ref::{FileId, FileRef, has_id_table};
 pub use mesh::{Doorway, Material, Mesh, Wall};
 pub use model::{Model, ModelLight, ModelLoads, check_model, load_gltf};
 pub use texture::{Texture, TextureRef, Textures, check_image};

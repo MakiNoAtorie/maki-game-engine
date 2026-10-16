@@ -293,7 +293,7 @@ impl Document {
                             on_floor(0.5),
                         )
                     }
-                    Kind::Model(path) => prop(MeshDef::File(path), on_floor(0.0)),
+                    Kind::Model(path) => prop(MeshDef::File(path.into()), on_floor(0.0)),
                     _ => unreachable!("the outer arm has the four kinds of a prop"),
                 };
                 // A name of its own: the outliner lists the object by it, and a
@@ -320,7 +320,7 @@ impl Document {
                 let stem = stem.to_string_lossy().into_owned();
                 let used = PrefabUse {
                     name: None,
-                    file,
+                    file: file.into(),
                     pose: on_floor(0.0),
                     changes: Default::default(),
                 };
@@ -598,7 +598,7 @@ impl Document {
         let used = PrefabUse {
             name: None,
             // Forward slashes: the same room file on each system.
-            file: PathBuf::from(file.to_string_lossy().replace('\\', "/")),
+            file: PathBuf::from(file.to_string_lossy().replace('\\', "/")).into(),
             pose: outer,
             changes: Default::default(),
         };
@@ -621,7 +621,9 @@ impl Document {
         let Some(used) = self.prefab_use(item) else {
             return Err("Select a prefab first".to_owned());
         };
-        let path = self.path.parent().unwrap_or(Path::new("")).join(&used.file);
+        let path = used
+            .file
+            .resolve(self.path.parent().unwrap_or(Path::new("")));
         let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
         let mut items = Vec::new();
         for mut object in instance_objects(&used, &prefab, types) {
@@ -645,7 +647,7 @@ impl Document {
             }
         }
         self.dirty = true;
-        Ok((items, used.file, used.pose))
+        Ok((items, used.file.path, used.pose))
     }
 
     /// What undo and redo keep: all of the document but the path.
