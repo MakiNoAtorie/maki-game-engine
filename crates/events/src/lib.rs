@@ -18,6 +18,7 @@ mod check;
 mod command;
 mod interpreter;
 mod model;
+mod objects;
 mod script;
 
 use std::collections::BTreeMap;
@@ -40,6 +41,7 @@ pub use model::{
     Area, Compare, Condition, EventDef, EventPages, Page, Trigger, Wire, active_page, all_hold,
     short_events,
 };
+pub use objects::ObjectCommand;
 pub use script::{
     Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
 };
@@ -115,6 +117,8 @@ impl Module for EventsModule {
         maki_scene::add_component_reader(app, "event", interpreter::insert_event);
         // A room with a bad event is not loaded. The check has the registry, with
         // the commands and the checks that other modules add later.
+        // Show, hide, and move of any object.
+        objects::add(app, &registry);
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)

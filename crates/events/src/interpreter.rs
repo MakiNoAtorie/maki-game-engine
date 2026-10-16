@@ -11,14 +11,14 @@
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::query::{QueryState, With};
+use bevy_ecs::query::{Has, QueryState, With};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{EntityCommands, Res, ResMut};
 use bevy_ecs::world::{EntityWorldMut, Mut, World};
 use glam::Vec3;
 use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
-use maki_scene::{ComponentText, CurrentRoom, Name, ObjectId, Player, RoomItem};
+use maki_scene::{ComponentText, CurrentRoom, Hidden, Name, ObjectId, Player, RoomItem};
 
 use crate::command::{Command, CommandRegistry, Step};
 use crate::model::{EventDef, EventPages, Trigger, active_page};
@@ -277,13 +277,16 @@ impl EventRunner {
             Option<&Interpolated>,
             Option<&RoomItem>,
             Option<&EventMemory>,
+            Has<Hidden>,
         )>();
         let mut events: Vec<_> = events.iter(world).collect();
         events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
 
         let state = world.resource::<GameState>();
         let mut memories = Vec::new();
-        for (entity, pages, name, area, pose, _, memory) in events {
+        for (entity, pages, name, area, pose, _, memory, hidden) in events {
+            // The area of a hidden object gives no output.
+            let area = area.filter(|_| !hidden);
             let name = name.map_or("", |name| name.0.as_str());
             let at = pose.map_or(Vec3::ZERO, |pose| pose.current.translation);
             let area = area.map(|area| EventDef::area_at(area, at.to_array()));

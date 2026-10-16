@@ -295,15 +295,20 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
         .map(|(entity, hooked)| (entity, hooked.map(|hooked| hooked.inside)))
         .collect();
     for (entity, before) in entities {
-        let area = world.get::<TriggerArea>(entity).map(|area| {
-            let center = world
-                .get::<Interpolated>(entity)
-                .map_or(Vec3::ZERO, |pose| pose.current.translation);
-            Area {
-                center: [center.x, center.z],
-                size: [area.width, area.depth],
-            }
-        });
+        // The area of a hidden object gives no output.
+        let hidden = world.entity(entity).contains::<maki_scene::Hidden>();
+        let area = world
+            .get::<TriggerArea>(entity)
+            .filter(|_| !hidden)
+            .map(|area| {
+                let center = world
+                    .get::<Interpolated>(entity)
+                    .map_or(Vec3::ZERO, |pose| pose.current.translation);
+                Area {
+                    center: [center.x, center.z],
+                    size: [area.width, area.depth],
+                }
+            });
         let inside =
             area.is_some_and(|area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0));
         // A hook before could have despawned the entity.
