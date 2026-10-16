@@ -108,6 +108,8 @@ pub enum Kind {
         /// The value when a tool turns it on. `None`: [`Kind::zero`] of `inner`.
         some: Option<Value>,
     },
+    /// A list of values of one kind (`Vec<T>`): a tool adds and removes items.
+    List(Box<Kind>),
     /// A struct.
     Group(Vec<Field>),
     /// An enum.
@@ -236,6 +238,7 @@ impl Kind {
             Kind::Vector { .. } => Value::from(vec![0.0; 3]),
             Kind::Color => Value::from(vec![1.0; 3]),
             Kind::Optional { .. } => Value::Null,
+            Kind::List(_) => Value::Array(Vec::new()),
             Kind::Group(fields) => Value::Object(zero_map(fields)),
             Kind::Choice(variants) => variants.first().map_or(Value::Null, Variant::zero),
         }
@@ -395,6 +398,16 @@ impl<T: Fields> Fields for Option<T> {
 
     fn tree(&self) -> Value {
         self.as_ref().map_or(Value::Null, Fields::tree)
+    }
+}
+
+impl<T: Fields> Fields for Vec<T> {
+    fn kind() -> Kind {
+        Kind::List(Box::new(T::kind()))
+    }
+
+    fn tree(&self) -> Value {
+        Value::Array(self.iter().map(Fields::tree).collect())
     }
 }
 

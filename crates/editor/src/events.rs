@@ -279,14 +279,18 @@ impl Names {
                 };
                 for condition in &page.conditions {
                     let text = format!("if {condition:?}");
-                    place(condition.is_variable(), condition.name(), text, false);
+                    if let Some(name) = condition.name() {
+                        place(condition.is_variable(), name, text, false);
+                    }
                 }
                 registry.each_command(&page.commands, &mut |command| match command.get() {
                     Some(Builtin::If(conditions, ..)) => {
                         for condition in conditions {
                             let variable = condition.is_variable();
                             let text = command_text(command, registry);
-                            place(variable, condition.name(), text, false);
+                            if let Some(name) = condition.name() {
+                                place(variable, name, text, false);
+                            }
                         }
                     }
                     Some(Builtin::SetFlag(name, _)) => {

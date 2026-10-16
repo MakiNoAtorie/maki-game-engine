@@ -21,6 +21,7 @@ mod model;
 mod objects;
 mod routine;
 mod script;
+mod state;
 
 use std::collections::BTreeMap;
 
@@ -39,8 +40,8 @@ pub use interpreter::{
     run_events, start_event,
 };
 pub use model::{
-    Area, Compare, Condition, EventDef, EventPages, Page, Trigger, Wire, active_page, all_hold,
-    short_events,
+    Area, Compare, Condition, EventDef, EventPages, Facts, Page, Trigger, Wire, active_page,
+    all_hold, short_events,
 };
 pub use objects::ObjectCommand;
 pub use routine::{
@@ -48,6 +49,10 @@ pub use routine::{
 };
 pub use script::{
     Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
+};
+pub use state::{
+    NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,
+    room_key,
 };
 
 /// Starts the event that the player faces, closes a message, and takes the marked
@@ -134,6 +139,8 @@ impl Module for EventsModule {
         // the commands and the checks that other modules add later.
         // Show, hide, and move of any object.
         objects::add(app, &registry);
+        // The switches and numbers of an object.
+        state::add(app, &registry);
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)

@@ -300,17 +300,23 @@ pub(crate) fn with_lists(command: &Builtin, lists: Vec<Vec<Command>>) -> Builtin
 
 /// A built-in command as a line for a reader (`CommandRegistry::add_texts`).
 pub(crate) fn row_text(command: &Builtin) -> Option<String> {
+    let sign = |compare: &Compare| match compare {
+        Compare::Equals => "=",
+        Compare::NotEquals => "!=",
+        Compare::Less => "<",
+        Compare::AtLeast => ">=",
+    };
+    let object = crate::state::object_text;
     let condition = |condition: &Condition| match condition {
         Condition::Flag(name) => name.clone(),
         Condition::NotFlag(name) => format!("not {name}"),
         Condition::Variable(name, compare, value) => {
-            let sign = match compare {
-                Compare::Equals => "=",
-                Compare::NotEquals => "!=",
-                Compare::Less => "<",
-                Compare::AtLeast => ">=",
-            };
-            format!("{name} {sign} {value}")
+            format!("{name} {} {value}", sign(compare))
+        }
+        Condition::Switch(id, name) => format!("{}.{name}", object(id)),
+        Condition::NotSwitch(id, name) => format!("not {}.{name}", object(id)),
+        Condition::Number(id, name, compare, value) => {
+            format!("{}.{name} {} {value}", object(id), sign(compare))
         }
     };
     Some(match command {

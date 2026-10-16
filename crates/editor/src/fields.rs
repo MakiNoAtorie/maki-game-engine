@@ -198,6 +198,35 @@ fn value(
             *tree = set.unwrap_or(Value::Null);
             changed
         }
+        Kind::List(inner) => {
+            if !tree.is_array() {
+                *tree = Value::Array(Vec::new());
+            }
+            let items = tree.as_array_mut().expect("set above");
+            let rows = |ui: &mut Ui| {
+                let (mut changed, mut remove) = (false, None);
+                for (index, item) in items.iter_mut().enumerate() {
+                    ui.push_id(index, |ui| {
+                        changed |= value(ui, "", "", inner, item, None, lists);
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                    ui.separator();
+                }
+                if let Some(index) = remove {
+                    items.remove(index);
+                    changed = true;
+                }
+                if ui.small_button("Add").clicked() {
+                    items.push(inner.zero());
+                    changed = true;
+                }
+                changed
+            };
+            row(ui, label, |_| {});
+            ui.indent((label, "list"), rows).inner
+        }
         Kind::Group(table) => {
             let mut rows = |ui: &mut Ui| {
                 let mut changed = false;
