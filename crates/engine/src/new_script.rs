@@ -130,17 +130,31 @@ pub fn fill(template: &str, snake: &str, pascal: &str) -> String {
 }
 
 /// `src/lib.rs` with the module and its line in `add_modules`. `None`: the text has
-/// no top-level `mod` line or no `add_modules`.
+/// no `add_modules`.
 fn register(lib: &str, snake: &str) -> Option<String> {
     let lines: Vec<&str> = lib.lines().collect();
-    let last_mod = lines.iter().rposition(|line| line.starts_with("mod "))?;
+    // Top level only: `mod tests {` has no `;`. Else after the `use` lines, else at
+    // the top, below the inner `//!` and `#![..]` lines that must stay first.
+    let last = |start: &str| {
+        lines
+            .iter()
+            .rposition(|l| l.starts_with(start) && l.trim_end().ends_with(';'))
+    };
+    let top = lines
+        .iter()
+        .take_while(|l| l.starts_with("//!") || l.starts_with("#!["))
+        .count();
+    let at = last("mod ").or(last("use ")).or(top.checked_sub(1));
     let entry = lines.iter().position(|line| line.trim() == ENTRY)?;
     let mod_line = format!("mod {snake};");
     let add_line = format!("    {snake}::add(app);");
     let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 2);
+    if at.is_none() {
+        out.push(&mod_line);
+    }
     for (index, line) in lines.iter().enumerate() {
         out.push(line);
-        if index == last_mod {
+        if Some(index) == at {
             out.push(&mod_line);
         }
         if index == entry {
@@ -213,7 +227,7 @@ mod panel {
     };
 
     use super::{create, names, templates};
-    use crate::reload::open_in_code_editor;
+    use crate::reload::open_after_build;
 
     const PANEL: &str = "new_script";
     /// The folder of the script crate in a project folder.
@@ -267,8 +281,8 @@ mod panel {
         }
     }
 
-    /// A name, a template, and "Create": the file goes into the script crate and
-    /// opens in the code editor. The watch of the build sees it.
+    /// A name, a template, and "Create": the file goes into the script crate. It opens
+    /// in the code editor when the build passes; if not, the panel "Build" shows.
     fn new_script_panel(ui: &mut egui::Ui, world: &mut World) {
         // A new type under the name of another would take its place in each room.
         let taken: Vec<&str> = world
@@ -331,7 +345,7 @@ mod panel {
                 tracing::info!("{text}");
                 form.result = Some((text, !created.to_add.is_empty()));
                 form.name.clear();
-                open_in_code_editor(world, &created.file, 1);
+                open_after_build(world, created.file);
             }
             Some(Err(text)) => {
                 form.result = Some((text.clone(), true));
@@ -385,6 +399,25 @@ mod tests {
         let created = create(&dir, "gate", TEMPLATES[0].1).unwrap();
         assert!(created.to_add.contains("mod gate;"), "{}", created.to_add);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_mod_line_is_top_level_never_in_a_tests_block() {
+        let entry = "pub fn add_modules(app: &mut App) {\n}\n";
+        let lib =
+            format!("mod beacon;\n\n{entry}\n#[cfg(test)]\nmod tests {{\n    use super::*;\n}}\n");
+        let out = register(&lib, "gate").unwrap();
+        assert!(out.starts_with("mod beacon;\nmod gate;\n"), "{out}");
+        assert_eq!(out.matches("mod gate;").count(), 1);
+        // No `mod` line: after the `use` lines, else at the top (after the `//!` lines).
+        let out = register(
+            &format!("//! Doc.\n\nuse a::B;\nuse c::D;\n\n{entry}"),
+            "gate",
+        )
+        .unwrap();
+        assert!(out.contains("use c::D;\nmod gate;\n"), "{out}");
+        let out = register(&format!("//! Doc.\n\n{entry}"), "gate").unwrap();
+        assert!(out.starts_with("//! Doc.\nmod gate;\n"), "{out}");
     }
 
     #[test]
