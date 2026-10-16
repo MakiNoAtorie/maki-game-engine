@@ -279,7 +279,7 @@ The order is data, then behavior, then the way with no code. Each stage leaves t
 | 49 | Prefabs: a kind is a prefab file, the player is data, an instance with changes (item 2) (`stage-49-prefabs.md`) | Done (`stage-49.md`) |
 | 50 | Script components with hooks, each command as a function of a script, "New script" with its templates (2.7), the log panel (2.4) (`stage-50-scripts.md`) | Done (`stage-50.md`) |
 | 51 | The events as components, and the general commands set a field and call a script function (2.8) (`stage-51-events-as-components.md`) | Done (`stage-51.md`) |
-| 52 | Wires between objects (item 3), and "Send a signal" (`stage-52-wires.md`) | Planned |
+| 52 | Wires between objects (item 3), and "Send a signal" (`stage-52-wires.md`) | Done (`stage-52.md`) |
 | 53 | Who is the player (item 4), and the states of the game (item 5) (`stage-53-player-and-states.md`); merged before stage 52 (a parallel lane) | Done (`stage-53.md`) |
 | After the object model | What the events lack (2.8), in one stage | Not planned |
 
