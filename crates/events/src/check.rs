@@ -177,9 +177,11 @@ impl CommandRegistry {
             }
             // A wire joins an output that a component of its object has.
             for (wire_index, wire) in event.wires.iter().enumerate() {
-                if let Some(text) =
-                    context.output_problem(&ObjectRef::from(event.name.as_str()), &wire.output)
-                {
+                // The object of the event by its id; by its name in a file with no ids.
+                let object = event
+                    .id
+                    .map_or_else(|| ObjectRef::from(event.name.as_str()), ObjectRef::Id);
+                if let Some(text) = context.output_problem(&object, &wire.output) {
                     let wire = Wire::label(&event.wires, wire_index);
                     problems.push(Problem {
                         event: index,
