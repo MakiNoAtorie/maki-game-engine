@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use maki_scene::ObjectRef;
 use maki_ui::egui::{self, Ui};
 
 use crate::sources::Converters;
@@ -123,6 +124,17 @@ pub fn pick(ui: &mut Ui, text: &str, value: &mut String, known: &[String]) -> bo
     row(ui, text, |ui| {
         crate::event_panel::picker(ui, text, value, known, &[], false)
     })
+}
+
+/// Edits an object reference as a text: its name, or `id 7`. Only a new text is
+/// written, as the name form: the pick of ids comes with #43.
+pub fn object_text(object: &mut ObjectRef, edit: impl FnOnce(&mut String) -> bool) -> bool {
+    let mut text = object.to_string();
+    let changed = edit(&mut text);
+    if text != object.to_string() {
+        *object = ObjectRef::Name(text);
+    }
+    changed
 }
 
 /// The extensions of the sound files.

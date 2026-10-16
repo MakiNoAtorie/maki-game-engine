@@ -66,8 +66,8 @@ use maki_platform::{
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
-    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, Player, RoomDef, RoomOverride,
-    RoomRequest, RoomTarget, load_requested_room, patch_room,
+    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, ObjectRef, Player, RoomDef,
+    RoomOverride, RoomRequest, RoomTarget, load_requested_room, patch_room,
 };
 use maki_ui::{COMMAND_SEARCH, NoticeLevel, Panels, TOGGLE_HELP, ToolCommand, notify};
 use serde::{Deserialize, Serialize};
@@ -835,7 +835,7 @@ impl Editor {
         world.resource_mut::<RoomOverride>().0 = Some((path.clone(), text.clone()));
         world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
             path,
-            spawn,
+            spawn: spawn.map(ObjectRef::Name),
             text: Some(text),
         });
         self.status = "Playing".to_owned();
@@ -1328,7 +1328,8 @@ impl Module for EditorModule {
             event_ui: EventUi::default(),
             others: None,
             test: None,
-            play_from: Some(start.spawn),
+            // A name only: the editor picks spawn points by id with #43.
+            play_from: start.spawn.name().map(str::to_owned),
             status: String::new(),
             error: None,
             renaming: None,

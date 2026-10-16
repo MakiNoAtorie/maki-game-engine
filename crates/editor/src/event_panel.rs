@@ -23,7 +23,7 @@ use maki_ui::egui::{self, Color32, Ui};
 use crate::events::{
     ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, row, same_kind};
+use crate::widgets::{choice, drag, number, object_text, row, same_kind};
 use crate::{Command as EditorCommand, Editor};
 
 pub(crate) const ERROR: Color32 = maki_ui::THEME.error;
@@ -460,11 +460,13 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
         }
         Builtin::OpenDoor(name) | Builtin::CloseDoor(name) => {
             ui.label("door or mover");
-            pick(ui, "mover", name, &lists.movers)
+            object_text(name, |name| pick(ui, "mover", name, &lists.movers))
         }
-        Builtin::LightOn(name) | Builtin::LightOff(name) => pick(ui, "light", name, &lists.lights),
+        Builtin::LightOn(name) | Builtin::LightOff(name) => {
+            object_text(name, |name| pick(ui, "light", name, &lists.lights))
+        }
         Builtin::LightIntensity(name, value) => {
-            pick(ui, "light", name, &lists.lights)
+            object_text(name, |name| pick(ui, "light", name, &lists.lights))
                 | number(ui, "intensity", value, 0.1, 0.0..=10000.0)
         }
         Builtin::Message(message) => {
@@ -476,18 +478,20 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
         Builtin::Transfer(room, spawn) => {
             let files: Vec<String> = lists.rooms.iter().map(|room| room.0.clone()).collect();
             ui.label("room file");
-            let mut changed = pick(ui, "room", room, &files);
+            let picked = pick(ui, "room", room, &files);
             let spawns = lists.rooms.iter().find(|other| other.0 == *room);
             let spawns = spawns.map_or(&[][..], |room| &room.1);
-            // Another room: its first spawn point, if it has not the one of before.
-            if let (true, false, Some(first)) = (changed, spawns.contains(spawn), spawns.first()) {
-                spawn.clone_from(first);
-            }
-            ui.label("spawn point");
-            changed |= pick(ui, "spawn", spawn, spawns);
-            changed
+            object_text(spawn, |spawn| {
+                // Another room: its first spawn point, if it has not the one of before.
+                if let (true, false, Some(first)) = (picked, spawns.contains(spawn), spawns.first())
+                {
+                    spawn.clone_from(first);
+                }
+                ui.label("spawn point");
+                picked | pick(ui, "spawn", spawn, spawns)
+            })
         }
-        Builtin::SetField(object, component, field, value) => {
+        Builtin::SetField(object, component, field, value) => object_text(object, |object| {
             let objects: Vec<String> = lists.objects.iter().map(|found| found.0.clone()).collect();
             ui.label("object");
             let picked_object = pick(ui, "object", object, &objects);
@@ -529,12 +533,12 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
                 changed |= crate::fields::show(ui, &found.kind, value, &|_| Vec::new());
             }
             changed
-        }
+        }),
         Builtin::CallScript(name) => {
             ui.label("script function");
             pick(ui, "function", name, &lists.functions)
         }
-        Builtin::Signal(object, output) => {
+        Builtin::Signal(object, output) => object_text(object, |object| {
             let objects: Vec<String> = lists.outputs.iter().map(|found| found.0.clone()).collect();
             ui.label("object");
             let picked = pick(ui, "object", object, &objects);
@@ -547,7 +551,7 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
             }
             ui.label("output");
             picked | pick(ui, "output", output, outputs)
-        }
+        }),
         Builtin::Choice(question, answers) => {
             ui.label("question");
             let field = egui::TextEdit::multiline(question)
@@ -608,15 +612,15 @@ fn new_command(
             let answer = |text: &str| (text.to_owned(), Vec::new());
             Builtin::Choice("Question?".to_owned(), vec![answer("Yes"), answer("No")])
         }
-        "OpenDoor" => Builtin::OpenDoor(first(&lists.movers, "")),
-        "CloseDoor" => Builtin::CloseDoor(first(&lists.movers, "")),
-        "LightOn" => Builtin::LightOn(first(&lists.lights, "")),
-        "LightOff" => Builtin::LightOff(first(&lists.lights, "")),
-        "LightIntensity" => Builtin::LightIntensity(first(&lists.lights, ""), 1.0),
+        "OpenDoor" => Builtin::OpenDoor(first(&lists.movers, "").into()),
+        "CloseDoor" => Builtin::CloseDoor(first(&lists.movers, "").into()),
+        "LightOn" => Builtin::LightOn(first(&lists.lights, "").into()),
+        "LightOff" => Builtin::LightOff(first(&lists.lights, "").into()),
+        "LightIntensity" => Builtin::LightIntensity(first(&lists.lights, "").into(), 1.0),
         "Message" => Builtin::Message(String::new()),
         "FadeOut" => Builtin::FadeOut(0.4),
         "FadeIn" => Builtin::FadeIn(0.4),
-        "Transfer" => Builtin::Transfer(file, first(&spawns, "")),
+        "Transfer" => Builtin::Transfer(file, first(&spawns, "").into()),
         // The first field of the first object with a value in the game.
         "SetField" => {
             let (object, components) = lists.objects.first().cloned().unwrap_or_default();
@@ -634,12 +638,12 @@ fn new_command(
                     )
                 },
             );
-            Builtin::SetField(object, component, field, value)
+            Builtin::SetField(object.into(), component, field, value)
         }
         "CallScript" => Builtin::CallScript(first(&lists.functions, "")),
         "Signal" => {
             let (object, outputs) = lists.outputs.first().cloned().unwrap_or_default();
-            Builtin::Signal(object, first(&outputs, ""))
+            Builtin::Signal(object.into(), first(&outputs, ""))
         }
         // A command of another module: what the module gives for the name, or the
         // name alone for a command with no argument.
@@ -738,7 +742,7 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
     let own = (file_name(&editor.document), room.spawn_names());
     let other_rooms = others
         .iter()
-        .map(|room| (room.file.clone(), room.spawns.iter().cloned().collect()));
+        .map(|other| (other.file.clone(), other.room.spawn_names()));
     // The objects with a component, by name: what a command can name.
     let with = |kinds: &[&str]| -> Vec<String> {
         let objects = room.objects.iter();
@@ -1488,8 +1492,11 @@ mod tests {
         let Some(Builtin::SetField(object, component, field, value)) = new.get() else {
             panic!("not a SetField row");
         };
-        assert_eq!((object.as_str(), component.as_str()), ("lamp", "light"));
-        let key = (object.clone(), component.clone(), field.clone());
+        assert_eq!(
+            (object.to_string().as_str(), component.as_str()),
+            ("lamp", "light")
+        );
+        let key = (object.to_string(), component.clone(), field.clone());
         assert_eq!(Some(value), lists.current.get(&key));
         let intensity = (
             "lamp".to_owned(),

@@ -87,7 +87,7 @@ output = false",
         .add_module(CameraModule)
         .add_module(RoomsModule {
             start_room: directory.join("a.ron"),
-            start_spawn: "start".to_owned(),
+            start_spawn: "start".into(),
         })
         .add_module(UiModule)
         .add_module(EditorModule {
@@ -479,7 +479,7 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
             conditions: Vec::new(),
             trigger: Trigger::Autorun,
             commands: vec![
-                command(Builtin::OpenDoor("mover".to_owned())),
+                command(Builtin::OpenDoor("mover".into())),
                 command(Builtin::SetFlag("up".to_owned(), true)),
             ],
         }];
@@ -705,7 +705,7 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         );
         app.resource_mut::<maki_scene::RoomRequest>().0 = Some(maki_scene::RoomTarget {
             path: directory.join("a.ron"),
-            spawn: Some("start".to_owned()),
+            spawn: Some("start".into()),
             text: None,
         });
         frames(&mut app, 1);
@@ -778,7 +778,7 @@ fn a_sound_command_is_added_with_arguments_and_a_rename_of_its_light_follows() {
     let lamp = || "lamp".to_owned();
     assert_eq!(
         new("SoundOn"),
-        registry.command(AudioCommand::SoundOn(lamp()))
+        registry.command(AudioCommand::SoundOn(lamp().into()))
     );
     assert_eq!(
         new("PlaySound"),

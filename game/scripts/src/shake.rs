@@ -125,7 +125,7 @@ mod tests {
             .add_module(ShakeModule);
         let target = RoomTarget {
             path: path.clone(),
-            spawn: Some("start".to_owned()),
+            spawn: Some("start".into()),
             text: None,
         };
         app.add_systems(

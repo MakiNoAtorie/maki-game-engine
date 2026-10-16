@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use maki_scene::ObjectRef;
 use serde::Deserialize;
 
 /// The name of the project file in a project folder.
@@ -16,7 +17,7 @@ struct ProjectFile {
     name: String,
     rooms: PathBuf,
     start_room: PathBuf,
-    start_spawn: String,
+    start_spawn: ObjectRef,
     save: PathBuf,
     scripts: String,
     /// The prefab file of the player, from `rooms`. No key: a capsule.
@@ -38,7 +39,7 @@ pub struct Project {
     /// Where the game starts if the config file names no room: a file of `rooms`,
     /// and a spawn point of it.
     pub start_room: PathBuf,
-    pub start_spawn: String,
+    pub start_spawn: ObjectRef,
     /// The save file of the game.
     pub save: PathBuf,
     /// The cargo package that the editor builds and loads: the script crate of the
@@ -104,5 +105,10 @@ mod tests {
         // A key that the engine does not know is an error, with its name.
         let error = Project::parse(Path::new("game"), &format!("{text}\nrom = 1"));
         assert!(format!("{:#}", error.unwrap_err()).contains("rom"));
+        // The start spawn by its id, or by its name.
+        assert_eq!(project.start_spawn, ObjectRef::from("start"));
+        let by_id = text.replace(r#"start_spawn = "start""#, "start_spawn = 2");
+        let project = Project::parse(Path::new("game"), &by_id).unwrap();
+        assert_eq!(project.start_spawn, ObjectRef::Id(maki_scene::ObjectId(2)));
     }
 }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::World;
 use maki_events::{CheckContext, CommandRegistry, Finding, Step};
-use maki_scene::{CurrentRoom, Name, RoomDef, SoundSource};
+use maki_scene::{CurrentRoom, Name, ObjectId, ObjectRef, RoomDef, SoundSource};
 use serde::{Deserialize, Serialize};
 
 use crate::Audio;
@@ -21,9 +21,9 @@ pub enum AudioCommand {
     PlayMusic(PathBuf, f32),
     /// The music fades out.
     StopMusic,
-    /// Turns the sound of a light of the room on, by the name of the light.
-    SoundOn(String),
-    SoundOff(String),
+    /// Turns the sound of a light of the room on.
+    SoundOn(ObjectRef),
+    SoundOff(ObjectRef),
 }
 
 /// The names of the things of a room that have a sound: what `SoundOn` and
@@ -70,22 +70,22 @@ fn run(command: &AudioCommand, step: &mut Step, world: &mut World) -> bool {
 }
 
 /// Writes the component only: the audio module starts and stops the sound.
-fn set_source(world: &mut World, name: &str, on: bool, event: &str) {
+fn set_source(world: &mut World, name: &ObjectRef, on: bool, event: &str) {
     let mut found = false;
-    let mut sources = world.query::<(&Name, &mut SoundSource)>();
-    for (source_name, mut source) in sources.iter_mut(world) {
-        if source_name.0 != name {
+    let mut sources = world.query::<(Option<&ObjectId>, Option<&Name>, &mut SoundSource)>();
+    for (id, source_name, mut source) in sources.iter_mut(world) {
+        if !name.is(id, source_name.map(|name| name.0.as_str())) {
             continue;
         }
         found = true;
         // An event in a loop gives the command again and again: one write.
         if source.on != on {
             source.on = on;
-            tracing::debug!(event, name, on, "sound of the room");
+            tracing::debug!(event, %name, on, "sound of the room");
         }
     }
     if !found {
-        tracing::warn!(name, "an event names a sound that the room does not have");
+        tracing::warn!(%name, "an event names a sound that the room does not have");
     }
 }
 
@@ -97,7 +97,10 @@ fn check(command: &AudioCommand, context: &CheckContext) -> Option<Finding> {
             missing.then(|| Finding::warning(format!("no sound file `{}`", file.display())))
         }
         AudioCommand::SoundOn(name) | AudioCommand::SoundOff(name) => {
-            let missing = !sound_names(context.room).contains(name);
+            let with_sound = |(_, object): (usize, &maki_scene::ObjectDef)| {
+                object.light()?.ok()?.sound.is_some().then_some(())
+            };
+            let missing = context.room.find(name).and_then(with_sound).is_none();
             missing.then(|| Finding::error(format!("the room has no light `{name}` with a sound")))
         }
         AudioCommand::StopMusic => None,
@@ -127,7 +130,7 @@ fn help(name: &str) -> Option<&'static str> {
 
 /// A new command for a tool (`CommandRegistry::add_defaults`).
 fn new(name: &str, room: &RoomDef) -> Option<AudioCommand> {
-    let first = || sound_names(room).into_iter().next().unwrap_or_default();
+    let first = || ObjectRef::Name(sound_names(room).into_iter().next().unwrap_or_default());
     Some(match name {
         "PlaySound" => AudioCommand::PlaySound(PathBuf::new(), 1.0),
         "PlayMusic" => AudioCommand::PlayMusic(PathBuf::new(), 1.0),

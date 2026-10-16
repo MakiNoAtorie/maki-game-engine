@@ -6,14 +6,14 @@
 //! is the same code for the two. A module adds the check of its own commands with
 //! [`CommandRegistry::add_check`].
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
 use bevy_ecs::system::Res;
 use maki_core::fields::Value;
-use maki_scene::{ComponentTypes, RoomCheck, RoomDef, RoomProblem, RoomValidator};
+use maki_scene::{ComponentTypes, ObjectRef, RoomCheck, RoomDef, RoomProblem, RoomValidator};
 
 use crate::builtin::Builtin;
 use crate::command::{Command, CommandRegistry, Stop};
@@ -26,9 +26,9 @@ pub struct CheckContext<'a> {
     pub file: &'a str,
     /// The directory of the room file: a file name of a command starts there.
     pub directory: &'a Path,
-    /// For another room file in the directory of the room, and a name: true if the
-    /// file has a spawn point of that name. `None`: no such room file.
-    pub spawn: &'a dyn Fn(&str, &str) -> Option<bool>,
+    /// For another room file in the directory of the room, and a spawn point: true if
+    /// the file has it. `None`: no such room file.
+    pub spawn: &'a dyn Fn(&str, &ObjectRef) -> Option<bool>,
     /// The script functions and the outputs of the component types.
     pub registry: &'a CommandRegistry,
 }
@@ -36,8 +36,8 @@ pub struct CheckContext<'a> {
 impl CheckContext<'_> {
     /// What is wrong with an output of an object of the room. `None`: the object has
     /// it.
-    pub fn output_problem(&self, object: &str, output: &str) -> Option<String> {
-        let Some((_, found)) = self.room.object_named(object) else {
+    pub fn output_problem(&self, object: &ObjectRef, output: &str) -> Option<String> {
+        let Some((_, found)) = self.room.find(object) else {
             return Some(format!("the room has no object `{object}`"));
         };
         let has = self.registry.outputs_of(found).contains(&output);
@@ -46,9 +46,25 @@ impl CheckContext<'_> {
 }
 
 impl CheckContext<'_> {
+    /// True if the object, or the prefab of an instance, has one of the components.
+    pub fn reaches(&self, object: &ObjectRef, components: &[&str]) -> bool {
+        let Some((_, found)) = self.room.find(object) else {
+            return false;
+        };
+        let types = self
+            .registry
+            .component_types
+            .read()
+            .expect("no writer panics");
+        let reached = found.reached_components(self.directory, &types);
+        components
+            .iter()
+            .any(|component| reached.contains_key(*component))
+    }
+
     /// True if the room file has the spawn point. `None`: no such room file. The
     /// file can be the room itself.
-    pub fn has_spawn(&self, file: &str, spawn: &str) -> Option<bool> {
+    pub fn has_spawn(&self, file: &str, spawn: &ObjectRef) -> Option<bool> {
         if file == self.file {
             return Some(self.room.spawn(spawn).is_some());
         }
@@ -63,12 +79,12 @@ impl CheckContext<'_> {
     /// the row is right.
     pub fn field_problem(
         &self,
-        object: &str,
+        object: &ObjectRef,
         component: &str,
         field: &str,
         value: &Value,
     ) -> Option<String> {
-        let Some((_, found)) = self.room.object_named(object) else {
+        let Some((_, found)) = self.room.find(object) else {
             return Some(format!("the room has no object `{object}`"));
         };
         let types = self
@@ -155,7 +171,9 @@ impl CommandRegistry {
             }
             // A wire joins an output that a component of its object has.
             for (wire_index, wire) in event.wires.iter().enumerate() {
-                if let Some(text) = context.output_problem(&event.name, &wire.output) {
+                if let Some(text) =
+                    context.output_problem(&ObjectRef::from(event.name.as_str()), &wire.output)
+                {
                     let wire = Wire::label(&event.wires, wire_index);
                     problems.push(Problem {
                         event: index,
@@ -210,7 +228,8 @@ impl CommandRegistry {
             };
             let file = check.path.file_name().unwrap_or_default();
             let directory = check.path.parent().unwrap_or(Path::new(""));
-            let spawn = |file: &str, spawn: &str| neighbors.has_spawn(&directory.join(file), spawn);
+            let spawn =
+                |file: &str, spawn: &ObjectRef| neighbors.has_spawn(&directory.join(file), spawn);
             let context = CheckContext {
                 room: check.room,
                 file: &file.to_string_lossy(),
@@ -242,19 +261,19 @@ impl CommandRegistry {
 #[derive(Default)]
 struct Neighbors(Mutex<HashMap<PathBuf, Neighbor>>);
 
-/// When the file was written, and its spawn points.
-type Neighbor = (Option<SystemTime>, BTreeSet<String>);
+/// When the file was written, and the room.
+type Neighbor = (Option<SystemTime>, RoomDef);
 
 impl Neighbors {
     /// `None`: the file is not there, or it is not a room.
-    fn has_spawn(&self, path: &Path, spawn: &str) -> Option<bool> {
+    fn has_spawn(&self, path: &Path, spawn: &ObjectRef) -> Option<bool> {
         let written = std::fs::metadata(path).ok()?.modified().ok();
         let mut files = self.0.lock().expect("no holder panics");
         if files.get(path).is_none_or(|(known, _)| *known != written) {
             let text = std::fs::read_to_string(path).ok()?;
-            let spawns = maki_scene::parse_room(&text).ok()?.spawn_names();
-            files.insert(path.to_owned(), (written, spawns.into_iter().collect()));
+            let room = maki_scene::parse_room(&text).ok()?;
+            files.insert(path.to_owned(), (written, room));
         }
-        Some(files[path].1.contains(spawn))
+        Some(files[path].1.spawn(spawn).is_some())
     }
 }

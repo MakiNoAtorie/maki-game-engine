@@ -56,7 +56,7 @@ fn game(directory: &std::path::Path) -> App {
                 commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
                 request.0 = Some(RoomTarget {
                     path: path.clone(),
-                    spawn: Some("start".to_owned()),
+                    spawn: Some("start".into()),
                     text: None,
                 });
             },
@@ -265,6 +265,74 @@ fn commands_reach_the_door_the_light_the_fade_and_the_next_room() {
         assert_eq!(running(&app), 0);
     });
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// The room of [`room`] with ids, each object renamed after the commands named it
+/// by its id; and a button (id 5) whose wire opens the door by its id.
+fn renamed_room(events: &str) -> String {
+    let button = r#"objects: [(id: 5, name: "knob", pose: (position: (3, 0, 3)), components: {"area": (width: 0.5, depth: 0.5), "event": (wires: [(output: "used", commands: [OpenDoor(1)])])}),"#;
+    room(events)
+        .replacen("objects: [", button, 1)
+        .replacen(r#"(name: "door""#, r#"(id: 1, name: "gate""#, 1)
+        .replacen(r#"(name: "lamp""#, r#"(id: 2, name: "bulb""#, 1)
+        .replacen(r#"(name: "east""#, r#"(id: 4, name: "far""#, 1)
+}
+
+#[test]
+fn a_command_a_wire_and_a_transfer_by_id_reach_their_objects_after_a_rename() {
+    let directory = directory("ids");
+    let events = r#"(name: "show", pages: [(trigger: Autorun, commands: [
+        Signal(5, "used"), LightOff(2), SetField(2, "light", "intensity", 3.0),
+        Wait(0.3), Transfer("b.ron", 4), SetFlag("there", true)])])"#;
+    std::fs::write(directory.join("a.ron"), renamed_room(events)).unwrap();
+    std::fs::write(directory.join("b.ron"), renamed_room("")).unwrap();
+    let app = game(&directory);
+    app.run(|mut app| {
+        steps(&mut app, 12);
+        let world = app.world();
+        let door = world
+            .try_query::<&Mover>()
+            .unwrap()
+            .single(world)
+            .unwrap()
+            .state;
+        assert_eq!(door, MoverState::AtB);
+        let lamp = *world.try_query::<&Light>().unwrap().single(world).unwrap();
+        assert_eq!((lamp.on, lamp.intensity), (false, 3.0));
+        steps(&mut app, 15);
+        assert!(flag(&app, "there"));
+        let current = app.world().resource::<CurrentRoom>();
+        assert!(current.path.ends_with("b.ron"));
+        assert_eq!(current.spawn, Some([2.0, 0.0, 0.0]));
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn the_check_reports_an_id_with_no_object() {
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    app.update();
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let events = r#"(name: "a", pages: [(trigger: Interact, commands: [
+        OpenDoor(1), OpenDoor(9), LightOn(2), LightOff(1), Signal(8, "used"),
+        SetField(7, "light", "intensity", 1.0), Transfer("a.ron", 4), Transfer("a.ron", 6)])])"#;
+    let path = std::path::Path::new("a.ron");
+    let error = maki_scene::check_room(path, &renamed_room(events), validators)
+        .unwrap_err()
+        .to_string();
+    for wanted in [
+        "the room has no door or mover `id 9`",
+        "the room has no light `id 1`",
+        "the room has no object `id 8`",
+        "the room has no object `id 7`",
+    ] {
+        assert!(error.contains(wanted), "{wanted}: {error}");
+    }
+    // Each other row is right: four errors. The spawn point is a warning.
+    assert_eq!(error.lines().count(), 4, "{error}");
 }
 
 #[test]
@@ -498,7 +566,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         .collect();
     assert_eq!(found[0], (0, false, "the room has no door or mover `dor`"));
     assert_eq!(found.len(), 5);
-    let wrong = registry.command(Builtin::OpenDoor("dor".to_owned()));
+    let wrong = registry.command(Builtin::OpenDoor("dor".into()));
     assert_eq!(problems[0].command, wrong.map(|command| (0, command)));
 
     // A `Transfer` to a file or a spawn point that is not there: the room loads.
@@ -509,7 +577,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         (trigger: Touch, commands: [Transfer("a.ron", "north")])])"#;
     assert!(check(transfer).is_ok());
     let def = maki_scene::parse_room(&room(transfer)).unwrap();
-    let texts = |spawn: &dyn Fn(&str, &str) -> Option<bool>| -> Vec<String> {
+    let texts = |spawn: &dyn Fn(&str, &maki_scene::ObjectRef) -> Option<bool>| -> Vec<String> {
         let context = CheckContext {
             room: &def,
             file: "a.ron",
@@ -527,7 +595,7 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         ["no room file `b.ron`", "`a.ron` has no spawn point `north`"]
     );
     assert_eq!(
-        texts(&|_, spawn| Some(spawn == "west")),
+        texts(&|_, spawn| Some(spawn.name() == Some("west"))),
         ["`a.ron` has no spawn point `north`"]
     );
     std::fs::remove_dir_all(&directory).unwrap();
@@ -926,22 +994,28 @@ fn a_row_sets_a_field_of_a_component_of_the_prefab_of_an_instance() {
     let lamp = r#"(objects: [(name: "bulb", pose: (position: (0, 1, 0)), components: {
         "light": (radius: 0.1, color: (1, 1, 1), intensity: 8.0)})])"#;
     std::fs::write(directory.join("lamp.ron"), lamp).unwrap();
-    let events = r#"(name: "dim", pages: [(trigger: Autorun, commands: [
-        SetField("standing", "light", "intensity", 3.0)])])"#;
-    let text = room(events).replacen(
-        "objects: [",
-        r#"objects: [(name: "standing", pose: (position: (2, 0, 2)), components: {"prefab": (file: "lamp.ron")}),"#,
-        1,
-    );
-    std::fs::write(directory.join("a.ron"), text).unwrap();
-    // The room loads only if the check finds no problem.
-    game(&directory).run(|mut app| {
-        steps(&mut app, 3);
-        let mut lights = app.world().try_query::<(&Name, &Light)>().unwrap();
-        let bulb = lights.iter(app.world()).find(|(name, _)| name.0 == "bulb");
-        assert_eq!(bulb.unwrap().1.intensity, 3.0);
-        assert_eq!(running(&app), 0);
-    });
+    // By name and by the id of the instance: the prefab object with the component.
+    for (object, off) in [(r#""standing""#, ""), ("6", "LightOff(6)")] {
+        let events = format!(
+            r#"(name: "dim", pages: [(trigger: Autorun, commands: [
+            SetField({object}, "light", "intensity", 3.0), {off}])])"#
+        );
+        let text = room(&events).replacen(
+            "objects: [",
+            r#"objects: [(id: 6, name: "standing", pose: (position: (2, 0, 2)), components: {"prefab": (file: "lamp.ron")}),"#,
+            1,
+        );
+        std::fs::write(directory.join("a.ron"), text).unwrap();
+        // The room loads only if the check finds no problem.
+        game(&directory).run(|mut app| {
+            steps(&mut app, 3);
+            let mut lights = app.world().try_query::<(&Name, &Light)>().unwrap();
+            let bulb = lights.iter(app.world()).find(|(name, _)| name.0 == "bulb");
+            let bulb = bulb.unwrap().1;
+            assert_eq!((bulb.intensity, bulb.on), (3.0, off.is_empty()));
+            assert_eq!(running(&app), 0);
+        });
+    }
 }
 
 #[test]
