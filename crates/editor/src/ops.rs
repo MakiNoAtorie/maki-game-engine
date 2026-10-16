@@ -468,6 +468,7 @@ impl Document {
                 item
             }
         };
+        self.room.give_ids();
         self.dirty = true;
         Ok(item)
     }
@@ -527,6 +528,12 @@ impl Document {
                     if let Some(Ok(mut mover)) = object.mover() {
                         shift(&mut mover.b.position);
                         object.set_mover(mover);
+                    }
+                    // A paste of a cut object into its own room keeps the id.
+                    let cut = source.path == self.path
+                        && room.objects.iter().all(|other| other.id != object.id);
+                    if !cut || object.id.is_none() {
+                        object.id = Some(room.new_id());
                     }
                     let copy = Item::Object(room.objects.len());
                     let name = object.name.take();
@@ -606,6 +613,7 @@ impl Document {
             changes: Default::default(),
         };
         self.room.objects.push(used.into_object());
+        self.room.give_ids();
         let name = self.unique_name(&item, &stem);
         self.room.objects.last_mut().expect("pushed above").name = Some(name);
         self.dirty = true;
@@ -629,7 +637,10 @@ impl Document {
             .resolve(self.path.parent().unwrap_or(Path::new("")));
         let prefab = read_prefab(&path).map_err(|error| format!("{error:#}"))?;
         let mut items = Vec::new();
+        // The first object keeps the id of the instance, so a command still names it.
+        let mut id = self.object(item).and_then(|instance| instance.id);
         for mut object in instance_objects(&used, &prefab, types) {
+            object.id = id.take().or_else(|| Some(self.room.new_id()));
             object.pose = tidy(object.pose);
             let item = Item::Object(self.room.objects.len());
             let name = object.name.take();
@@ -671,6 +682,8 @@ impl Document {
 /// An object of the room in the space of a prefab at `space`: the inverse of the
 /// place that `maki_scene::instance_objects` gives it.
 fn into_space(mut object: ObjectDef, space: &Transform) -> ObjectDef {
+    // The ids of a prefab file are of the file, not of a room.
+    object.id = None;
     object.pose = tidy(PoseDef::of(&pose_out(space, &object.pose.transform())));
     if let Some(Ok(mut light)) = object.light() {
         let back = space.rotation.inverse();
@@ -930,6 +943,67 @@ mod tests {
         let status = document.renamed(&start, Some("start".to_owned()), &registry);
         assert!(status.contains("1 event commands"), "{status}");
         assert!(document.text().contains(r#"Transfer("room.ron", "begin")"#));
+    }
+
+    #[test]
+    fn an_object_keeps_its_id_and_a_new_object_or_a_copy_gets_a_new_one() {
+        let registry = registry();
+        let mut document = document(&registry);
+        let id = |document: &Document, index: usize| document.room.objects[index].id.unwrap().0;
+        let ids = |document: &Document| {
+            let ids = document
+                .room
+                .objects
+                .iter()
+                .map(|object| object.id.unwrap().0);
+            ids.collect::<Vec<_>>()
+        };
+
+        // A room with no ids gets them in the order of its objects; a save writes them.
+        assert_eq!(ids(&document), [1, 2, 3, 4, 5]);
+        let text = document.text();
+        assert!(text.contains("next_id: 6"), "{text}");
+        let again = Document::parse(Path::new("room.ron"), &text, &registry).unwrap();
+        assert_eq!(again.room, document.room);
+        assert_eq!(again.text(), text);
+
+        // A rename, a move, and the undo keep the id.
+        let (mut history, mut selection) = (History::default(), Vec::new());
+        history.reset(&document);
+        document.room.objects[2].name = Some("bulb".to_owned());
+        document.renamed(&Item::Object(2), Some("lamp".to_owned()), &registry);
+        document.room.objects[2].pose.position[0] = 1.0;
+        history.track(&document, &selection, false);
+        assert_eq!(id(&document, 2), 3);
+        assert!(history.undo(&mut document, &mut selection));
+        assert_eq!(document.room.objects[2].name.as_deref(), Some("lamp"));
+        assert_eq!(id(&document, 2), 3);
+
+        // A deleted id is not given again: a new object gets the next one.
+        document.delete(&[Item::Object(4)]);
+        let Ok(Item::Object(cube)) = document.add(Kind::Cube, Vec3::ZERO) else {
+            panic!("a cube");
+        };
+        assert_eq!(id(&document, cube), 6);
+        // A duplicate gets a new id.
+        let copies = document.duplicate(&[Item::Object(2)]);
+        assert_eq!(copies, [Item::Object(5)]);
+        assert_eq!(id(&document, 5), 7);
+
+        // A cut and a paste in the same room keep the id; a second paste is a copy.
+        let source = document.clone();
+        document.delete(&[Item::Object(0)]);
+        let pasted = document.copy_from(&source, &[Item::Object(0)], DUPLICATE_OFFSET);
+        assert_eq!(pasted, [Item::Object(5)]);
+        assert_eq!(id(&document, 5), 1);
+        document.copy_from(&source, &[Item::Object(0)], DUPLICATE_OFFSET);
+        assert_eq!(id(&document, 6), 8);
+
+        // A paste into another room gets an id of that room.
+        let mut other = Document::new_room(PathBuf::from("other.ron"));
+        assert_eq!(ids(&other), [1, 2]);
+        other.copy_from(&source, &[Item::Object(2)], 0.0);
+        assert_eq!(ids(&other), [1, 2, 3]);
     }
 
     #[test]

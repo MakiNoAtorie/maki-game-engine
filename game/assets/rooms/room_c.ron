@@ -5,9 +5,11 @@
     width: 8.0,
     depth: 8.0,
     height: 3.0,
+    next_id: 13,
     objects: [
         // Metal: from almost a mirror to dull.
         (
+            id: 1,
             pose: (position: (-2.4, 0.5, -0.6)),
             components: {
                 "prop": (
@@ -17,6 +19,7 @@
             },
         ),
         (
+            id: 2,
             pose: (position: (-1.1, 0.5, -0.6)),
             components: {
                 "prop": (
@@ -26,6 +29,7 @@
             },
         ),
         (
+            id: 3,
             pose: (position: (0.2, 0.5, -0.6)),
             components: {
                 "prop": (
@@ -36,6 +40,7 @@
         ),
         // Plastic: a smooth and a rough coat.
         (
+            id: 4,
             pose: (position: (1.5, 0.5, -0.6)),
             components: {
                 "prop": (
@@ -45,6 +50,7 @@
             },
         ),
         (
+            id: 5,
             pose: (position: (2.8, 0.5, -0.6)),
             components: {
                 "prop": (
@@ -55,6 +61,7 @@
         ),
         // A plastic floor plate in front of the spheres: it shows the reflections.
         (
+            id: 6,
             pose: (position: (0.2, 0.02, 1.2), scale: (6.4, 0.04, 1.6)),
             components: {
                 "prop": (
@@ -66,6 +73,7 @@
         ),
         // A panel with a light of its own, on the back wall.
         (
+            id: 7,
             pose: (position: (-2.2, 1.6, -3.9), scale: (1.6, 0.5, 0.05)),
             components: {
                 "prop": (
@@ -76,12 +84,14 @@
             },
         ),
         (
+            id: 8,
             name: "lamp",
             pose: (position: (0.5, 2.3, 1.8)),
             components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 9.0)},
         ),
         // A cone light from above the right wall, down to the two plastic spheres.
         (
+            id: 9,
             name: "spot",
             pose: (position: (3.4, 2.7, -2.6)),
             components: {
@@ -94,10 +104,11 @@
                 ),
             },
         ),
-        (name: "start", pose: (position: (-3.2, 0.0, 2.6)), components: {"spawn": ()}),
+        (id: 10, name: "start", pose: (position: (-3.2, 0.0, 2.6)), components: {"spawn": ()}),
         // The spot light pulses while the player stands under it (the script of the
         // game). Not the first light: the benchmark moves that one.
         (
+            id: 11,
             name: "beacon",
             pose: (position: (3.4, 0.0, -2.6)),
             components: {
@@ -108,6 +119,7 @@
         // A dial near the start: a row changes a field of the beacon, and a row calls
         // a function of the script crate (game/scripts/src/beacon.rs).
         (
+            id: 12,
             name: "dial",
             pose: (position: (-1.6, 0.0, 2.6)),
             components: {

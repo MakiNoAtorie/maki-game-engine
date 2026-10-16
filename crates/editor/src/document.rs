@@ -67,7 +67,7 @@ impl Document {
             cone: None,
             sound: None,
         };
-        Self {
+        let mut room = Self {
             path,
             room: RoomDef {
                 width: 8.0,
@@ -81,7 +81,9 @@ impl Document {
             },
             notes: Notes::default(),
             dirty: true,
-        }
+        };
+        room.room.give_ids();
+        room
     }
 
     /// Reads a room file.
@@ -96,7 +98,9 @@ impl Document {
     // name in an event must open, so that the name can be set right. The editor
     // shows what those checks find (`problems`).
     pub fn parse(path: &Path, text: &str, registry: &CommandRegistry) -> Result<Self> {
-        let room = check_room(path, text, &RoomValidators::default())?;
+        let mut room = check_room(path, text, &RoomValidators::default())?;
+        // Ids for a room of a person or a tool; not a change: no question on close.
+        room.give_ids();
         // The events read, with the line of a command that no module added.
         registry
             .parse_events(text)
@@ -422,7 +426,7 @@ mod tests {
         let text = document.text();
         assert!(text.starts_with("// A test room.\n("), "{text}");
         assert!(
-            text.contains("        // At the door.\n        (name: \"start\""),
+            text.contains("        // At the door.\n        (id: 2, name: \"start\""),
             "{text}"
         );
         assert_eq!(maki_scene::parse_room(&text).unwrap(), document.room);
