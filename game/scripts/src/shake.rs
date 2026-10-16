@@ -7,18 +7,21 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
 use glam::Vec3;
-use maki_engine::core::{App, Module, ResetPlay, Time, Update};
+use maki_engine::core::{App, Fields, Module, ResetPlay, Time, Update};
 use maki_engine::events::{CommandRegistry, Finding};
 use maki_engine::gameplay::{FollowCamera, follow_player};
 use maki_engine::scene::Camera;
 use serde::{Deserialize, Serialize};
 
-/// The event commands of this game.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The event commands of this game. `Fields`: the editor draws their arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum GameCommand {
     /// Shakes the camera for this many seconds. The second number is the largest
     /// offset, in meters. The event does not wait for the end of the shake.
-    ShakeCamera(f32, f32),
+    ShakeCamera(
+        #[field(label = "seconds", range = 0.0..=10.0, step = 0.05)] f32,
+        #[field(label = "meters", range = 0.0..=1.0, step = 0.01)] f32,
+    ),
 }
 
 /// The shake that runs. `left` at zero: none.
@@ -63,6 +66,8 @@ impl Module for ShakeModule {
             },
             |_| Some("Shakes the camera for some seconds. The event does not wait for the end."),
         );
+        // The widgets of the arguments in the event panel, from the table of the derive.
+        registry.add_fields::<GameCommand>();
         // What the "Add" list of the editor makes.
         registry.add_defaults(|_, _| Some(GameCommand::ShakeCamera(0.5, 0.05)));
         // The proof that a module checks its own commands: the room loader runs

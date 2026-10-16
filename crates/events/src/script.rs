@@ -28,7 +28,7 @@ use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
 use maki_core::{App, Fields, Interpolated, Time, Transform};
 use maki_platform::{Action, FixedActionState};
-use maki_scene::{Name, add_object_component};
+use maki_scene::{Name, ObjectId, add_object_component};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +132,20 @@ impl<'w> ScriptContext<'w> {
     /// A component of the object: of another script, a light.
     pub fn get_mut<C: Component<Mutability = Mutable>>(&mut self) -> Option<Mut<'_, C>> {
         self.world.get_mut::<C>(self.entity)
+    }
+
+    /// A component of another object, by the id of the object. The id is in a field
+    /// of the script (`ObjectId` or `ObjectRef`): the editor picks the object by its
+    /// name, and a new name of the object does not change the id.
+    pub fn object_mut<C: Component<Mutability = Mutable>>(
+        &mut self,
+        id: ObjectId,
+    ) -> Option<Mut<'_, C>> {
+        let mut objects = self.world.query_filtered::<(Entity, &ObjectId), With<C>>();
+        let entity = objects
+            .iter(self.world)
+            .find_map(|(entity, other)| (*other == id).then_some(entity))?;
+        self.world.get_mut::<C>(entity)
     }
 
     /// A component of another object, by the name of the object: the first entity

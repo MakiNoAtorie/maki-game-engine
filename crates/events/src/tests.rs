@@ -1064,6 +1064,82 @@ fn a_row_calls_a_function_of_the_script_crate_with_the_object_of_the_event() {
     });
 }
 
+/// A script that names a light by the id in its field, and sets the intensity of the
+/// light to the count of its steps.
+#[derive(
+    bevy_ecs::component::Component,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    maki_core::Fields,
+)]
+#[serde(default)]
+struct Dimmer {
+    light: Option<ObjectId>,
+    steps: f32,
+}
+
+impl Script for Dimmer {
+    fn step(&mut self, context: &mut ScriptContext) {
+        self.steps += 1.0;
+        let light = self.light.and_then(|id| context.object_mut::<Light>(id));
+        if let Some(mut light) = light {
+            light.intensity = self.steps;
+        }
+    }
+}
+
+#[test]
+fn a_script_finds_an_object_by_the_id_of_its_field_after_a_rename() {
+    // The room has a light "lamp" with no id; the light of the dimmer has the id 7.
+    let room = room("").replacen(
+        "objects: [",
+        r#"objects: [(id: 7, name: "bulb", components: {"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}),
+            (name: "dimmer", components: {"dimmer": (light: Some(7))}),"#,
+        1,
+    );
+    let directory = directory("by-id");
+    std::fs::write(directory.join("a.ron"), room).unwrap();
+    let mut app = game(&directory);
+    add_script::<Dimmer>(&mut app, "dimmer");
+    // The rename: the object of the id 7 gets a new name, before the step.
+    app.init_resource::<NewName>().add_systems(
+        maki_core::FixedFirst,
+        |mut new: ResMut<NewName>, mut names: Query<(&ObjectId, &mut Name)>| {
+            let Some(text) = new.0.take() else { return };
+            for (id, mut name) in &mut names {
+                if *id == ObjectId(7) {
+                    name.0 = text.clone();
+                }
+            }
+        },
+    );
+    app.run(|mut app| {
+        let intensity = |app: &App, id: Option<ObjectId>| {
+            let world = app.world();
+            let mut lights = world.try_query::<(&Light, Option<&ObjectId>)>().unwrap();
+            let found = lights.iter(world).find(|(_, other)| other.copied() == id);
+            found.unwrap().0.intensity
+        };
+        steps(&mut app, 3);
+        assert_eq!(intensity(&app, Some(ObjectId(7))), 2.0);
+        assert_eq!(intensity(&app, None), 5.0);
+        // A new name: the id stays, and the script finds the light.
+        app.resource_mut::<NewName>().0 = Some("old bulb".to_owned());
+        steps(&mut app, 1);
+        let world = app.world();
+        let mut names = world.try_query::<(&ObjectId, &Name)>().unwrap();
+        let renamed = names.iter(world).find(|(id, _)| **id == ObjectId(7));
+        assert_eq!(renamed.unwrap().1.0, "old bulb");
+        assert_eq!(intensity(&app, Some(ObjectId(7))), 3.0);
+    });
+}
+
+/// The new name of the object of the id 7, at the start of the next step.
+#[derive(bevy_ecs::resource::Resource, Default)]
+struct NewName(Option<String>);
+
 #[test]
 fn a_called_function_shows_a_message_and_the_next_row_runs_after_it() {
     fn greet(context: &mut ScriptContext) {
@@ -1371,4 +1447,42 @@ fn a_problem_of_a_wire_names_the_wire_as_its_tab_does() {
             "the wire `pressed 2`: the object `button` has no output `pressed`",
         ]
     );
+}
+
+#[test]
+fn a_command_enum_with_fields_gives_a_tool_its_table_and_reads_a_changed_tree() {
+    use maki_core::fields::{Kind, Value};
+    use maki_scene::ObjectRef;
+
+    /// A command of a script crate: it names an object of the room.
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, maki_core::Fields)]
+    enum Ring {
+        Ring(ObjectRef, f32),
+    }
+
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    registry.add(|_: &Ring, _, _| true);
+    let bell = |id| registry.command(Ring::Ring(ObjectRef::Id(ObjectId(id)), 0.5));
+    let command = bell(3).unwrap();
+    // No table before the module gives it.
+    assert!(registry.fields(&command).is_none());
+    registry.add_fields::<Ring>();
+
+    let (kind, mut tree) = registry.fields(&command).unwrap();
+    let Kind::Choice(variants) = kind else {
+        panic!("an enum is a choice");
+    };
+    assert_eq!(variants[0].fields[0].kind, Kind::Object);
+    // The id is a number of the tree; another id is another command.
+    let id = variants[0].part(&mut tree, 0).unwrap();
+    assert_eq!(*id, Value::from(3));
+    *id = Value::from(4);
+    assert_eq!(registry.from_tree(&command, tree), bell(4));
+    // A command of an enum with no table: none.
+    let wait = registry.parse_command("Wait(1.0)").unwrap();
+    assert!(registry.fields(&wait).is_none());
 }

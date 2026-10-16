@@ -38,6 +38,18 @@ use crate::room::{PoseDef, ron_options};
 #[serde(transparent)]
 pub struct ObjectId(pub u32);
 
+/// The field of a script that names an object of the room: the editor picks it by its
+/// name and stores the id.
+impl Fields for ObjectId {
+    fn kind() -> maki_core::fields::Kind {
+        maki_core::fields::Kind::Object
+    }
+
+    fn tree(&self) -> Value {
+        Value::from(self.0)
+    }
+}
+
 /// A reference to an object of the room: by its id (a number in RON and TOML) or by
 /// its name (a text). The name form is for the rooms of before stage 55; the
 /// migration of the content removes it (#47).

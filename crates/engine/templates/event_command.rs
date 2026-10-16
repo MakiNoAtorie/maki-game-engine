@@ -3,15 +3,17 @@
 //! `ScriptName(1.0)` in a list of commands.
 
 use bevy_ecs::world::World;
-use maki_engine::core::{App, Module};
+use maki_engine::core::{App, Fields, Module};
 use maki_engine::events::{CommandRegistry, Finding, Step};
 use serde::{Deserialize, Serialize};
 
 /// The commands of this module. The name of a variant must be unique in the game.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// `Fields`: the event panel draws the arguments. A field that names an object of the
+/// room is a `maki_engine::scene::ObjectRef`: the editor picks it by its name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum ScriptNameCommand {
     /// Change this: what the number means.
-    ScriptName(f32),
+    ScriptName(#[field(label = "value")] f32),
 }
 
 pub struct ScriptNameModule;
@@ -28,6 +30,8 @@ impl Module for ScriptNameModule {
             },
             |_| Some("Change this: what the command does."),
         );
+        // The widgets of the arguments in the event panel.
+        registry.add_fields::<ScriptNameCommand>();
         // What "Add" in the event panel makes.
         registry.add_defaults(|_, _| Some(ScriptNameCommand::ScriptName(1.0)));
         // A check when a room loads, and on the row in the editor.

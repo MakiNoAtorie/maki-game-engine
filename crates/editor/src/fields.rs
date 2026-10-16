@@ -42,6 +42,16 @@ pub fn show(ui: &mut Ui, kind: &Kind, tree: &mut Value, lists: Lists) -> bool {
     value(ui, "", "", kind, tree, None, lists)
 }
 
+/// Draws the rows of the fields of the variant that a tree of an enum has: the
+/// arguments of a command. The variant does not change. True: the user changed a value.
+pub fn show_arguments(ui: &mut Ui, kind: &Kind, tree: &mut Value, lists: Lists) -> bool {
+    let Kind::Choice(variants) = kind else {
+        return show(ui, kind, tree, lists);
+    };
+    let variant = variant_of(variants, tree).and_then(|index| variants.get(index));
+    variant.is_some_and(|variant| variant_fields(ui, variant, tree, lists))
+}
+
 /// The extensions of a group of files (`#[field(file = "model")]`).
 fn extensions(group: &str) -> &'static [&'static str] {
     match group {

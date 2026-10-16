@@ -597,6 +597,50 @@ fn a_module_gives_the_widgets_for_the_arguments_of_its_command() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+/// A command of a script crate with a field table: the argument column draws it with
+/// no code of the editor, and an object field shows the name of its object.
+#[test]
+fn a_script_command_with_fields_has_widgets_and_a_pick_of_names() {
+    use maki_events::CommandRegistry;
+    use maki_scene::{ObjectId, ObjectRef};
+    use maki_ui::egui;
+
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, maki_core::Fields)]
+    enum Bell {
+        Ring(ObjectRef, f32),
+    }
+
+    let mut app = App::new(ConfigFile::default()).unwrap();
+    app.add_module(PlatformModule)
+        .add_module(SceneModule)
+        .add_module(EventsModule);
+    let registry = app.world().resource::<CommandRegistry>().clone();
+    registry.add(|_: &Bell, _, _| true);
+    registry.add_fields::<Bell>();
+    let objects = [(ObjectId(4), "church bell".to_owned())];
+    let ring = registry.command(Bell::Ring(ObjectRef::Id(ObjectId(4)), 0.5));
+    let wait = registry.parse_command("Wait(1.0)").unwrap();
+    let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        let edit = |ui: &mut egui::Ui, command| {
+            crate::event_panel::field_arguments(ui, command, &registry, &objects)
+        };
+        // A command with no table: not this path. With no input: no change.
+        assert_eq!(edit(ui, &wait), None);
+        assert_eq!(edit(ui, ring.as_ref().unwrap()), Some(None));
+    });
+    // The pick shows the name of the object of the id.
+    let texts: Vec<String> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.iter().any(|text| text == "church bell"), "{texts:?}");
+    output.textures_delta.clear();
+}
+
 /// The traps of the UX pass: which list a command goes to, a file that "Save as"
 /// would write over, play with changes, a drag that is cancelled, and the selection
 /// of an undo.

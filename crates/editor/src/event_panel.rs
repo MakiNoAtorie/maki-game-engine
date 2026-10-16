@@ -207,8 +207,9 @@ pub struct ArgumentEditors(pub(crate) Vec<ArgumentEditor>);
 /// Gives the event panel widgets for the arguments of the commands of the enum `T`
 /// (a command enum of the game). `edit` draws them for one value and returns true if
 /// it changed the value. It gets the open room, for a list of the names that the
-/// command can have; `crate::widgets` has the widgets. Without this, such a command
-/// has a text field.
+/// command can have; `crate::widgets` has the widgets. Without this, a command of an
+/// enum with a field table (`CommandRegistry::add_fields`) has the widgets of the
+/// table, and else a text field.
 ///
 /// The "Add" list makes a new command of a module with
 /// `CommandRegistry::add_defaults`.
@@ -1369,6 +1370,8 @@ fn command_arguments(
             .find_map(|edit| edit(ui, &command, registry, room))
         {
             new
+        } else if let Some(new) = field_arguments(ui, &command, registry, &lists.ids) {
+            new
         } else {
             // As a text. The buffer is the draft: it can be a text that is not a
             // command while the user types.
@@ -1414,6 +1417,21 @@ fn command_arguments(
         ui.weak("Select a command row.");
     }
     changed
+}
+
+/// The widgets of the arguments of a command from the field table of its enum
+/// (`CommandRegistry::add_fields`). `None`: its module gave no table. `Some(new)`:
+/// the changed command, if the user changed it.
+pub(crate) fn field_arguments(
+    ui: &mut Ui,
+    command: &Command,
+    registry: &CommandRegistry,
+    objects: &[(ObjectId, String)],
+) -> Option<Option<Command>> {
+    let (kind, mut tree) = registry.fields(command)?;
+    let lists = crate::fields::Lists::objects(objects);
+    let changed = crate::fields::show_arguments(ui, &kind, &mut tree, lists);
+    Some(changed.then(|| registry.from_tree(command, tree)).flatten())
 }
 
 /// The text field of a command as a room file has it, checked with each key.
