@@ -29,11 +29,25 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::room::{PoseDef, ron_options};
 
+/// The id of an object of a room: unique in its room, and it does not change with
+/// a new name or a move (ADR 0001). In the file a number. Also the component of the
+/// entity of the object, beside its `Name`.
+#[derive(
+    Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct ObjectId(pub u32);
+
 /// One thing of a room.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
 #[serde(deny_unknown_fields)]
 #[fields(default)]
 pub struct ObjectDef {
+    /// The editor gives it. `None`: a room file of a person or a tool; no command
+    /// can name the object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[field(skip)]
+    pub id: Option<ObjectId>,
     /// Events and scripts find the object by its name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

@@ -35,7 +35,7 @@ use maki_assets::{
 use maki_core::{Fields, Interpolated, Transform};
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef};
+use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
@@ -58,6 +58,10 @@ pub struct RoomDef {
     /// The same for the walls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walls: Option<TextureDef>,
+    /// The id that the editor gives to the next new object. An id is not given
+    /// again: the saved state of a deleted object cannot go to a new one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_id: u32,
     /// The things of the room: each a name, a pose, and components.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDef>,
@@ -79,7 +83,32 @@ pub struct RoomShell {
     pub walls: Option<TextureDef>,
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 impl RoomDef {
+    /// A new id, not given before in this room.
+    pub fn new_id(&mut self) -> ObjectId {
+        let used = self.objects.iter().filter_map(|object| object.id);
+        let next = used.map(|id| id.0 + 1).fold(self.next_id.max(1), u32::max);
+        self.next_id = next + 1;
+        ObjectId(next)
+    }
+
+    /// Gives an id to each object with none, in the order of the objects. Returns
+    /// true if one had none.
+    pub fn give_ids(&mut self) -> bool {
+        let mut given = false;
+        for index in 0..self.objects.len() {
+            if self.objects[index].id.is_none() {
+                self.objects[index].id = Some(self.new_id());
+                given = true;
+            }
+        }
+        given
+    }
+
     /// The first object of the name, with its index (its `RoomItem`).
     pub fn object_named(&self, name: &str) -> Option<(usize, &ObjectDef)> {
         let named = |(_, object): &(usize, &ObjectDef)| object.name.as_deref() == Some(name);
@@ -440,6 +469,7 @@ impl PropDef {
             light_radius: self.light_radius,
         };
         ObjectDef {
+            id: None,
             name: self.name,
             pose: self.pose,
             parent: None,
@@ -753,6 +783,7 @@ impl LightDef {
             sound,
         };
         ObjectDef {
+            id: None,
             name,
             pose: PoseDef {
                 position,
@@ -1372,6 +1403,7 @@ pub fn load_requested_room(
         old,
         owned: Vec::new(),
         made: 0,
+        id: None,
     };
     spawner.room(&def);
     let (owned, unused) = (spawner.owned, spawner.old);
@@ -1423,6 +1455,9 @@ struct Spawner<'a, 'w, 's> {
     owned: Vec<(String, Handle<Mesh>)>,
     /// How many of `owned` were made, not taken from `old`.
     made: usize,
+    /// The id of the room object whose entities are made now. The entities of a
+    /// prefab instance get the id of the instance.
+    id: Option<ObjectId>,
 }
 
 impl Spawner<'_, '_, '_> {
@@ -1490,6 +1525,7 @@ impl Spawner<'_, '_, '_> {
     /// generated mesh, of its light, door, or mover, else a new one. It has the pose
     /// of the object as `Interpolated`, so a script that moves it moves the mesh.
     fn object(&mut self, object: &ObjectDef, item: RoomItem, width: f32, depth: f32) {
+        self.id = object.id;
         let mut main = None;
         if let Some(Ok(prop)) = object.prop() {
             main = self.prop(&prop, item);
@@ -1524,6 +1560,9 @@ impl Spawner<'_, '_, '_> {
                 if let Some(name) = &object.name {
                     entity.insert(Name(name.clone()));
                 }
+                if let Some(id) = self.id {
+                    entity.insert(id);
+                }
                 entity
             }
         };
@@ -1551,6 +1590,9 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = &light.name {
             entity.insert(Name(name.clone()));
         }
+        if let Some(id) = self.id {
+            entity.insert(id);
+        }
         if let Some(sound) = &light.sound {
             entity.insert(sound.source(self.directory));
         }
@@ -1572,7 +1614,9 @@ impl Spawner<'_, '_, '_> {
                 return;
             }
         };
-        for object in instance_objects(used, &prefab, self.types) {
+        let id = self.id;
+        for mut object in instance_objects(used, &prefab, self.types) {
+            object.id = id;
             self.object(&object, item, width, depth);
         }
     }
@@ -1621,6 +1665,9 @@ impl Spawner<'_, '_, '_> {
         if let Some(name) = &prop.name {
             entity.insert(Name(name.clone()));
         }
+        if let Some(id) = self.id {
+            entity.insert(id);
+        }
         (!file).then(|| entity.id())
     }
 
@@ -1643,6 +1690,9 @@ impl Spawner<'_, '_, '_> {
         ));
         if let Some(name) = &mover.name {
             entity.insert(Name(name.clone()));
+        }
+        if let Some(id) = self.id {
+            entity.insert(id);
         }
         Some(entity.id())
     }
@@ -1714,6 +1764,9 @@ impl Spawner<'_, '_, '_> {
         ));
         if let Some(name) = name {
             entity.insert(Name(name.clone()));
+        }
+        if let Some(id) = self.id {
+            entity.insert(id);
         }
         entity.id()
     }
@@ -1992,6 +2045,7 @@ mod tests {
             width: 6.0,
             depth: 5.0,
             height: 3.0,
+            next_id: 0,
             objects: vec![
                 PropDef {
                     name: Some("crate".to_owned()),
@@ -2168,6 +2222,7 @@ mod tests {
                 old: Vec::new(),
                 owned: Vec::new(),
                 made: 0,
+                id: None,
             };
             let leaf = door.door().unwrap().unwrap();
             spawner.door(
@@ -2813,6 +2868,45 @@ watch = true",
             // A component that no module registered stays text: no entity.
             let mut items = world.try_query::<&RoomItem>().unwrap();
             assert!(items.iter(world).all(|item| item.0 != 3));
+        });
+    }
+
+    #[test]
+    fn an_object_with_an_id_has_it_on_its_entity_and_one_with_none_loads_as_before() {
+        let room = r#"(width: 6.0, depth: 6.0, height: 3.0, next_id: 8, objects: [
+            (id: 7, name: "box", components: {"prop": (mesh: Cube(0.5))}),
+            (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 1.0)}),
+        ])"#;
+        let def = parse_room(room).unwrap();
+        assert_eq!(def.next_id, 8);
+        assert_eq!(def.objects[0].id, Some(ObjectId(7)));
+        // The id is the first field, and a number.
+        let text = ron_options().to_string(&def).unwrap();
+        assert!(text.contains("next_id:8"), "{text}");
+        assert!(text.contains("(id:7,name:\"box\""), "{text}");
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        app.add_module(SceneModule);
+        app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+            path: PathBuf::from("ids.ron"),
+            spawn: None,
+            text: Some(room.to_owned()),
+        });
+        app.run(|mut app| {
+            app.advance(Duration::from_millis(16));
+            let world = app.world();
+            let mut named = world.try_query::<(&Name, Option<&ObjectId>)>().unwrap();
+            let mut found: Vec<_> = named
+                .iter(world)
+                .map(|(name, id)| (name.0.clone(), id.copied()))
+                .collect();
+            found.sort();
+            assert_eq!(
+                found,
+                [
+                    ("box".to_owned(), Some(ObjectId(7))),
+                    ("lamp".to_owned(), None)
+                ]
+            );
         });
     }
 }

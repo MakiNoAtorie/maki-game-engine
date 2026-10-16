@@ -24,17 +24,20 @@ const ROOM_A: &str = r#"// The test room.
     width: 6.0,
     depth: 6.0,
     height: 3.0,
+    next_id: 5,
     objects: [
         // The cube.
-        (name: "cube", pose: (position: (1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(1.0))}),
+        (id: 1, name: "cube", pose: (position: (1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(1.0))}),
         (
+            id: 2,
             name: "lamp",
             pose: (position: (0.0, 2.0, 0.0)),
             components: {"light": (radius: 0.1, color: (1.0, 0.9, 0.8), intensity: 5.0)},
         ),
-        (name: "start", pose: (position: (0.0, 0.0, 2.0)), components: {"spawn": ()}),
+        (id: 3, name: "start", pose: (position: (0.0, 0.0, 2.0)), components: {"spawn": ()}),
         // Runs at the start.
         (
+            id: 4,
             name: "leave",
             components: {
                 "event": (
@@ -444,7 +447,7 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
                 .resource::<Editor>()
                 .document
                 .text()
-                .contains("// The cube.\n        (name: \"cube\"")
+                .contains("// The cube.\n        (id: 1, name: \"cube\"")
         );
     });
     std::fs::remove_dir_all(&directory).unwrap();
@@ -1400,9 +1403,11 @@ fn an_object_shows_each_component_and_keeps_one_with_no_type() {
     width: 4.0,
     depth: 4.0,
     height: 3.0,
+    next_id: 2,
     objects: [
         // A note of the object.
         (
+            id: 1,
             name: "ball",
             pose: (position: (2.0, 0.5, 0.0)),
             components: {
