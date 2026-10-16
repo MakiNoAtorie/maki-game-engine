@@ -216,6 +216,25 @@ impl Document {
         )
     }
 
+    /// Gives object `index` an event of one empty page, if it has none.
+    pub fn add_event(&mut self, index: usize) {
+        if self.event_exists(index) {
+            return;
+        }
+        let pages = EventPages {
+            pages: vec![crate::event_panel::empty_page()],
+            wires: Vec::new(),
+        };
+        self.set_event(index, &pages);
+    }
+
+    fn event_exists(&self, index: usize) -> bool {
+        self.room
+            .objects
+            .get(index)
+            .is_some_and(|object| object.components.contains_key("event"))
+    }
+
     /// Writes the pages of the event of object `index`.
     pub fn set_event(&mut self, index: usize, pages: &EventPages) {
         if let Some(object) = self.room.objects.get_mut(index) {
