@@ -319,6 +319,8 @@ mod panel {
                 .map_or("", |t| t.0.as_str());
             egui::ComboBox::from_id_salt("new_script_template")
                 .selected_text(chosen)
+                // The default height hides the tenth template behind a scroll.
+                .height(f32::INFINITY)
                 .show_ui(ui, |ui| {
                     for (index, (name, _)) in form.templates.iter().enumerate() {
                         ui.selectable_value(&mut form.template, index, name);

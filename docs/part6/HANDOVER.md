@@ -6,8 +6,8 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 
 - The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
 - `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
-- Next: stage 56 (object state). It has no stage file: the session writes it; the tickets come from `/to-tickets`, which the owner starts.
-- A run by hand of stages 50 to 53 in the editor found three panics and ten rough edges: `PLANNING-HANDOVER.md`, group F, "To fix". Stage 54 has them.
+- Stages 54 (#22) and 55 (#40 to #47) and the symbol limit (#23, `symbol-limit.md`) are done.
+- Next: stage 56 (object state). The session writes its stage file; the tickets come from `/to-tickets`, which the owner starts.
 
 ## State
 
