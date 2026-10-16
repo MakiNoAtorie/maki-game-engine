@@ -143,11 +143,11 @@ impl<'de> Deserialize<'de> for ObjectRef {
     }
 }
 
-/// A text field until the editor picks objects (#43). The tree is the form of the
-/// file: a number or a text.
+/// The editor picks an object by its name and stores its id. The tree is the form of
+/// the file: a number or a text.
 impl Fields for ObjectRef {
     fn kind() -> maki_core::fields::Kind {
-        maki_core::fields::Kind::Text
+        maki_core::fields::Kind::Object
     }
 
     fn tree(&self) -> Value {
@@ -184,6 +184,13 @@ pub struct ObjectDef {
 }
 
 impl ObjectDef {
+    /// A reference to this object: by its id, else by its name (a room file of
+    /// before stage 55). `None`: neither.
+    pub fn reference(&self) -> Option<ObjectRef> {
+        let name = || self.name.clone().map(ObjectRef::Name);
+        self.id.map(ObjectRef::Id).or_else(name)
+    }
+
     /// The component `name` read as its type. `None`: the object has no such
     /// component. `Err`: the text is not of that type.
     pub fn component<T: DeserializeOwned>(

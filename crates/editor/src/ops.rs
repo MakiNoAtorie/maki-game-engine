@@ -1,22 +1,17 @@
 //! Changes of the document that are more than one value: add, delete, and duplicate
-//! an item, names and the events that use them, and the history for undo and redo.
+//! an item, names, and the history for undo and redo.
 //!
-//! Names: events find an object (a light, a door, a mover, a spawn point) by name.
-//! So a new or changed name is made unique among the objects (an event has the name
-//! of its object), and a change of a name changes the commands of this room that use it. A command of another
-//! module, and a `Transfer` in another room file, are not changed: see
-//! [`spawn_users`].
+//! Names: a command names an object by its id, so a new name changes no command. A
+//! name is made unique among the objects all the same, so that a pick by name is
+//! clear. A `Transfer` in another room file that names a spawn point by its name is
+//! not changed: see [`spawn_users`].
 
 use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use maki_assets::{Doorway, Wall};
-use maki_audio::AudioCommand;
 use maki_core::Transform;
-use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, EventPages, Page, Trigger, TriggerArea,
-};
-use maki_gameplay::GameCommand;
+use maki_events::{Builtin, Command, CommandRegistry, EventPages, Page, Trigger, TriggerArea};
 use maki_scene::{
     ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, ObjectRef,
     PoseDef, PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text,
@@ -133,137 +128,23 @@ impl Document {
         }
     }
 
-    /// Call after the name of an object was changed from `old`. The new
-    /// name is made unique, and the commands of the events of this room that name the
-    /// object (built-in, of the audio module, and of the game module) get the new name. Returns a text for
-    /// the user if something more than the name itself was changed.
-    pub fn renamed(
-        &mut self,
-        item: &Item,
-        old: Option<String>,
-        registry: &CommandRegistry,
-    ) -> String {
-        let index = match item {
-            Item::Object(index) => *index,
-            Item::Room => return String::new(),
+    /// Call after the name of an object was changed: the name is made unique in the
+    /// room. A command names the object by its id, so nothing else changes. Returns a
+    /// text for the user if the name was changed.
+    pub fn keep_name_unique(&mut self, item: &Item) -> String {
+        let Item::Object(index) = item else {
+            return String::new();
         };
-        let Some(typed) = self.room.objects[index].name.take() else {
-            // Events that still name the object give a warning when they run.
+        let Some(typed) = self.room.objects[*index].name.take() else {
             return String::new();
         };
         let new = self.unique_name(item, &typed);
-        let mut status = String::new();
-        if new != typed {
-            status = "The name was in use: a number was added. ".to_owned();
-        }
-        let mut users = 0;
-        if let Some(old) = &old {
-            // Only the name form: a reference by id stays right after a rename.
-            let is_old = |name: &ObjectRef| name.name() == Some(old.as_str());
-            let to_new = || ObjectRef::Name(new.clone());
-            // A command names the object by the kind that it wants; an object can
-            // be each kind.
-            users += self.rename_in_events(registry, |command: &Builtin| match command {
-                Builtin::LightOn(name) if is_old(name) => Some(Builtin::LightOn(to_new())),
-                Builtin::LightOff(name) if is_old(name) => Some(Builtin::LightOff(to_new())),
-                Builtin::LightIntensity(name, value) if is_old(name) => {
-                    Some(Builtin::LightIntensity(to_new(), *value))
-                }
-                Builtin::OpenDoor(name) if is_old(name) => Some(Builtin::OpenDoor(to_new())),
-                Builtin::CloseDoor(name) if is_old(name) => Some(Builtin::CloseDoor(to_new())),
-                Builtin::Signal(name, output) if is_old(name) => {
-                    Some(Builtin::Signal(to_new(), output.clone()))
-                }
-                Builtin::SetField(name, component, field, value) if is_old(name) => Some(
-                    Builtin::SetField(to_new(), component.clone(), field.clone(), value.clone()),
-                ),
-                _ => None,
-            });
-            users += self.rename_in_events(registry, |command: &AudioCommand| match command {
-                AudioCommand::SoundOn(name) if is_old(name) => {
-                    Some(AudioCommand::SoundOn(to_new()))
-                }
-                AudioCommand::SoundOff(name) if is_old(name) => {
-                    Some(AudioCommand::SoundOff(to_new()))
-                }
-                _ => None,
-            });
-            users += self.rename_in_events(registry, |command: &GameCommand| match command {
-                GameCommand::GiveControl(name) if is_old(name) => {
-                    Some(GameCommand::GiveControl(to_new()))
-                }
-                _ => None,
-            });
-            // A `Transfer` of this room to itself names the spawn point.
-            if self.room.objects[index].is_spawn() {
-                let file = self.path.file_name().unwrap_or_default();
-                let file = file.to_string_lossy().into_owned();
-                users += self.rename_in_events(registry, |command: &Builtin| match command {
-                    Builtin::Transfer(room, to) if *room == file && is_old(to) => {
-                        Some(Builtin::Transfer(room.clone(), to_new()))
-                    }
-                    _ => None,
-                });
-            }
-        }
-        if users > 0 {
-            status += &format!("{users} event commands now name `{new}`");
-        }
-        self.room.objects[index].name = Some(new);
+        let status = match new == typed {
+            true => String::new(),
+            false => "The name was in use: a number was added.".to_owned(),
+        };
+        self.room.objects[*index].name = Some(new);
         status
-    }
-
-    /// Replaces each command of the enum `T` in the events for which `change` gives
-    /// a new one. Returns the number of the commands that were replaced.
-    pub(crate) fn rename_in_events<T: CommandSet>(
-        &mut self,
-        registry: &CommandRegistry,
-        change: impl Fn(&T) -> Option<T>,
-    ) -> usize {
-        fn walk<T: CommandSet>(
-            commands: &mut [Command],
-            registry: &CommandRegistry,
-            change: &dyn Fn(&T) -> Option<T>,
-        ) -> usize {
-            let mut count = 0;
-            for command in commands {
-                // The lists of a command hold commands too.
-                let lists = registry.lists(command);
-                let mut lists: Vec<Vec<Command>> =
-                    lists.into_iter().map(|list| list.1.to_vec()).collect();
-                let inner: usize = lists
-                    .iter_mut()
-                    .map(|list| walk(list, registry, change))
-                    .sum();
-                count += inner;
-                let new = if inner > 0 {
-                    registry.with_lists(command, lists)
-                } else {
-                    let new = command.get::<T>().and_then(change);
-                    new.inspect(|_| count += 1)
-                        .and_then(|new| registry.command(new))
-                };
-                if let Some(new) = new {
-                    *command = new;
-                }
-            }
-            count
-        }
-        let mut count = 0;
-        for index in 0..self.room.objects.len() {
-            let Some(Ok(mut event)) = self.event(index, registry) else {
-                continue;
-            };
-            let pages = event.pages.iter_mut();
-            let changed: usize = pages
-                .map(|page| walk(&mut page.commands, registry, &change))
-                .sum();
-            if changed > 0 {
-                self.set_event(index, &event);
-                count += changed;
-            }
-        }
-        count
     }
 
     /// Adds an item at a point of the floor. Returns the new item. `Err`: why not.
@@ -438,11 +319,8 @@ impl Document {
                     object.components.contains_key("door")
                         || object.components.contains_key("mover")
                 };
-                let door = room
-                    .objects
-                    .iter()
-                    .find(moves)
-                    .and_then(|object| object.name.clone());
+                let door = room.objects.iter().find(moves);
+                let door = door.and_then(ObjectDef::reference);
                 let mut pose = on_floor(0.15);
                 pose.scale = [0.3; 3];
                 let mut object = PropDef {
@@ -460,7 +338,7 @@ impl Document {
                 );
                 // The text of the event: the commands of a wire need the registry to be
                 // made as values.
-                let door = door.unwrap_or_default();
+                let door = door.unwrap_or_else(|| ObjectRef::Name(String::new()));
                 let used = TriggerArea::USED;
                 let wire = format!("(wires: [(output: {used:?}, commands: [OpenDoor({door:?})])])");
                 let wire = ComponentText::parse(&wire).expect("the text is RON");
@@ -890,11 +768,11 @@ mod tests {
                 }),
                 (name: "start", components: {"spawn": ()}),
                 (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
-                    LightOff("lamp"),
-                    GiveControl("lamp"),
-                    SetField("lamp", "light", "intensity", 2.0),
-                    If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
-                    Transfer("room.ron", "start"),
+                    LightOff(3),
+                    GiveControl(3),
+                    SetField(3, "light", "intensity", 2.0),
+                    If([Flag("open")], [OpenDoor(2), LightOn(3)], [CloseDoor(1)]),
+                    Transfer("room.ron", 4),
                 ])])}),
             ],
         )"#;
@@ -902,28 +780,33 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_changes_the_events_and_a_name_stays_unique() {
+    fn a_rename_changes_the_name_only_and_a_name_stays_unique() {
         let registry = registry();
         let mut document = document(&registry);
         // Objects: two doorways with their doors, the light, the spawn point.
         let lamp = Item::Object(2);
 
+        // The commands name the lamp by its id: one line of the file changes.
+        let before = document.text();
         document.room.objects[2].name = Some("bulb".to_owned());
-        let status = document.renamed(&lamp, Some("lamp".to_owned()), &registry);
-        assert!(status.contains("4 event commands"), "{status}");
+        assert_eq!(document.keep_name_unique(&lamp), "");
         let text = document.text();
-        assert!(text.contains(r#"LightOff("bulb")"#) && text.contains(r#"LightOn("bulb")"#));
-        assert!(text.contains(r#"GiveControl("bulb")"#));
-        assert!(text.contains(r#"SetField("bulb", "light", "intensity", 2.0)"#));
-        assert!(!text.contains("\"lamp\""), "{text}");
+        let changed: Vec<(&str, &str)> = before
+            .lines()
+            .zip(text.lines())
+            .filter(|(old, new)| old != new)
+            .collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert!(changed[0].1.contains("\"bulb\""), "{changed:?}");
+        assert_eq!(before.lines().count(), text.lines().count());
+        assert!(text.contains("LightOff(3)") && text.contains("GiveControl(3)"));
 
-        // A door with the name of the other door gets a number, and the events
-        // follow the door that was renamed.
+        // A door with the name of the other door gets a number.
         document.room.objects[1].name = Some("door".to_owned());
-        document.renamed(&Item::Object(1), Some("east".to_owned()), &registry);
+        let status = document.keep_name_unique(&Item::Object(1));
+        assert!(status.contains("a number was added"), "{status}");
         assert_eq!(document.room.objects[1].name.as_deref(), Some("door_2"));
-        let text = document.text();
-        assert!(text.contains(r#"OpenDoor("door_2")"#) && text.contains(r#"CloseDoor("door")"#));
+        assert!(document.text().contains("OpenDoor(2)"));
 
         // A new light and a copy of a light have names of their own.
         let Ok(Item::Object(new)) = document.add(Kind::Light, Vec3::ZERO) else {
@@ -939,14 +822,6 @@ mod tests {
             ("bulb_2".to_owned(), "light_2".to_owned())
         );
         assert_eq!(free_name("bulb_2", |name| name == "bulb_2"), "bulb_3");
-
-        // A spawn point: the `Transfer` to it in this room follows.
-        let start = Item::Object(3);
-        assert!(document.room.objects[3].is_spawn());
-        document.room.objects[3].name = Some("begin".to_owned());
-        let status = document.renamed(&start, Some("start".to_owned()), &registry);
-        assert!(status.contains("1 event commands"), "{status}");
-        assert!(document.text().contains(r#"Transfer("room.ron", "begin")"#));
     }
 
     #[test]
@@ -975,7 +850,7 @@ mod tests {
         let (mut history, mut selection) = (History::default(), Vec::new());
         history.reset(&document);
         document.room.objects[2].name = Some("bulb".to_owned());
-        document.renamed(&Item::Object(2), Some("lamp".to_owned()), &registry);
+        document.keep_name_unique(&Item::Object(2));
         document.room.objects[2].pose.position[0] = 1.0;
         history.track(&document, &selection, false);
         assert_eq!(id(&document, 2), 3);
@@ -1141,7 +1016,7 @@ mod tests {
             .collect();
         assert_eq!(
             (event.wires[0].output.as_str(), texts),
-            ("used", vec![r#"OpenDoor("door")"#.to_owned()])
+            ("used", vec!["OpenDoor(1)".to_owned()])
         );
 
         // A change of the output, then a delete: each a step of the history.

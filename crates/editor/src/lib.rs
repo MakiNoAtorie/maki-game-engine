@@ -272,9 +272,9 @@ pub struct Editor {
     others: Option<Vec<OtherRoom>>,
     /// The page that a test waits to start, when the room of the game is loaded.
     test: Option<(String, usize)>,
-    /// The spawn point where the game starts on `Play`. `None`, or a name that the
-    /// room does not have: the first one.
-    pub play_from: Option<String>,
+    /// The spawn point where the game starts on `Play`. `None`, or one that the room
+    /// does not have: the first one ([`play_spawn`]).
+    pub play_from: Option<ObjectRef>,
     /// One line for the user: what the last command did. The status row shows it.
     pub status: String,
     /// Why a command did not do its work. It becomes a notice in the same frame.
@@ -756,8 +756,8 @@ impl Editor {
         self.error = Some(error);
     }
 
-    /// Gives an item a new name, as the name field of the inspector does: the
-    /// events that name the item follow. An empty name is no name.
+    /// Gives an item a new name, as the name field of the inspector does. Commands
+    /// name the item by its id: they do not change. An empty name is no name.
     pub fn rename(&mut self, item: &Item, new: String) {
         let registry = self.registry.clone();
         // The name that the item had.
@@ -775,7 +775,7 @@ impl Editor {
             _ => false,
         };
         let old_spawn = old.clone().filter(|_| spawn);
-        let more = self.document.renamed(item, old, &registry);
+        let more = self.document.keep_name_unique(item);
         if !more.is_empty() {
             self.status = more;
         }
@@ -818,9 +818,8 @@ impl Editor {
     fn play(&mut self, world: &mut World) {
         self.playing = Some(world.resource::<GameState>().clone());
         reset_play_state(world);
-        let spawns = self.document.room.spawn_names();
-        let chosen = self.play_from.as_ref().filter(|name| spawns.contains(name));
-        let spawn = chosen.or_else(|| spawns.first()).cloned();
+        let spawns = spawn_points(&self.document.room);
+        let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| spawn.clone());
         if spawn.is_none() {
             // A room with no spawn point: the player starts where the editor looks.
             let mut cameras = world.query::<&EditorCamera>();
@@ -838,7 +837,7 @@ impl Editor {
         world.resource_mut::<RoomOverride>().0 = Some((path.clone(), text.clone()));
         world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
             path,
-            spawn: spawn.map(ObjectRef::Name),
+            spawn,
             text: Some(text),
         });
         self.status = "Playing".to_owned();
@@ -1218,9 +1217,30 @@ pub struct Session {
     /// The selected items.
     pub selection: Vec<Item>,
     /// The spawn point where the game starts on "Play".
-    pub play_from: Option<String>,
+    pub play_from: Option<ObjectRef>,
     /// The view of the editor camera.
     pub view: Option<EditorCamera>,
+}
+
+/// The spawn points of a room in name order: the reference of each (its id, else
+/// its name), and its name.
+pub(crate) fn spawn_points(room: &RoomDef) -> Vec<(ObjectRef, String)> {
+    let names = room.spawn_names().into_iter();
+    names
+        .filter_map(|name| Some((room.object_named(&name)?.1.reference()?, name)))
+        .collect()
+}
+
+/// The spawn point where "Play" starts: `wanted` (by its id or its name) if the
+/// room has it, else the first one.
+pub(crate) fn play_spawn<'a>(
+    spawns: &'a [(ObjectRef, String)],
+    wanted: Option<&ObjectRef>,
+) -> Option<&'a (ObjectRef, String)> {
+    let is = |(spawn, name): &&(ObjectRef, String)| {
+        wanted.is_some_and(|wanted| wanted == spawn || wanted.name() == Some(name.as_str()))
+    };
+    spawns.iter().find(is).or(spawns.first())
 }
 
 /// The session of an app with the editor. `None`: the app has no editor.
@@ -1331,8 +1351,7 @@ impl Module for EditorModule {
             event_ui: EventUi::default(),
             others: None,
             test: None,
-            // A name only: the editor picks spawn points by id with #43.
-            play_from: start.spawn.name().map(str::to_owned),
+            play_from: Some(start.spawn.clone()),
             status: String::new(),
             error: None,
             renaming: None,

@@ -767,18 +767,18 @@ fn a_sound_command_is_added_with_arguments_and_a_rename_of_its_light_follows() {
             (name: "dark", pose: (position: (2.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0)}),
             (name: "lamp", pose: (position: (0.0, 2.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 5.0, sound: (file: "hum.wav", volume: 0.5))}),
             (name: "power", components: {"event": (pages: [(trigger: Interact, commands: [
-                SoundOff("lamp"), If([Flag("loud")], [SoundOn("lamp")], [PlaySound("click.wav", 1.0)]),
+                SoundOff(2), If([Flag("loud")], [SoundOn(2)], [PlaySound("click.wav", 1.0)]),
             ])])}),
         ])"#;
     let mut document = Document::parse(Path::new("room.ron"), text, &registry).unwrap();
     let room = document.room.clone();
 
-    // The "Add" list: a new command names the light that has a sound.
+    // The "Add" list: a new command names the light that has a sound, by its id.
     let new = |name: &str| registry.new_command(name, &room);
-    let lamp = || "lamp".to_owned();
+    let lamp = maki_scene::ObjectRef::Id(maki_scene::ObjectId(2));
     assert_eq!(
         new("SoundOn"),
-        registry.command(AudioCommand::SoundOn(lamp().into()))
+        registry.command(AudioCommand::SoundOn(lamp))
     );
     assert_eq!(
         new("PlaySound"),
@@ -803,12 +803,11 @@ fn a_sound_command_is_added_with_arguments_and_a_rename_of_its_light_follows() {
     assert_eq!(texts, ["no sound file `click.wav`"]);
     assert!(found[0].warning);
 
-    // A rename of the light: the two sound commands follow, also the one in a list.
+    // A rename of the light: the two sound commands name it by its id still.
     document.room.objects[1].name = Some("bulb".to_owned());
-    let status = document.renamed(&Item::Object(1), Some(lamp()), &registry);
-    assert!(status.contains("2 event commands"), "{status}");
+    assert_eq!(document.keep_name_unique(&Item::Object(1)), "");
     let text = document.text();
-    assert!(text.contains(r#"SoundOff("bulb")"#) && text.contains(r#"SoundOn("bulb")"#));
+    assert!(text.contains("SoundOff(2)") && text.contains("SoundOn(2)"));
     assert!(
         problems(&document, &[], &registry)
             .iter()
@@ -1103,7 +1102,7 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
         assert_eq!(row("add cuboid").text, "Add: Cuboid");
 
         // The key of "Rename": the row of the lamp in the outliner is a text field
-        // in the next frame. Its end gives the name, and the event follows.
+        // in the next frame. Its end gives the name.
         app.resource_mut::<Editor>().select(Item::Object(1), false);
         app.write_message(maki_platform::RawInput::KeyDown(Key::F2));
         app.advance(Duration::from_millis(20));
@@ -1116,7 +1115,8 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
             editor.document.room.objects[1].name.as_deref(),
             Some("bulb")
         );
-        assert!(editor.document.text().contains(r#"LightOff("bulb")"#));
+        // A rename changes no command: the name form of this room is of before ids.
+        assert!(editor.document.text().contains(r#"LightOff("lamp")"#));
         assert!(editor.document.dirty);
 
         // The layout "Look" closes the event panel; an event that is selected
@@ -1145,6 +1145,33 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
 }
 
 #[test]
+fn play_starts_at_the_spawn_point_of_an_id_or_of_a_name() {
+    let text = maki_scene::room_text(
+        4.0,
+        4.0,
+        3.0,
+        &[
+            r#"(id: 1, name: "west", components: {"spawn": ()})"#,
+            r#"(id: 2, name: "east", components: {"spawn": ()})"#,
+        ],
+    );
+    let room = maki_scene::parse_room(&text).unwrap();
+    let spawns = spawn_points(&room);
+    let start = |wanted: Option<ObjectRef>| {
+        let found = play_spawn(&spawns, wanted.as_ref());
+        found.map(|(spawn, name)| (spawn.clone(), name.as_str()))
+    };
+    let west = Some((ObjectRef::Id(maki_scene::ObjectId(1)), "west"));
+    let east = Some((ObjectRef::Id(maki_scene::ObjectId(2)), "east"));
+    // A start spawn by id (`project.toml`) or by name: that spawn point, by its id.
+    assert_eq!(start(Some(ObjectRef::Id(maki_scene::ObjectId(1)))), west);
+    assert_eq!(start(Some("west".into())), west);
+    // None, or one that the room does not have: the first in name order.
+    assert_eq!(start(Some(ObjectRef::Id(maki_scene::ObjectId(9)))), east);
+    assert_eq!(start(None), east);
+}
+
+#[test]
 fn the_document_of_a_session_goes_to_the_next_editor_app() {
     // The first app: a change that is not saved, another spawn point for "Play",
     // and another view.
@@ -1156,7 +1183,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         light.intensity = 2.5;
         editor.document.set_light(&Item::Object(1), light);
         editor.document.dirty = true;
-        editor.play_from = Some("other".to_owned());
+        editor.play_from = Some("other".into());
         editor.select(Item::Object(LEAVE), false);
         frames(&mut app, 2);
         let world = app.world();
@@ -1182,7 +1209,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         );
         assert!(editor.document.dirty);
         assert_eq!(editor.document.path, directory.join("a.ron"));
-        assert_eq!(editor.play_from.as_deref(), Some("other"));
+        assert_eq!(editor.play_from, Some("other".into()));
         assert_eq!(editor.selection, [Item::Object(LEAVE)]);
         // The same session comes out of it.
         assert_eq!(super::session(world).unwrap(), session);
@@ -1266,16 +1293,14 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
     // A frame with no input: the rows of each item and of each component are drawn,
     // and no value changes.
     let before = document.clone();
-    let lists = |_: &str| Vec::new();
+    let objects = crate::widgets::object_names(&document.room.objects);
+    let lists = crate::fields::Lists::objects(&objects);
     let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
         for item in &items {
             let (name, mut tree) = document.tree(item).unwrap();
             let shown = tree.clone();
             let kind = &types.get(name).unwrap().kind;
-            assert!(
-                !crate::fields::show(ui, kind, &mut tree, &lists),
-                "{item:?}"
-            );
+            assert!(!crate::fields::show(ui, kind, &mut tree, lists), "{item:?}");
             assert_eq!(tree, shown, "{item:?}");
             document.set_tree(item, tree).unwrap();
         }
@@ -1285,7 +1310,7 @@ fn the_rows_of_an_item_come_from_the_table_of_its_fields() {
                 let mut tree = tree.unwrap().unwrap();
                 let shown = tree.clone();
                 let kind = &types.get(name).unwrap().kind;
-                assert!(!crate::fields::show(ui, kind, &mut tree, &lists), "{name}");
+                assert!(!crate::fields::show(ui, kind, &mut tree, lists), "{name}");
                 assert_eq!(tree, shown, "{name}");
                 document
                     .set_component_tree(index, name, &tree, components)

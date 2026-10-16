@@ -130,7 +130,14 @@ fn help(name: &str) -> Option<&'static str> {
 
 /// A new command for a tool (`CommandRegistry::add_defaults`).
 fn new(name: &str, room: &RoomDef) -> Option<AudioCommand> {
-    let first = || ObjectRef::Name(sound_names(room).into_iter().next().unwrap_or_default());
+    // The first light with a sound, by its id if it has one.
+    let first = || {
+        let name = sound_names(room).into_iter().next().unwrap_or_default();
+        let found = room
+            .object_named(&name)
+            .and_then(|(_, object)| object.reference());
+        found.unwrap_or(ObjectRef::Name(name))
+    };
     Some(match name {
         "PlaySound" => AudioCommand::PlaySound(PathBuf::new(), 1.0),
         "PlayMusic" => AudioCommand::PlayMusic(PathBuf::new(), 1.0),

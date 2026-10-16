@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use maki_scene::ObjectRef;
+use maki_scene::{ObjectDef, ObjectId, ObjectRef};
 use maki_ui::egui::{self, Ui};
 
 use crate::sources::Converters;
@@ -126,13 +126,48 @@ pub fn pick(ui: &mut Ui, text: &str, value: &mut String, known: &[String]) -> bo
     })
 }
 
-/// Edits an object reference as a text: its name, or `id 7`. Only a new text is
-/// written, as the name form: the pick of ids comes with #43.
-pub fn object_text(object: &mut ObjectRef, edit: impl FnOnce(&mut String) -> bool) -> bool {
-    let mut text = object.to_string();
+/// The objects of a room (or of a prefab file) that a pick of objects offers: each
+/// with an id and a name.
+pub fn object_names(objects: &[ObjectDef]) -> Vec<(ObjectId, String)> {
+    objects
+        .iter()
+        .filter_map(|object| Some((object.id?, object.name.clone()?)))
+        .collect()
+}
+
+/// The text of a reference: the name of its object, or "missing (id 7)".
+pub fn object_label(object: &ObjectRef, objects: &[(ObjectId, String)]) -> String {
+    match object {
+        ObjectRef::Id(id) => match objects.iter().find(|(other, _)| other == id) {
+            Some((_, name)) => name.clone(),
+            None => format!("missing (id {})", id.0),
+        },
+        ObjectRef::Name(name) => name.clone(),
+    }
+}
+
+/// The reference for a picked name: the id of the object of that name. A name with
+/// no id (a room file of before stage 55) stays a name.
+pub fn object_ref(name: &str, objects: &[(ObjectId, String)]) -> ObjectRef {
+    match objects.iter().find(|(_, other)| other == name) {
+        Some((id, _)) => ObjectRef::Id(*id),
+        None => ObjectRef::Name(name.to_owned()),
+    }
+}
+
+/// Edits an object reference as the name of its object: `edit` gets the name (or
+/// "missing (id 7)", which no list has, so it shows in red) and picks another. The
+/// id of the picked object is stored.
+pub fn object_pick(
+    object: &mut ObjectRef,
+    objects: &[(ObjectId, String)],
+    edit: impl FnOnce(&mut String) -> bool,
+) -> bool {
+    let before = object_label(object, objects);
+    let mut text = before.clone();
     let changed = edit(&mut text);
-    if text != object.to_string() {
-        *object = ObjectRef::Name(text);
+    if text != before {
+        *object = object_ref(&text, objects);
     }
     changed
 }
@@ -145,3 +180,39 @@ pub(crate) const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
 pub(crate) const MODELS: [&str; 2] = ["gltf", "glb"];
 /// The extension of the prefab files.
 pub(crate) const PREFABS: [&str; 1] = ["prefab"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pick_of_objects_shows_names_and_stores_ids() {
+        let objects = [
+            (ObjectId(3), "lamp".to_owned()),
+            (ObjectId(5), "door".to_owned()),
+        ];
+        let mut object = ObjectRef::Id(ObjectId(3));
+        assert_eq!(object_label(&object, &objects), "lamp");
+        // The pick gets the name, and the id of the picked name is stored.
+        let picked = object_pick(&mut object, &objects, |name| {
+            assert_eq!(name, "lamp");
+            *name = "door".to_owned();
+            true
+        });
+        assert!(picked);
+        assert_eq!(object, ObjectRef::Id(ObjectId(5)));
+        // An id with no object: no list has its text.
+        let mut missing = ObjectRef::Id(ObjectId(7));
+        assert_eq!(object_label(&missing, &objects), "missing (id 7)");
+        assert!(!object_pick(&mut missing, &objects, |_| false));
+        assert_eq!(missing, ObjectRef::Id(ObjectId(7)));
+        // A name form gets the id when it is picked again.
+        let mut named = ObjectRef::from("door");
+        assert_eq!(object_label(&named, &objects), "door");
+        object_pick(&mut named, &objects, |name| {
+            *name = "lamp".to_owned();
+            true
+        });
+        assert_eq!(named, ObjectRef::Id(ObjectId(3)));
+    }
+}

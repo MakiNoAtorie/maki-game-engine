@@ -99,6 +99,9 @@ pub enum Kind {
         list: &'static str,
         text: bool,
     },
+    /// An object of the room: its id (a number in the tree). A tool shows the name
+    /// of the object and picks it by its name.
+    Object,
     /// A value that can be absent: `null` in the tree.
     Optional {
         inner: Box<Kind>,
@@ -228,7 +231,8 @@ impl Kind {
             Kind::Text | Kind::File(_) | Kind::Pick { text: true, .. } => {
                 Value::String(String::new())
             }
-            Kind::Pick { text: false, .. } => Value::from(0),
+            // No object has the id 0: the editor gives ids from 1.
+            Kind::Pick { text: false, .. } | Kind::Object => Value::from(0),
             Kind::Vector { .. } => Value::from(vec![0.0; 3]),
             Kind::Color => Value::from(vec![1.0; 3]),
             Kind::Optional { .. } => Value::Null,

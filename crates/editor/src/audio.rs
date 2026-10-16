@@ -7,7 +7,7 @@ use maki_audio::{AudioCommand, sound_names};
 use maki_core::App;
 
 use crate::add_argument_editor;
-use crate::widgets::{SOUNDS, file, number, object_text, pick};
+use crate::widgets::{SOUNDS, file, number, object_names, object_pick, pick};
 
 pub(crate) fn add_argument_editors(app: &mut App) {
     add_argument_editor(app, |ui, command: &mut AudioCommand, room| match command {
@@ -15,8 +15,11 @@ pub(crate) fn add_argument_editors(app: &mut App) {
             file(ui, "sound file", path, &SOUNDS) | number(ui, "volume", volume, 0.01, 0.0..=4.0)
         }
         AudioCommand::StopMusic => false,
-        AudioCommand::SoundOn(name) | AudioCommand::SoundOff(name) => object_text(name, |name| {
-            pick(ui, "light with a sound", name, &sound_names(room))
-        }),
+        AudioCommand::SoundOn(name) | AudioCommand::SoundOff(name) => {
+            let objects = object_names(&room.objects);
+            object_pick(name, &objects, |name| {
+                pick(ui, "light with a sound", name, &sound_names(room))
+            })
+        }
     });
 }

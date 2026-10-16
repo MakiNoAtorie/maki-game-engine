@@ -29,6 +29,7 @@ use maki_ui::{
 };
 
 use crate::event_panel::{ERROR, HINT, NEVER_WRITTEN, event_panel, event_properties};
+use crate::fields::Lists;
 use crate::widgets::drag;
 use crate::{Answer, Command, Document, Editor, EditorSettings, Item, Kind, Tool};
 
@@ -295,18 +296,17 @@ fn play_row(ui: &mut Ui, world: &mut World) {
     );
     // Where the game starts.
     let mut editor = world.resource_mut::<Editor>();
-    let spawns = editor.document.room.spawn_names();
-    let chosen = editor
-        .play_from
+    let spawns = crate::spawn_points(&editor.document.room);
+    let current = crate::play_spawn(&spawns, editor.play_from.as_ref()).cloned();
+    let shown = current
         .as_ref()
-        .filter(|name| spawns.contains(name));
-    let current = chosen.or(spawns.first()).cloned();
+        .map_or("at the view", |(_, name)| name.as_str());
     egui::ComboBox::from_id_salt("play from")
-        .selected_text(current.as_deref().unwrap_or("at the view"))
+        .selected_text(shown)
         .show_ui(ui, |ui| {
-            for spawn in spawns {
-                let selected = current.as_ref() == Some(&spawn);
-                if ui.selectable_label(selected, spawn.as_str()).clicked() {
+            for (spawn, name) in spawns {
+                let selected = current.as_ref().is_some_and(|(chosen, _)| *chosen == spawn);
+                if ui.selectable_label(selected, name.as_str()).clicked() {
                     editor.play_from = Some(spawn);
                 }
             }
@@ -706,16 +706,14 @@ fn properties(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
             editor.selection.len()
         ));
     }
-    // `Some`: the name of the item was changed, from this one.
-    let mut old_name = None;
-    let shown = item_properties(ui, world, editor, &item, &mut old_name);
+    let mut renamed = false;
+    let shown = item_properties(ui, world, editor, &item, &mut renamed);
     let Some(mut changed) = shown else {
         ui.weak("The room has no such item.");
         return;
     };
-    if let Some(old) = old_name {
-        let registry = editor.registry.clone();
-        let more = editor.document.renamed(&item, old, &registry);
+    if renamed {
+        let more = editor.document.keep_name_unique(&item);
         if !more.is_empty() {
             editor.status = more;
         }
@@ -755,7 +753,7 @@ fn item_properties(
     world: &World,
     editor: &mut Editor,
     item: &Item,
-    old_name: &mut Option<Option<String>>,
+    renamed: &mut bool,
 ) -> Option<bool> {
     // What is not a field of an item kind.
     match item {
@@ -775,15 +773,10 @@ fn item_properties(
         return Some(false);
     };
     let name_before = tree.get("name").cloned();
-    // No field of the room or of an object picks from a list of the room.
-    let lists = |_: &str| Vec::new();
+    let objects = crate::widgets::object_names(&editor.document.room.objects);
     let mut changed = false;
-    if crate::fields::show(ui, &table.kind, &mut tree, &lists) {
-        // The name of an item that events find by its name.
-        if tree.get("name") != name_before.as_ref() {
-            let old = name_before.as_ref().and_then(Value::as_str);
-            *old_name = Some(old.map(str::to_owned));
-        }
+    if crate::fields::show(ui, &table.kind, &mut tree, Lists::objects(&objects)) {
+        *renamed = tree.get("name") != name_before.as_ref();
         match editor.document.set_tree(item, tree) {
             Ok(()) => changed = true,
             Err(error) => editor.status = format!("The change was not taken: {error:#}"),
@@ -834,8 +827,9 @@ fn components(ui: &mut Ui, world: &World, editor: &mut Editor, index: usize) -> 
         };
         // An id of its own: egui makes the id of a widget from its label, and two
         // components can have a field of the same name.
+        let objects = crate::widgets::object_names(&editor.document.room.objects);
         let shown = ui.push_id(&name, |ui| {
-            crate::fields::show(ui, &table.kind, &mut tree, &|_| Vec::new())
+            crate::fields::show(ui, &table.kind, &mut tree, Lists::objects(&objects))
         });
         if !shown.inner {
             continue;
@@ -889,6 +883,8 @@ fn instance(
         }
     };
     let mut changes = used.changes.clone();
+    // A reference in a prefab file names an object of that file.
+    let objects = crate::widgets::object_names(&prefab.objects);
     for (number, object) in prefab.objects.iter().enumerate() {
         ui.separator();
         let label = object
@@ -913,7 +909,7 @@ fn instance(
                 maki_scene::merge(&mut tree, change);
             }
             let shown = ui.push_id(&key, |ui| {
-                crate::fields::show(ui, &table.kind, &mut tree, &|_| Vec::new())
+                crate::fields::show(ui, &table.kind, &mut tree, Lists::objects(&objects))
             });
             if shown.inner {
                 match maki_scene::difference(&base, &tree) {
