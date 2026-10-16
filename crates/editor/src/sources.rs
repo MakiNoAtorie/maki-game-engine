@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Res, ResMut};
+use maki_assets::FileId;
 use maki_core::App;
 use maki_ui::{Jobs, NoticeLevel, Notices};
 
@@ -132,6 +133,8 @@ pub enum Report {
     Done(PathBuf, f32),
     /// The conversion failed: the source, and why. The old result stays.
     Failed(PathBuf, String),
+    /// The list of the files of the folder changed: a file is new, gone, or moved.
+    Files,
 }
 
 /// The files of a folder and of the folders in it.
@@ -219,6 +222,48 @@ pub fn convert_due(
     }
 }
 
+/// True: the file gets an id file. Not an id file, not the buffer of a glTF file
+/// (the id is of the `.glb` or `.gltf`), and no temporary or hidden file.
+fn needs_id(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let extension = path.extension().unwrap_or_default().to_string_lossy();
+    !(name.starts_with('.')
+        || name.contains(".tmp.")
+        || name.ends_with(".id.new")
+        || ["id", "bin"].contains(&extension.to_lowercase().as_str()))
+}
+
+/// Writes an id file for each file of `files` that has none. `files`: all files of
+/// the folder, the id files too.
+fn write_ids(files: &[PathBuf]) {
+    for file in files.iter().filter(|file| needs_id(file)) {
+        if files.binary_search(&FileId::file_of(file)).is_ok() {
+            continue;
+        }
+        match FileId::random(file).write(file) {
+            Ok(()) => tracing::info!(file = %file.display(), "id file written"),
+            Err(error) => {
+                tracing::error!(file = %file.display(), "cannot write the id file: {error}")
+            }
+        }
+    }
+}
+
+/// One look at the folder: the conversions that are due ([`convert_due`]), then an
+/// id file for each file that has none, the new results too. Returns the files of
+/// the folder after the look. The ids are written here only: one thread writes them.
+pub fn scan(
+    directory: &Path,
+    converters: &Converters,
+    tools: &Tools,
+    failed: &mut HashMap<PathBuf, SystemTime>,
+    report: &mut dyn FnMut(Report),
+) -> Vec<PathBuf> {
+    convert_due(directory, converters, tools, failed, report);
+    write_ids(&files_below(directory));
+    files_below(directory)
+}
+
 /// The thread of the converters: looks at the folder until `stop` is set.
 fn run(
     directory: PathBuf,
@@ -228,10 +273,15 @@ fn run(
     stop: Arc<AtomicBool>,
 ) {
     let mut failed = HashMap::new();
+    let mut known = Vec::new();
     while !stop.load(Ordering::Relaxed) {
         // No receiver: the app has ended, and `stop` is set.
         let mut send = |report| drop(reports.send(report));
-        convert_due(&directory, &converters, &tools, &mut failed, &mut send);
+        let files = scan(&directory, &converters, &tools, &mut failed, &mut send);
+        if files != known {
+            known = files;
+            send(Report::Files);
+        }
         std::thread::sleep(SCAN);
     }
 }
@@ -322,6 +372,14 @@ pub(crate) fn tell_reports(
     let job = |path: &Path| format!("convert {}", name(path));
     for report in reports {
         match report {
+            // The table of ids is of the files before: a moved file is found again.
+            Report::Files => {
+                maki_assets::forget_id_tables();
+                let moved = crate::ids::correct_paths(&mut editor.document);
+                if moved > 0 {
+                    editor.status = format!("{moved} moved files: the room has their new paths");
+                }
+            }
             Report::Started(source) => {
                 jobs.0.push(job(&source));
                 tracing::info!(source = %source.display(), "conversion starts");
@@ -611,6 +669,7 @@ mod tests {
                         Report::Started(_) => "started".to_owned(),
                         Report::Done(..) => "done".to_owned(),
                         Report::Failed(_, error) => format!("failed: {error}"),
+                        Report::Files => "files".to_owned(),
                     });
                 },
             );
@@ -682,6 +741,69 @@ mod tests {
             [directory.join("b.out")]
         );
         assert!(converters.missing_results(&directory, &["glb"]).is_empty());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn each_new_file_gets_an_id_file_and_a_result_keeps_its_id_through_a_conversion() {
+        let directory = std::env::temp_dir().join(format!("maki-ids-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("models")).unwrap();
+        let converters = Converters(vec![Converter {
+            sources: &["src"],
+            result: "out",
+            convert: upper,
+        }]);
+        let at = |name: &str| directory.join(name);
+        std::fs::write(at("models/a.glb"), "glb").unwrap();
+        std::fs::write(at("models/a.bin"), "bin").unwrap();
+        std::fs::write(at("models/b.src"), "one").unwrap();
+        set_time(
+            &at("models/b.src"),
+            SystemTime::now() - Duration::from_secs(100),
+        );
+        let look = || {
+            let mut failed = HashMap::new();
+            scan(
+                &directory,
+                &converters,
+                &Tools::default(),
+                &mut failed,
+                &mut |_| {},
+            );
+        };
+
+        look();
+        let id = |name: &str| FileId::read(&at(name));
+        // Each file but the buffer of a glTF file, and the new result too.
+        assert!(id("models/a.glb").is_some());
+        assert!(id("models/b.src").is_some());
+        let result = id("models/b.out").expect("the result has an id");
+        assert!(!FileId::file_of(&at("models/a.bin")).exists());
+        // No id of an id file, and no temporary file is left.
+        assert_eq!(
+            files_below(&directory).len(),
+            7,
+            "{:?}",
+            files_below(&directory)
+        );
+        assert_ne!(id("models/a.glb"), id("models/b.src"));
+
+        // Converted again: the same id.
+        std::fs::write(at("models/b.src"), "two").unwrap();
+        set_time(
+            &at("models/b.out"),
+            SystemTime::now() - Duration::from_secs(90),
+        );
+        set_time(
+            &at("models/b.src"),
+            SystemTime::now() - Duration::from_secs(80),
+        );
+        let first = id("models/a.glb");
+        look();
+        assert_eq!(std::fs::read_to_string(at("models/b.out")).unwrap(), "TWO");
+        assert_eq!(id("models/b.out"), Some(result));
+        assert_eq!(id("models/a.glb"), first);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

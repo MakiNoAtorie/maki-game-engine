@@ -35,6 +35,30 @@ impl FileId {
             .parse()
             .ok()
     }
+
+    /// A new id. `seed`: the path of the asset, so two files of one moment differ.
+    // ponytail: std `RandomState` keys over time, path, and a count; a generator crate if ids collide.
+    pub fn random(seed: &Path) -> FileId {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        seed.hash(&mut hasher);
+        std::time::SystemTime::now().hash(&mut hasher);
+        COUNT.fetch_add(1, Ordering::Relaxed).hash(&mut hasher);
+        FileId(hasher.finish())
+    }
+
+    /// Writes the id file of `asset`. The only writer of id files: the text goes to
+    /// a second file first, so a reader never sees half of an id. The game never
+    /// calls it; the editor does.
+    pub fn write(self, asset: &Path) -> std::io::Result<()> {
+        let file = Self::file_of(asset);
+        let mut new = file.as_os_str().to_owned();
+        new.push(".new");
+        std::fs::write(&new, format!("{self}\n"))?;
+        std::fs::rename(&new, &file)
+    }
 }
 
 impl fmt::Display for FileId {
@@ -116,6 +140,12 @@ fn find_by_id(folder: &Path, id: FileId) -> Option<PathBuf> {
         table
     });
     table.get(&id).cloned()
+}
+
+/// Forgets the tables of id files: the next look by id walks the folder again. The
+/// editor calls it when the files of the asset folder change.
+pub fn forget_id_tables() {
+    *TABLES.lock().unwrap_or_else(PoisonError::into_inner) = None;
 }
 
 /// True if the table of id files of `folder` is built.
