@@ -712,6 +712,24 @@ fn condition_row<T: Fields + DeserializeOwned>(
     condition: &mut T,
     lists: &Lists,
 ) -> bool {
+    let mut tree = condition.tree();
+    if !with_picks(lists, |picks| {
+        crate::fields::show(ui, &T::kind(), &mut tree, picks)
+    }) {
+        return false;
+    }
+    match maki_core::fields::read::<T>(tree) {
+        Ok(changed) => {
+            *condition = changed;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Calls `draw` with what the picks of the field rows offer: the flags and the
+/// variables (`pick = "flags"`, `"variables"`) and the objects.
+fn with_picks<R>(lists: &Lists, draw: impl FnOnce(crate::fields::Lists) -> R) -> R {
     let names = |list: &str| match list {
         "flags" => lists.flags.clone(),
         "variables" => lists.variables.clone(),
@@ -722,22 +740,11 @@ fn condition_row<T: Fields + DeserializeOwned>(
         "variables" => Some(lists.unset_variables.clone()),
         _ => None,
     };
-    let picks = crate::fields::Lists {
+    draw(crate::fields::Lists {
         names: &names,
         open: &open,
         objects: &lists.ids,
-    };
-    let mut tree = condition.tree();
-    if !crate::fields::show(ui, &T::kind(), &mut tree, picks) {
-        return false;
-    }
-    match maki_core::fields::read::<T>(tree) {
-        Ok(changed) => {
-            *condition = changed;
-            true
-        }
-        Err(_) => false,
-    }
+    })
 }
 
 /// The names that the pickers offer for the open room, and what the checks find in
@@ -1245,10 +1252,8 @@ fn command_rows(
                 let of_problem = problem.command.as_ref();
                 command.is_some_and(|command| of_problem == Some(&(page_index, command.clone())))
             });
-            // A line for a reader, if the module of the command gives one. The text
-            // of the room file is the hover text.
-            let shown = command.and_then(|command| registry.row_text(command));
-            let label = egui::RichText::new(shown.as_deref().unwrap_or(text));
+            // The text of `rows`: the line for a reader, with "Else if" and names.
+            let label = egui::RichText::new(text);
             let label = match bad {
                 Some(problem) => label.color(color(problem)),
                 None => label,
@@ -1365,7 +1370,9 @@ fn command_arguments(
             .find_map(|edit| edit(ui, &command, registry, room))
         {
             new
-        } else if let Some(new) = field_arguments(ui, &command, registry, &lists.ids) {
+        } else if let Some(new) = with_picks(lists, |picks| {
+            field_arguments(ui, &command, registry, picks)
+        }) {
             new
         } else {
             // As a text. The buffer is the draft: it can be a text that is not a
@@ -1421,10 +1428,9 @@ pub(crate) fn field_arguments(
     ui: &mut Ui,
     command: &Command,
     registry: &CommandRegistry,
-    objects: &[(ObjectId, String)],
+    lists: crate::fields::Lists,
 ) -> Option<Option<Command>> {
     let (kind, mut tree) = registry.fields(command)?;
-    let lists = crate::fields::Lists::objects(objects);
     let changed = crate::fields::show_arguments(ui, &kind, &mut tree, lists);
     Some(changed.then(|| registry.from_tree(command, tree)).flatten())
 }
@@ -1490,6 +1496,11 @@ mod tests {
             (
                 Condition::Variable("turns".to_owned(), maki_events::Compare::AtLeast, 2),
                 vec!["variable", "turns", "is", "at least", "value", "2"],
+            ),
+            // A list of conditions in a condition: a row for each, and "Add".
+            (
+                Condition::Any(vec![Condition::NotFlag("lit".to_owned())]),
+                vec!["any of", "flag is not set", "lit", "Add"],
             ),
         ];
         for (condition, expected) in forms {

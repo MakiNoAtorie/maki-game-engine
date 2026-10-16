@@ -16,6 +16,7 @@
 mod builtin;
 mod check;
 mod command;
+mod flow;
 mod interpreter;
 mod model;
 mod script;
@@ -32,6 +33,7 @@ use maki_scene::{RoomValidators, load_requested_room, move_movers};
 pub use builtin::Builtin;
 pub use check::{CheckContext, Finding, Problem};
 pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, ScriptFunction, Step};
+pub use flow::{Flow, Loop};
 pub use interpreter::{
     ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, Signals, Start, load_room_events,
     run_events, start_event,
@@ -90,6 +92,7 @@ impl Module for EventsModule {
         registry.add_check(builtin::check);
         registry.add_texts(builtin::row_text, builtin::help);
         registry.add_lists(builtin::lists, builtin::with_lists);
+        flow::add(&registry);
         add_bindings(
             app,
             &[

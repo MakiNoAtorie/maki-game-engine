@@ -245,6 +245,37 @@ fn value(
             }
             changed
         }
+        Kind::List(item) => {
+            let item = item.get();
+            if !tree.is_array() {
+                *tree = Value::Array(Vec::new());
+            }
+            let items = tree.as_array_mut().expect("set above");
+            if !label.is_empty() {
+                row(ui, label, |_| {});
+            }
+            let rows = |ui: &mut Ui| {
+                let (mut changed, mut removed) = (false, None);
+                for (index, part) in items.iter_mut().enumerate() {
+                    ui.push_id(index, |ui| {
+                        if ui.small_button("x").on_hover_text("Remove").clicked() {
+                            removed = Some(index);
+                        }
+                        changed |= value(ui, "", "", &item, part, None, lists);
+                    });
+                }
+                if let Some(index) = removed {
+                    items.remove(index);
+                    changed = true;
+                }
+                if ui.button("Add").clicked() {
+                    items.push(item.zero());
+                    changed = true;
+                }
+                changed
+            };
+            ui.indent((label, "items"), rows).inner
+        }
     }
 }
 

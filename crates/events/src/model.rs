@@ -153,6 +153,9 @@ pub enum Condition {
         #[field(label = "is")] Compare,
         #[field(label = "value")] i32,
     ),
+    /// One of the conditions holds ("or"). With no condition: it does not hold.
+    #[field(label = "any of")]
+    Any(Vec<Condition>),
 }
 
 /// How a variable is compared with a number.
@@ -182,21 +185,18 @@ impl Condition {
                     Compare::AtLeast => variable >= *value,
                 }
             }
+            Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
         }
     }
 
-    /// The name of the flag or the variable that the condition reads.
-    pub fn name(&self) -> &str {
+    /// The flags and the variables that the condition reads: for each, true for a
+    /// variable, and the name.
+    pub fn names(&self) -> Vec<(bool, &str)> {
         match self {
-            Condition::Flag(name) | Condition::NotFlag(name) | Condition::Variable(name, ..) => {
-                name
-            }
+            Condition::Flag(name) | Condition::NotFlag(name) => vec![(false, name)],
+            Condition::Variable(name, ..) => vec![(true, name)],
+            Condition::Any(conditions) => conditions.iter().flat_map(Condition::names).collect(),
         }
-    }
-
-    /// True: the name is of a variable. False: of a flag.
-    pub fn is_variable(&self) -> bool {
-        matches!(self, Condition::Variable(..))
     }
 }
 

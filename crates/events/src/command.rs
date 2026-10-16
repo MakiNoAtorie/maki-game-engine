@@ -135,6 +135,18 @@ pub struct Step<'a> {
     pub entity: Option<Entity>,
     pub(crate) memory: &'a mut Option<Box<dyn Any + Send + Sync>>,
     pub(crate) opened: &'a mut Option<Vec<Command>>,
+    pub(crate) jump: &'a mut Jump,
+}
+
+/// What a command of the flow asks of the open lists when it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Jump {
+    #[default]
+    None,
+    /// The opened list runs again each time it ends (`Loop`).
+    Loop,
+    /// The lists close up to the innermost loop, and that loop too (`Break`).
+    Break,
 }
 
 impl Step<'_> {

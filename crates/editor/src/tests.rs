@@ -622,7 +622,12 @@ fn a_script_command_with_fields_has_widgets_and_a_pick_of_names() {
     let wait = registry.parse_command("Wait(1.0)").unwrap();
     let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
         let edit = |ui: &mut egui::Ui, command| {
-            crate::event_panel::field_arguments(ui, command, &registry, &objects)
+            crate::event_panel::field_arguments(
+                ui,
+                command,
+                &registry,
+                crate::fields::Lists::objects(&objects),
+            )
         };
         // A command with no table: not this path. With no input: no change.
         assert_eq!(edit(ui, &wait), None);

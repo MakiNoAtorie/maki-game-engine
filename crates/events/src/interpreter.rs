@@ -20,7 +20,7 @@ use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
 use maki_scene::{ComponentText, CurrentRoom, Name, ObjectId, Player, RoomItem};
 
-use crate::command::{Command, CommandRegistry, Step};
+use crate::command::{Command, CommandRegistry, Jump, Step};
 use crate::model::{EventDef, EventPages, Trigger, active_page};
 use crate::script::{ScriptRunners, TriggerArea};
 use crate::{GameState, INTERACT};
@@ -75,8 +75,9 @@ pub struct RunningEvent {
     pub(crate) entity: Option<Entity>,
     pub start: Start,
     /// The command lists that are open: the page, and in it the branch of each `If`
-    /// that was taken. With each list, the index of its next command.
-    stack: Vec<(Vec<Command>, usize)>,
+    /// that was taken. With each list, the index of its next command, and true for
+    /// the list of a `Loop`.
+    stack: Vec<(Vec<Command>, usize, bool)>,
     /// True: the current command ran in a step before and waits.
     waiting: bool,
     /// What the current command keeps between its steps (`Step::memory`).
@@ -90,7 +91,7 @@ impl RunningEvent {
             id: None,
             entity: None,
             start,
-            stack: vec![(commands.to_vec(), 0)],
+            stack: vec![(commands.to_vec(), 0, false)],
             waiting: false,
             memory: None,
         }
@@ -105,22 +106,24 @@ impl RunningEvent {
 
     /// The command that runs or waits now.
     pub fn current(&self) -> Option<&Command> {
-        let (list, index) = self.stack.last()?;
+        let (list, index, _) = self.stack.last()?;
         list.get(*index)
     }
 
     /// One fixed step. True: the event has ended. `steps`: see `EventRunner::steps`.
     pub(crate) fn step(&mut self, world: &mut World, steps: &mut Option<u32>) -> bool {
         for _ in 0..MAX_COMMANDS_PER_STEP {
-            // A list at its end is closed: the list around it goes on.
-            while self
-                .stack
-                .last()
-                .is_some_and(|(list, index)| *index >= list.len())
+            // A closed list: the outer list goes on. A loop starts again; an empty one closes.
+            while let Some((list, index, looping)) = self.stack.last_mut()
+                && *index >= list.len()
             {
+                if *looping && !list.is_empty() {
+                    *index = 0;
+                    break;
+                }
                 self.stack.pop();
             }
-            let Some((list, index)) = self.stack.last() else {
+            let Some((list, index, _)) = self.stack.last() else {
                 return true;
             };
             let command = list[*index].clone();
@@ -136,6 +139,7 @@ impl RunningEvent {
                 self.memory = None;
             }
             let mut opened = None;
+            let mut jump = Jump::None;
             let mut step = Step {
                 start,
                 event: &self.name,
@@ -143,15 +147,26 @@ impl RunningEvent {
                 entity: self.entity,
                 memory: &mut self.memory,
                 opened: &mut opened,
+                jump: &mut jump,
             };
             if !command.run(&mut step, world) {
                 return false;
             }
             self.waiting = false;
+            if jump == Jump::Break {
+                match self.stack.iter().rposition(|(_, _, looping)| *looping) {
+                    // The index of the list around the loop is already after it.
+                    Some(at) => {
+                        self.stack.truncate(at);
+                        continue;
+                    }
+                    None => tracing::warn!(event = self.name, "Break with no loop around it"),
+                }
+            }
             self.stack.last_mut().expect("tested above").1 += 1;
-            // The branch of an `If`.
+            // The branch of an `If`, or the list of a loop.
             if let Some(list) = opened {
-                self.stack.push((list, 0));
+                self.stack.push((list, 0, jump == Jump::Loop));
             }
         }
         tracing::warn!(
