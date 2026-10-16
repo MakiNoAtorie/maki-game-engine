@@ -38,6 +38,12 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - A game or a test app with `PlayerModule` adds `GameModule`: the rules give the controller the control. Find the player with `With<Player>`; move the control only with `give_control`.
 - `maki_core::PlayState` is the state of the game, changed along `can_change`; `Time::paused` is of the editor.
 - A test that writes a room builds the text with `maki_scene::room_text` and its events with `maki_events::short_events`: the form of the file is in one place. The tests of the format itself (`crates/scene/src/room.rs`) keep their literal texts.
+- A command started inside the egui frame (menu, palette, command button) goes through `maki_ui::queue_command`: it runs after `run_ui`, when `Panels` is back in the world.
+- A script function called by a `CallScript` row queues its commands in `ScriptContext`; the row runs them as an opened list, as `If` runs a branch.
+- Output names of a component are `pub const` on its type (`TriggerArea::USED`); the registration uses its `OUTPUTS`.
+- A component that `SetField` can change has a live form (`add_live_component_type` with a `Live` constant that lists the live fields). A live write uses `set_if_neq`.
+- The room check reads the component types from a copy in `CommandRegistry`: a check test runs one `app.update()` first.
+- An editor-only change of a game module's key goes in a Startup system of the editor that edits `Bindings`.
 
 ## Code intelligence
 - Use `rust-analyzer-lsp` (`/plugin install rust-analyzer-lsp@claude-plugins-official`, `rust-analyzer` on PATH) in local sessions: lookup by symbol and errors after each edit save build round trips.
