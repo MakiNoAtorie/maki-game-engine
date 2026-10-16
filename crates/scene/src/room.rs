@@ -35,7 +35,7 @@ use maki_assets::{
 use maki_core::{Fields, Interpolated, Transform};
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ComponentTypes, ObjectDef};
+use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
@@ -636,7 +636,60 @@ pub struct LightSource {
     pub sound: Option<SoundDef>,
 }
 
+impl LightSource {
+    /// The live form of the component `light`: the tree of a [`Light`] of the game,
+    /// and a tree written back into it. The sound is another component: its tree is
+    /// `None`, and a sound in a tree is not written.
+    pub(crate) const LIVE: Live = Live {
+        get: |world, entity| {
+            let light = world.get::<Light>(entity)?;
+            let source = LightSource {
+                radius: light.radius,
+                color: light.color.into(),
+                intensity: light.intensity,
+                on: light.on,
+                direction: Some(light.direction.into()),
+                cone: (light.cone_degrees < 180.0).then_some(light.cone_degrees),
+                sound: None,
+            };
+            Some(source.tree())
+        },
+        set: |world, entity, tree| {
+            let source = maki_core::fields::read::<LightSource>(tree).map_err(|e| e.to_string())?;
+            let mut light = world
+                .get_mut::<Light>(entity)
+                .ok_or("the entity has no light")?;
+            *light = LightDef::from_source(source).light();
+            Ok(())
+        },
+    };
+}
+
 impl LightDef {
+    /// A light at the origin with no name, with the values of the component.
+    fn from_source(source: LightSource) -> Self {
+        let LightSource {
+            radius,
+            color,
+            intensity,
+            on,
+            direction,
+            cone,
+            sound,
+        } = source;
+        LightDef {
+            name: None,
+            position: [0.0; 3],
+            radius,
+            color,
+            intensity,
+            on,
+            direction,
+            cone,
+            sound,
+        }
+    }
+
     /// The light as an object with the component `light`.
     pub fn into_object(self) -> ObjectDef {
         let LightDef {

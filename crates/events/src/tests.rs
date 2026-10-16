@@ -823,7 +823,6 @@ fn a_row_sets_a_field_of_a_component_of_an_object() {
     let events = r#"(name: "tune", pages: [(trigger: Autorun, commands: [
         SetField("counter", "counter", "speed", 2.5),
         SetField("counter", "area", "width", 3),
-        SetField("counter", "area", "nothing", 1),
     ])])"#;
     let app = counter_game("set-field", &counter_room(0.0, events));
     app.run(|mut app| {
@@ -832,8 +831,76 @@ fn a_row_sets_a_field_of_a_component_of_an_object() {
         let mut counters = world.try_query::<(&Counter, &TriggerArea)>().unwrap();
         let (counter, area) = counters.single(world).unwrap();
         assert_eq!((counter.speed, area.width, area.depth), (2.5, 3.0, 1.0));
-        // A field that is not there changes nothing, and the event ends. A wrong
-        // object or component is an error of the check: the room does not load.
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn a_row_sets_the_strength_color_and_radius_of_a_light_in_play() {
+    let directory = directory("set-light");
+    let events = r#"(name: "dim", pages: [(trigger: Autorun, commands: [
+        SetField("lamp", "light", "intensity", 2.0),
+        SetField("lamp", "light", "color", (1.0, 0.5, 0.0)),
+        SetField("lamp", "light", "radius", 0.3),
+    ])])"#;
+    std::fs::write(directory.join("a.ron"), room(events)).unwrap();
+    game(&directory).run(|mut app| {
+        steps(&mut app, 3);
+        let mut lights = app.world().try_query::<&Light>().unwrap();
+        let lamp = *lights.single(app.world()).unwrap();
+        let wanted = (2.0, glam::Vec3::new(1.0, 0.5, 0.0), 0.3, true);
+        assert_eq!((lamp.intensity, lamp.color, lamp.radius, lamp.on), wanted);
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
+fn the_check_finds_a_field_that_the_component_does_not_have_and_a_value_of_a_wrong_kind() {
+    let events = r#"(name: "e", pages: [(trigger: Autorun, commands: [
+        SetField("lamp", "light", "intensity", 2),
+        SetField("lamp", "light", "strength", 2.0),
+        SetField("lamp", "light", "intensity", "bright"),
+    ])])"#;
+    let directory = directory("check-field");
+    let path = directory.join("a.ron");
+    std::fs::write(&path, room(events)).unwrap();
+    let mut app = game(&directory);
+    // The check knows the types of components after the modules are built.
+    app.update();
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let error = maki_scene::check_room(&path, &room(events), validators).unwrap_err();
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("the component `light` has no field `strength`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"bright\" is not a value of the field `light.intensity`"),
+        "{text}"
+    );
+    assert_eq!(text.matches("event `e`").count(), 2, "{text}");
+}
+
+#[test]
+fn a_row_sets_a_field_of_a_component_of_the_prefab_of_an_instance() {
+    let directory = directory("set-prefab");
+    let lamp = r#"(objects: [(name: "bulb", pose: (position: (0, 1, 0)), components: {
+        "light": (radius: 0.1, color: (1, 1, 1), intensity: 8.0)})])"#;
+    std::fs::write(directory.join("lamp.ron"), lamp).unwrap();
+    let events = r#"(name: "dim", pages: [(trigger: Autorun, commands: [
+        SetField("standing", "light", "intensity", 3.0)])])"#;
+    let text = room(events).replacen(
+        "objects: [",
+        r#"objects: [(name: "standing", pose: (position: (2, 0, 2)), components: {"prefab": (file: "lamp.ron")}),"#,
+        1,
+    );
+    std::fs::write(directory.join("a.ron"), text).unwrap();
+    // The room loads only if the check finds no problem.
+    game(&directory).run(|mut app| {
+        steps(&mut app, 3);
+        let mut lights = app.world().try_query::<(&Name, &Light)>().unwrap();
+        let bulb = lights.iter(app.world()).find(|(name, _)| name.0 == "bulb");
+        assert_eq!(bulb.unwrap().1.intensity, 3.0);
         assert_eq!(running(&app), 0);
     });
 }
