@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.15 ("First"), and [PLANNING-HANDOVER.md](PLANNIN
 Goal: the object model of stages 47 to 53 works by hand in the editor and in the game, with no panic, before the stages that build on it (object ids, the gaps of the events).
 Gate: each defect of the run by hand has a test that failed before the fix; "New script" from the File menu, Ctrl+P, and the panel makes a script that builds; the dial of room C shows its message in the game and in the editor with no panic. The game plays as before: the trip run passes, the benchmark against `s52` shows the same pictures.
 
-State: written by the session from the run by hand of 2026-10-16 and the reports of stages 50 to 53. Not seen by the owner.
+State: written by the session from the run by hand of 2026-10-16 and the reports of stages 50 to 53. Not seen by the owner. Spec: issue #22; the measure of the symbol limit: issue #23.
 
 Beside this stage, outside the stages (a branch and a pull request of its own): the measure of the symbol limit (2.15). `opt-level = 2` for the engine crates in the profile `dynamic`; the count of the engine DLL, the build time, and the reload test before and after. A check in CI if the gain is large. It changes `Cargo.toml` only: no shared file with this stage.
 
