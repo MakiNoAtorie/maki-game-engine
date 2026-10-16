@@ -832,6 +832,14 @@ pub fn ron_options() -> ron::Options {
     ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
 }
 
+/// The text of a room file of `width` x `depth` x `height` meters with these objects,
+/// each in the RON form of an object: for a test that writes a room. The form of the
+/// file is here only, so a change of the format changes no test.
+pub fn room_text(width: f32, depth: f32, height: f32, objects: &[&str]) -> String {
+    let objects = objects.join(",\n");
+    format!("(width: {width:?}, depth: {depth:?}, height: {height:?}, objects: [\n{objects}\n])")
+}
+
 /// The room in a RON text. The error has the line and the column.
 pub fn parse_room(text: &str) -> Result<RoomDef, ron::error::SpannedError> {
     ron_options().from_str(text)
@@ -1900,6 +1908,19 @@ mod tests {
         let mut changed = room.clone();
         changed.set_shell(shell);
         assert_eq!((changed.width, &changed.objects), (9.0, &room.objects));
+    }
+
+    #[test]
+    fn a_room_text_of_a_test_reads_as_its_room() {
+        let text = room_text(
+            4.0,
+            5.0,
+            3.0,
+            &[r#"(name: "box", components: {"prop": (mesh: Cube(1.0))})"#],
+        );
+        let room = parse_room(&text).unwrap();
+        assert_eq!((room.width, room.depth, room.height), (4.0, 5.0, 3.0));
+        assert_eq!(room.objects[0].name.as_deref(), Some("box"));
     }
 
     #[test]
