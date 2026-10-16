@@ -56,9 +56,36 @@ pub trait Script:
 pub struct ScriptContext<'w> {
     pub world: &'w mut World,
     pub entity: Entity,
+    /// `Some`: a row `CallScript` called the function. The runner is out of the world
+    /// then, so [`Self::run`] pushes here and the row runs the list after the call.
+    queue: Option<Vec<Command>>,
 }
 
-impl ScriptContext<'_> {
+impl<'w> ScriptContext<'w> {
+    /// The context of a hook.
+    pub(crate) fn new(world: &'w mut World, entity: Entity) -> Self {
+        Self {
+            world,
+            entity,
+            queue: None,
+        }
+    }
+
+    /// Calls a function for a row `CallScript`: the commands that it ran, in order.
+    pub(crate) fn call_function(
+        function: ScriptFunction,
+        world: &'w mut World,
+        entity: Entity,
+    ) -> Vec<Command> {
+        let mut context = Self {
+            world,
+            entity,
+            queue: Some(Vec::new()),
+        };
+        function(&mut context);
+        context.queue.unwrap_or_default()
+    }
+
     /// The pose of the object at the end of the last step.
     pub fn pose(&self) -> Transform {
         self.world
@@ -148,8 +175,14 @@ impl ScriptContext<'_> {
 
     /// Runs a list of commands as an event runs a page. The first step runs now. A
     /// command that waits (a message, a door that turns) goes on as a running event
-    /// with the name of the object: it blocks the player as an event does.
+    /// with the name of the object: it blocks the player as an event does. In a
+    /// function of a row `CallScript`, the commands run in the event of the row,
+    /// before its next row.
     pub fn run(&mut self, commands: Vec<Command>) {
+        if let Some(queue) = &mut self.queue {
+            queue.extend(commands);
+            return;
+        }
         let name = self.name().to_owned();
         // `Interact`: the player started it, so it blocks the player.
         let mut running = RunningEvent::new(&name, Trigger::Interact, &commands);
@@ -252,7 +285,7 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
             continue;
         };
         let mut script = std::mem::take(&mut *value);
-        let mut context = ScriptContext { world, entity };
+        let mut context = ScriptContext::new(world, entity);
         match before {
             None => script.start(&mut context),
             Some(before) => {

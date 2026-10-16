@@ -206,7 +206,9 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
         Builtin::CallScript(name) => {
             let function = world.resource::<CommandRegistry>().function(name);
             match (function, step.entity) {
-                (Some(function), Some(entity)) => function(&mut ScriptContext { world, entity }),
+                (Some(function), Some(entity)) => {
+                    step.open(ScriptContext::call_function(function, world, entity));
+                }
                 (None, _) => tracing::warn!(event = step.event, name, "no such script function"),
                 (_, None) => tracing::warn!(name, "a script function needs the object of an event"),
             }

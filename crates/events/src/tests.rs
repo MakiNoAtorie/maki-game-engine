@@ -859,6 +859,30 @@ fn a_row_calls_a_function_of_the_script_crate_with_the_object_of_the_event() {
 }
 
 #[test]
+fn a_called_function_shows_a_message_and_the_next_row_runs_after_it() {
+    fn greet(context: &mut ScriptContext) {
+        context.call(Builtin::SetVariable("order".to_owned(), 1));
+        context.call(Builtin::Message("hello".to_owned()));
+    }
+    let events = r#"(name: "caller", pages: [(trigger: Autorun, commands: [
+        CallScript("greet"), AddVariable("order", 10)])])"#;
+    let mut app = counter_game("call-wait", &counter_room(0.0, events));
+    add_script_function(&mut app, "greet", greet);
+    app.run(|mut app| {
+        let message = |app: &App| app.world().resource::<MessageBox>().0.clone();
+        steps(&mut app, 3);
+        // The pushed commands ran in the step of the call; the next row waits.
+        assert_eq!(message(&app).as_deref(), Some("hello"));
+        assert_eq!(variable(&app, "order"), 1);
+        interact(&mut app);
+        steps(&mut app, 1);
+        assert_eq!(message(&app), None);
+        assert_eq!(variable(&app, "order"), 11);
+        assert_eq!(running(&app), 0);
+    });
+}
+
+#[test]
 fn the_check_finds_a_wrong_object_component_or_function_of_a_general_command() {
     let mut app = App::new(ConfigFile::default()).unwrap();
     app.add_module(PlatformModule)
