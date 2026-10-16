@@ -9,7 +9,7 @@ use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
     Action, ActionState, Binding, Bindings, Chord, FixedActionState, InputCapture, InputMode, Key,
-    Modifiers, Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings,
+    Modifiers, Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings, update_actions,
 };
 pub use window::{
     MakeApp, NextApp, Picture, PictureFit, QuitHold, QuitRequested, RawWindowEvent, Window,

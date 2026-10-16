@@ -1,0 +1,56 @@
+# The run by hand of stage 54, with no input of the desktop: an input script of the
+# editor (crates/devtools/src/input_script.rs). The coordinates are window pixels of
+# the maximized window on a display of 3840 x 2160 at a scale of 200 %.
+# A config for it: [rooms] start = "game/assets/rooms/room_c.ron",
+# [window] focus = false, [audio] output = false.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage54.txt --input-shots DIR
+wait 30
+shot start
+
+# File > New script, then away from it (Esc, no "Create").
+click 23 10
+wait 10
+shot file_menu
+click 60 146
+wait 10
+shot new_script
+# The template list of the panel.
+click 621 1881
+wait 10
+shot templates
+tap Esc
+wait 5
+tap Esc
+wait 5
+
+# The command search: Ctrl+P, "New script", Esc.
+tap Ctrl+P
+wait 5
+type New script
+wait 5
+shot search
+tap Esc
+wait 5
+
+# Play, walk to the dial, interact.
+tap F5
+wait 60
+shot playing
+press D
+wait 40
+release D
+wait 10
+shot at_dial
+tap Z
+wait 30
+shot message
+tap Z
+wait 10
+tap F5
+wait 30
+
+# The outliner row of the dial: its mark, and its event in the event panel.
+click 35 397
+wait 20
+shot outliner
+quit

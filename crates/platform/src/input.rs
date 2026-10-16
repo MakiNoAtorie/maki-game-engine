@@ -38,6 +38,14 @@ macro_rules! keys {
                 }
             }
 
+            /// The key whose label is this text: "F5", "Ctrl", "Esc". For a script of input.
+            pub fn from_label(label: &str) -> Option<Key> {
+                match label {
+                    $($label => Some(Key::$key),)*
+                    _ => None,
+                }
+            }
+
             /// The key of a winit key code. `None`: no binding can use that key.
             pub(crate) fn from_winit(code: winit::keyboard::KeyCode) -> Option<Key> {
                 use winit::keyboard::KeyCode;
@@ -397,9 +405,10 @@ pub(crate) fn update_pointer(
     });
 }
 
+/// Runs in `Input`. A system that writes `RawInput` in `Input` runs before it.
 // A system: each argument is a system parameter.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn update_actions(
+pub fn update_actions(
     mut events: MessageReader<RawInput>,
     // Each key that is down, with the modifiers that were down when it went down.
     mut held: Local<HashMap<Key, Modifiers>>,
