@@ -43,7 +43,7 @@ fn a_compare_of_two_variables_holds_as_it_says() {
     state.set_variable("a", 2);
     state.set_variable("b", 5);
     let holds = |state: &GameState, compare| {
-        Condition::Variables("a".into(), compare, "b".into()).holds(state)
+        Condition::Variables("a".into(), compare, "b".into()).holds(&crate::Facts::of(state))
     };
     assert!(!holds(&state, Compare::Equals));
     assert!(holds(&state, Compare::NotEquals));

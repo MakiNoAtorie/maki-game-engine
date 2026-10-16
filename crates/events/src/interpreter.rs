@@ -20,10 +20,10 @@ use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
 use maki_scene::{ComponentText, CurrentRoom, Hidden, Name, ObjectId, Player, RoomItem};
 
+use crate::INTERACT;
 use crate::command::{Command, CommandRegistry, Jump, Scope, Step};
-use crate::model::{EventDef, EventPages, Trigger, active_page};
+use crate::model::{EventDef, EventPages, Facts, Trigger, active_page};
 use crate::script::{ScriptRunners, TriggerArea};
-use crate::{GameState, INTERACT};
 
 /// An interact event starts if its area is not farther from the player than this, in
 /// meters, and the player faces it.
@@ -304,7 +304,6 @@ impl EventRunner {
         let mut events: Vec<_> = events.iter(world).collect();
         events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
 
-        let state = world.resource::<GameState>();
         let mut memories = Vec::new();
         for (entity, pages, name, area, pose, _, memory, hidden) in events {
             // The area of a hidden object gives no output.
@@ -318,7 +317,8 @@ impl EventRunner {
             let inside = area.is_some_and(inside);
             let entered = inside && !before.0 && !self.new_room;
 
-            let page_index = active_page(&pages.pages, state);
+            let facts = Facts::new(world, world.get::<ObjectId>(entity).copied());
+            let page_index = active_page(&pages.pages, &facts);
             let page = page_index.map(|page| &pages.pages[page]);
             // An autorun page starts again if another page was active in between.
             let mut autorun = before.1;

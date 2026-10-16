@@ -10,9 +10,11 @@
 //! of the object ([`TriggerArea`]) at the pose of the object: the same area as for the
 //! hooks of a script.
 
+use std::borrow::Cow;
 use std::fmt;
 
 use bevy_ecs::component::Component;
+use bevy_ecs::world::World;
 use maki_core::Fields;
 use maki_scene::{ObjectId, PoseDef};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
@@ -21,6 +23,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::GameState;
 use crate::command::Command;
 use crate::script::TriggerArea;
+use crate::state::{ObjectStates, RoomStates, StateValues};
 
 /// The component `event` of an object: the pages of its event, and its wires. The
 /// commands are an open set: read the text with `CommandRegistry::parse_pages`.
@@ -163,6 +166,26 @@ pub enum Condition {
         #[field(label = "is")] Compare,
         #[field(label = "than", pick = "variables")] String,
     ),
+    /// A switch of the state of an object is on. Object 0: the object of the event.
+    #[field(label = "switch is on")]
+    Switch(
+        #[field(label = "object")] ObjectId,
+        #[field(label = "switch")] String,
+    ),
+    /// A switch of the state of an object is off. Object 0: the object of the event.
+    #[field(label = "switch is off")]
+    NotSwitch(
+        #[field(label = "object")] ObjectId,
+        #[field(label = "switch")] String,
+    ),
+    /// A number of the state of an object, compared with a number.
+    #[field(label = "number of an object")]
+    Number(
+        #[field(label = "object")] ObjectId,
+        #[field(label = "number")] String,
+        #[field(label = "is")] Compare,
+        #[field(label = "value")] i32,
+    ),
     /// One of the conditions holds ("or"). With no condition: it does not hold.
     #[field(label = "any of")]
     Any(Vec<Condition>),
@@ -182,18 +205,19 @@ pub enum Compare {
 }
 
 impl Compare {
-    pub fn holds(self, left: i32, right: i32) -> bool {
+    /// `a` compared with `b`.
+    pub fn holds(self, a: i32, b: i32) -> bool {
         match self {
-            Compare::Equals => left == right,
-            Compare::NotEquals => left != right,
-            Compare::Less => left < right,
-            Compare::AtLeast => left >= right,
+            Compare::Equals => a == b,
+            Compare::NotEquals => a != b,
+            Compare::Less => a < b,
+            Compare::AtLeast => a >= b,
         }
     }
 }
 
 impl Condition {
-    pub fn holds(&self, state: &GameState) -> bool {
+    pub fn holds(&self, state: &Facts) -> bool {
         match self {
             Condition::Flag(name) => state.flag(name),
             Condition::NotFlag(name) => !state.flag(name),
@@ -202,6 +226,16 @@ impl Condition {
             }
             Condition::Variables(a, compare, b) => {
                 compare.holds(state.variable(a), state.variable(b))
+            }
+            Condition::Switch(object, name) => {
+                state.object(*object).is_some_and(|o| o.switch(name))
+            }
+            Condition::NotSwitch(object, name) => {
+                !state.object(*object).is_some_and(|o| o.switch(name))
+            }
+            Condition::Number(object, name, compare, value) => {
+                let number = state.object(*object).map_or(0, |o| o.number(name));
+                compare.holds(number, *value)
             }
             Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
         }
@@ -215,12 +249,60 @@ impl Condition {
             Condition::Variable(name, ..) => vec![(true, name)],
             Condition::Variables(a, _, b) => vec![(true, a), (true, b)],
             Condition::Any(conditions) => conditions.iter().flat_map(Condition::names).collect(),
+            // The state of an object: no flag, no variable.
+            Condition::Switch(..) | Condition::NotSwitch(..) | Condition::Number(..) => Vec::new(),
         }
     }
 }
 
+/// What a condition reads: the flags and variables as a command sees them (with the
+/// arguments of a routine), the state of the objects of the current room, and the
+/// object of the event, which object 0 names.
+pub struct Facts<'a> {
+    pub game: Cow<'a, GameState>,
+    /// `None`: no object has state in this room yet.
+    pub objects: Option<&'a RoomStates>,
+    pub this: Option<ObjectId>,
+}
+
+impl<'a> Facts<'a> {
+    /// The facts of the world, for the object of an event.
+    pub fn new(world: &'a World, this: Option<ObjectId>) -> Self {
+        let room = crate::state::current_room(world);
+        let states = world.get_resource::<ObjectStates>();
+        Self {
+            game: Cow::Borrowed(world.resource::<GameState>()),
+            objects: room.and_then(|room| states?.0.get(&room)),
+            this,
+        }
+    }
+
+    /// Flags and variables only: no object has state.
+    pub fn of(game: &'a GameState) -> Self {
+        Self {
+            game: Cow::Borrowed(game),
+            objects: None,
+            this: None,
+        }
+    }
+
+    /// The state of an object of the room. Object 0: the object of the event.
+    pub fn object(&self, object: ObjectId) -> Option<&StateValues> {
+        let object = crate::state::resolve(object, self.this)?;
+        self.objects?.get(&object)
+    }
+}
+
+impl std::ops::Deref for Facts<'_> {
+    type Target = GameState;
+
+    fn deref(&self) -> &GameState {
+        &self.game
+    }
+}
+
 /// True if each condition of the list holds. A list with no condition holds.
-pub fn all_hold(conditions: &[Condition], state: &GameState) -> bool {
+pub fn all_hold(conditions: &[Condition], state: &Facts) -> bool {
     conditions.iter().all(|condition| condition.holds(state))
 }
 
@@ -239,7 +321,7 @@ pub enum Trigger {
 }
 
 /// The index of the active page of an event: the last one whose conditions hold.
-pub fn active_page(pages: &[Page], state: &GameState) -> Option<usize> {
+pub fn active_page(pages: &[Page], state: &Facts) -> Option<usize> {
     let holds = |page: &Page| all_hold(&page.conditions, state);
     pages.iter().rposition(holds)
 }
@@ -390,28 +472,28 @@ mod tests {
             ]),
         ]);
         let mut state = GameState::default();
-        assert_eq!(active_page(&door, &state), Some(0));
+        assert_eq!(active_page(&door, &Facts::of(&state)), Some(0));
         state.set_flag("key", true);
-        assert_eq!(active_page(&door, &state), Some(1));
+        assert_eq!(active_page(&door, &Facts::of(&state)), Some(1));
         // All conditions of a page must hold.
         state.set_variable("turns", 1);
-        assert_eq!(active_page(&door, &state), Some(1));
+        assert_eq!(active_page(&door, &Facts::of(&state)), Some(1));
         state.set_variable("turns", 2);
-        assert_eq!(active_page(&door, &state), Some(2));
+        assert_eq!(active_page(&door, &Facts::of(&state)), Some(2));
         // A later page that does not hold lets an earlier one be active.
         state.set_flag("key", false);
-        assert_eq!(active_page(&door, &state), Some(0));
+        assert_eq!(active_page(&door, &Facts::of(&state)), Some(0));
 
         // No page holds: the event does nothing.
         let hidden = event(vec![page(&[Condition::NotFlag("gone".to_owned())])]);
-        assert_eq!(active_page(&hidden, &state), Some(0));
+        assert_eq!(active_page(&hidden, &Facts::of(&state)), Some(0));
         state.set_flag("gone", true);
-        assert_eq!(active_page(&hidden, &state), None);
-        assert_eq!(active_page(&event(Vec::new()), &state), None);
+        assert_eq!(active_page(&hidden, &Facts::of(&state)), None);
+        assert_eq!(active_page(&event(Vec::new()), &Facts::of(&state)), None);
         // A variable that was never set is 0.
         let variable = |compare, value| {
             let condition = Condition::Variable("new".to_owned(), compare, value);
-            active_page(&event(vec![page(&[condition])]), &state).is_some()
+            active_page(&event(vec![page(&[condition])]), &Facts::of(&state)).is_some()
         };
         assert!(variable(Compare::Equals, 0) && !variable(Compare::NotEquals, 0));
         assert!(variable(Compare::Less, 1) && !variable(Compare::Less, 0));

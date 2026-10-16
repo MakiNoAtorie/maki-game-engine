@@ -194,6 +194,35 @@ impl<'w> ScriptContext<'w> {
         self.call(crate::RoutineCommand::CallRoutine(file.into(), arguments));
     }
 
+    /// A switch of the state of an object of the room, by its id. Object 0: the
+    /// object of this script.
+    pub fn switch(&self, object: ObjectId, name: &str) -> bool {
+        let this = self.world.get::<ObjectId>(self.entity).copied();
+        crate::state::values(self.world, object, this).is_some_and(|values| values.switch(name))
+    }
+
+    /// A number of the state of an object of the room, by its id. See [`Self::switch`].
+    pub fn number(&self, object: ObjectId, name: &str) -> i32 {
+        let this = self.world.get::<ObjectId>(self.entity).copied();
+        crate::state::values(self.world, object, this).map_or(0, |values| values.number(name))
+    }
+
+    /// Sets a switch of the state of an object of the room. See [`Self::switch`].
+    pub fn set_switch(&mut self, object: ObjectId, name: &str, on: bool) {
+        let this = self.world.get::<ObjectId>(self.entity).copied();
+        if let Some(mut values) = crate::state::values_mut(self.world, object, this) {
+            values.switches.insert(name.to_owned(), on);
+        }
+    }
+
+    /// Sets a number of the state of an object of the room. See [`Self::switch`].
+    pub fn set_number(&mut self, object: ObjectId, name: &str, value: i32) {
+        let this = self.world.get::<ObjectId>(self.entity).copied();
+        if let Some(mut values) = crate::state::values_mut(self.world, object, this) {
+            values.numbers.insert(name.to_owned(), value);
+        }
+    }
+
     /// Runs a list of commands as an event runs a page. The first step runs now. A
     /// command that waits (a message, a door that turns) goes on as a running event
     /// with the name of the object: it blocks the player as an event does. In a

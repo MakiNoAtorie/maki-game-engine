@@ -181,17 +181,14 @@ impl Step<'_> {
 
     /// The flags and variables as the command sees them: in a routine, its
     /// arguments in place of the variables of the same name. A command that reads a
-    /// condition or a variable reads it here.
-    pub fn state<'w>(&self, world: &'w World) -> std::borrow::Cow<'w, GameState> {
-        let state = world.resource::<GameState>();
-        match self.scope.as_deref() {
-            Some(scope) if !scope.is_empty() => {
-                let mut state = state.clone();
-                state.variables.extend(scope.clone());
-                std::borrow::Cow::Owned(state)
-            }
-            _ => std::borrow::Cow::Borrowed(state),
+    /// condition or a variable reads it here. With the state of the objects, and the
+    /// object of the event as object 0.
+    pub fn state<'w>(&self, world: &'w World) -> crate::model::Facts<'w> {
+        let mut facts = crate::model::Facts::new(world, self.object);
+        if let Some(scope) = self.scope.as_deref().filter(|scope| !scope.is_empty()) {
+            facts.game.to_mut().variables.extend(scope.clone());
         }
+        facts
     }
 
     /// Sets a variable: an argument of the routine that runs, else a variable of the

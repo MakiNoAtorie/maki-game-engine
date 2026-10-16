@@ -314,11 +314,17 @@ fn compare_sign(compare: Compare) -> &'static str {
 }
 
 fn condition_text(condition: &Condition) -> String {
+    let object = crate::state::object_text;
     match condition {
         Condition::Flag(name) => name.clone(),
         Condition::NotFlag(name) => format!("not {name}"),
         Condition::Variable(name, compare, value) => {
             format!("{name} {} {value}", compare_sign(*compare))
+        }
+        Condition::Switch(id, name) => format!("{}.{name}", object(id)),
+        Condition::NotSwitch(id, name) => format!("not {}.{name}", object(id)),
+        Condition::Number(id, name, compare, value) => {
+            format!("{}.{name} {} {value}", object(id), compare_sign(*compare))
         }
         Condition::Variables(a, compare, b) => format!("{a} {} {b}", compare_sign(*compare)),
         Condition::Any(conditions) => format!("({})", conditions_text(conditions, " or ")),

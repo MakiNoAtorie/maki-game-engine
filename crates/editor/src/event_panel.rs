@@ -1001,7 +1001,7 @@ fn pages(
     }
     // The pages, as tabs. The one that the game would run now has a star.
     let count = pages.len();
-    let active = active_page(pages, state);
+    let active = active_page(pages, &maki_events::Facts::of(state));
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
         for page in 0..count {
@@ -1502,12 +1502,40 @@ mod tests {
                 Condition::Variable("turns".to_owned(), maki_events::Compare::AtLeast, 2),
                 vec!["variable", "turns", "is", "at least", "value", "2"],
             ),
+            (
+                Condition::Switch(ObjectId(20), "open".to_owned()),
+                vec!["switch is on", "object", "chest", "switch", "open"],
+            ),
+            (
+                Condition::NotSwitch(ObjectId(20), "open".to_owned()),
+                vec!["switch is off", "chest", "open"],
+            ),
+            (
+                Condition::Number(
+                    ObjectId(20),
+                    "coins".to_owned(),
+                    maki_events::Compare::Less,
+                    3,
+                ),
+                vec![
+                    "number of an object",
+                    "chest",
+                    "number",
+                    "coins",
+                    "less than",
+                    "3",
+                ],
+            ),
             // A list of conditions in a condition: a row for each, and "Add".
             (
                 Condition::Any(vec![Condition::NotFlag("lit".to_owned())]),
                 vec!["any of", "flag is not set", "lit", "Add"],
             ),
         ];
+        let lists = Lists {
+            ids: vec![(ObjectId(20), "chest".to_owned())],
+            ..lists
+        };
         for (condition, expected) in forms {
             let mut shown = condition.clone();
             let texts = shown_texts(|ui| assert!(!condition_row(ui, &mut shown, &lists)));
@@ -1516,6 +1544,41 @@ mod tests {
             }
             assert_eq!(shown, condition);
         }
+    }
+
+    /// The component `state` in the inspector: its lists of named values, drawn from
+    /// its field table, with a button to add an item.
+    #[test]
+    fn the_state_component_is_drawn_from_its_field_table() {
+        let state = maki_events::ObjectState {
+            switches: vec![maki_events::NamedSwitch {
+                name: "open".to_owned(),
+                on: true,
+            }],
+            numbers: vec![maki_events::NamedNumber {
+                name: "coins".to_owned(),
+                value: 5,
+            }],
+        };
+        let kind = maki_events::ObjectState::kind();
+        let mut tree = state.tree();
+        let texts = shown_texts(|ui| {
+            assert!(!crate::fields::show(
+                ui,
+                &kind,
+                &mut tree,
+                crate::fields::Lists::objects(&[])
+            ));
+        });
+        for text in [
+            "switches", "open", "on", "numbers", "coins", "5", "Add", "x",
+        ] {
+            assert!(texts.iter().any(|found| found == text), "{text}: {texts:?}");
+        }
+        assert_eq!(
+            maki_core::fields::read::<maki_events::ObjectState>(tree).unwrap(),
+            state
+        );
     }
 
     /// A change of the kind keeps a value of the same kind at the same place: "flag
