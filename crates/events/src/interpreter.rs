@@ -334,7 +334,10 @@ impl EventRunner {
                 };
                 match page.trigger {
                     Trigger::Parallel => !runs(Trigger::Parallel),
-                    Trigger::Autorun => !blocked && autorun != page_index,
+                    Trigger::Autorun => {
+                        !blocked
+                            && (autorun != page_index || (page.repeat && !runs(Trigger::Autorun)))
+                    }
                     Trigger::Touch => !blocked && entered,
                     Trigger::Interact => {
                         interact
