@@ -126,6 +126,8 @@ pub struct Step<'a> {
     pub start: bool,
     /// The name of the event, for log lines.
     pub event: &'a str,
+    /// The id of the object of the event (`RunningEvent::id`).
+    pub object: Option<maki_scene::ObjectId>,
     /// The entity of the object of the event, or of the script that runs the
     /// commands. `None`: a tool started them with no object.
     pub entity: Option<Entity>,

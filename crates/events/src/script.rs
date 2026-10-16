@@ -185,8 +185,8 @@ impl<'w> ScriptContext<'w> {
         }
         let name = self.name().to_owned();
         // `Interact`: the player started it, so it blocks the player.
-        let mut running = RunningEvent::new(&name, Start::Page(Trigger::Interact), &commands);
-        running.entity = Some(self.entity);
+        let running = RunningEvent::new(&name, Start::Page(Trigger::Interact), &commands);
+        let mut running = running.of(self.world, self.entity);
         // ponytail: the step mode of a tool is not for script calls.
         if !running.step(self.world, &mut None) {
             self.world

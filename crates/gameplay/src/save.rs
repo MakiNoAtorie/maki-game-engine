@@ -15,10 +15,11 @@ use bevy_ecs::system::{Query, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::Quat;
 use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Startup, Update};
-use maki_events::{CommandRegistry, EventRunner, GameState, run_events};
+use maki_events::{CommandRegistry, EventRunner, GameState, RunningEvent, run_events};
 use maki_platform::{Action, ActionState, Key, add_bindings};
 use maki_scene::{
-    CurrentRoom, Player, RoomRequest, RoomTarget, RoomValidators, load_requested_room, ron_options,
+    CurrentRoom, ObjectId, Player, RoomRequest, RoomTarget, RoomValidators, load_requested_room,
+    ron_options,
 };
 use serde::{Deserialize, Serialize};
 
@@ -79,9 +80,10 @@ pub enum SaveCommand {
     SavePoint,
 }
 
-/// The event whose end writes the save file.
+/// The event whose end writes the save file: the id of its object, and its name (the
+/// key if the object has no id).
 #[derive(Resource, Debug, Default)]
-struct SaveRequest(Option<String>);
+struct SaveRequest(Option<(Option<ObjectId>, String)>);
 
 /// Adds the command `SavePoint`, the load at the start, and the debug load key.
 /// Needs `maki_events::EventsModule`, `PlayerModule`, and `RoomsModule`.
@@ -103,7 +105,7 @@ impl Module for SaveModule {
         let registry = app.world().resource::<CommandRegistry>();
         registry.add(|_: &SaveCommand, step, world| {
             if world.resource::<SaveFile>().0.is_some() {
-                world.resource_mut::<SaveRequest>().0 = Some(step.event.to_owned());
+                world.resource_mut::<SaveRequest>().0 = Some((step.object, step.event.to_owned()));
             } else {
                 tracing::debug!(
                     event = step.event,
@@ -165,12 +167,12 @@ fn save_when_the_event_ends(
     poses: Query<&Interpolated>,
 ) {
     // No write of the resource in a step with no request.
-    let Some(event) = &request.0 else { return };
-    if runner
-        .running()
-        .iter()
-        .any(|running| running.name == *event)
-    {
+    let Some((id, name)) = &request.0 else { return };
+    let same = |running: &RunningEvent| match id {
+        Some(_) => running.id == *id,
+        None => running.name == *name,
+    };
+    if runner.running().iter().any(same) {
         return;
     }
     request.0 = None;
@@ -373,6 +375,27 @@ mod tests {
         game(&directory).run(|mut app| assert_eq!(state(&mut app), start));
         std::fs::write(directory.join("save.ron"), "not a save").unwrap();
         game(&directory).run(|mut app| assert_eq!(state(&mut app), start));
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// The save point waits for the event of its object, by its id: another object
+    /// with the name (a rename) and an event that never ends does not stop it.
+    #[test]
+    fn a_save_point_waits_for_the_event_of_its_object_by_id() {
+        let directory = std::env::temp_dir().join(format!("maki-save-id-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let room = r#"(width: 4, depth: 4, height: 3, next_id: 4, objects: [(id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
+            (id: 2, name: "go", components: {"event": (pages: [(trigger: Autorun, commands: [
+                SavePoint, Wait(0.04), SetVariable("count", 3),
+            ])])}),
+            (id: 3, name: "go", components: {"event": (pages: [(trigger: Parallel, commands: [Wait(1.0)])])}),
+        ])"#;
+        std::fs::write(directory.join("a.ron"), room).unwrap();
+        game(&directory).run(|mut app| {
+            state(&mut app);
+        });
+        let save = read(&directory.join("save.ron")).unwrap().unwrap();
+        assert_eq!(save.variables["count"], 3);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

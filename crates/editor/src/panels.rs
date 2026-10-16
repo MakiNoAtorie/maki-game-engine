@@ -889,6 +889,8 @@ fn instance(
         }
     };
     let mut changes = used.changes.clone();
+    // A change of an instance from before the ids of the file is written by id.
+    maki_scene::key_changes_by_id(&mut changes, &prefab);
     for (number, object) in prefab.objects.iter().enumerate() {
         ui.separator();
         let label = object

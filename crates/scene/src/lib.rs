@@ -23,7 +23,7 @@ pub use object::{
 };
 pub use prefab::{
     PrefabDef, PrefabFile, PrefabUse, change_key, changed_text, difference, instance_objects,
-    merge, prefab_text, read_prefab,
+    key_changes_by_id, merge, prefab_text, read_prefab,
 };
 pub use room::{
     CurrentRoom, DoorLeaf, Filter, LightDef, LightSource, LookDef, MeshDef, MoverDef, MoverPath,

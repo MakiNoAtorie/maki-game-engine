@@ -18,7 +18,7 @@ use bevy_ecs::world::{EntityWorldMut, Mut, World};
 use glam::Vec3;
 use maki_core::{Interpolated, PlayState};
 use maki_platform::FixedActionState;
-use maki_scene::{ComponentText, CurrentRoom, Name, Player, RoomItem};
+use maki_scene::{ComponentText, CurrentRoom, Name, ObjectId, Player, RoomItem};
 
 use crate::command::{Command, CommandRegistry, Step};
 use crate::model::{EventDef, EventPages, Trigger, active_page};
@@ -65,7 +65,11 @@ pub enum Start {
 /// An event whose commands run.
 #[derive(Debug)]
 pub struct RunningEvent {
+    /// The name of the object, for the log and the panels.
     pub name: String,
+    /// The id of the object of the event: what names the event. `None`: a tool
+    /// started it, or the object has no id.
+    pub id: Option<ObjectId>,
     /// The entity of the object of the event. `None`: a script or a tool started the
     /// commands.
     pub(crate) entity: Option<Entity>,
@@ -83,12 +87,20 @@ impl RunningEvent {
     pub(crate) fn new(name: &str, start: Start, commands: &[Command]) -> Self {
         Self {
             name: name.to_owned(),
+            id: None,
             entity: None,
             start,
             stack: vec![(commands.to_vec(), 0)],
             waiting: false,
             memory: None,
         }
+    }
+
+    /// The event of the object of `entity`: its entity and its id.
+    pub(crate) fn of(mut self, world: &World, entity: Entity) -> Self {
+        self.entity = Some(entity);
+        self.id = world.get::<ObjectId>(entity).copied();
+        self
     }
 
     /// The command that runs or waits now.
@@ -127,6 +139,7 @@ impl RunningEvent {
             let mut step = Step {
                 start,
                 event: &self.name,
+                object: self.id,
                 entity: self.entity,
                 memory: &mut self.memory,
                 opened: &mut opened,
@@ -317,9 +330,8 @@ impl EventRunner {
                     interact = false;
                 }
                 let start = Start::Page(page.trigger);
-                let mut running = RunningEvent::new(name, start, &page.commands);
-                running.entity = Some(entity);
-                self.running.push(running);
+                let running = RunningEvent::new(name, start, &page.commands);
+                self.running.push(running.of(world, entity));
             }
 
             // The outputs of the area, with the rules of the triggers, and the outputs
@@ -369,9 +381,8 @@ impl EventRunner {
                     continue;
                 }
                 tracing::debug!(event = name, output, "wires start");
-                let mut running = RunningEvent::new(name, Start::Wire, &commands);
-                running.entity = Some(entity);
-                self.running.push(running);
+                let running = RunningEvent::new(name, Start::Wire, &commands);
+                self.running.push(running.of(world, entity));
                 blocked = true;
             }
 
@@ -388,20 +399,23 @@ impl EventRunner {
 }
 
 /// Starts the commands of a page of the event of an object now, whatever its trigger
-/// and its conditions are: for a test of the page. `name`: of the object. False: the
+/// and its conditions are: for a test of the page. `id`: of the object. False: the
 /// room has no such event or page.
-pub fn start_event(world: &mut World, name: &str, page: usize) -> bool {
-    let mut events = world.query::<(Entity, &EventPages, &Name)>();
+pub fn start_event(world: &mut World, id: ObjectId, page: usize) -> bool {
+    let mut events = world.query::<(Entity, &EventPages, &ObjectId, Option<&Name>)>();
     let found = events
         .iter(world)
-        .find(|(_, _, other)| other.0 == name)
-        .and_then(|(entity, pages, _)| Some((entity, pages.pages.get(page)?.clone())));
-    let Some((entity, page)) = found else {
+        .find(|(_, _, other, _)| **other == id)
+        .and_then(|(entity, pages, _, name)| {
+            let name = name.map_or(String::new(), |name| name.0.clone());
+            Some((entity, pages.pages.get(page)?.clone(), name))
+        });
+    let Some((entity, page, name)) = found else {
         return false;
     };
     tracing::debug!(event = name, "event starts for a test");
-    let mut running = RunningEvent::new(name, Start::Page(page.trigger), &page.commands);
-    running.entity = Some(entity);
+    let running = RunningEvent::new(&name, Start::Page(page.trigger), &page.commands);
+    let running = running.of(world, entity);
     world.resource_mut::<EventRunner>().running.push(running);
     true
 }
