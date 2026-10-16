@@ -25,10 +25,10 @@ fn room(events: &str) -> String {
     format!(
         r#"(
             width: 8, depth: 8, height: 3,
-            objects: [(name: "door", components: {{"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
-                (name: "lamp", pose: (position: (0, 2, 0)), components: {{"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}}),
-                (name: "start", components: {{"spawn": ()}}),
-                (name: "east", pose: (position: (2, 0, 0)), components: {{"spawn": ()}}),
+            objects: [(id: 1, name: "door", components: {{"door": (seconds: 0.1), "doorway": (wall: NegZ, offset: 0.0, width: 1.0, height: 2.0, depth: 1.0)}}),
+                (id: 2, name: "lamp", pose: (position: (0, 2, 0)), components: {{"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}}),
+                (id: 3, name: "start", components: {{"spawn": ()}}),
+                (id: 4, name: "east", pose: (position: (2, 0, 0)), components: {{"spawn": ()}}),
                 {}],
         )"#,
         short_events(events)
@@ -56,7 +56,7 @@ fn game(directory: &std::path::Path) -> App {
                 commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
                 request.0 = Some(RoomTarget {
                     path: path.clone(),
-                    spawn: Some("start".into()),
+                    spawn: Some(ObjectId(3)),
                     text: None,
                 });
             },
@@ -218,11 +218,11 @@ fn touch_starts_when_the_player_walks_into_the_area() {
 fn commands_reach_the_door_the_light_the_fade_and_the_next_room() {
     let directory = directory("world");
     let events = r#"(name: "show", pages: [(trigger: Autorun, commands: [
-        OpenDoor("door"), SetFlag("open", true),
-        LightIntensity("lamp", 2.0), LightOff("lamp"),
+        OpenDoor(1), SetFlag("open", true),
+        LightIntensity(2, 2.0), LightOff(2),
         FadeOut(0.1), SetFlag("dark", true),
-        Transfer("b.ron", "east"),
-        SetFlag("there", true), FadeIn(0.1), CloseDoor("door"), LightOn("nothing")])])"#;
+        Transfer("b.ron", 4),
+        SetFlag("there", true), FadeIn(0.1), CloseDoor(1), LightOn(99)])])"#;
     std::fs::write(directory.join("a.ron"), room(events)).unwrap();
     std::fs::write(directory.join("b.ron"), room("")).unwrap();
     let app = game(&directory);
@@ -273,9 +273,9 @@ fn renamed_room(events: &str) -> String {
     let button = r#"objects: [(id: 5, name: "knob", pose: (position: (3, 0, 3)), components: {"area": (width: 0.5, depth: 0.5), "event": (wires: [(output: "used", commands: [OpenDoor(1)])])}),"#;
     room(events)
         .replacen("objects: [", button, 1)
-        .replacen(r#"(name: "door""#, r#"(id: 1, name: "gate""#, 1)
-        .replacen(r#"(name: "lamp""#, r#"(id: 2, name: "bulb""#, 1)
-        .replacen(r#"(name: "east""#, r#"(id: 4, name: "far""#, 1)
+        .replacen(r#"(id: 1, name: "door""#, r#"(id: 1, name: "gate""#, 1)
+        .replacen(r#"(id: 2, name: "lamp""#, r#"(id: 2, name: "bulb""#, 1)
+        .replacen(r#"(id: 4, name: "east""#, r#"(id: 4, name: "far""#, 1)
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn the_check_reports_an_id_with_no_object() {
 fn a_transfer_to_a_bad_room_does_not_happen_and_the_event_goes_on() {
     let directory = directory("bad");
     let events = r#"(name: "go", pages: [(trigger: Autorun, commands: [
-        Transfer("b.ron", "start"), SetFlag("after", true)])])"#;
+        Transfer("b.ron", 3), SetFlag("after", true)])])"#;
     std::fs::write(directory.join("a.ron"), room(events)).unwrap();
     // A command that does not exist.
     let bad = r#"(name: "x", pages: [(trigger: Autorun, commands: [Explode])])"#;
@@ -534,24 +534,24 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     // the line of its component `event`.
     let bad = r#"
         (name: "a", pages: [(trigger: Interact, commands: [
-            OpenDoor("door"),
+            OpenDoor(1),
             If([Flag("x")], [
-                OpenDoor("dor")], [
-                OpenDoor("dor")]),
+                OpenDoor(9)], [
+                OpenDoor(9)]),
             Ring(0),
-            LightOn("lamp")])]),
+            LightOn(2)])]),
         (name: "b", pages: []),
         (name:
-            "a", pages: [(trigger: Touch, commands: [LightOff("lamb")])])"#;
+            "a", pages: [(trigger: Touch, commands: [LightOff(8)])])"#;
     let error = check(bad).unwrap_err().to_string();
     let lines: Vec<&str> = error.lines().collect();
     let file = path.display().to_string();
     let expected = [
-        "10: event `a`: the room has no door or mover `dor`",
-        "11: event `a`: the room has no door or mover `dor`",
+        "10: event `a`: the room has no door or mover `id 9`",
+        "11: event `a`: the room has no door or mover `id 9`",
         "12: event `a`: a bell rings one time or more",
         "15: event `a`: another event has the name `a`",
-        "15: event `a`: the room has no light `lamb`",
+        "15: event `a`: the room has no light `id 8`",
     ];
     assert_eq!(lines, expected.map(|line| format!("{file}:{line}")));
 
@@ -570,20 +570,20 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
         .iter()
         .map(|problem| (problem.event, problem.warning, problem.text.as_str()))
         .collect();
-    assert_eq!(found[0], (0, false, "the room has no door or mover `dor`"));
+    assert_eq!(found[0], (0, false, "the room has no door or mover `id 9`"));
     assert_eq!(found.len(), 5);
-    let wrong = registry.command(Builtin::OpenDoor("dor".into()));
+    let wrong = registry.command(Builtin::OpenDoor(ObjectId(9)));
     assert_eq!(problems[0].command, wrong.map(|command| (0, command)));
 
     // A `Transfer` to a file or a spawn point that is not there: the room loads.
     // The command after a `Transfer` runs in the other room: no check of its name.
     let transfer = r#"(name: "a", pages: [
-        (trigger: Touch, commands: [Transfer("b.ron", "west"), LightOn("of b")]),
-        (trigger: Touch, commands: [Transfer("a.ron", "east")]),
-        (trigger: Touch, commands: [Transfer("a.ron", "north")])])"#;
+        (trigger: Touch, commands: [Transfer("b.ron", 5), LightOn(7)]),
+        (trigger: Touch, commands: [Transfer("a.ron", 4)]),
+        (trigger: Touch, commands: [Transfer("a.ron", 6)])])"#;
     assert!(check(transfer).is_ok());
     let def = maki_scene::parse_room(&room(transfer)).unwrap();
-    let texts = |spawn: &dyn Fn(&str, &maki_scene::ObjectRef) -> Option<bool>| -> Vec<String> {
+    let texts = |spawn: &dyn Fn(&str, &maki_scene::ObjectId) -> Option<bool>| -> Vec<String> {
         let context = CheckContext {
             room: &def,
             file: "a.ron",
@@ -598,11 +598,11 @@ fn a_wrong_name_is_an_error_with_its_line_and_a_room_that_is_not_there_is_a_warn
     };
     assert_eq!(
         texts(&|_, _| None),
-        ["no room file `b.ron`", "`a.ron` has no spawn point `north`"]
+        ["no room file `b.ron`", "`a.ron` has no spawn point `id 6`"]
     );
     assert_eq!(
-        texts(&|_, spawn| Some(spawn.name() == Some("west"))),
-        ["`a.ron` has no spawn point `north`"]
+        texts(&|_, spawn| Some(*spawn == ObjectId(5))),
+        ["`a.ron` has no spawn point `id 6`"]
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
@@ -635,7 +635,7 @@ fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
         Choice("Open it?", [
             ("Yes", [SetFlag("yes", true)]),
             ("No", [SetFlag("no", true),
-                OpenDoor("dor")]),
+                OpenDoor(9)]),
         ]),
         SetFlag("after", true)])])"#;
     // The check of the loader: the line of a command in the list of an answer, and
@@ -647,7 +647,7 @@ fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
     assert!(
         error
             .to_string()
-            .ends_with(":12: event `ask`: the room has no door or mover `dor`"),
+            .ends_with(":12: event `ask`: the room has no door or mover `id 9`"),
         "{error}"
     );
     let empty = r#"(name: "ask", pages: [(trigger: Autorun, commands: [Choice("?", [])])])"#;
@@ -657,7 +657,7 @@ fn a_question_runs_the_list_of_the_answer_that_the_player_takes() {
         "{error}"
     );
 
-    let events = events.replace("OpenDoor(\"dor\")", "OpenDoor(\"door\")");
+    let events = events.replace("OpenDoor(9)", "OpenDoor(1)");
     std::fs::write(&path, room(&events)).unwrap();
     app.run(|mut app| {
         let tap = |app: &mut App, key| {
@@ -759,7 +759,7 @@ fn counter_room(speed: f32, events: &str) -> String {
     room(events).replacen(
         "objects: [",
         &format!(
-            r#"objects: [(name: "counter", pose: (position: (0, 0, 1.4)), components: {{"counter": (speed: {speed}), "area": (width: 1.0, depth: 1.0)}}),"#
+            r#"objects: [(id: 10, name: "counter", pose: (position: (0, 0, 1.4)), components: {{"counter": (speed: {speed}), "area": (width: 1.0, depth: 1.0)}}),"#
         ),
         1,
     )
@@ -915,8 +915,8 @@ fn one_press_starts_an_event_or_a_script_not_both() {
 fn a_row_sets_a_field_of_a_component_of_an_object() {
     // The speed of the script, and the width of the area of its object.
     let events = r#"(name: "tune", pages: [(trigger: Autorun, commands: [
-        SetField("counter", "counter", "speed", 2.5),
-        SetField("counter", "area", "width", 3),
+        SetField(10, "counter", "speed", 2.5),
+        SetField(10, "area", "width", 3),
     ])])"#;
     let app = counter_game("set-field", &counter_room(0.0, events));
     app.run(|mut app| {
@@ -933,9 +933,9 @@ fn a_row_sets_a_field_of_a_component_of_an_object() {
 fn a_row_sets_the_strength_color_and_radius_of_a_light_in_play() {
     let directory = directory("set-light");
     let events = r#"(name: "dim", pages: [(trigger: Autorun, commands: [
-        SetField("lamp", "light", "intensity", 2.0),
-        SetField("lamp", "light", "color", (1.0, 0.5, 0.0)),
-        SetField("lamp", "light", "radius", 0.3),
+        SetField(2, "light", "intensity", 2.0),
+        SetField(2, "light", "color", (1.0, 0.5, 0.0)),
+        SetField(2, "light", "radius", 0.3),
     ])])"#;
     std::fs::write(directory.join("a.ron"), room(events)).unwrap();
     game(&directory).run(|mut app| {
@@ -952,13 +952,13 @@ fn a_row_sets_the_strength_color_and_radius_of_a_light_in_play() {
 fn a_row_opens_a_door_and_takes_the_collider_from_a_prop_in_play() {
     let directory = directory("set-door-prop");
     let events = r#"(name: "open", pages: [(trigger: Autorun, commands: [
-        SetField("door", "door", "open", true),
-        SetField("door", "door", "seconds", 0.5),
-        SetField("crate", "prop", "collider", false),
+        SetField(1, "door", "open", true),
+        SetField(1, "door", "seconds", 0.5),
+        SetField(11, "prop", "collider", false),
     ])])"#;
     let text = room(events).replacen(
         "objects: [",
-        r#"objects: [(name: "crate", pose: (position: (2, 0, 2)), components: {"prop": (mesh: Cube(1.0))}),"#,
+        r#"objects: [(id: 11, name: "crate", pose: (position: (2, 0, 2)), components: {"prop": (mesh: Cube(1.0))}),"#,
         1,
     );
     std::fs::write(directory.join("a.ron"), text).unwrap();
@@ -985,10 +985,10 @@ fn a_row_opens_a_door_and_takes_the_collider_from_a_prop_in_play() {
 #[test]
 fn the_check_finds_a_field_that_the_component_does_not_have_and_a_value_of_a_wrong_kind() {
     let events = r#"(name: "e", pages: [(trigger: Autorun, commands: [
-        SetField("lamp", "light", "intensity", 2),
-        SetField("lamp", "light", "strength", 2.0),
-        SetField("lamp", "light", "intensity", "bright"),
-        SetField("door", "door", "color", (1.0, 0.0, 0.0)),
+        SetField(2, "light", "intensity", 2),
+        SetField(2, "light", "strength", 2.0),
+        SetField(2, "light", "intensity", "bright"),
+        SetField(1, "door", "color", (1.0, 0.0, 0.0)),
     ])])"#;
     let directory = directory("check-field");
     let path = directory.join("a.ron");
@@ -1020,8 +1020,8 @@ fn a_row_sets_a_field_of_a_component_of_the_prefab_of_an_instance() {
     let lamp = r#"(objects: [(name: "bulb", pose: (position: (0, 1, 0)), components: {
         "light": (radius: 0.1, color: (1, 1, 1), intensity: 8.0)})])"#;
     std::fs::write(directory.join("lamp.ron"), lamp).unwrap();
-    // By name and by the id of the instance: the prefab object with the component.
-    for (object, off) in [(r#""standing""#, ""), ("6", "LightOff(6)")] {
+    // By the id of the instance: the prefab object with the component.
+    for (object, off) in [("6", ""), ("6", "LightOff(6)")] {
         let events = format!(
             r#"(name: "dim", pages: [(trigger: Autorun, commands: [
             SetField({object}, "light", "intensity", 3.0), {off}])])"#
@@ -1092,7 +1092,7 @@ impl Script for Dimmer {
 
 #[test]
 fn a_script_finds_an_object_by_the_id_of_its_field_after_a_rename() {
-    // The room has a light "lamp" with no id; the light of the dimmer has the id 7.
+    // The room has a light "lamp" with the id 2; the light of the dimmer has the id 7.
     let room = room("").replacen(
         "objects: [",
         r#"objects: [(id: 7, name: "bulb", components: {"light": (radius: 0.1, color: (1, 1, 1), intensity: 5.0)}),
@@ -1124,7 +1124,7 @@ fn a_script_finds_an_object_by_the_id_of_its_field_after_a_rename() {
         };
         steps(&mut app, 3);
         assert_eq!(intensity(&app, Some(ObjectId(7))), 2.0);
-        assert_eq!(intensity(&app, None), 5.0);
+        assert_eq!(intensity(&app, Some(ObjectId(2))), 5.0);
         // A new name: the id stays, and the script finds the light.
         app.resource_mut::<NewName>().0 = Some("old bulb".to_owned());
         steps(&mut app, 1);
@@ -1174,9 +1174,9 @@ fn the_check_finds_a_wrong_object_component_or_function_of_a_general_command() {
     let registry = app.world().resource::<CommandRegistry>().clone();
     let text = room(
         r#"(name: "e", pages: [(trigger: Autorun, commands: [
-        SetField("lamp", "light", "intensity", 2.0),
-        SetField("lamb", "light", "intensity", 2.0),
-        SetField("lamp", "swing", "angle", 2.0),
+        SetField(2, "light", "intensity", 2.0),
+        SetField(8, "light", "intensity", 2.0),
+        SetField(2, "swing", "angle", 2.0),
         CallScript("count"),
         CallScript("cont"),
     ])])"#,
@@ -1198,7 +1198,7 @@ fn the_check_finds_a_wrong_object_component_or_function_of_a_general_command() {
     assert_eq!(
         texts,
         [
-            "the room has no object `lamb`",
+            "the room has no object `id 8`",
             "the object `lamp` has no component `swing`",
             "no module added the script function `cont`",
         ]
@@ -1229,7 +1229,7 @@ fn button_room(wires: &str) -> String {
     room("").replacen(
         "objects: [",
         &format!(
-            r#"objects: [(name: "button", pose: (position: (0, 0, 1.4)), components: {{"area": (width: 1.0, depth: 1.0), "event": (wires: [{wires}])}}),"#
+            r#"objects: [(id: 12, name: "button", pose: (position: (0, 0, 1.4)), components: {{"area": (width: 1.0, depth: 1.0), "event": (wires: [{wires}])}}),"#
         ),
         1,
     )
@@ -1240,7 +1240,7 @@ fn the_area_sends_its_outputs_to_the_wires_of_its_object() {
     let wires = r#"(output: "used", commands: [AddVariable("used", 1)]),
         (output: "entered", commands: [AddVariable("entered", 1)]),
         (output: "left", commands: [AddVariable("left", 1)]),
-        (output: "used", commands: [OpenDoor("door")])"#;
+        (output: "used", commands: [OpenDoor(1)])"#;
     let app = counter_game("outputs", &button_room(wires));
     app.run(|mut app| {
         steps(&mut app, 3);
@@ -1285,7 +1285,7 @@ fn a_signal_row_and_a_script_send_outputs_to_wires() {
         "objects: [",
         r#"objects: [
             (name: "pinger", components: {"pinger": (), "event": (wires: [(output: "ping", commands: [AddVariable("pinged", 1)])])}),
-            (name: "pad", components: {"event": (pages: [(trigger: Autorun, commands: [Signal("button", "used")])])}),"#,
+            (name: "pad", components: {"event": (pages: [(trigger: Autorun, commands: [Signal(12, "used")])])}),"#,
         1,
     );
     let mut app = counter_game("signal", &room);
@@ -1306,8 +1306,8 @@ fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
         .add_module(EventsModule);
     let registry = app.world().resource::<CommandRegistry>().clone();
     let text = button_room(
-        r#"(output: "used", commands: [Signal("button", "entered")]),
-        (output: "pressed", commands: [Signal("button", "pushed"), Signal("knob", "used")])"#,
+        r#"(output: "used", commands: [Signal(12, "entered")]),
+        (output: "pressed", commands: [Signal(12, "pushed"), Signal(13, "used")])"#,
     );
     let def = maki_scene::parse_room(&text).unwrap();
     let context = CheckContext {
@@ -1328,7 +1328,7 @@ fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
         [
             "the wire `pressed`: the object `button` has no output `pressed`",
             "the object `button` has no output `pushed`",
-            "the room has no object `knob`",
+            "the room has no object `id 13`",
         ]
     );
 }
@@ -1337,7 +1337,7 @@ fn the_check_finds_a_wrong_output_of_a_wire_and_of_a_signal() {
 fn a_wire_that_sends_its_own_output_starts_once_in_a_step_and_an_event_goes_first() {
     // The second wire of `used` runs after the first, and sends `used` again.
     let wires = r#"(output: "used", commands: [AddVariable("count", 1)]),
-        (output: "used", commands: [Signal("button", "used")])"#;
+        (output: "used", commands: [Signal(12, "used")])"#;
     let app = counter_game("loop", &button_room(wires));
     app.run(|mut app| {
         steps(&mut app, 3);
@@ -1452,12 +1452,12 @@ fn a_problem_of_a_wire_names_the_wire_as_its_tab_does() {
 #[test]
 fn a_command_enum_with_fields_gives_a_tool_its_table_and_reads_a_changed_tree() {
     use maki_core::fields::{Kind, Value};
-    use maki_scene::ObjectRef;
+    use maki_scene::ObjectId;
 
     /// A command of a script crate: it names an object of the room.
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, maki_core::Fields)]
     enum Ring {
-        Ring(ObjectRef, f32),
+        Ring(ObjectId, f32),
     }
 
     let mut app = App::new(ConfigFile::default()).unwrap();
@@ -1466,7 +1466,7 @@ fn a_command_enum_with_fields_gives_a_tool_its_table_and_reads_a_changed_tree() 
         .add_module(EventsModule);
     let registry = app.world().resource::<CommandRegistry>().clone();
     registry.add(|_: &Ring, _, _| true);
-    let bell = |id| registry.command(Ring::Ring(ObjectRef::Id(ObjectId(id)), 0.5));
+    let bell = |id| registry.command(Ring::Ring(ObjectId(id), 0.5));
     let command = bell(3).unwrap();
     // No table before the module gives it.
     assert!(registry.fields(&command).is_none());

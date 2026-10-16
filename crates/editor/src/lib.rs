@@ -67,8 +67,8 @@ use maki_platform::{
     QuitRequested, WindowTitle, add_mode_bindings,
 };
 use maki_scene::{
-    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, ObjectId, ObjectRef, Player,
-    RoomDef, RoomOverride, RoomRequest, RoomTarget, load_requested_room, patch_room,
+    ActiveCamera, Camera, ComponentTypes, CurrentRoom, MeshInstance, ObjectId, Player, RoomDef,
+    RoomOverride, RoomRequest, RoomTarget, load_requested_room, patch_room,
 };
 use maki_ui::{COMMAND_SEARCH, NoticeLevel, Panels, TOGGLE_HELP, ToolCommand, notify};
 use serde::{Deserialize, Serialize};
@@ -79,7 +79,8 @@ use event_panel::row_command;
 pub use event_panel::{ArgumentEditors, EventUi, RowCommand, add_argument_editor};
 pub use events::{Names, OtherRoom, Row, RowKind, Use, names, other_rooms, problems};
 pub use gizmo::{Drag, Gizmo, Handle, Tool};
-pub use ops::{History, Kind, spawn_users};
+pub use ids::correct_paths;
+pub use ops::{History, Kind};
 pub use ron_text::{Notes, pretty, read_notes};
 pub use view::{Ray, View, pick};
 
@@ -274,7 +275,7 @@ pub struct Editor {
     test: Option<(ObjectId, usize)>,
     /// The spawn point where the game starts on `Play`. `None`, or one that the room
     /// does not have: the first one ([`play_spawn`]).
-    pub play_from: Option<ObjectRef>,
+    pub play_from: Option<ObjectId>,
     /// One line for the user: what the last command did. The status row shows it.
     pub status: String,
     /// Why a command did not do its work. It becomes a notice in the same frame.
@@ -759,33 +760,16 @@ impl Editor {
     /// Gives an item a new name, as the name field of the inspector does. Commands
     /// name the item by its id: they do not change. An empty name is no name.
     pub fn rename(&mut self, item: &Item, new: String) {
-        let registry = self.registry.clone();
-        // The name that the item had.
-        let old = match item {
+        match item {
             Item::Object(index) => match self.document.room.objects.get_mut(*index) {
-                Some(object) => {
-                    std::mem::replace(&mut object.name, (!new.is_empty()).then_some(new))
-                }
+                Some(object) => object.name = (!new.is_empty()).then_some(new),
                 None => return,
             },
             Item::Room => return,
-        };
-        let spawn = match item {
-            Item::Object(index) => self.document.room.objects[*index].is_spawn(),
-            _ => false,
-        };
-        let old_spawn = old.clone().filter(|_| spawn);
+        }
         let more = self.document.keep_name_unique(item);
         if !more.is_empty() {
             self.status = more;
-        }
-        // The rooms that go to the spawn point by its old name.
-        if let Some(old) = old_spawn {
-            let users = spawn_users(&self.rooms, &self.document.path, &old, &registry);
-            if !users.is_empty() {
-                let users = users.join(", ");
-                self.status = format!("{users}: a Transfer still names `{old}`");
-            }
         }
         self.document.dirty = true;
     }
@@ -819,7 +803,7 @@ impl Editor {
         self.playing = Some(world.resource::<GameState>().clone());
         reset_play_state(world);
         let spawns = spawn_points(&self.document.room);
-        let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| spawn.clone());
+        let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| *spawn);
         if spawn.is_none() {
             // A room with no spawn point: the player starts where the editor looks.
             let mut cameras = world.query::<&EditorCamera>();
@@ -1217,29 +1201,27 @@ pub struct Session {
     /// The selected items.
     pub selection: Vec<Item>,
     /// The spawn point where the game starts on "Play".
-    pub play_from: Option<ObjectRef>,
+    pub play_from: Option<ObjectId>,
     /// The view of the editor camera.
     pub view: Option<EditorCamera>,
 }
 
-/// The spawn points of a room in name order: the reference of each (its id, else
-/// its name), and its name.
-pub(crate) fn spawn_points(room: &RoomDef) -> Vec<(ObjectRef, String)> {
+/// The spawn points of a room in name order: the id of each, and its name. A spawn
+/// point with no id is left out.
+pub(crate) fn spawn_points(room: &RoomDef) -> Vec<(ObjectId, String)> {
     let names = room.spawn_names().into_iter();
     names
-        .filter_map(|name| Some((room.object_named(&name)?.1.reference()?, name)))
+        .filter_map(|name| Some((room.object_named(&name)?.1.id?, name)))
         .collect()
 }
 
-/// The spawn point where "Play" starts: `wanted` (by its id or its name) if the
-/// room has it, else the first one.
+/// The spawn point where "Play" starts: `wanted` if the room has it, else the first
+/// one.
 pub(crate) fn play_spawn<'a>(
-    spawns: &'a [(ObjectRef, String)],
-    wanted: Option<&ObjectRef>,
-) -> Option<&'a (ObjectRef, String)> {
-    let is = |(spawn, name): &&(ObjectRef, String)| {
-        wanted.is_some_and(|wanted| wanted == spawn || wanted.name() == Some(name.as_str()))
-    };
+    spawns: &'a [(ObjectId, String)],
+    wanted: Option<&ObjectId>,
+) -> Option<&'a (ObjectId, String)> {
+    let is = |(spawn, _): &&(ObjectId, String)| wanted == Some(spawn);
     spawns.iter().find(is).or(spawns.first())
 }
 
@@ -1252,7 +1234,7 @@ pub fn session(world: &World) -> Option<Session> {
         text: editor.document.text(),
         dirty: editor.document.dirty,
         selection: editor.selection.clone(),
-        play_from: editor.play_from.clone(),
+        play_from: editor.play_from,
         view: cameras.iter(world).next().copied(),
     })
 }
@@ -1351,7 +1333,7 @@ impl Module for EditorModule {
             event_ui: EventUi::default(),
             others: None,
             test: None,
-            play_from: Some(start.spawn.clone()),
+            play_from: Some(start.spawn),
             status: String::new(),
             error: None,
             renaming: None,

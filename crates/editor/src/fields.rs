@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use maki_core::Fields;
 use maki_core::fields::{Kind, Value, Variant, number, read, variant_of};
-use maki_scene::{ObjectId, ObjectRef};
+use maki_scene::ObjectId;
 use maki_ui::egui::Ui;
 use maki_ui::widgets::help;
 
@@ -154,7 +154,7 @@ fn value(
             changed
         }
         Kind::Object => {
-            let Ok(mut object) = read::<ObjectRef>(tree.clone()) else {
+            let Ok(mut object) = read::<ObjectId>(tree.clone()) else {
                 return false;
             };
             let names: Vec<String> = lists.objects.iter().map(|(_, name)| name.clone()).collect();

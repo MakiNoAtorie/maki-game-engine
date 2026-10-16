@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use maki_scene::ObjectRef;
+use maki_assets::FileRef;
+use maki_scene::ObjectId;
 use serde::Deserialize;
 
 /// The name of the project file in a project folder.
@@ -17,12 +18,12 @@ struct ProjectFile {
     name: String,
     rooms: PathBuf,
     start_room: PathBuf,
-    start_spawn: ObjectRef,
+    start_spawn: ObjectId,
     save: PathBuf,
     scripts: String,
     /// The prefab file of the player, from `rooms`. No key: a capsule.
     #[serde(default)]
-    player: Option<PathBuf>,
+    player: Option<FileRef>,
 }
 
 /// A project: a folder with `project.toml`, the assets, and the script crate. The
@@ -39,7 +40,7 @@ pub struct Project {
     /// Where the game starts if the config file names no room: a file of `rooms`,
     /// and a spawn point of it.
     pub start_room: PathBuf,
-    pub start_spawn: ObjectRef,
+    pub start_spawn: ObjectId,
     /// The save file of the game.
     pub save: PathBuf,
     /// The cargo package that the editor builds and loads: the script crate of the
@@ -47,7 +48,7 @@ pub struct Project {
     pub scripts: String,
     /// The prefab file of the player, from `rooms` (a file name in it starts there,
     /// as in a prefab that a room names). `None`: a capsule.
-    pub player: Option<PathBuf>,
+    pub player: Option<FileRef>,
 }
 
 impl Project {
@@ -91,9 +92,10 @@ mod tests {
             name = "test"
             rooms = "assets/rooms"
             start_room = "a.ron"
-            start_spawn = "start"
+            start_spawn = 2
             save = "save.ron"
             scripts = "test-dll"
+            player = { path = "p.prefab", id = "9f3a2c0011223344" }
         "#;
         let project = Project::parse(Path::new("game"), text).unwrap();
         assert_eq!(project.rooms, Path::new("game/assets/rooms"));
@@ -105,10 +107,13 @@ mod tests {
         // A key that the engine does not know is an error, with its name.
         let error = Project::parse(Path::new("game"), &format!("{text}\nrom = 1"));
         assert!(format!("{:#}", error.unwrap_err()).contains("rom"));
-        // The start spawn by its id, or by its name.
-        assert_eq!(project.start_spawn, ObjectRef::from("start"));
-        let by_id = text.replace(r#"start_spawn = "start""#, "start_spawn = 2");
-        let project = Project::parse(Path::new("game"), &by_id).unwrap();
-        assert_eq!(project.start_spawn, ObjectRef::Id(maki_scene::ObjectId(2)));
+        // The start spawn by its id; the player prefab by its path and id.
+        assert_eq!(project.start_spawn, ObjectId(2));
+        let player = project.player.unwrap();
+        assert_eq!(player.id, Some(maki_assets::FileId(0x9f3a_2c00_1122_3344)));
+        assert_eq!(player.path, Path::new("p.prefab"));
+        // A name is no longer a spawn point.
+        let named = text.replace("start_spawn = 2", r#"start_spawn = "start""#);
+        assert!(Project::parse(Path::new("game"), &named).is_err());
     }
 }

@@ -12,8 +12,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, ObjectId, ObjectRef,
-    RoomItem, RoomRequest, RoomTarget, ScreenFade,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomItem, RoomRequest,
+    RoomTarget, ScreenFade,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +26,7 @@ use crate::script::ScriptContext;
 use crate::{CHOICE_DOWN, CHOICE_UP, GameState, INTERACT, MessageBox};
 
 /// Text arguments are names: of a flag or a variable. An object of the room file (a
-/// door, a mover, a light) is an [`ObjectRef`]: its id, or its name.
+/// door, a mover, a light) is its [`ObjectId`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Builtin {
     SetFlag(String, bool),
@@ -37,12 +37,12 @@ pub enum Builtin {
     /// The first list if all conditions hold, else the second one.
     If(Vec<Condition>, Vec<Command>, Vec<Command>),
     /// Sends a door or a mover to its pose B (a door: open) and waits until it is there.
-    OpenDoor(ObjectRef),
+    OpenDoor(ObjectId),
     /// To pose A (a door: closed).
-    CloseDoor(ObjectRef),
-    LightOn(ObjectRef),
-    LightOff(ObjectRef),
-    LightIntensity(ObjectRef, f32),
+    CloseDoor(ObjectId),
+    LightOn(ObjectId),
+    LightOff(ObjectId),
+    LightIntensity(ObjectId, f32),
     /// Shows the text until the player presses interact.
     Message(String),
     /// A question: the text, and for each answer its text and the commands that run
@@ -54,17 +54,17 @@ pub enum Builtin {
     FadeIn(f32),
     /// To a spawn point of another room. The text is the room file, from the
     /// directory of the current room file. The event goes on in the new room.
-    Transfer(String, ObjectRef),
+    Transfer(String, ObjectId),
     /// Changes a field of a component of an object: the object, the component, the
     /// field, and the value in the form of the tree of the fields (a number, `true`,
     /// a text, a list for a vector or a color).
-    SetField(ObjectRef, String, String, Value),
+    SetField(ObjectId, String, String, Value),
     /// Calls a function of the script crate (`add_script_function`) with the object
     /// of the event.
     CallScript(String),
     /// Sends an output of an object: the object, the output. Its wires start in the
     /// step of the interpreter after the commands that run.
-    Signal(ObjectRef, String),
+    Signal(ObjectId, String),
 }
 
 /// One step of a built-in command. False: the command waits.
@@ -177,7 +177,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
                 let path = directory.join(room);
                 world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
                     path,
-                    spawn: Some(spawn.clone()),
+                    spawn: Some(*spawn),
                     text: None,
                 });
                 // `CurrentRoom::loads` when the room was asked for.
@@ -197,12 +197,10 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             set_field(world, object, [component, field], value);
         }
         Builtin::Signal(object, output) => {
-            let mut events = world
-                .query_filtered::<(Entity, Option<&ObjectId>, Option<&Name>), With<EventPages>>();
-            let found = events
-                .iter(world)
-                .find(|(_, id, name)| object.is(*id, name.map(|name| name.0.as_str())));
-            match found.map(|(entity, ..)| entity) {
+            let mut events =
+                world.query_filtered::<(Entity, Option<&ObjectId>), With<EventPages>>();
+            let found = events.iter(world).find(|(_, id)| *id == Some(object));
+            match found.map(|(entity, _)| entity) {
                 Some(entity) => crate::interpreter::Signals::send(world, entity, output),
                 None => {
                     tracing::warn!(event = step.event, %object, "Signal: no object with wires");
@@ -227,7 +225,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
 /// that has the component. A name that the game does not have is a warning.
 fn set_field(
     world: &mut World,
-    object: &ObjectRef,
+    object: &ObjectId,
     [component, field]: [&String; 2],
     value: &Value,
 ) {
@@ -245,12 +243,11 @@ fn set_field(
     // The entities of the reference first: an instance has its id and the prefab names.
     let def = &world.resource::<CurrentRoom>().def;
     let item = def.find(object).map(|(index, _)| index);
-    let mut entities =
-        world.query::<(Entity, Option<&ObjectId>, Option<&Name>, Option<&RoomItem>)>();
+    let mut entities = world.query::<(Entity, Option<&ObjectId>, Option<&RoomItem>)>();
     let mut named = Vec::new();
     let mut of_item = Vec::new();
-    for (entity, id, name, room_item) in entities.iter(world) {
-        if object.is(id, name.map(|name| name.0.as_str())) {
+    for (entity, id, room_item) in entities.iter(world) {
+        if id == Some(object) {
             named.push(entity);
         } else if item.is_some() && room_item.map(|room_item| room_item.0) == item {
             of_item.push(entity);
@@ -425,11 +422,11 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
 
 /// Sends each mover of the object to pose B or A (only `start`), and tells if all of
 /// them are there.
-fn send_mover(world: &mut World, name: &ObjectRef, to_b: bool, start: bool) -> bool {
+fn send_mover(world: &mut World, name: &ObjectId, to_b: bool, start: bool) -> bool {
     let (mut found, mut arrived) = (false, true);
-    let mut movers = world.query::<(Option<&ObjectId>, Option<&Name>, &mut Mover)>();
-    for (id, mover_name, mut mover) in movers.iter_mut(world) {
-        if !name.is(id, mover_name.map(|name| name.0.as_str())) {
+    let mut movers = world.query::<(Option<&ObjectId>, &mut Mover)>();
+    for (id, mut mover) in movers.iter_mut(world) {
+        if id != Some(name) {
             continue;
         }
         found = true;
@@ -460,11 +457,11 @@ fn send_mover(world: &mut World, name: &ObjectRef, to_b: bool, start: bool) -> b
     arrived
 }
 
-fn set_light(world: &mut World, name: &ObjectRef, change: impl Fn(&Light) -> Light) {
+fn set_light(world: &mut World, name: &ObjectId, change: impl Fn(&Light) -> Light) {
     let mut found = false;
-    let mut lights = world.query::<(Option<&ObjectId>, Option<&Name>, &mut Light)>();
-    for (id, light_name, mut light) in lights.iter_mut(world) {
-        if name.is(id, light_name.map(|name| name.0.as_str())) {
+    let mut lights = world.query::<(Option<&ObjectId>, &mut Light)>();
+    for (id, mut light) in lights.iter_mut(world) {
+        if id == Some(name) {
             found = true;
             let new = change(&light);
             // A write is a change of the lighting for the renderer.

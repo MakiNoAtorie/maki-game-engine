@@ -44,7 +44,7 @@ impl EventPages {
 
 /// A wire, as in Source: when an output of the object is sent (the area: `used`,
 /// `entered`, `left`; a script or the row `Signal`: its own), the commands run. A
-/// command is the input: `OpenDoor("door")`.
+/// command is the input: `OpenDoor(3)`, the door by its id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Wire {
@@ -391,6 +391,7 @@ mod tests {
             objects: [
                 (components: {"prop": (mesh: Cube(1.0))}),
                 (
+                    id: 2,
                     name: "door",
                     pose: (position: (3.0, 0.0, -3.3)),
                     components: {
@@ -402,8 +403,8 @@ mod tests {
                                 trigger: Interact,
                                 commands: [
                                     If([Flag("seen"), Variable("turns", Less, 3)], [Wait(0.5)], [SetFlag("seen", true)]),
-                                    OpenDoor("door"),
-                                    Transfer("room_b.ron", "west"),
+                                    OpenDoor(2),
+                                    Transfer("room_b.ron", 9),
                                 ],
                             ),
                         ]),

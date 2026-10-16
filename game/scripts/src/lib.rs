@@ -116,9 +116,76 @@ output = false",
         assert_eq!((count, pages), (10, 11));
     }
 
-    /// Room D: the button opens the door by a wire, with no code.
+    /// The text of a room of the game after a rename of one object in the editor.
+    fn renamed(path: &str, old: &str, new: &str) -> (String, String) {
+        let app = game_app();
+        let registry = app.world().resource::<events::CommandRegistry>();
+        let mut document = maki_editor::Document::read(path.as_ref(), registry).unwrap();
+        let before = document.text();
+        let (index, _) = document.room.object_named(old).unwrap();
+        document.room.objects[index].name = Some(new.to_owned());
+        (before, document.text())
+    }
+
+    /// The gate of stage 55: a rename of the door of room A, of the button of room
+    /// D, and of the spawn point `west` of room B changes only the line of the name.
+    #[test]
+    fn a_rename_changes_only_the_line_of_the_name() {
+        for (path, old, new) in [
+            (ROOMS[0], "door", "front door"),
+            (ROOMS[3], "button", "red button"),
+            (ROOMS[1], "west", "west door"),
+        ] {
+            let (before, after) = renamed(path, old, new);
+            assert_eq!(before.lines().count(), after.lines().count(), "{path}");
+            let changed: Vec<_> = before
+                .lines()
+                .zip(after.lines())
+                .filter(|(a, b)| a != b)
+                .collect();
+            let name = |name: &str| format!("name: \"{name}\"");
+            assert_eq!(changed.len(), 1, "{path}: {changed:?}");
+            assert_eq!(changed[0].1.replace(&name(new), &name(old)), changed[0].0);
+        }
+    }
+
+    /// The gate of stage 55: the model file of the cabinet moved to another folder
+    /// with its id file. The game finds it by the id; the editor gives the room the
+    /// new path.
+    #[test]
+    fn the_cabinet_moved_with_its_id_file_still_shows() {
+        let directory = std::env::temp_dir().join(format!("maki-cabinet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("models/old")).unwrap();
+        let room = directory.join("room_a.ron");
+        std::fs::copy(ROOMS[0], &room).unwrap();
+        for name in ["cabinet.glb", "cabinet.glb.id"] {
+            let from = PathBuf::from("../assets/rooms/models").join(name);
+            std::fs::copy(from, directory.join("models/old").join(name)).unwrap();
+        }
+        let moved = directory.join("models/old/cabinet.glb");
+        let def = scene::parse_room(&std::fs::read_to_string(&room).unwrap()).unwrap();
+        let (_, cabinet) = def.object_named("cabinet").unwrap();
+        let scene::MeshDef::File(file) = cabinet.prop().unwrap().unwrap().mesh else {
+            panic!("the cabinet is a model file");
+        };
+        assert_eq!(file.resolve(&directory), moved);
+
+        let app = game_app();
+        let registry = app.world().resource::<events::CommandRegistry>();
+        let mut document = maki_editor::Document::read(&room, registry).unwrap();
+        assert_eq!(maki_editor::correct_paths(&mut document), 1);
+        assert!(document.dirty && document.text().contains(r#""models/old/cabinet.glb""#));
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Room D: the button opens the door by a wire, with no code. Also after a rename
+    /// of the button and of the door: the wire names the door by its id.
     #[test]
     fn the_button_of_room_d_opens_the_door_by_a_wire() {
+        let (_, text) = renamed(ROOMS[3], "button", "red button");
+        let text = text.replace(r#"name: "door""#, r#"name: "gate""#);
+
         use std::time::Duration;
 
         use maki_engine::core::{Interpolated, Startup, Transform};
@@ -128,13 +195,13 @@ output = false",
         let mut app = game_app();
         app.add_systems(
             Startup,
-            |mut commands: bevy_ecs::system::Commands,
-             mut request: bevy_ecs::system::ResMut<RoomRequest>| {
+            move |mut commands: bevy_ecs::system::Commands,
+                  mut request: bevy_ecs::system::ResMut<RoomRequest>| {
                 commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
                 request.0 = Some(RoomTarget {
                     path: "../assets/rooms/room_d.ron".into(),
-                    spawn: Some("start".into()),
-                    text: None,
+                    spawn: Some(maki_engine::scene::ObjectId(3)),
+                    text: Some(text.clone()),
                 });
             },
         );

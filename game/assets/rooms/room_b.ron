@@ -45,7 +45,7 @@
             id: 5,
             name: "cabinet",
             pose: (position: (-2.3, 0.0, -2.2)),
-            components: {"prop": (mesh: File("models/cabinet.glb"))},
+            components: {"prop": (mesh: File((path: "models/cabinet.glb", id: "3ec15a7f16724392")))},
         ),
         (
             id: 6,
@@ -80,7 +80,7 @@
                             commands: [
                                 PlaySound("sounds/click.wav", 1.0),
                                 SetFlag("power_off", true),
-                                LightOff("lamp_b"),
+                                LightOff(6),
                                 Message("Click. The lamp dies. Far away, a lock lets go."),
                                 SavePoint,
                             ],
@@ -100,9 +100,7 @@
             name: "lamp is dead",
             components: {
                 "event": (
-                    pages: [
-                        (conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff("lamp_b")]),
-                    ],
+                    pages: [(conditions: [Flag("power_off")], trigger: Autorun, commands: [LightOff(6)])],
                 ),
             },
         ),
@@ -136,10 +134,7 @@
                 "area": (width: 0.8, depth: 1.2),
                 "event": (
                     pages: [
-                        (
-                            trigger: Touch,
-                            commands: [FadeOut(0.4), Transfer("room_a.ron", "east"), FadeIn(0.4)],
-                        ),
+                        (trigger: Touch, commands: [FadeOut(0.4), Transfer("room_a.ron", 10), FadeIn(0.4)]),
                     ],
                 ),
             },

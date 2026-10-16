@@ -9,7 +9,7 @@ use bevy_ecs::system::{Res, ResMut};
 use maki_core::{App, Module, Settings, Startup, Update};
 use maki_platform::{Action, ActionState, Key, add_bindings};
 use maki_scene::{
-    CurrentRoom, ObjectRef, RoomRequest, RoomTarget, RoomValidators, load_requested_room,
+    CurrentRoom, ObjectId, RoomRequest, RoomTarget, RoomValidators, load_requested_room,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub struct RoomSettings {
     /// The room file that the game starts in.
     pub start: Option<PathBuf>,
     /// The spawn point of that room where the player starts.
-    pub start_spawn: Option<ObjectRef>,
+    pub start_spawn: Option<ObjectId>,
 }
 
 impl Settings for RoomSettings {
@@ -35,14 +35,14 @@ impl Settings for RoomSettings {
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct StartRoom {
     pub path: PathBuf,
-    pub spawn: ObjectRef,
+    pub spawn: ObjectId,
 }
 
 impl StartRoom {
     pub fn target(&self) -> RoomTarget {
         RoomTarget {
             path: self.path.clone(),
-            spawn: Some(self.spawn.clone()),
+            spawn: Some(self.spawn),
             text: None,
         }
     }
@@ -53,7 +53,7 @@ impl StartRoom {
 pub struct RoomsModule {
     /// The start room and its spawn point for a config file that names none.
     pub start_room: PathBuf,
-    pub start_spawn: ObjectRef,
+    pub start_spawn: ObjectId,
 }
 
 impl Module for RoomsModule {
@@ -66,9 +66,7 @@ impl Module for RoomsModule {
         );
         app.insert_resource(StartRoom {
             path: settings.start.unwrap_or_else(|| self.start_room.clone()),
-            spawn: settings
-                .start_spawn
-                .unwrap_or_else(|| self.start_spawn.clone()),
+            spawn: settings.start_spawn.unwrap_or(self.start_spawn),
         })
         .add_systems(Startup, request_start_room)
         .add_systems(Update, reload_on_action.before(load_requested_room));

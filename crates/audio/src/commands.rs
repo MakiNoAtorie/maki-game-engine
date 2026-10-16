@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::World;
 use maki_events::{CheckContext, CommandRegistry, Finding, Step};
-use maki_scene::{CurrentRoom, Name, ObjectId, ObjectRef, RoomDef, SoundSource};
+use maki_scene::{CurrentRoom, ObjectId, RoomDef, SoundSource};
 use serde::{Deserialize, Serialize};
 
 use crate::Audio;
@@ -22,8 +22,8 @@ pub enum AudioCommand {
     /// The music fades out.
     StopMusic,
     /// Turns the sound of a light of the room on.
-    SoundOn(ObjectRef),
-    SoundOff(ObjectRef),
+    SoundOn(ObjectId),
+    SoundOff(ObjectId),
 }
 
 /// The names of the things of a room that have a sound: what `SoundOn` and
@@ -70,11 +70,11 @@ fn run(command: &AudioCommand, step: &mut Step, world: &mut World) -> bool {
 }
 
 /// Writes the component only: the audio module starts and stops the sound.
-fn set_source(world: &mut World, name: &ObjectRef, on: bool, event: &str) {
+fn set_source(world: &mut World, name: &ObjectId, on: bool, event: &str) {
     let mut found = false;
-    let mut sources = world.query::<(Option<&ObjectId>, Option<&Name>, &mut SoundSource)>();
-    for (id, source_name, mut source) in sources.iter_mut(world) {
-        if !name.is(id, source_name.map(|name| name.0.as_str())) {
+    let mut sources = world.query::<(Option<&ObjectId>, &mut SoundSource)>();
+    for (id, mut source) in sources.iter_mut(world) {
+        if id != Some(name) {
             continue;
         }
         found = true;
@@ -130,13 +130,11 @@ fn help(name: &str) -> Option<&'static str> {
 
 /// A new command for a tool (`CommandRegistry::add_defaults`).
 fn new(name: &str, room: &RoomDef) -> Option<AudioCommand> {
-    // The first light with a sound, by its id if it has one.
+    // The id of the first light with a sound; none: no object.
     let first = || {
-        let name = sound_names(room).into_iter().next().unwrap_or_default();
-        let found = room
-            .object_named(&name)
-            .and_then(|(_, object)| object.reference());
-        found.unwrap_or(ObjectRef::Name(name))
+        let names = sound_names(room).into_iter();
+        let mut ids = names.filter_map(|name| room.object_named(&name)?.1.id);
+        ids.next().unwrap_or_default()
     };
     Some(match name {
         "PlaySound" => AudioCommand::PlaySound(PathBuf::new(), 1.0),

@@ -2,8 +2,10 @@
 // module), and its mesh. A model file in place of the capsule: `mesh: File("...")`,
 // from the folder of the rooms.
 (
+    next_id: 2,
     objects: [
         (
+            id: 1,
             name: "player",
             components: {
                 "player": (walk_speed: 1.6, run_speed: 3.6, radius: 0.3),

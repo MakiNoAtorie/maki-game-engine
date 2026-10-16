@@ -44,7 +44,7 @@ const ROOM_A: &str = r#"// The test room.
                     pages: [
                         (
                             trigger: Autorun,
-                            commands: [SetFlag("left", true), LightOff("lamp"), Transfer("b.ron", "in")],
+                            commands: [SetFlag("left", true), LightOff(2), Transfer("b.ron", 1)],
                         ),
                     ],
                 ),
@@ -55,8 +55,7 @@ const ROOM_A: &str = r#"// The test room.
 "#;
 /// The object of the event of room A.
 const LEAVE: usize = 3;
-const ROOM_B: &str =
-    r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [(name: "in", components: {"spawn": ()})])"#;
+const ROOM_B: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [(id: 1, name: "in", components: {"spawn": ()})])"#;
 
 /// A directory with the two rooms, and an app with the modules of a game and the
 /// editor.
@@ -87,7 +86,7 @@ output = false",
         .add_module(CameraModule)
         .add_module(RoomsModule {
             start_room: directory.join("a.ron"),
-            start_spawn: "start".into(),
+            start_spawn: maki_scene::ObjectId(3),
         })
         .add_module(UiModule)
         .add_module(EditorModule {
@@ -206,7 +205,7 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
         let text = std::fs::read_to_string(directory.join("a.ron")).unwrap();
         assert_eq!(parse_room(&text).unwrap(), editor.document.room);
         assert!(text.contains("// The cube.") && text.contains("// Runs at the start."));
-        assert!(text.contains(r#"Transfer("b.ron", "in")"#), "{text}");
+        assert!(text.contains(r#"Transfer("b.ron", 1)"#), "{text}");
 
         // A new room with the changes not saved: the editor asks, and "cancel"
         // keeps the document.
@@ -468,6 +467,7 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
         let registry = editor.registry.clone();
         let command = |command: Builtin| registry.command(command).unwrap();
         let mut mover = editor.document.mover(&Item::Object(2)).unwrap();
+        let mover_id = editor.document.room.objects[2].id.unwrap();
         mover.seconds = 0.2;
         editor.document.room.objects[2].set_mover(mover);
         let lift = maki_scene::ObjectDef {
@@ -479,7 +479,7 @@ fn a_mover_that_the_editor_adds_moves_in_the_game_when_an_event_opens_it() {
             conditions: Vec::new(),
             trigger: Trigger::Autorun,
             commands: vec![
-                command(Builtin::OpenDoor("mover".into())),
+                command(Builtin::OpenDoor(mover_id)),
                 command(Builtin::SetFlag("up".to_owned(), true)),
             ],
         }];
@@ -539,7 +539,7 @@ fn a_test_of_a_page_plays_the_room_in_step_mode_and_stop_ends_it() {
         app.resource_mut::<EventRunner>().step_command();
         frames(&mut app, 3);
         assert!(app.world().resource::<GameState>().flag("left"));
-        assert_eq!(waits(&app)[0], r#"LightOff("lamp")"#);
+        assert_eq!(waits(&app)[0], "LightOff(2)");
         assert!(lamp(&app).0.on);
 
         // Stop: no step mode, no flag, and a play after it runs with no steps.
@@ -602,12 +602,12 @@ fn a_module_gives_the_widgets_for_the_arguments_of_its_command() {
 #[test]
 fn a_script_command_with_fields_has_widgets_and_a_pick_of_names() {
     use maki_events::CommandRegistry;
-    use maki_scene::{ObjectId, ObjectRef};
+    use maki_scene::ObjectId;
     use maki_ui::egui;
 
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, maki_core::Fields)]
     enum Bell {
-        Ring(ObjectRef, f32),
+        Ring(ObjectId, f32),
     }
 
     let mut app = App::new(ConfigFile::default()).unwrap();
@@ -618,7 +618,7 @@ fn a_script_command_with_fields_has_widgets_and_a_pick_of_names() {
     registry.add(|_: &Bell, _, _| true);
     registry.add_fields::<Bell>();
     let objects = [(ObjectId(4), "church bell".to_owned())];
-    let ring = registry.command(Bell::Ring(ObjectRef::Id(ObjectId(4)), 0.5));
+    let ring = registry.command(Bell::Ring(ObjectId(4), 0.5));
     let wait = registry.parse_command("Wait(1.0)").unwrap();
     let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
         let edit = |ui: &mut egui::Ui, command| {
@@ -749,7 +749,7 @@ fn a_command_goes_to_the_list_of_the_last_click_and_no_work_is_lost_with_no_ques
         );
         app.resource_mut::<maki_scene::RoomRequest>().0 = Some(maki_scene::RoomTarget {
             path: directory.join("a.ron"),
-            spawn: Some("start".into()),
+            spawn: Some(maki_scene::ObjectId(3)),
             text: None,
         });
         frames(&mut app, 1);
@@ -819,7 +819,7 @@ fn a_sound_command_is_added_with_arguments_and_a_rename_of_its_light_follows() {
 
     // The "Add" list: a new command names the light that has a sound, by its id.
     let new = |name: &str| registry.new_command(name, &room);
-    let lamp = maki_scene::ObjectRef::Id(maki_scene::ObjectId(2));
+    let lamp = maki_scene::ObjectId(2);
     assert_eq!(
         new("SoundOn"),
         registry.command(AudioCommand::SoundOn(lamp))
@@ -1167,8 +1167,8 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
             editor.document.room.objects[1].name.as_deref(),
             Some("bulb")
         );
-        // A rename changes no command: the name form of this room is of before ids.
-        assert!(editor.document.text().contains(r#"LightOff("lamp")"#));
+        // A rename changes no command: it names the lamp by its id.
+        assert!(editor.document.text().contains("LightOff(2)"));
         assert!(editor.document.dirty);
 
         // The layout "Look" closes the event panel; an event that is selected
@@ -1197,7 +1197,7 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
 }
 
 #[test]
-fn play_starts_at_the_spawn_point_of_an_id_or_of_a_name() {
+fn play_starts_at_the_spawn_point_of_an_id() {
     let text = maki_scene::room_text(
         4.0,
         4.0,
@@ -1209,17 +1209,16 @@ fn play_starts_at_the_spawn_point_of_an_id_or_of_a_name() {
     );
     let room = maki_scene::parse_room(&text).unwrap();
     let spawns = spawn_points(&room);
-    let start = |wanted: Option<ObjectRef>| {
+    let start = |wanted: Option<ObjectId>| {
         let found = play_spawn(&spawns, wanted.as_ref());
-        found.map(|(spawn, name)| (spawn.clone(), name.as_str()))
+        found.map(|(spawn, name)| (*spawn, name.as_str()))
     };
-    let west = Some((ObjectRef::Id(maki_scene::ObjectId(1)), "west"));
-    let east = Some((ObjectRef::Id(maki_scene::ObjectId(2)), "east"));
-    // A start spawn by id (`project.toml`) or by name: that spawn point, by its id.
-    assert_eq!(start(Some(ObjectRef::Id(maki_scene::ObjectId(1)))), west);
-    assert_eq!(start(Some("west".into())), west);
+    let west = Some((ObjectId(1), "west"));
+    let east = Some((ObjectId(2), "east"));
+    // The start spawn of `project.toml`: that spawn point.
+    assert_eq!(start(Some(ObjectId(1))), west);
     // None, or one that the room does not have: the first in name order.
-    assert_eq!(start(Some(ObjectRef::Id(maki_scene::ObjectId(9)))), east);
+    assert_eq!(start(Some(ObjectId(9))), east);
     assert_eq!(start(None), east);
 }
 
@@ -1235,7 +1234,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         light.intensity = 2.5;
         editor.document.set_light(&Item::Object(1), light);
         editor.document.dirty = true;
-        editor.play_from = Some("other".into());
+        editor.play_from = Some(maki_scene::ObjectId(7));
         editor.select(Item::Object(LEAVE), false);
         frames(&mut app, 2);
         let world = app.world();
@@ -1261,7 +1260,7 @@ fn the_document_of_a_session_goes_to_the_next_editor_app() {
         );
         assert!(editor.document.dirty);
         assert_eq!(editor.document.path, directory.join("a.ron"));
-        assert_eq!(editor.play_from, Some("other".into()));
+        assert_eq!(editor.play_from, Some(maki_scene::ObjectId(7)));
         assert_eq!(editor.selection, [Item::Object(LEAVE)]);
         // The same session comes out of it.
         assert_eq!(super::session(world).unwrap(), session);
@@ -1512,14 +1511,14 @@ fn an_instance_shows_its_prefab_with_its_changes() {
 
     let (app, directory) = editor_app("instance");
     std::fs::create_dir_all(directory.join("prefabs")).unwrap();
-    let lamp = r#"(objects: [(name: "lamp", pose: (position: (0.0, 2.0, 0.0)),
+    let lamp = r#"(next_id: 2, objects: [(id: 1, name: "lamp", pose: (position: (0.0, 2.0, 0.0)),
         components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})])"#;
     std::fs::write(directory.join("prefabs/lamp.prefab"), lamp).unwrap();
     app.run(|mut app| {
         frames(&mut app, 2);
         // A change of the intensity only; the radius follows the file.
         let changes = ron_options()
-            .from_str(r#"{"lamp/light": {"intensity": 3.0}}"#)
+            .from_str(r#"{"1/light": {"intensity": 3.0}}"#)
             .unwrap();
         let used = PrefabUse {
             name: Some("lamp 2".to_owned()),
@@ -1585,8 +1584,8 @@ fn a_general_command_row_has_undo_and_shows_its_problems() {
         let mut event = before.clone();
         let width = maki_core::fields::number(2.0, false);
         let rows = [
-            Builtin::SetField("leave".into(), "area".into(), "width".into(), width.clone()),
-            Builtin::SetField("leave".into(), "swing".into(), "angle".into(), width),
+            Builtin::SetField(ObjectId(4), "area".into(), "width".into(), width.clone()),
+            Builtin::SetField(ObjectId(4), "swing".into(), "angle".into(), width),
             Builtin::CallScript("nothing".into()),
         ];
         event.pages[0].commands = rows.map(|row| registry.command(row).unwrap()).into();

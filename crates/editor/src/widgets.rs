@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use maki_scene::{ObjectDef, ObjectId, ObjectRef};
+use maki_scene::{ObjectDef, ObjectId};
 use maki_ui::egui::{self, Ui};
 
 use crate::sources::Converters;
@@ -136,30 +136,24 @@ pub fn object_names(objects: &[ObjectDef]) -> Vec<(ObjectId, String)> {
 }
 
 /// The text of a reference: the name of its object, or "missing (id 7)".
-pub fn object_label(object: &ObjectRef, objects: &[(ObjectId, String)]) -> String {
-    match object {
-        ObjectRef::Id(id) => match objects.iter().find(|(other, _)| other == id) {
-            Some((_, name)) => name.clone(),
-            None => format!("missing (id {})", id.0),
-        },
-        ObjectRef::Name(name) => name.clone(),
+pub fn object_label(object: &ObjectId, objects: &[(ObjectId, String)]) -> String {
+    match objects.iter().find(|(other, _)| other == object) {
+        Some((_, name)) => name.clone(),
+        None => format!("missing ({object})"),
     }
 }
 
-/// The reference for a picked name: the id of the object of that name. A name with
-/// no id (a room file of before stage 55) stays a name.
-pub fn object_ref(name: &str, objects: &[(ObjectId, String)]) -> ObjectRef {
-    match objects.iter().find(|(_, other)| other == name) {
-        Some((id, _)) => ObjectRef::Id(*id),
-        None => ObjectRef::Name(name.to_owned()),
-    }
+/// The id of the object of a picked name. No such name: no object (the default).
+pub fn object_ref(name: &str, objects: &[(ObjectId, String)]) -> ObjectId {
+    let found = objects.iter().find(|(_, other)| other == name);
+    found.map(|(id, _)| *id).unwrap_or_default()
 }
 
 /// Edits an object reference as the name of its object: `edit` gets the name (or
 /// "missing (id 7)", which no list has, so it shows in red) and picks another. The
 /// id of the picked object is stored.
 pub fn object_pick(
-    object: &mut ObjectRef,
+    object: &mut ObjectId,
     objects: &[(ObjectId, String)],
     edit: impl FnOnce(&mut String) -> bool,
 ) -> bool {
@@ -191,7 +185,7 @@ mod tests {
             (ObjectId(3), "lamp".to_owned()),
             (ObjectId(5), "door".to_owned()),
         ];
-        let mut object = ObjectRef::Id(ObjectId(3));
+        let mut object = ObjectId(3);
         assert_eq!(object_label(&object, &objects), "lamp");
         // The pick gets the name, and the id of the picked name is stored.
         let picked = object_pick(&mut object, &objects, |name| {
@@ -200,19 +194,11 @@ mod tests {
             true
         });
         assert!(picked);
-        assert_eq!(object, ObjectRef::Id(ObjectId(5)));
+        assert_eq!(object, ObjectId(5));
         // An id with no object: no list has its text.
-        let mut missing = ObjectRef::Id(ObjectId(7));
+        let mut missing = ObjectId(7);
         assert_eq!(object_label(&missing, &objects), "missing (id 7)");
         assert!(!object_pick(&mut missing, &objects, |_| false));
-        assert_eq!(missing, ObjectRef::Id(ObjectId(7)));
-        // A name form gets the id when it is picked again.
-        let mut named = ObjectRef::from("door");
-        assert_eq!(object_label(&named, &objects), "door");
-        object_pick(&mut named, &objects, |name| {
-            *name = "lamp".to_owned();
-            true
-        });
-        assert_eq!(named, ObjectRef::Id(ObjectId(3)));
+        assert_eq!(missing, ObjectId(7));
     }
 }

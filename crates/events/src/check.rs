@@ -13,7 +13,7 @@ use std::time::SystemTime;
 
 use bevy_ecs::system::Res;
 use maki_core::fields::Value;
-use maki_scene::{ComponentTypes, ObjectRef, RoomCheck, RoomDef, RoomProblem, RoomValidator};
+use maki_scene::{ComponentTypes, ObjectId, RoomCheck, RoomDef, RoomProblem, RoomValidator};
 
 use crate::builtin::Builtin;
 use crate::command::{Command, CommandRegistry, Stop};
@@ -28,7 +28,7 @@ pub struct CheckContext<'a> {
     pub directory: &'a Path,
     /// For another room file in the directory of the room, and a spawn point: true if
     /// the file has it. `None`: no such room file.
-    pub spawn: &'a dyn Fn(&str, &ObjectRef) -> Option<bool>,
+    pub spawn: &'a dyn Fn(&str, &ObjectId) -> Option<bool>,
     /// The script functions and the outputs of the component types.
     pub registry: &'a CommandRegistry,
 }
@@ -36,18 +36,24 @@ pub struct CheckContext<'a> {
 impl CheckContext<'_> {
     /// What is wrong with an output of an object of the room. `None`: the object has
     /// it.
-    pub fn output_problem(&self, object: &ObjectRef, output: &str) -> Option<String> {
+    pub fn output_problem(&self, object: &ObjectId, output: &str) -> Option<String> {
         let Some((_, found)) = self.room.find(object) else {
             return Some(format!("the room has no object `{object}`"));
         };
         let has = self.registry.outputs_of(found).contains(&output);
+        let object = label(found, object);
         (!has).then(|| format!("the object `{object}` has no output `{output}`"))
     }
 }
 
+/// The name of an object for a problem, else its id.
+fn label(object: &maki_scene::ObjectDef, id: &ObjectId) -> String {
+    object.name.clone().unwrap_or_else(|| id.to_string())
+}
+
 impl CheckContext<'_> {
     /// True if the object, or the prefab of an instance, has one of the components.
-    pub fn reaches(&self, object: &ObjectRef, components: &[&str]) -> bool {
+    pub fn reaches(&self, object: &ObjectId, components: &[&str]) -> bool {
         let Some((_, found)) = self.room.find(object) else {
             return false;
         };
@@ -64,7 +70,7 @@ impl CheckContext<'_> {
 
     /// True if the room file has the spawn point. `None`: no such room file. The
     /// file can be the room itself.
-    pub fn has_spawn(&self, file: &str, spawn: &ObjectRef) -> Option<bool> {
+    pub fn has_spawn(&self, file: &str, spawn: &ObjectId) -> Option<bool> {
         if file == self.file {
             return Some(self.room.spawn(spawn).is_some());
         }
@@ -79,7 +85,7 @@ impl CheckContext<'_> {
     /// the row is right.
     pub fn field_problem(
         &self,
-        object: &ObjectRef,
+        object: &ObjectId,
         component: &str,
         field: &str,
         value: &Value,
@@ -94,6 +100,7 @@ impl CheckContext<'_> {
             .expect("no writer panics");
         let components = found.reached_components(self.directory, &types);
         let Some(text) = components.get(component) else {
+            let object = label(found, object);
             return Some(format!(
                 "the object `{object}` has no component `{component}`"
             ));
@@ -177,10 +184,8 @@ impl CommandRegistry {
             }
             // A wire joins an output that a component of its object has.
             for (wire_index, wire) in event.wires.iter().enumerate() {
-                // The object of the event by its id; by its name in a file with no ids.
-                let object = event
-                    .id
-                    .map_or_else(|| ObjectRef::from(event.name.as_str()), ObjectRef::Id);
+                // An object with no id: no command can name it, so no wire is checked.
+                let Some(object) = event.id else { continue };
                 if let Some(text) = context.output_problem(&object, &wire.output) {
                     let wire = Wire::label(&event.wires, wire_index);
                     problems.push(Problem {
@@ -237,7 +242,7 @@ impl CommandRegistry {
             let file = check.path.file_name().unwrap_or_default();
             let directory = check.path.parent().unwrap_or(Path::new(""));
             let spawn =
-                |file: &str, spawn: &ObjectRef| neighbors.has_spawn(&directory.join(file), spawn);
+                |file: &str, spawn: &ObjectId| neighbors.has_spawn(&directory.join(file), spawn);
             let context = CheckContext {
                 room: check.room,
                 file: &file.to_string_lossy(),
@@ -274,7 +279,7 @@ type Neighbor = (Option<SystemTime>, RoomDef);
 
 impl Neighbors {
     /// `None`: the file is not there, or it is not a room.
-    fn has_spawn(&self, path: &Path, spawn: &ObjectRef) -> Option<bool> {
+    fn has_spawn(&self, path: &Path, spawn: &ObjectId) -> Option<bool> {
         let written = std::fs::metadata(path).ok()?.modified().ok();
         let mut files = self.0.lock().expect("no holder panics");
         if files.get(path).is_none_or(|(known, _)| *known != written) {

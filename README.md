@@ -223,14 +223,14 @@ The config file is TOML, with one table for each module. A module declares its t
 | `follow_time` | 0.25 | The camera target moves most of the way to the player in this time, in seconds. 0: no delay |
 | `margin` | 3.0 | The camera target stays this far from the walls of the room, in meters |
 
-The player (`crates/gameplay`, `PlayerModule`) is a prefab file that the project file names (`player = "prefabs/player.prefab"`, from the folder of the rooms). Its object has the component `player` (`walk_speed`, `run_speed`: meters per second; `radius`: the circle for collisions, in meters) and `prop` (the mesh: `Capsule(radius, height)`, or `File("...")`, a glTF file with the feet at its origin, from the folder of the rooms).
+The player (`crates/gameplay`, `PlayerModule`) is a prefab file that the project file names (`player = { path = "prefabs/player.prefab", id = "..." }`, from the folder of the rooms; a path alone is valid too). Its object has the component `player` (`walk_speed`, `run_speed`: meters per second; `radius`: the circle for collisions, in meters) and `prop` (the mesh: `Capsule(radius, height)`, or `File("...")`, a glTF file with the feet at its origin, from the folder of the rooms).
 
 `[rooms]` (`crates/gameplay`, `RoomsModule`):
 
 | Key | Default | Meaning |
 |---|---|---|
 | `start` | not set | The room file that the game starts in. Not set: the start room of the project (`project.toml`). A path that is not absolute starts at the working directory |
-| `start_spawn` | not set | The spawn point of that room where the player starts: its id or its name. Not set: that of the project |
+| `start_spawn` | not set | The spawn point of that room where the player starts: its id. Not set: that of the project |
 
 `[assets]` (`crates/assets`, `AssetsModule`):
 
@@ -364,16 +364,16 @@ An event has pages. A page has conditions, a trigger, and commands. The active p
 | `SetFlag("name", true)`, `SetVariable("name", 3)`, `AddVariable("name", 1)` | Change the game state |
 | `Wait(0.5)` | Seconds |
 | `If([Flag("name"), Variable("count", Equals, 3)], [...], [...])` | The first list if all conditions hold, else the second one |
-| `OpenDoor(3)`, `CloseDoor(3)` | Send a door or a mover to its other pose, and wait until it is there. An object is named by its id (`3`) or its name (`"door"`) |
-| `LightOn("name")`, `LightOff("name")`, `LightIntensity("name", 4.0)` | Change a light of the room |
+| `OpenDoor(3)`, `CloseDoor(3)` | Send a door or a mover to its other pose, and wait until it is there. An object is named by its id (`3`): a new name of the object changes no command |
+| `LightOn(7)`, `LightOff(7)`, `LightIntensity(7, 4.0)` | Change a light of the room |
 | `Message("text")` | Show the text until the player presses interact |
 | `Choice("question", [("Yes", [...]), ("No", [...])])` | Show the question and the answers. The player moves the mark (up, down) and presses interact; the list of that answer runs, then the commands after the question |
 | `FadeOut(0.4)`, `FadeIn(0.4)` | To black and back, in seconds |
-| `Transfer("room_b.ron", "west")` | To a spawn point of another room. The event goes on in the new room |
+| `Transfer("room_b.ron", 9)` | To a spawn point (by its id) of another room. The event goes on in the new room |
 | `PlaySound("sounds/click.wav", 1.0)` | Play a sound file one time, with this volume (1.0: as loud as the file). The event does not wait for its end. A command of the audio module (`crates/audio`), as the next four |
 | `PlayMusic("sounds/theme.ogg", 0.8)` | Start a file as music: a loop, read from the file while it plays, in place of the music that plays. The file of the music that plays: no change |
 | `StopMusic` | The music fades out in one second |
-| `SoundOn("name")`, `SoundOff("name")` | Turn the sound of a light of the room on or off |
+| `SoundOn(7)`, `SoundOff(7)` | Turn the sound of a light of the room on or off |
 | `ShakeCamera(0.6, 0.06)` | A command of the game, not of the engine (`game/scripts/src/shake.rs`): shakes the camera for this many seconds, by at most this many meters |
 
 The interpreter runs the commands in fixed steps and never stops the frame loop: a command that waits is tried again in the next step.

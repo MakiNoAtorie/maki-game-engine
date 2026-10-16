@@ -3,19 +3,17 @@
 //!
 //! Names: a command names an object by its id, so a new name changes no command. A
 //! name is made unique among the objects all the same, so that a pick by name is
-//! clear. A `Transfer` in another room file that names a spawn point by its name is
-//! not changed: see [`spawn_users`].
+//! clear.
 
 use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use maki_assets::{Doorway, Wall};
 use maki_core::Transform;
-use maki_events::{Builtin, Command, CommandRegistry, EventPages, Page, Trigger, TriggerArea};
+use maki_events::{EventPages, Page, Trigger, TriggerArea};
 use maki_scene::{
-    ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, ObjectRef,
-    PoseDef, PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text,
-    read_prefab,
+    ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef,
+    PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
 };
 
 use crate::ron_text::Notes;
@@ -320,7 +318,7 @@ impl Document {
                         || object.components.contains_key("mover")
                 };
                 let door = room.objects.iter().find(moves);
-                let door = door.and_then(ObjectDef::reference);
+                let door = door.and_then(|door| door.id);
                 let mut pose = on_floor(0.15);
                 pose.scale = [0.3; 3];
                 let mut object = PropDef {
@@ -338,7 +336,7 @@ impl Document {
                 );
                 // The text of the event: the commands of a wire need the registry to be
                 // made as values.
-                let door = door.unwrap_or_else(|| ObjectRef::Name(String::new()));
+                let door = door.unwrap_or_default();
                 let used = TriggerArea::USED;
                 let wire = format!("(wires: [(output: {used:?}, commands: [OpenDoor({door:?})])])");
                 let wire = ComponentText::parse(&wire).expect("the text is RON");
@@ -689,57 +687,10 @@ impl History {
     }
 }
 
-/// The room files of a directory with a `Transfer` to a spawn point of a room file:
-/// their names. The editor does not change other room files: a rename of a spawn
-/// point that this finds users of gets a warning with the files.
-pub fn spawn_users(
-    directory: &Path,
-    room: &Path,
-    spawn: &str,
-    registry: &CommandRegistry,
-) -> Vec<String> {
-    let names = |commands: &[Command], target: (&str, &str)| -> bool {
-        let mut found = false;
-        registry.each_command(commands, &mut |command| {
-            if let Some(Builtin::Transfer(room, spawn)) = command.get() {
-                found |= room == target.0 && spawn.name() == Some(target.1);
-            }
-        });
-        found
-    };
-    let Some(room_name) = room.file_name().and_then(|name| name.to_str()) else {
-        return Vec::new();
-    };
-    let files = std::fs::read_dir(directory).into_iter().flatten().flatten();
-    let mut users = Vec::new();
-    for path in files.map(|entry| entry.path()) {
-        let other = path.file_name() != room.file_name();
-        let events = std::fs::read_to_string(&path)
-            .ok()
-            .filter(|_| other && path.extension().is_some_and(|extension| extension == "ron"))
-            .and_then(|text| registry.parse_events(&text).ok());
-        // The command lists of the pages and of the wires.
-        let events = events.iter().flatten();
-        let mut lists = events.flat_map(|event| {
-            let pages = event.pages.iter().map(|page| &page.commands);
-            pages.chain(event.wires.iter().map(|wire| &wire.commands))
-        });
-        if lists.any(|commands| names(commands, (room_name, spawn))) {
-            users.push(
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-    }
-    users.sort();
-    users
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maki_events::CommandRegistry;
 
     fn registry() -> CommandRegistry {
         // The built-in commands, as `EventsModule` adds them.
@@ -959,41 +910,6 @@ mod tests {
         document.room.width = 9.0;
         history.undo(&mut document, &mut selection);
         assert_eq!((document.room.width, document.room.objects.len()), (8.0, 4));
-    }
-
-    #[test]
-    fn the_users_of_a_spawn_point_in_other_room_files_are_found() {
-        let registry = registry();
-        let directory = std::env::temp_dir().join(format!("maki-users-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let room = |commands: &str| {
-            format!(
-                "(width: 4, depth: 4, height: 3, objects: [(name: \"go\", components: {{\"event\": (pages: [(trigger: Touch, commands: [{commands}])])}})])"
-            )
-        };
-        std::fs::write(
-            directory.join("a.ron"),
-            room(r#"Transfer("b.ron", "west")"#),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("c.ron"),
-            room(r#"If([Flag("x")], [], [Transfer("b.ron", "west")])"#),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("d.ron"),
-            room(r#"Transfer("b.ron", "north")"#),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("b.ron"),
-            room(r#"Transfer("b.ron", "west")"#),
-        )
-        .unwrap();
-        let users = spawn_users(&directory, &directory.join("b.ron"), "west", &registry);
-        assert_eq!(users, ["a.ron", "c.ron"]);
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

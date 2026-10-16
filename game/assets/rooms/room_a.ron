@@ -46,7 +46,7 @@
             id: 6,
             name: "cabinet",
             pose: (position: (-3.2, 0.0, -3.7)),
-            components: {"prop": (mesh: File("models/cabinet.glb"))},
+            components: {"prop": (mesh: File((path: "models/cabinet.glb", id: "3ec15a7f16724392")))},
         ),
         // In front of the objects, so their shadows fall to the back. It hums while
         // the power is on. The file is a placeholder of tools/gen_sounds.py.
@@ -59,7 +59,7 @@
                     radius: 0.15,
                     color: (1.0, 0.9, 0.8),
                     intensity: 12.0,
-                    sound: (file: "sounds/hum.wav", volume: 0.5),
+                    sound: (file: (path: "sounds/hum.wav", id: "96a21ca0a7282230"), volume: 0.5),
                 ),
             },
         ),
@@ -93,7 +93,7 @@
                         (
                             conditions: [Flag("power_off")],
                             trigger: Interact,
-                            commands: [Message("The lock is dead. The door gives way."), OpenDoor("door")],
+                            commands: [Message("The lock is dead. The door gives way."), OpenDoor(8)],
                         ),
                     ],
                 ),
@@ -107,10 +107,7 @@
                 "area": (width: 0.8, depth: 1.2),
                 "event": (
                     pages: [
-                        (
-                            trigger: Touch,
-                            commands: [FadeOut(0.4), Transfer("room_b.ron", "west"), FadeIn(0.4)],
-                        ),
+                        (trigger: Touch, commands: [FadeOut(0.4), Transfer("room_b.ron", 9), FadeIn(0.4)]),
                     ],
                 ),
             },
@@ -127,14 +124,14 @@
                             conditions: [Flag("power_off")],
                             trigger: Parallel,
                             commands: [
-                                SoundOff("lamp"),
-                                LightIntensity("lamp", 3.0),
+                                SoundOff(7),
+                                LightIntensity(7, 3.0),
                                 Wait(0.06),
-                                LightIntensity("lamp", 12.0),
+                                LightIntensity(7, 12.0),
                                 Wait(0.9),
-                                LightIntensity("lamp", 6.0),
+                                LightIntensity(7, 6.0),
                                 Wait(0.05),
-                                LightIntensity("lamp", 12.0),
+                                LightIntensity(7, 12.0),
                                 Wait(1.7),
                             ],
                         ),

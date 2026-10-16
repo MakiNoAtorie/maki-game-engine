@@ -32,7 +32,7 @@
             pose: (position: (0.0, 0.15, 0.9), scale: (0.3, 0.3, 0.3)),
             components: {
                 "area": (width: 0.8, depth: 0.8),
-                "event": (wires: [(output: "used", commands: [OpenDoor("door")])]),
+                "event": (wires: [(output: "used", commands: [OpenDoor(2)])]),
                 "prop": (mesh: Cube(1.0)),
             },
         ),
@@ -42,7 +42,7 @@
             pose: (position: (-2.0, 0.0, 0.0)),
             components: {
                 "area": (width: 1.0, depth: 1.0),
-                "event": (pages: [(trigger: Touch, commands: [Signal("button", "used")])]),
+                "event": (pages: [(trigger: Touch, commands: [Signal(4, "used")])]),
             },
         ),
     ],

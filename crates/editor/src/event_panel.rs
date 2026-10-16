@@ -1170,7 +1170,7 @@ fn command_rows(
     problems: &[&Problem],
     page_index: usize,
 ) -> bool {
-    let all = rows(list, registry);
+    let all = rows(list, registry, &lists.ids);
     // A row that is not there after a change of the list is not selected.
     if event_ui
         .row
@@ -1476,8 +1476,8 @@ mod tests {
             6.0,
             3.0,
             &[
-                r#"(name: "lamp", components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})"#,
-                r#"(name: "crate", components: {"prop": (mesh: Cube(1.0))})"#,
+                r#"(id: 1, name: "lamp", components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 8.0)})"#,
+                r#"(id: 2, name: "crate", components: {"prop": (mesh: Cube(1.0))})"#,
                 r#"(name: "gate", components: {"door": (seconds: 1.0, color: (0.3, 0.2, 0.1), open: false)})"#,
                 r#"(name: "sign", components: {"event": (pages: [])})"#,
             ],
@@ -1523,15 +1523,13 @@ mod tests {
         assert_eq!(fields("door"), ["seconds", "open"]);
         // A new row: the first field of the first object, with the value it has now.
         let registry = app.world().resource::<CommandRegistry>().clone();
+        lists.ids = crate::widgets::object_names(&room.objects);
         let new = new_command("SetField", &lists, &registry, &room).unwrap();
         let Some(Builtin::SetField(object, component, field, value)) = new.get() else {
             panic!("not a SetField row");
         };
-        assert_eq!(
-            (object.to_string().as_str(), component.as_str()),
-            ("lamp", "light")
-        );
-        let key = (object.to_string(), component.clone(), field.clone());
+        assert_eq!((*object, component.as_str()), (ObjectId(1), "light"));
+        let key = ("lamp".to_owned(), component.clone(), field.clone());
         assert_eq!(Some(value), lists.current.get(&key));
         let intensity = (
             "lamp".to_owned(),

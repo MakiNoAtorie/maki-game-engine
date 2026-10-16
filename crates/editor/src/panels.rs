@@ -535,7 +535,7 @@ fn go_to_problem(editor: &mut Editor, problem: &Problem) {
     let Some(commands) = event.pages.get(*page).map(|page| &page.commands) else {
         return;
     };
-    let rows = crate::events::rows(commands, registry);
+    let rows = crate::events::rows(commands, registry, &[]);
     let of_command = |row: &crate::Row| {
         row.kind == crate::RowKind::Command && row.command(commands, registry) == Some(command)
     };
@@ -883,8 +883,6 @@ fn instance(
         }
     };
     let mut changes = used.changes.clone();
-    // A change of an instance from before the ids of the file is written by id.
-    maki_scene::key_changes_by_id(&mut changes, &prefab);
     // A reference in a prefab file names an object of that file.
     let objects = crate::widgets::object_names(&prefab.objects);
     for (number, object) in prefab.objects.iter().enumerate() {
@@ -895,7 +893,10 @@ fn instance(
             .unwrap_or_else(|| format!("object {number}"));
         ui.strong(format!("{label} (of the prefab)"));
         for (name, text) in &object.components {
-            let key = maki_scene::change_key(number, object, name);
+            let Some(key) = maki_scene::change_key(object, name) else {
+                ui.weak(format!("{name}: the object has no id in the prefab file"));
+                continue;
+            };
             let (Some(kind), Some(table)) = (types.get(name), tables.and_then(|t| t.get(name)))
             else {
                 ui.weak(format!("{name}: no module registered this type"));
@@ -954,15 +955,14 @@ mod tests {
 
     #[test]
     fn a_reset_takes_the_value_of_the_file_again() {
-        let text =
-            r#"{"lamp/light": {"intensity": 3.0, "radius": 0.2}, "box/prop": {"Cube": 1.0}}"#;
+        let text = r#"{"1/light": {"intensity": 3.0, "radius": 0.2}, "2/prop": {"Cube": 1.0}}"#;
         let mut changes: BTreeMap<String, Value> =
             maki_scene::ron_options().from_str(text).unwrap();
-        reset(&mut changes, "lamp/light", "intensity");
-        assert_eq!(changes["lamp/light"].as_object().unwrap().len(), 1);
-        reset(&mut changes, "lamp/light", "radius");
-        assert!(!changes.contains_key("lamp/light"));
-        reset(&mut changes, "box/prop", "");
+        reset(&mut changes, "1/light", "intensity");
+        assert_eq!(changes["1/light"].as_object().unwrap().len(), 1);
+        reset(&mut changes, "1/light", "radius");
+        assert!(!changes.contains_key("1/light"));
+        reset(&mut changes, "2/prop", "");
         assert!(changes.is_empty());
     }
 }

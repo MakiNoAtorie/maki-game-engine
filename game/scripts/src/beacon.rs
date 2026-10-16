@@ -15,7 +15,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::world::Mut;
 use maki_engine::core::{App, Fields};
 use maki_engine::events::{Builtin, Script, ScriptContext, add_script, add_script_function};
-use maki_engine::scene::{Light, ObjectRef};
+use maki_engine::scene::{Light, ObjectId};
 use serde::{Deserialize, Serialize};
 
 /// The variable that counts the presses of interact at the beacon.
@@ -26,7 +26,7 @@ const TOUCHES: &str = "beacon_touches";
 #[fields(default)]
 pub struct Beacon {
     /// The light object. The editor picks it by its name and stores its id.
-    pub light: ObjectRef,
+    pub light: ObjectId,
     /// Pulses in a second.
     #[field(range = 0.1..=10.0, step = 0.1)]
     pub pulses: f32,
@@ -46,7 +46,7 @@ pub struct Beacon {
 impl Default for Beacon {
     fn default() -> Self {
         Self {
-            light: ObjectRef::from(""),
+            light: ObjectId::default(),
             pulses: 1.5,
             strength: 0.6,
             base: 0.0,
@@ -57,11 +57,7 @@ impl Default for Beacon {
 
 impl Beacon {
     fn light<'a>(&self, context: &'a mut ScriptContext) -> Option<Mut<'a, Light>> {
-        match &self.light {
-            ObjectRef::Id(id) => context.object_mut::<Light>(*id),
-            // A room file of before stage 55.
-            ObjectRef::Name(name) => context.named_mut::<Light>(name),
-        }
+        context.object_mut::<Light>(self.light)
     }
 
     fn set_intensity(&self, context: &mut ScriptContext, intensity: f32) {

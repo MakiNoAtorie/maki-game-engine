@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use maki_assets::FileRef;
+
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
@@ -112,7 +114,7 @@ struct PlayerModel(Handle<Model>, PathBuf);
 #[derive(bevy_ecs::resource::Resource, Clone)]
 pub(crate) struct PlayerFile {
     rooms: PathBuf,
-    prefab: Option<PathBuf>,
+    prefab: Option<FileRef>,
 }
 
 /// Spawns the player from its prefab file, steers it with the move actions, moves it
@@ -126,7 +128,7 @@ pub struct PlayerModule {
     pub rooms: PathBuf,
     /// The prefab file, from `rooms`. `None`: a capsule with the values of
     /// [`PlayerDef::default`].
-    pub prefab: Option<PathBuf>,
+    pub prefab: Option<FileRef>,
 }
 
 impl Module for PlayerModule {
@@ -182,7 +184,7 @@ impl Module for PlayerModule {
 
 impl PlayerFile {
     fn prefab_path(&self) -> Option<PathBuf> {
-        Some(self.rooms.join(self.prefab.as_ref()?))
+        Some(self.prefab.as_ref()?.resolve(&self.rooms))
     }
 
     /// The values and the mesh of the player. An error: the prefab file does not
@@ -492,7 +494,7 @@ mod tests {
             .add_module(ControlsModule)
             .add_module(PlayerModule {
                 rooms: directory.clone(),
-                prefab: Some(PathBuf::from("player.prefab")),
+                prefab: Some(FileRef::from("player.prefab")),
             });
         // The watch knows the two files, also while it is off.
         let watched: Vec<PathBuf> = {

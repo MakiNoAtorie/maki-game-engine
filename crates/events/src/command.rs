@@ -281,7 +281,7 @@ impl CommandRegistry {
 
     /// Gives a tool the field table of the enum `T` (`#[derive(Fields)]`): the event
     /// panel of the editor draws the arguments of its commands from it, with no code
-    /// of the editor. A field `ObjectRef` or `ObjectId` gets a pick of the objects.
+    /// of the editor. A field `ObjectId` gets a pick of the objects.
     /// Call after `add::<T>`.
     ///
     /// Panics if the enum `T` was not added.

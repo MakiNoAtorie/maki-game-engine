@@ -82,7 +82,7 @@ const TRIP_SCRIPT: Script = &[
 /// The shake script: the mirror ball of room B, whose event has the command of this
 /// game (`ShakeCamera`). Not a benchmark: a check that the command runs in the game.
 /// It needs room B as the start room: `[rooms] start = ".../room_b.ron"` and
-/// `start_spawn = "west"` in the config.
+/// `start_spawn = 9` (the spawn point `west`) in the config.
 const SHAKE_SCRIPT: Script = &[
     Step::Hold(10, &[]),
     // From the west spawn point to the front of the ball: the ball stops the player.

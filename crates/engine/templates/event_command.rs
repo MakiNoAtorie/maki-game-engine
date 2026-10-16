@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// The commands of this module. The name of a variant must be unique in the game.
 /// `Fields`: the event panel draws the arguments. A field that names an object of the
-/// room is a `maki_engine::scene::ObjectRef`: the editor picks it by its name.
+/// room is a `maki_engine::scene::ObjectId`: the editor picks it by its name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum ScriptNameCommand {
     /// Change this: what the number means.

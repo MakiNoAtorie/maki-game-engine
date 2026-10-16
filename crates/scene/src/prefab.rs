@@ -164,31 +164,10 @@ impl crate::RoomDef {
 }
 
 /// The key of a component of an object of a prefab file in the changes of an
-/// instance: the id of the object, and the component. A file with no ids (before
-/// stage 55): the name of the object, or its index if it has none.
-pub fn change_key(index: usize, object: &ObjectDef, component: &str) -> String {
-    match (object.id, &object.name) {
-        (Some(id), _) => format!("{}/{component}", id.0),
-        (None, Some(name)) => format!("{name}/{component}"),
-        (None, None) => format!("{index}/{component}"),
-    }
-}
-
-/// Moves the changes keyed by the name of an object of the file (an instance from
-/// before the ids of the file) to the key of its id. A key by index stays: it can be
-/// an id too (the migration rewrites it).
-pub fn key_changes_by_id(changes: &mut BTreeMap<String, Value>, prefab: &PrefabDef) {
-    for object in &prefab.objects {
-        let (Some(id), Some(name)) = (object.id, &object.name) else {
-            continue;
-        };
-        for component in object.components.keys() {
-            if let Some(change) = changes.remove(&format!("{name}/{component}")) {
-                let key = format!("{}/{component}", id.0);
-                changes.entry(key).or_insert(change);
-            }
-        }
-    }
+/// instance: the id of the object, and the component. `None`: the object has no id
+/// (the editor gives one when it opens the file), so no change can reach it.
+pub fn change_key(object: &ObjectDef, component: &str) -> Option<String> {
+    Some(format!("{}/{component}", object.id?.0))
 }
 
 /// The objects that an instance shows: each object of the file at its place in the
@@ -201,8 +180,7 @@ pub fn instance_objects(
     types: &ComponentTypes,
 ) -> Vec<ObjectDef> {
     let outer = used.pose.transform();
-    let mut changes = used.changes.clone();
-    key_changes_by_id(&mut changes, prefab);
+    let changes = &used.changes;
     let mut objects = Vec::new();
     for (index, inner) in prefab.objects.iter().enumerate() {
         if inner.components.contains_key("prefab") {
@@ -211,7 +189,8 @@ pub fn instance_objects(
         }
         let mut object = inner.clone();
         for (name, text) in &mut object.components {
-            let Some(change) = changes.get(&change_key(index, inner, name)) else {
+            let key = change_key(inner, name);
+            let Some(change) = key.and_then(|key| changes.get(&key)) else {
                 continue;
             };
             match changed_text(types, name, text, change) {
@@ -316,6 +295,13 @@ mod tests {
         (pose: (position: (1.0, 0.5, 0.0)), components: {"prop": (mesh: Cube(0.4))}),
     ])"#;
 
+    /// `LAMP` with the ids that the editor gives: 1 the lamp, 2 the cube.
+    fn with_ids(text: &str) -> String {
+        text.replace("(objects: [", "(next_id: 3, objects: [")
+            .replace(r#"(name: "lamp","#, r#"(id: 1, name: "lamp","#)
+            .replace("(pose: (position: (1.0", "(id: 2, pose: (position: (1.0")
+    }
+
     #[test]
     fn a_prefab_file_is_a_list_of_objects_that_reads_back() {
         let prefab: PrefabDef = ron_options().from_str(LAMP).unwrap();
@@ -328,7 +314,7 @@ mod tests {
     fn an_instance_shows_the_file_at_its_pose_with_its_changes() {
         let app = types();
         let types = app.world().resource::<ComponentTypes>();
-        let prefab: PrefabDef = ron_options().from_str(LAMP).unwrap();
+        let prefab: PrefabDef = ron_options().from_str(&with_ids(LAMP)).unwrap();
         let mut used = PrefabUse {
             name: Some("lamp 2".to_owned()),
             file: "lamp.prefab".into(),
@@ -357,12 +343,12 @@ mod tests {
 
         // A change of the intensity, and of the mesh of the object with no name.
         used.changes = BTreeMap::from([
-            ("lamp/light".to_owned(), json!({"intensity": 3.0})),
+            ("1/light".to_owned(), json!({"intensity": 3.0})),
             (
-                "1/prop".to_owned(),
+                "2/prop".to_owned(),
                 json!({"mesh": {"Sphere": {"radius": 0.2, "segments": 8, "rings": 4}}}),
             ),
-            ("lamp/swing".to_owned(), json!({"angle": 1.0})),
+            ("1/swing".to_owned(), json!({"angle": 1.0})),
         ]);
         let objects = instance_objects(&used, &prefab, types);
         let light = objects[0].light().unwrap().unwrap();
@@ -381,7 +367,7 @@ mod tests {
         );
 
         // The file changes: what the instance did not change follows it.
-        let changed = LAMP
+        let changed = with_ids(LAMP)
             .replace("radius: 0.1", "radius: 0.3")
             .replace("intensity: 8.0", "intensity: 9.0");
         let prefab: PrefabDef = ron_options().from_str(&changed).unwrap();
@@ -396,13 +382,10 @@ mod tests {
     fn a_change_of_an_instance_stays_after_a_rename_in_the_prefab_file() {
         let app = types();
         let types = app.world().resource::<ComponentTypes>();
-        let with_ids = LAMP
-            .replace("(objects: [", "(next_id: 3, objects: [")
-            .replace(r#"(name: "lamp","#, r#"(id: 1, name: "lamp","#)
-            .replace("(pose: (position: (1.0", "(id: 2, pose: (position: (1.0");
+        let with_ids = with_ids(LAMP);
         let prefab: PrefabDef = ron_options().from_str(&with_ids).unwrap();
         assert_eq!(prefab.next_id, 3);
-        assert_eq!(change_key(0, &prefab.objects[0], "light"), "1/light");
+        assert_eq!(change_key(&prefab.objects[0], "light").unwrap(), "1/light");
         let intensity = |prefab: &PrefabDef, changes: &BTreeMap<String, Value>| {
             let used = PrefabUse {
                 name: None,
@@ -414,10 +397,10 @@ mod tests {
             objects[0].light().unwrap().unwrap().intensity
         };
         let by_id = BTreeMap::from([("1/light".to_owned(), json!({"intensity": 3.0}))]);
-        // A change keyed by the name, of an instance from before the ids.
+        // A key by the name reaches no object.
         let by_name = BTreeMap::from([("lamp/light".to_owned(), json!({"intensity": 3.0}))]);
         assert_eq!(intensity(&prefab, &by_id), 3.0);
-        assert_eq!(intensity(&prefab, &by_name), 3.0);
+        assert_eq!(intensity(&prefab, &by_name), 8.0);
 
         let renamed = with_ids.replace(r#"name: "lamp""#, r#"name: "lantern""#);
         let renamed: PrefabDef = ron_options().from_str(&renamed).unwrap();

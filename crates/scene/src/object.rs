@@ -31,9 +31,10 @@ use crate::room::{PoseDef, ron_options};
 
 /// The id of an object of a room: unique in its room, and it does not change with
 /// a new name or a move (ADR 0001). In the file a number. Also the component of the
-/// entity of the object, beside its `Name`.
+/// entity of the object, beside its `Name`. The ids of a room start at 1: the
+/// default, 0, is no object (a new command before a pick).
 #[derive(
-    Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Component, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[serde(transparent)]
 pub struct ObjectId(pub u32);
@@ -50,123 +51,17 @@ impl Fields for ObjectId {
     }
 }
 
-/// A reference to an object of the room: by its id (a number in RON and TOML) or by
-/// its name (a text). The name form is for the rooms of before stage 55; the
-/// migration of the content removes it (#47).
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub enum ObjectRef {
-    Id(ObjectId),
-    Name(String),
-}
-
-impl ObjectRef {
-    /// True for an object with this id and name: the id of a reference by id, the
-    /// name of a reference by name.
-    pub fn is(&self, id: Option<&ObjectId>, name: Option<&str>) -> bool {
-        match self {
-            Self::Id(wanted) => id == Some(wanted),
-            Self::Name(wanted) => name == Some(wanted.as_str()),
-        }
-    }
-
-    /// True for the object of a room file.
-    pub fn is_object(&self, object: &ObjectDef) -> bool {
-        self.is(object.id.as_ref(), object.name.as_deref())
-    }
-
-    /// The name of a reference by name.
-    pub fn name(&self) -> Option<&str> {
-        match self {
-            Self::Name(name) => Some(name),
-            Self::Id(_) => None,
-        }
-    }
-}
-
-impl From<&str> for ObjectRef {
-    fn from(name: &str) -> Self {
-        Self::Name(name.to_owned())
-    }
-}
-
-impl From<String> for ObjectRef {
-    fn from(name: String) -> Self {
-        Self::Name(name)
-    }
-}
-
-impl From<ObjectId> for ObjectRef {
-    fn from(id: ObjectId) -> Self {
-        Self::Id(id)
-    }
-}
-
-/// The name, or `id 7`: for a log and a problem of the check.
-impl std::fmt::Display for ObjectRef {
+/// `id 7`: for a log and a problem of the check.
+impl std::fmt::Display for ObjectId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Id(id) => write!(f, "id {}", id.0),
-            Self::Name(name) => f.write_str(name),
-        }
+        write!(f, "id {}", self.0)
     }
 }
 
-/// As in the file, `3` or `"door"`: the debug text of a command is its RON form.
-impl std::fmt::Debug for ObjectRef {
+/// As in the file, `3`: the debug text of a command is its RON form.
+impl std::fmt::Debug for ObjectId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Id(id) => write!(f, "{}", id.0),
-            Self::Name(name) => write!(f, "{name:?}"),
-        }
-    }
-}
-
-impl Serialize for ObjectRef {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Id(id) => serializer.serialize_u32(id.0),
-            Self::Name(name) => serializer.serialize_str(name),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ObjectRef {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = ObjectRef;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("the id of an object (a number) or its name (a text)")
-            }
-            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<ObjectRef, E> {
-                let id = u32::try_from(value).map_err(E::custom)?;
-                Ok(ObjectRef::Id(ObjectId(id)))
-            }
-            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<ObjectRef, E> {
-                let id = u32::try_from(value).map_err(E::custom)?;
-                Ok(ObjectRef::Id(ObjectId(id)))
-            }
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<ObjectRef, E> {
-                Ok(ObjectRef::Name(value.to_owned()))
-            }
-        }
-        // `any`: the form of the text decides between the two.
-        deserializer.deserialize_any(Visitor)
-    }
-}
-
-/// The editor picks an object by its name and stores its id. The tree is the form of
-/// the file: a number or a text.
-impl Fields for ObjectRef {
-    fn kind() -> maki_core::fields::Kind {
-        maki_core::fields::Kind::Object
-    }
-
-    fn tree(&self) -> Value {
-        match self {
-            Self::Id(id) => Value::from(id.0),
-            Self::Name(name) => Value::String(name.clone()),
-        }
+        write!(f, "{}", self.0)
     }
 }
 
@@ -188,7 +83,7 @@ pub struct ObjectDef {
     /// The object that this one belongs to. The pose is in the space of the room all
     /// the same (stage 49 changes that).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<ObjectRef>,
+    pub parent: Option<ObjectId>,
     /// By the name of the type of each component.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[field(skip)]
@@ -196,13 +91,6 @@ pub struct ObjectDef {
 }
 
 impl ObjectDef {
-    /// A reference to this object: by its id, else by its name (a room file of
-    /// before stage 55). `None`: neither.
-    pub fn reference(&self) -> Option<ObjectRef> {
-        let name = || self.name.clone().map(ObjectRef::Name);
-        self.id.map(ObjectRef::Id).or_else(name)
-    }
-
     /// The component `name` read as its type. `None`: the object has no such
     /// component. `Err`: the text is not of that type.
     pub fn component<T: DeserializeOwned>(
@@ -510,12 +398,12 @@ mod tests {
     use crate::room::{LightDef, MeshDef, Prop, parse_room};
 
     const ROOM: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [
-        (name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
+        (id: 1, name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
             // A comment in a component.
             "prop": (mesh: Sphere(radius: 0.5, segments: 8, rings: 4), collider: false, ),
             "swing": (angle: 12.5, axis: Y, label: "a \"b\" // c"),
         }),
-        (parent: "ball"),
+        (id: 2, parent: 1),
     ])"#;
 
     #[test]
@@ -530,10 +418,10 @@ mod tests {
         // Id 3 was named `ball` when the parent was set.
         let def = check(&room("3")).unwrap();
         let parent = def.objects[1].parent.as_ref().unwrap();
-        assert_eq!(*parent, ObjectRef::Id(ObjectId(3)));
+        assert_eq!(*parent, ObjectId(3));
         assert_eq!(def.find(parent).unwrap().1.name.as_deref(), Some("ball_2"));
-        // The name form also finds it; the file keeps each form as it was.
-        assert!(check(&room(r#""ball_2""#)).is_ok());
+        // A name is not a parent.
+        assert!(check(&room(r#""ball_2""#)).is_err());
         let text = crate::room::ron_options().to_string(&def).unwrap();
         assert!(text.contains("parent:3"), "{text}");
         let error = check(&room("7")).unwrap_err().to_string();
@@ -546,7 +434,7 @@ mod tests {
         let ball = &room.objects[0];
         assert_eq!(ball.name.as_deref(), Some("ball"));
         assert_eq!(ball.pose.position, [1.0, 0.5, 0.0]);
-        assert_eq!(room.objects[1].parent, Some(ObjectRef::from("ball")));
+        assert_eq!(room.objects[1].parent, Some(ObjectId(1)));
         // No type reads "swing": its text stays, compact.
         assert_eq!(
             ball.components["swing"].as_str(),

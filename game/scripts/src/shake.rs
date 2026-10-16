@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn an_event_of_a_room_file_shakes_the_camera_and_the_camera_comes_back() {
         let path = std::env::temp_dir().join(format!("maki-shake-{}.ron", std::process::id()));
-        let room = r#"(width: 8, depth: 8, height: 3, objects: [(name: "start", components: {"spawn": ()}),
+        let room = r#"(width: 8, depth: 8, height: 3, objects: [(id: 1, name: "start", components: {"spawn": ()}),
             (name: "quake", components: {"event": (pages: [(trigger: Autorun, commands: [
                 ShakeCamera(0.1, 0.5), SetFlag("after", true)])])})])"#;
         std::fs::write(&path, room).unwrap();
@@ -130,7 +130,7 @@ mod tests {
             .add_module(ShakeModule);
         let target = RoomTarget {
             path: path.clone(),
-            spawn: Some("start".into()),
+            spawn: Some(maki_engine::scene::ObjectId(1)),
             text: None,
         };
         app.add_systems(

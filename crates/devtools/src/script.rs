@@ -97,7 +97,12 @@ impl Place {
                     .position;
                 Some(Vec3::new(x, 0.0, z))
             }
-            Place::Spawn(name) => world.room.spawn(&(*name).into()).map(Vec3::from),
+            Place::Spawn(name) => {
+                let mut objects = world.room.objects.iter();
+                let spawn = objects
+                    .find(|object| object.is_spawn() && object.name.as_deref() == Some(*name))?;
+                Some(Vec3::from(spawn.pose.position))
+            }
         }
     }
 }

@@ -135,7 +135,7 @@ impl<'w> ScriptContext<'w> {
     }
 
     /// A component of another object, by the id of the object. The id is in a field
-    /// of the script (`ObjectId` or `ObjectRef`): the editor picks the object by its
+    /// of the script (`ObjectId`): the editor picks the object by its
     /// name, and a new name of the object does not change the id.
     pub fn object_mut<C: Component<Mutability = Mutable>>(
         &mut self,

@@ -35,7 +35,7 @@ use maki_assets::{
 use maki_core::{Fields, Interpolated, Transform};
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId, ObjectRef};
+use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
@@ -126,15 +126,15 @@ impl RoomDef {
     }
 
     /// The first object of the reference, with its index (its `RoomItem`).
-    pub fn find(&self, object: &ObjectRef) -> Option<(usize, &ObjectDef)> {
-        let found = |(_, def): &(usize, &ObjectDef)| object.is_object(def);
+    pub fn find(&self, object: &ObjectId) -> Option<(usize, &ObjectDef)> {
+        let found = |(_, def): &(usize, &ObjectDef)| def.id == Some(*object);
         self.objects.iter().enumerate().find(found)
     }
 
     /// The position of a spawn point: of the object of the reference with the
     /// component `spawn`.
-    pub fn spawn(&self, spawn: &ObjectRef) -> Option<[f32; 3]> {
-        let found = |object: &&ObjectDef| object.is_spawn() && spawn.is_object(object);
+    pub fn spawn(&self, spawn: &ObjectId) -> Option<[f32; 3]> {
+        let found = |object: &&ObjectDef| object.is_spawn() && object.id == Some(*spawn);
         Some(self.objects.iter().find(found)?.pose.position)
     }
 
@@ -1157,7 +1157,7 @@ pub struct RoomTarget {
     pub path: PathBuf,
     /// The spawn point of the room where the player goes. `None`: the player stays
     /// where it is (a reload of the same room).
-    pub spawn: Option<ObjectRef>,
+    pub spawn: Option<ObjectId>,
     /// `Some`: the text of the room, in place of the text of the file (a tool shows a
     /// room that is not saved). `path` then is the name of the room, and its
     /// directory is where the files that the room names are. The validators do not
@@ -2280,12 +2280,18 @@ mod tests {
             std::fs::write(directory.join(name), text).unwrap();
             directory.join(name)
         };
-        let room_a = write("a.ron", &sample());
+        let mut sample = sample();
+        sample.give_ids();
+        let start = sample.object_named("start").unwrap().1.id.unwrap();
+        let room_a = write("a.ron", &sample);
         let small = RoomDef {
             width: 3.0,
             depth: 3.0,
             height: 2.0,
-            objects: vec![ObjectDef::spawn_point("door".to_owned(), [1.0, 0.0, 1.0])],
+            objects: vec![ObjectDef {
+                id: Some(ObjectId(1)),
+                ..ObjectDef::spawn_point("door".to_owned(), [1.0, 0.0, 1.0])
+            }],
             ..RoomDef::default()
         };
         let room_b = write("b.ron", &small);
@@ -2304,10 +2310,10 @@ mod tests {
                 })
                 .before(load_requested_room),
             );
-        let load = |app: &mut App, path: &Path, spawn: Option<&str>| {
+        let load = |app: &mut App, path: &Path, spawn: Option<ObjectId>| {
             app.write_message(RequestRoom(RoomTarget {
                 path: path.to_owned(),
-                spawn: spawn.map(ObjectRef::from),
+                spawn,
                 text: None,
             }));
             app.advance(Duration::from_millis(16));
@@ -2328,19 +2334,19 @@ mod tests {
         app.run(|mut app| {
             // Room A: the shell, 6 wall boxes, a door, an object, a prop, a mover, a
             // light. Meshes: the shell, the door leaf, the object, the prop, the mover.
-            let (entities, meshes, spawn) = load(&mut app, &room_a, Some("start"));
+            let (entities, meshes, spawn) = load(&mut app, &room_a, Some(start));
             assert_eq!((entities, meshes), (12, 5));
             assert_eq!(spawn, Some([0.0, 0.0, 1.0]));
 
             // Room B: the shell and 4 wall boxes. The meshes of room A are gone.
-            let (entities, meshes, spawn) = load(&mut app, &room_b, Some("door"));
+            let (entities, meshes, spawn) = load(&mut app, &room_b, Some(ObjectId(1)));
             assert_eq!((entities, meshes), (5, 1));
             assert_eq!(spawn, Some([1.0, 0.0, 1.0]));
 
             // A reload with no spawn point: the same room again, no place to go to.
             assert_eq!(load(&mut app, &room_b, None), (5, 1, None));
             // A spawn point that the room does not have: nothing changes.
-            assert_eq!(load(&mut app, &room_a, Some("nowhere")), (5, 1, None));
+            assert_eq!(load(&mut app, &room_a, Some(ObjectId(99))), (5, 1, None));
             assert_eq!(app.world().resource::<CurrentRoom>().path, room_b);
         });
         std::fs::remove_dir_all(&directory).unwrap();
@@ -2542,7 +2548,7 @@ mod tests {
         std::fs::write(&model, TRIANGLE).unwrap();
         let room = r#"(width: 4, depth: 4, height: 3, floor: (path: "floor.png"),
             objects: [
-                (name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
+                (id: 1, name: "start", pose: (position: (1.0, 0.0, 1.0)), components: {"spawn": ()}),
                 (components: {"prop": (mesh: Cube(1.0))}),
                 (components: {"prop": (mesh: File("models/triangle.gltf"))}),
             ])"#;
@@ -2559,7 +2565,7 @@ watch = true",
             .add_module(SceneModule);
         app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
             path: directory.join("room.ron"),
-            spawn: Some("start".into()),
+            spawn: Some(ObjectId(1)),
             text: None,
         });
         // The color of the floor texture, the mesh of the cube, the model, and the
