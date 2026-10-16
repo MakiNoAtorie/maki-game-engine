@@ -11,10 +11,10 @@ use anyhow::{Context, Result};
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Query, Res, ResMut};
+use bevy_ecs::system::{Local, Query, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::Quat;
-use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Startup, Update};
+use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Update};
 use maki_events::{
     CommandRegistry, EventRunner, GameState, ObjectStates, RunningEvent, run_events,
 };
@@ -126,16 +126,6 @@ impl Module for SaveModule {
         registry.add_defaults(|_, _| Some(SaveCommand::SavePoint));
         app.insert_resource(SaveFile(file))
             .init_resource::<SaveRequest>()
-            .add_systems(
-                Startup,
-                // After the start room: the room of the save takes its place. After
-                // the player: it gets the pose of the save.
-                load_at_start
-                    .after(crate::rooms::request_start_room)
-                    .after(crate::player::spawn_player)
-                    // It has the world: these two orders are the ones that count.
-                    .ambiguous_with_all(),
-            )
             // It reads `Controller::home` only; `apply_rules` writes `active`.
             .add_systems(
                 FixedUpdate,
@@ -147,7 +137,7 @@ impl Module for SaveModule {
             // counts.
             .add_systems(
                 Update,
-                load_on_action
+                load_at_start_or_on_action
                     .before(load_requested_room)
                     .ambiguous_with_all(),
             )
@@ -273,12 +263,11 @@ pub fn apply(world: &mut World, save: &SaveData) -> Result<()> {
     Ok(())
 }
 
-fn load_at_start(world: &mut World) {
-    load(world);
-}
-
-fn load_on_action(world: &mut World) {
-    if world.resource::<ActionState>().just_pressed(LOAD_GAME) {
+/// The load at the start is in the first frame, not in `Startup`: the `ResetPlay`
+/// of the start of the game runs after `Startup` and would clear the object state.
+fn load_at_start_or_on_action(world: &mut World, mut started: Local<bool>) {
+    let start = !std::mem::replace(&mut *started, true);
+    if start || world.resource::<ActionState>().just_pressed(LOAD_GAME) {
         load(world);
     }
 }
@@ -469,6 +458,57 @@ mod tests {
         game(&directory).run(|mut app| {
             state(&mut app);
             assert!(!open(&app, &directory));
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// The gate of stage 56: a chest opens by an interact, and stays open after a
+    /// transfer to another room and back, and after a save and a load.
+    #[test]
+    fn a_chest_opened_by_an_interact_stays_open_over_a_transfer_and_a_save() {
+        use maki_platform::RawInput;
+        let directory = std::env::temp_dir().join(format!("review-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        // The chest is in front of the player (+Z); room B sends the player back at once.
+        let room_a = room(&[
+            START,
+            r#"(id: 2, name: "chest", pose: (position: (1.0, 0.0, 1.6)), components: {
+                "area": (width: 0.5, depth: 0.5),
+                "state": (switches: [(name: "open")]),
+                "event": (pages: [(trigger: Interact, commands: [SetSwitch(0, "open", true)])])})"#,
+            r#"(name: "leave", components: {"event": (pages: [(conditions: [Flag("leave")],
+                trigger: Autorun, commands: [SetFlag("leave", false), Transfer("b.ron", 1)])])})"#,
+            r#"(name: "save", components: {"event": (pages: [(conditions: [Flag("save")],
+                trigger: Autorun, commands: [SetFlag("save", false), SavePoint])])})"#,
+        ]);
+        let room_b = room(&[
+            START,
+            r#"(name: "back", components: {"event": (pages: [(trigger: Autorun, commands: [
+                AddVariable("count", 1), Transfer("a.ron", 1)])])})"#,
+        ]);
+        std::fs::write(directory.join("a.ron"), room_a).unwrap();
+        std::fs::write(directory.join("b.ron"), room_b).unwrap();
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(!open(&app, &directory));
+            app.write_message(RawInput::KeyDown(Key::Z))
+                .write_message(RawInput::KeyUp(Key::Z));
+            state(&mut app);
+            assert!(open(&app, &directory));
+
+            app.resource_mut::<GameState>().set_flag("leave", true);
+            let (room, _, count, _) = state(&mut app);
+            // In room B and back.
+            assert_eq!((room, count), (directory.join("a.ron"), 1));
+            assert!(open(&app, &directory));
+
+            app.resource_mut::<GameState>().set_flag("save", true);
+            state(&mut app);
+        });
+        // The next start loads the save: no flag opens the chest, only its state.
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(open(&app, &directory));
         });
         std::fs::remove_dir_all(&directory).unwrap();
     }

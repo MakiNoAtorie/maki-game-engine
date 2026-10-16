@@ -6,20 +6,21 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::common_conditions::resource_changed;
 use bevy_ecs::system::{Query, Res, ResMut};
 use bevy_ecs::world::World;
-use maki_core::{App, Fields, Update};
+use maki_core::{App, Fields, ResetPlay, Update};
 use maki_scene::{
     CurrentRoom, ObjectId, RoomDef, RoomProblem, RoomValidators, load_requested_room,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::CommandRegistry;
-use crate::check::Finding;
+use crate::check::{CheckContext, Finding};
 use crate::command::Step;
 
 /// The component `state`: the switches and numbers of the object, with their first
@@ -123,12 +124,17 @@ pub enum StateCommand {
 
 pub(crate) fn add(app: &mut App, registry: &CommandRegistry) {
     maki_scene::add_object_component::<ObjectState>(app, "state");
-    app.init_resource::<ObjectStates>().add_systems(
-        Update,
-        first_values
-            .run_if(resource_changed::<CurrentRoom>)
-            .after(load_requested_room),
-    );
+    app.init_resource::<ObjectStates>()
+        .add_systems(
+            Update,
+            first_values
+                .run_if(resource_changed::<CurrentRoom>)
+                .after(load_requested_room),
+        )
+        // A play starts with no values: the next room load gives the first values.
+        .add_systems(ResetPlay, |mut states: ResMut<ObjectStates>| {
+            states.set_if_neq(ObjectStates::default());
+        });
     app.resource_mut::<RoomValidators>()
         .0
         .push(Box::new(|check| no_id(check.room)));
@@ -194,6 +200,34 @@ fn first_values(
             value.or_insert(number.value);
         }
     }
+}
+
+/// What is wrong with a condition of object state: no object, or no `state` on it.
+/// `this`: the id of the object of the event.
+pub(crate) fn condition_problem(
+    condition: &crate::Condition,
+    this: Option<ObjectId>,
+    context: &CheckContext,
+) -> Option<String> {
+    use crate::Condition;
+    let object = match condition {
+        Condition::Any(conditions) => {
+            let mut problems = conditions.iter();
+            return problems.find_map(|condition| condition_problem(condition, this, context));
+        }
+        Condition::Switch(object, _)
+        | Condition::NotSwitch(object, _)
+        | Condition::Number(object, ..) => *object,
+        _ => return None,
+    };
+    let Some(object) = resolve(object, this) else {
+        return Some("object 0 (this): the object of the event has no id".to_owned());
+    };
+    if context.room.find(&object).is_none() {
+        return Some(format!("the room has no object `{object}`"));
+    }
+    let has = context.reaches(&object, &["state"]);
+    (!has).then(|| format!("`{object}` has no component `state`"))
 }
 
 fn target(command: &StateCommand) -> &ObjectId {

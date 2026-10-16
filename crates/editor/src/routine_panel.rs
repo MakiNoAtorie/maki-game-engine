@@ -74,8 +74,7 @@ impl Editor {
 /// routine" with its name field.
 pub(crate) fn routine_menu(ui: &mut Ui, editor: &mut Editor, name: &mut String) {
     ui.add_enabled_ui(!editor.playing(), |ui| {
-        let directory = editor.document.path.parent().unwrap_or(Path::new(""));
-        let directory = directory.to_owned();
+        let directory = editor.document.directory();
         ui.menu_button("Open routine", |ui| {
             let files =
                 crate::widgets::files(&directory, &crate::widgets::ROUTINES, &editor.converters);
@@ -121,10 +120,9 @@ pub(crate) fn routine_panel(ui: &mut Ui, world: &mut World, editor: &mut Editor)
         return false;
     }
     let registry = editor.registry.clone();
-    // No object has the index: the lists of the room, and no problem of an event.
-    let (mut lists, _) = lists_and_problems(editor, usize::MAX);
-    let directory = editor.document.path.parent().unwrap_or(Path::new(""));
-    let directory = directory.to_owned();
+    // No object: the lists of the room, and no problem of an event.
+    let (mut lists, _) = lists_and_problems(editor, None);
+    let directory = editor.document.directory();
     let (room, cache) = (&editor.document.room, &mut editor.event_ui.live);
     cached_live_lists(world, room, &directory, cache, &mut lists);
     let editors = world

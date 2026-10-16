@@ -52,6 +52,14 @@ impl Item {
 }
 
 impl Document {
+    /// The directory of the room file: a file name of the room starts there.
+    pub fn directory(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .to_owned()
+    }
+
     /// An empty room of 8 x 8 x 3 m that is not saved. It has what a room needs to
     /// show and to be played: one lamp (with no light the picture is black) and one
     /// spawn point.

@@ -18,9 +18,9 @@ use crate::command::Step;
 /// `Fields`: the editor draws their arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum ObjectCommand {
-    /// Takes the component `hidden` away from each entity of the object.
+    /// Takes the component `hidden` away from the object and its children.
     Show(ObjectId),
-    /// The object is not in the picture, has no collider, and its area gives no output.
+    /// The object and its children are not in the picture, have no collider, and give no output.
     Hide(ObjectId),
     /// Moves a root object to a place in the room in some seconds (0: at once), and
     /// waits until it is there.
@@ -31,8 +31,7 @@ pub enum ObjectCommand {
     ),
 }
 
-/// How far each object of the current room was moved from its place in the room
-/// file. A new room starts with no offsets.
+/// How far each object of the current room moved from its place in the room file.
 #[derive(Resource, Debug, Default)]
 struct MovedObjects {
     /// `CurrentRoom::loads` of the offsets.
@@ -61,12 +60,12 @@ pub(crate) fn add(app: &mut App, registry: &CommandRegistry) {
 fn run(command: &ObjectCommand, step: &mut Step, world: &mut World) -> bool {
     match command {
         ObjectCommand::Show(object) => {
-            for entity in entities_of(world, object) {
+            for entity in tree_entities(world, object) {
                 world.entity_mut(entity).remove::<Hidden>();
             }
         }
         ObjectCommand::Hide(object) => {
-            for entity in entities_of(world, object) {
+            for entity in tree_entities(world, object) {
                 // Only an entity that is not hidden: a write is a change.
                 if !world.entity(entity).contains::<Hidden>() {
                     world.entity_mut(entity).insert(Hidden {});
@@ -80,17 +79,55 @@ fn run(command: &ObjectCommand, step: &mut Step, world: &mut World) -> bool {
     true
 }
 
-/// The entities of an object: those with its id, and those of its item of the room
-/// file (the meshes of a model file have no id).
+/// The entities of an object: by its id, and by its room item (a model mesh has no id).
 pub(crate) fn entities_of(world: &mut World, object: &ObjectId) -> Vec<Entity> {
     let def = &world.resource::<CurrentRoom>().def;
-    let item = def.find(object).map(|(index, _)| RoomItem(index));
+    let items: Vec<usize> = def
+        .find(object)
+        .map(|(index, _)| index)
+        .into_iter()
+        .collect();
+    entities_of_items(world, &[*object], &items)
+}
+
+/// The entities of an object and of its children: a pose is in room space, so a child moves by the same offset.
+fn tree_entities(world: &mut World, object: &ObjectId) -> Vec<Entity> {
+    let def = &world.resource::<CurrentRoom>().def;
+    let tree: Vec<(usize, Option<ObjectId>)> = def
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, at)| leads_to(def, at, object))
+        .map(|(index, at)| (index, at.id))
+        .collect();
+    let ids: Vec<ObjectId> = tree.iter().filter_map(|(_, id)| *id).collect();
+    let items: Vec<usize> = tree.iter().map(|(index, _)| *index).collect();
+    entities_of_items(world, &ids, &items)
+}
+
+/// True if the object is `object` or its parent chain leads to it.
+fn leads_to<'a>(def: &'a RoomDef, mut at: &'a maki_scene::ObjectDef, object: &ObjectId) -> bool {
+    // The chain is cut at the count of objects: a cycle of parents has no end.
+    for _ in 0..def.objects.len() {
+        if at.id.as_ref() == Some(object) {
+            return true;
+        }
+        let Some((_, parent)) = at.parent.as_ref().and_then(|parent| def.find(parent)) else {
+            return false;
+        };
+        at = parent;
+    }
+    false
+}
+
+/// The entities with one of the ids, then those of one of the room items.
+fn entities_of_items(world: &mut World, ids: &[ObjectId], items: &[usize]) -> Vec<Entity> {
     let mut entities = world.query::<(Entity, Option<&ObjectId>, Option<&RoomItem>)>();
     let (mut named, mut of_item) = (Vec::new(), Vec::new());
     for (entity, id, room_item) in entities.iter(world) {
-        if id == Some(object) {
+        if id.is_some_and(|id| ids.contains(id)) {
             named.push(entity);
-        } else if item.is_some() && room_item.copied() == item {
+        } else if room_item.is_some_and(|item| items.contains(&item.0)) {
             of_item.push(entity);
         }
     }
@@ -156,7 +193,7 @@ fn move_object(
         .insert(*object, target - start);
     // Only a different pose is a write: a write is a change for the renderer.
     if delta != Vec3::ZERO {
-        for entity in entities_of(world, object) {
+        for entity in tree_entities(world, object) {
             shift(world, entity, delta);
         }
     }

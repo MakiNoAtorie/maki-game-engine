@@ -14,8 +14,8 @@ use bevy_ecs::world::World;
 use maki_core::fields::{Field, Kind, Value};
 use maki_core::{App, FieldTypes, Fields};
 use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, Condition, EventPages, GameState, Page, Problem,
-    Trigger, Wire, active_page,
+    Builtin, Command, CommandRegistry, CommandSet, Condition, EventPages, Page, Problem, Trigger,
+    Wire, active_page,
 };
 use maki_scene::{ComponentTypes, ObjectId, RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
@@ -748,13 +748,16 @@ fn with_picks<R>(lists: &Lists, draw: impl FnOnce(crate::fields::Lists) -> R) ->
 }
 
 /// The names that the pickers offer for the open room, and what the checks find in
-/// one event.
-pub(crate) fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>) {
+/// one event (`None`: no event).
+pub(crate) fn lists_and_problems(
+    editor: &mut Editor,
+    index: Option<usize>,
+) -> (Lists, Vec<Problem>) {
     let registry = editor.registry.clone();
     let others = editor.others().to_vec();
     let used = names(&editor.document, &others, &registry);
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
-    problems.retain(|problem| problem.object == index);
+    problems.retain(|problem| Some(problem.object) == index);
     let room = &editor.document.room;
     let ids = object_names(&room.objects);
     let own = (file_name(&editor.document), room.spawn_names(), ids.clone());
@@ -799,10 +802,13 @@ pub(crate) fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, V
                 (!outputs.is_empty()).then(|| Some((object.name.clone()?, outputs)))?
             })
             .collect(),
-        own_outputs: room.objects.get(index).map_or_else(Vec::new, |object| {
-            let outputs = registry.outputs_of(object).into_iter();
-            outputs.map(str::to_owned).collect()
-        }),
+        own_outputs: index.and_then(|index| room.objects.get(index)).map_or_else(
+            Vec::new,
+            |object| {
+                let outputs = registry.outputs_of(object).into_iter();
+                outputs.map(str::to_owned).collect()
+            },
+        ),
         row_keys: Default::default(),
     };
     (lists, problems)
@@ -875,7 +881,7 @@ fn field_value(lists: &Lists, object: &str, component: &str, field: &Field) -> V
 /// event itself (a name that another event has). The name is that of the object;
 /// the area is its component `area`.
 pub(crate) fn event_properties(ui: &mut Ui, editor: &mut Editor, index: usize) {
-    let (_, problems) = lists_and_problems(editor, index);
+    let (_, problems) = lists_and_problems(editor, Some(index));
     for problem in problems.iter().filter(|problem| problem.command.is_none()) {
         ui.colored_label(color(problem), problem.text.as_str());
     }
@@ -893,7 +899,7 @@ pub(crate) fn event_panel(
     index: usize,
 ) -> Option<bool> {
     let registry = editor.registry.clone();
-    let (mut lists, problems) = lists_and_problems(editor, index);
+    let (mut lists, problems) = lists_and_problems(editor, Some(index));
     let room_directory = editor
         .document
         .path
@@ -904,7 +910,6 @@ pub(crate) fn event_panel(
     let actions = [crate::DELETE, crate::DUPLICATE, crate::COPY, crate::PASTE];
     lists.row_keys = actions.map(|action| maki_ui::key_label(world, action));
     let problems: Vec<&Problem> = problems.iter().collect();
-    let state = world.resource::<GameState>().clone();
     let editors = world
         .get_resource::<ArgumentEditors>()
         .cloned()
@@ -921,6 +926,7 @@ pub(crate) fn event_panel(
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
     let mut event = document.event(index, &registry)?.ok()?;
     let id = document.room.objects[index].id;
+    let facts = maki_events::Facts::new(world, id);
     let room = &document.room;
     let mut changed = false;
     if event.pages.is_empty() && event.wires.is_empty() {
@@ -942,7 +948,7 @@ pub(crate) fn event_panel(
     };
     part(egui::Panel::left("event pages")).show(ui, |ui| {
         scroll("pages").show(ui, |ui| {
-            changed |= pages(ui, &mut event.pages, id, event_ui, &state, &lists, queue);
+            changed |= pages(ui, &mut event.pages, id, event_ui, &facts, &lists, queue);
             ui.separator();
             changed |= wires(ui, &mut event, event_ui, &lists);
         });
@@ -986,7 +992,7 @@ fn pages(
     pages: &mut Vec<Page>,
     id: Option<ObjectId>,
     event_ui: &mut EventUi,
-    state: &GameState,
+    facts: &maki_events::Facts,
     lists: &Lists,
     queue: &mut Vec<EditorCommand>,
 ) -> bool {
@@ -1001,7 +1007,7 @@ fn pages(
     }
     // The pages, as tabs. The one that the game would run now has a star.
     let count = pages.len();
-    let active = active_page(pages, &maki_events::Facts::of(state));
+    let active = active_page(pages, facts);
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
         for page in 0..count {
@@ -1693,5 +1699,32 @@ mod tests {
             lists.current[&intensity],
             maki_core::fields::number(8.0, false)
         );
+    }
+
+    /// The star of the active page reads the state of the object of the event.
+    #[test]
+    fn the_active_page_star_reads_object_state() {
+        let mut world = World::new();
+        world.insert_resource(maki_events::GameState::default());
+        let mut room = maki_scene::CurrentRoom::default();
+        room.path = "a.ron".into();
+        world.insert_resource(room);
+        let mut states = maki_events::ObjectStates::default();
+        states
+            .get_mut("a.ron", ObjectId(20))
+            .switches
+            .insert("open".into(), true);
+        world.insert_resource(states);
+        let open = Condition::Switch(ObjectId::default(), "open".to_owned());
+        let mut list = vec![empty_page(), empty_page()];
+        list[1].conditions.push(open);
+        let facts = maki_events::Facts::new(&world, Some(ObjectId(20)));
+        let texts = shown_texts(|ui| {
+            let mut event_ui = EventUi::default();
+            let (lists, mut queue) = (Lists::default(), Vec::new());
+            let id = Some(ObjectId(20));
+            pages(ui, &mut list, id, &mut event_ui, &facts, &lists, &mut queue);
+        });
+        assert!(texts.iter().any(|text| text == "2 *"), "{texts:?}");
     }
 }

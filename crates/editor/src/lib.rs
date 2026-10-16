@@ -61,7 +61,7 @@ use maki_assets::{AssetChanged, AssetFailed, AssetWatch};
 use maki_core::{
     App, ConfigFile, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update,
 };
-use maki_events::{CommandRegistry, EventRunner, GameState, ObjectStates, Problem};
+use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
 use maki_gameplay::StartRoom;
 use maki_platform::{
     Action, ActionState, Bindings, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
@@ -306,8 +306,8 @@ pub struct Editor {
     queue: Vec<Command>,
     /// A command that waits for an [`Answer`].
     pending: Option<Command>,
-    /// `Some` while the game is played: the game state and the object state of before.
-    playing: Option<(GameState, ObjectStates)>,
+    /// `Some` while the game is played: the game state of before.
+    playing: Option<GameState>,
     /// The room that the world shows. `None`: load the document.
     shown: Option<(PathBuf, RoomDef)>,
     /// The items that "Copy" or "Cut" took, in the document that had them, and true
@@ -827,8 +827,7 @@ impl Editor {
     }
 
     fn play(&mut self, world: &mut World) {
-        let objects = world.resource::<ObjectStates>().clone();
-        self.playing = Some((world.resource::<GameState>().clone(), objects));
+        self.playing = Some(world.resource::<GameState>().clone());
         reset_play_state(world);
         let spawns = spawn_points(&self.document.room);
         let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| *spawn);
@@ -856,11 +855,10 @@ impl Editor {
     }
 
     fn stop(&mut self, world: &mut World) {
-        let Some((state, objects)) = self.playing.take() else {
+        let Some(state) = self.playing.take() else {
             return;
         };
         *world.resource_mut::<GameState>() = state;
-        *world.resource_mut::<ObjectStates>() = objects;
         reset_play_state(world);
         world.resource_mut::<RoomOverride>().0 = None;
         // The quit key of the game is also the cancel key of the editor: the press

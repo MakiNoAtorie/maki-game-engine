@@ -23,11 +23,12 @@ use std::path::{Path, PathBuf};
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::resource::Resource;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use bevy_ecs::world::World;
 use maki_assets::{AssetChanged, AssetWatch, FileRef};
-use maki_core::Fields;
 use maki_core::fields::{Kind, Value};
+use maki_core::{App, Fields, Update};
 use maki_scene::CurrentRoom;
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -154,8 +155,7 @@ pub fn read_routine(path: &Path, registry: &CommandRegistry) -> Result<RoutineDe
         .map_err(|error| format!("{}:{error}", path.display()))
 }
 
-/// The check of the watch: the file reads as a routine. The commands are not read:
-/// the watch has no registry.
+/// The check of the watch: the file reads as a routine (the watch has no registry).
 fn check_file(path: &Path) -> anyhow::Result<()> {
     #[derive(Deserialize)]
     #[allow(dead_code)]
@@ -170,9 +170,8 @@ fn check_file(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One step of `CallRoutine`: opens the commands of the routine, with the arguments
-/// as variables of the call.
-pub(crate) fn run(command: &RoutineCommand, step: &mut Step, world: &mut World) -> bool {
+/// One step of `CallRoutine`: opens the routine, with the arguments as variables.
+fn run(command: &RoutineCommand, step: &mut Step, world: &mut World) -> bool {
     let RoutineCommand::CallRoutine(file, arguments) = command;
     let current = world.resource::<CurrentRoom>();
     let path = file.resolve(current.path.parent().unwrap_or(Path::new("")));
@@ -200,9 +199,8 @@ pub(crate) fn run(command: &RoutineCommand, step: &mut Step, world: &mut World) 
     true
 }
 
-/// The check of `CallRoutine`: the file reads, and the call has a number for each
-/// argument.
-pub(crate) fn check(command: &RoutineCommand, context: &CheckContext) -> Option<Finding> {
+/// The check of `CallRoutine`: the file reads, and the count of arguments is right.
+fn check(command: &RoutineCommand, context: &CheckContext) -> Option<Finding> {
     let RoutineCommand::CallRoutine(file, arguments) = command;
     let path = file.resolve(context.directory);
     if !path.is_file() {
@@ -224,7 +222,7 @@ pub(crate) fn check(command: &RoutineCommand, context: &CheckContext) -> Option<
     })
 }
 
-pub(crate) fn row_text(command: &RoutineCommand) -> Option<String> {
+fn row_text(command: &RoutineCommand) -> Option<String> {
     let RoutineCommand::CallRoutine(file, arguments) = command;
     let numbers: Vec<String> = arguments.0.iter().map(i32::to_string).collect();
     Some(format!(
@@ -234,15 +232,12 @@ pub(crate) fn row_text(command: &RoutineCommand) -> Option<String> {
     ))
 }
 
-pub(crate) fn help(name: &str) -> Option<&'static str> {
+fn help(name: &str) -> Option<&'static str> {
     (name == "CallRoutine").then_some("Runs the commands of a routine file, with its arguments.")
 }
 
 /// Runs in `Update`: a routine file that changed is read again at its next call.
-pub(crate) fn forget_changed(
-    mut changed: MessageReader<AssetChanged>,
-    mut routines: ResMut<Routines>,
-) {
+fn forget_changed(mut changed: MessageReader<AssetChanged>, mut routines: ResMut<Routines>) {
     for AssetChanged(path) in changed.read() {
         if routines.0.contains_key(path) {
             routines.0.remove(path);
@@ -251,7 +246,7 @@ pub(crate) fn forget_changed(
 }
 
 /// Runs in `Update`: tells the watch the routine files that were read.
-pub(crate) fn watch_routines(routines: Res<Routines>, watch: Option<ResMut<AssetWatch>>) {
+fn watch_routines(routines: Res<Routines>, watch: Option<ResMut<AssetWatch>>) {
     let Some(mut watch) = watch.filter(|watch| watch.on) else {
         return;
     };
@@ -260,6 +255,22 @@ pub(crate) fn watch_routines(routines: Res<Routines>, watch: Option<ResMut<Asset
         let files = routines.0.keys().map(|path| (path.clone(), check));
         watch.set("routines", files.collect());
     }
+}
+
+/// Adds the command `CallRoutine`, the loaded files, and their watch.
+pub(crate) fn add(app: &mut App, registry: &CommandRegistry) {
+    registry.add(run);
+    registry.add_fields::<RoutineCommand>();
+    registry.add_check(check);
+    registry.add_texts(row_text, help);
+    registry.add_defaults(|_, _| {
+        Some(RoutineCommand::CallRoutine(
+            Default::default(),
+            Arguments::default(),
+        ))
+    });
+    app.init_resource::<Routines>()
+        .add_systems(Update, (forget_changed, watch_routines).chain());
 }
 
 #[cfg(test)]

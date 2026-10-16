@@ -34,6 +34,8 @@ const INTERACT_FACING: f32 = 0.3;
 /// An event runs at most this many commands in one step. More are a loop with no
 /// wait in it: the rest runs in the next step, and the game goes on.
 const MAX_COMMANDS_PER_STEP: usize = 256;
+/// Routine calls in one another: more is a call with no end.
+const MAX_CALL_DEPTH: usize = 64;
 
 /// The text that the game shows to the player. `None`: no message. The command
 /// `Message` writes it and waits; the game draws it.
@@ -161,7 +163,12 @@ impl RunningEvent {
             }
             self.waiting = false;
             if jump == Jump::Break {
-                match self.stack.iter().rposition(|(.., looping)| *looping) {
+                // The search stops at a routine call: a break never leaves a routine.
+                let stack = &self.stack;
+                let inner = stack
+                    .iter()
+                    .rposition(|(_, _, call, looping)| *looping || call.is_some());
+                match inner.filter(|at| stack[*at].3) {
                     // The index of the list around the loop is already after it.
                     Some(at) => {
                         self.stack.truncate(at);
@@ -173,7 +180,15 @@ impl RunningEvent {
             self.stack.last_mut().expect("tested above").1 += 1;
             // The branch of an `If`, a routine, or the list of a loop.
             if let Some((list, scope)) = opened {
-                self.stack.push((list, 0, scope, jump == Jump::Loop));
+                let calls = self.stack.iter().filter(|frame| frame.2.is_some()).count();
+                if scope.is_some() && calls >= MAX_CALL_DEPTH {
+                    tracing::warn!(
+                        event = self.name,
+                        "{MAX_CALL_DEPTH} routine calls in one another: the call does not run"
+                    );
+                } else {
+                    self.stack.push((list, 0, scope, jump == Jump::Loop));
+                }
             }
         }
         tracing::warn!(
