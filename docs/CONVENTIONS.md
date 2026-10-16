@@ -4,12 +4,14 @@ Build, test and delegation rules that bind future work. Keep under 8 KB. Add a l
 
 ## Quiet output
 Never pull full logs into context. Filter to errors and failures.
-- Build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`
-- Dynamic build: `cargo build --profile dynamic -p maki-editor-app -p maki-game-dll 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`
-- Clippy: `cargo clippy --workspace --all-targets 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`
-- Tests: `cargo test -q 2>&1 | rg -e 'FAILED|panicked|^error|test result' | head -40` (the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit)
-- Benchmark: `tools/bench.py` writes CSV; read only the summary rows, not the per-frame data.
-- No CI in this repository: the local checks above are the gate.
+- All checks: `sh tools/check.sh` (format, clippy and tests of the static and the dynamic build, errors only). `sh tools/check.sh fast` is the pre-commit hook (`.githooks`; once per clone: `git config core.hooksPath .githooks`). No CI: this is the gate.
+- One build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`. Tests: `cargo test -q` runs the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit.
+- Benchmark: `tools/bench.py` writes CSV. `compare A B --total` gives one row per scenario.
+- Picture gate first: after a change of a room file or of the renderer, `bench.py run --label X --only trip_720p walk_720p test_1080p materials_720p` and `bench.py same SCENARIO sNN X` for each (2 minutes), before the full run (20 minutes). `bench.py drop X` removes a side run.
+
+## Editing files
+- Write a file with the Write tool. A Bash heredoc breaks on an odd count of `'`.
+- Edit with the Edit tool after a Read of the part, or `python tools/replace.py FILE --script PAIRS.py` (keeps CRLF; the pairs in a file written with the Write tool).
 
 ## Model per task
 Decide before each subagent and pass `model` explicitly; state the choice and why in one line.

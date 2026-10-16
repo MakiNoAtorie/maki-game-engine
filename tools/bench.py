@@ -6,6 +6,12 @@ run      Builds the release binary, runs each scenario, and appends one row for 
          the frames after the warmup). Appends the environment to tools/bench_env.csv.
 compare  Prints a CSV with the medians of two stored runs and the change in percent.
          A run is named by a part of its run_id (the label); the newest match is used.
+         `--total`: the GPU total of each scenario only.
+base     Runs scenarios with the build of another commit, back to back with this one:
+         `base COMMIT --label x49 --only test_720p`. The commit goes to target/bench/base
+         (its build is kept for the next base), its rows and pictures come into this
+         tree: `compare` and `same` take the label.
+drop     Removes each run whose run_id ends with `-LABEL` (a side run).
 reference Makes the reference picture of a scenario: a static light, 65536 samples for
          each pixel, and no filter, in target/bench/reference/<scenario>.dump. About one
          minute. `--set table.key=value` changes config keys, `--name` the file name.
@@ -298,9 +304,53 @@ def command_compare(args):
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow(["name", f"median_ms {id_a}", f"median_ms {id_b}", "change_percent"])
     for name in a:
-        if name in b:
+        if name in b and (not args.total or name.endswith("/gpu_total")):
             change = (b[name] - a[name]) / a[name] * 100 if a[name] else float("nan")
             writer.writerow([name, a[name], b[name], f"{change:+.1f}"])
+
+
+def run_ids_with_label(path, label):
+    with path.open(newline="") as file:
+        return {row["run_id"] for row in csv.DictReader(file) if row["run_id"].endswith(f"-{label}")}
+
+
+def command_drop(args):
+    for path in (HISTORY, ENVIRONMENT):
+        with path.open(encoding="utf-8", newline="") as file:
+            lines = file.readlines()
+        keep = [line for line in lines if not line.split(",", 1)[0].endswith(f"-{args.label}")]
+        with path.open("w", encoding="utf-8", newline="") as file:
+            file.writelines(keep)
+        print(f"{path.name}: {len(lines) - len(keep)} rows removed")
+
+
+def command_base(args):
+    import io
+    import shutil
+    import tarfile
+
+    base = WORK / "base"
+    base.mkdir(parents=True, exist_ok=True)
+    archive = subprocess.run(["git", "archive", args.commit], cwd=ROOT, capture_output=True, check=True).stdout
+    # Over the tree before: its `target` stays, so the build is incremental.
+    # ponytail: a file that the commit does not have stays from an earlier base.
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        tar.extractall(base, filter="data")
+    command = [sys.executable, str(base / "tools" / "bench.py"), "run", "--label", args.label]
+    command += ["--only", *args.only] if args.only else []
+    command += ["--behind"] if args.behind else []
+    subprocess.run(command, cwd=base, check=True)
+    for name, path in (("bench_history.csv", HISTORY), ("bench_env.csv", ENVIRONMENT)):
+        source = base / "tools" / name
+        ids = run_ids_with_label(source, args.label) - run_ids_with_label(path, args.label)
+        with source.open(encoding="utf-8", newline="") as file:
+            lines = file.readlines()
+        with path.open("a", encoding="utf-8", newline="") as file:
+            file.writelines(line for line in lines if line.split(",", 1)[0] in ids)
+    for dump in (base / "target" / "bench").glob(f"*/{args.label}.dump"):
+        (WORK / dump.parent.name).mkdir(parents=True, exist_ok=True)
+        shutil.copy(dump, WORK / dump.parent.name / dump.name)
+    print(f"base {args.commit}: run `{args.label}` is in {HISTORY.name}")
 
 
 def build():
@@ -537,7 +587,17 @@ if __name__ == "__main__":
     compare = commands.add_parser("compare")
     compare.add_argument("a")
     compare.add_argument("b")
+    compare.add_argument("--total", action="store_true", help="the GPU total of each scenario only")
     compare.set_defaults(function=command_compare)
+    base = commands.add_parser("base", help="run scenarios with the build of another commit")
+    base.add_argument("commit")
+    base.add_argument("--label", required=True)
+    base.add_argument("--only", nargs="+", metavar="SCENARIO")
+    base.add_argument("--behind", action="store_true")
+    base.set_defaults(function=command_base)
+    drop = commands.add_parser("drop", help="remove each run whose run_id ends with -LABEL")
+    drop.add_argument("label")
+    drop.set_defaults(function=command_drop)
     reference = commands.add_parser("reference", help="make the reference picture of a scenario")
     reference.add_argument("scenario")
     reference.add_argument("--set", nargs="*", default=[], metavar="TABLE.KEY=VALUE", help="config keys, for example render.max_bounces=3")

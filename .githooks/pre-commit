@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Format and static clippy before each commit. Set up once: git config core.hooksPath .githooks
+exec sh "$(git rev-parse --show-toplevel)/tools/check.sh" fast

@@ -55,9 +55,6 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 ## Documentation
 - Write all documentation (READMEs, doc comments, reports) in lean, technical English. No verbose or flowery prose.
 
-## Skills
-- Use the `ponytail` skill proactively on every coding task (write, fix, refactor, review, choose dependencies).
-
 ## Working agreement
 - Work in stages, in the order of the stage table (`docs/part6/README.md`, 3.1). Implement only the stage at hand.
 - At the end of each stage, always, in this order:
