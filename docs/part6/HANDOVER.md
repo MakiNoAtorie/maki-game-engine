@@ -6,7 +6,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 
 - The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
 - `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
-- Next: stage 54 (`stage-54-cleanup.md`, spec issue #22). The tickets come from `/to-tickets`, which the owner starts.
+- Next: stage 56 (object state). It has no stage file: the session writes it; the tickets come from `/to-tickets`, which the owner starts.
 - A run by hand of stages 50 to 53 in the editor found three panics and ten rough edges: `PLANNING-HANDOVER.md`, group F, "To fix". Stage 54 has them.
 
 ## State
@@ -28,6 +28,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 53 (who is the player, the states of the game) ran as a parallel lane and was merged before stage 52: issues #15, #16. Report: `stage-53.md`.
 - Stage 52 (wires, "Send a signal"): issue #14. Report: `stage-52.md`. The benchmark base is now `s52`. The object model (stages 47 to 53) is done; no ticket is open. The stages after it are planned (see "Now").
 - Stage 54 (what the object model left): issues #22, #24 to #29. Report: `stage-54.md`. The base of the GPU time is now `s54`; the pictures go through `bench.py gate`. Its run by hand is open (section 3 of the report).
+- Stage 55 (object ids, files with an id): issues #40 to #47. Report: `stage-55.md`. The base of the GPU time is now `s55`. Its run by hand is open (section 3 of the report).
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
