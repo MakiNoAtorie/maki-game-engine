@@ -13,6 +13,7 @@
 use std::fmt;
 
 use bevy_ecs::component::Component;
+use maki_core::Fields;
 use maki_scene::{ObjectId, PoseDef};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -135,22 +136,35 @@ pub struct Page {
     pub commands: Vec<Command>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The editor draws a condition from its field table: a new form needs no editor code.
+/// A name of a flag or a variable picks from the list `flags` or `variables`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 pub enum Condition {
     /// The flag is set.
-    Flag(String),
+    #[field(label = "flag is set")]
+    Flag(#[field(pick = "flags")] String),
     /// The flag is not set.
-    NotFlag(String),
+    #[field(label = "flag is not set")]
+    NotFlag(#[field(pick = "flags")] String),
     /// The variable, compared with a number: `Variable("count", AtLeast, 3)`.
-    Variable(String, Compare, i32),
+    #[field(label = "variable")]
+    Variable(
+        #[field(pick = "variables")] String,
+        #[field(label = "is")] Compare,
+        #[field(label = "value")] i32,
+    ),
 }
 
 /// How a variable is compared with a number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Fields)]
 pub enum Compare {
+    #[field(label = "equal to")]
     Equals,
+    #[field(label = "not equal to")]
     NotEquals,
+    #[field(label = "less than")]
     Less,
+    #[field(label = "at least")]
     AtLeast,
 }
 

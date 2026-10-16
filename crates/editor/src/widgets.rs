@@ -13,7 +13,7 @@ use maki_ui::egui::{self, Ui};
 
 use crate::sources::Converters;
 pub(crate) use maki_ui::widgets::{
-    choice, color, drag, number as number_or, optional, row, same_kind, text, toggle, vector,
+    choice, color, drag, number as number_or, optional, row, text, toggle, vector,
 };
 
 /// A number with a label and its unit. Drag it, or click it and type.

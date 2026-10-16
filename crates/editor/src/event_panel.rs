@@ -12,18 +12,19 @@ use std::sync::Arc;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_core::fields::{Field, Kind, Value};
-use maki_core::{App, FieldTypes};
+use maki_core::{App, FieldTypes, Fields};
 use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, Compare, Condition, EventPages, GameState, Page,
-    Problem, Trigger, Wire, active_page,
+    Builtin, Command, CommandRegistry, CommandSet, Condition, EventPages, GameState, Page, Problem,
+    Trigger, Wire, active_page,
 };
 use maki_scene::{ComponentTypes, ObjectId, RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
+use serde::de::DeserializeOwned;
 
 use crate::events::{
     ListPath, Names, Row, RowKind, edit_list, file_name, move_command, names, problems, rows,
 };
-use crate::widgets::{choice, drag, number, object_names, object_pick, object_ref, row, same_kind};
+use crate::widgets::{choice, drag, number, object_names, object_pick, object_ref, row};
 use crate::{Command as EditorCommand, Editor};
 
 pub(crate) const ERROR: Color32 = maki_ui::THEME.error;
@@ -230,6 +231,7 @@ pub fn add_argument_editor<T: CommandSet>(
 type ObjectNames = Vec<(ObjectId, String)>;
 
 /// The names that the pickers offer.
+#[derive(Default)]
 pub(crate) struct Lists {
     flags: Vec<String>,
     variables: Vec<String>,
@@ -422,7 +424,7 @@ fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
 /// The name of a flag or a variable: one that an event of the game uses, or a new
 /// one ("New..."). `unset`: the names that no event writes. Such a name has a mark:
 /// it can be a name with a wrong letter.
-fn pick_or_new(
+pub(crate) fn pick_or_new(
     ui: &mut Ui,
     salt: &str,
     value: &mut String,
@@ -676,57 +678,14 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
     let mut removed = None;
     for (index, condition) in conditions.iter_mut().enumerate() {
         ui.push_id(("condition", index), |ui| {
-            // One line for each part: the column is narrow.
-            ui.horizontal(|ui| {
-                if ui
-                    .small_button("x")
-                    .on_hover_text("Remove the condition")
-                    .clicked()
-                {
-                    removed = Some(index);
-                }
-                // Another kind keeps the name if it is of the same list (flags or
-                // variables), else it takes the first name of the other list.
-                let name = |variable: bool| {
-                    let names = if variable {
-                        &lists.variables
-                    } else {
-                        &lists.flags
-                    };
-                    let first = || names.first().map_or("name", String::as_str).to_owned();
-                    if condition.is_variable() == variable {
-                        condition.name().to_owned()
-                    } else {
-                        first()
-                    }
-                };
-                let kinds = [
-                    ("flag is set", Condition::Flag(name(false))),
-                    ("flag is not set", Condition::NotFlag(name(false))),
-                    (
-                        "variable",
-                        Condition::Variable(name(true), Compare::AtLeast, 1),
-                    ),
-                ];
-                changed |= choice(ui, "", condition, &kinds, same_kind);
-            });
-            changed |= match condition {
-                Condition::Flag(name) | Condition::NotFlag(name) => pick_flag(ui, name, lists),
-                Condition::Variable(name, compare, value) => {
-                    let compares = [
-                        ("equal to", Compare::Equals),
-                        ("not equal to", Compare::NotEquals),
-                        ("less than", Compare::Less),
-                        ("at least", Compare::AtLeast),
-                    ];
-                    let picked = pick_variable(ui, name, lists);
-                    let compared = ui.horizontal(|ui| {
-                        choice(ui, "is", compare, &compares, PartialEq::eq)
-                            | ui.add(drag(value)).changed()
-                    });
-                    picked | compared.inner
-                }
-            };
+            if ui
+                .small_button("x")
+                .on_hover_text("Remove the condition")
+                .clicked()
+            {
+                removed = Some(index);
+            }
+            changed |= condition_row(ui, condition, lists);
         });
     }
     if let Some(index) = removed {
@@ -743,6 +702,42 @@ fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bo
         changed = true;
     }
     changed
+}
+
+/// The widgets of one condition, from the field table of its type: its kind and its
+/// values. A name field with `pick = "flags"` or `"variables"` picks a known name or
+/// a new one. True: the user changed the condition.
+fn condition_row<T: Fields + DeserializeOwned>(
+    ui: &mut Ui,
+    condition: &mut T,
+    lists: &Lists,
+) -> bool {
+    let names = |list: &str| match list {
+        "flags" => lists.flags.clone(),
+        "variables" => lists.variables.clone(),
+        _ => Vec::new(),
+    };
+    let open = |list: &str| match list {
+        "flags" => Some(lists.unset_flags.clone()),
+        "variables" => Some(lists.unset_variables.clone()),
+        _ => None,
+    };
+    let picks = crate::fields::Lists {
+        names: &names,
+        open: &open,
+        objects: &lists.ids,
+    };
+    let mut tree = condition.tree();
+    if !crate::fields::show(ui, &T::kind(), &mut tree, picks) {
+        return false;
+    }
+    match maki_core::fields::read::<T>(tree) {
+        Ok(changed) => {
+            *condition = changed;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// The names that the pickers offer for the open room, and what the checks find in
@@ -1461,6 +1456,85 @@ mod tests {
     use maki_core::ConfigFile;
 
     use super::*;
+
+    /// The texts that one frame of `draw` shows (`Shape::Text` galleys).
+    fn shown_texts(draw: impl FnMut(&mut Ui)) -> Vec<String> {
+        let mut output = egui::Context::default().run_ui(egui::RawInput::default(), draw);
+        // egui panics when texture changes are dropped unread.
+        output.textures_delta.clear();
+        let texts = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        });
+        texts.collect()
+    }
+
+    /// Each form of a condition is drawn from its field table: the kind, the picked
+    /// name, the compare, the number. With no input nothing changes.
+    #[test]
+    fn each_condition_form_is_drawn_from_its_field_table() {
+        let lists = Lists {
+            flags: vec!["lit".to_owned()],
+            variables: vec!["turns".to_owned()],
+            ..Lists::default()
+        };
+        let forms = [
+            (
+                Condition::Flag("lit".to_owned()),
+                vec!["flag is set", "lit"],
+            ),
+            (
+                Condition::NotFlag("lit".to_owned()),
+                vec!["flag is not set", "lit"],
+            ),
+            (
+                Condition::Variable("turns".to_owned(), maki_events::Compare::AtLeast, 2),
+                vec!["variable", "turns", "is", "at least", "value", "2"],
+            ),
+        ];
+        for (condition, expected) in forms {
+            let mut shown = condition.clone();
+            let texts = shown_texts(|ui| assert!(!condition_row(ui, &mut shown, &lists)));
+            for text in expected {
+                assert!(texts.iter().any(|found| found == text), "{text}: {texts:?}");
+            }
+            assert_eq!(shown, condition);
+        }
+    }
+
+    /// A change of the kind keeps a value of the same kind at the same place: "flag
+    /// is set" to "flag is not set" keeps the flag; to "variable" it does not.
+    #[test]
+    fn a_change_of_the_kind_of_a_condition_keeps_the_name_of_the_same_list() {
+        let maki_core::fields::Kind::Choice(variants) = Condition::kind() else {
+            panic!("an enum has a choice");
+        };
+        let tree = Condition::Flag("lit".to_owned()).tree();
+        let change = |to: usize| {
+            let tree = crate::fields::change_variant(variants.first(), tree.clone(), &variants[to]);
+            maki_core::fields::read::<Condition>(tree).unwrap()
+        };
+        assert_eq!(change(1), Condition::NotFlag("lit".to_owned()));
+        let compare = maki_events::Compare::Equals;
+        assert_eq!(change(2), Condition::Variable(String::new(), compare, 0));
+    }
+
+    /// A new form of a condition is a variant: the panel draws its widgets with no
+    /// code of the editor.
+    #[test]
+    fn a_new_condition_form_has_widgets_with_no_editor_code() {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Fields)]
+        enum Test {
+            Flag(#[field(pick = "flags")] String),
+            #[field(label = "hour of the day")]
+            Hour(#[field(label = "after")] i32),
+        }
+        let mut hour = Test::Hour(20);
+        let texts = shown_texts(|ui| assert!(!condition_row(ui, &mut hour, &Lists::default())));
+        for text in ["hour of the day", "after", "20"] {
+            assert!(texts.iter().any(|found| found == text), "{text}: {texts:?}");
+        }
+    }
 
     /// The pickers of `SetField`: the objects with a component that has a value in
     /// the game (a light, a prop, a door), the fields that change in the game, and a
