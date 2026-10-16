@@ -97,7 +97,7 @@ impl Place {
                     .position;
                 Some(Vec3::new(x, 0.0, z))
             }
-            Place::Spawn(name) => world.room.spawn(name).map(Vec3::from),
+            Place::Spawn(name) => world.room.spawn(&(*name).into()).map(Vec3::from),
         }
     }
 }

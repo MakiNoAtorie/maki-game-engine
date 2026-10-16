@@ -64,7 +64,7 @@ fn app(room: &Path) -> App {
         .add_module(AudioModule);
     let target = RoomTarget {
         path: room.to_owned(),
-        spawn: Some("start".to_owned()),
+        spawn: Some("start".into()),
         text: None,
     };
     app.add_systems(

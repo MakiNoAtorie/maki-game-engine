@@ -13,7 +13,7 @@ use bevy_ecs::world::World;
 use maki_core::{App, FixedUpdate, Interpolated, Module, PlayState, ResetPlay, Settings, Update};
 use maki_events::{CommandRegistry, EventRunner, run_events};
 use maki_platform::{Action, ActionState, Key, add_bindings};
-use maki_scene::Name;
+use maki_scene::{Name, ObjectId, ObjectRef};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{Controller, give_control};
@@ -59,9 +59,9 @@ pub enum GameCommand {
     /// allows it; else a warning, and no change. `Pause` needs the pause action on
     /// (`GameRules::pause`): only the action ends a pause.
     SetPlayState(PlayState),
-    /// The control goes to the first object with this name. An empty name: back to
-    /// the body of the player prefab.
-    GiveControl(String),
+    /// The control goes to the object. An empty name: back to the body of the player
+    /// prefab.
+    GiveControl(ObjectRef),
 }
 
 /// The rules of the game, the pause action, and the commands `SetPlayState` and
@@ -97,7 +97,7 @@ impl Module for GameModule {
             |command: &GameCommand| {
                 Some(match command {
                     GameCommand::SetPlayState(state) => format!("State: {state:?}"),
-                    GameCommand::GiveControl(name) if name.is_empty() => {
+                    GameCommand::GiveControl(name) if name.name() == Some("") => {
                         "Control: the player".to_owned()
                     }
                     GameCommand::GiveControl(name) => format!("Control: {name}"),
@@ -115,7 +115,7 @@ impl Module for GameModule {
         );
         registry.add_defaults(|name, _| match name {
             "SetPlayState" => Some(GameCommand::SetPlayState(PlayState::Cutscene)),
-            "GiveControl" => Some(GameCommand::GiveControl(String::new())),
+            "GiveControl" => Some(GameCommand::GiveControl("".into())),
             _ => None,
         });
         app.init_resource::<Controller>()
@@ -128,15 +128,18 @@ impl Module for GameModule {
     }
 }
 
-/// The first object with the name; the home body for an empty name.
-fn named(world: &mut World, name: &str) -> Option<Entity> {
-    if name.is_empty() {
+/// The first entity of the object; the home body for an empty name.
+fn named(world: &mut World, object: &ObjectRef) -> Option<Entity> {
+    if object.name() == Some("") {
         return world.resource::<Controller>().home;
     }
-    let mut objects = world.query_filtered::<(Entity, &Name), With<Interpolated>>();
-    objects
-        .iter(world)
-        .find_map(|(entity, other)| (other.0 == name).then_some(entity))
+    let mut objects =
+        world.query_filtered::<(Entity, Option<&ObjectId>, Option<&Name>), With<Interpolated>>();
+    objects.iter(world).find_map(|(entity, id, name)| {
+        object
+            .is(id, name.map(|name| name.0.as_str()))
+            .then_some(entity)
+    })
 }
 
 /// Runs in `FixedUpdate`: the rule of the control. The pawn takes the move actions
@@ -193,12 +196,12 @@ mod tests {
     /// an index into this list, plus one.
     fn calls() -> [GameCommand; 7] {
         [
-            GameCommand::GiveControl("box".to_owned()),
-            GameCommand::GiveControl(String::new()),
+            GameCommand::GiveControl("box".into()),
+            GameCommand::GiveControl("".into()),
             GameCommand::SetPlayState(PlayState::Play),
             GameCommand::SetPlayState(PlayState::Cutscene),
             GameCommand::SetPlayState(PlayState::Title),
-            GameCommand::GiveControl("nothing".to_owned()),
+            GameCommand::GiveControl("nothing".into()),
             GameCommand::SetPlayState(PlayState::Pause),
         ]
     }
@@ -391,7 +394,7 @@ background = false",
         );
         app.add_module(crate::RoomsModule {
             start_room: directory.join("a.ron"),
-            start_spawn: "start".to_owned(),
+            start_spawn: "start".into(),
         });
         app.run(|mut app| {
             let z = |app: &App| {

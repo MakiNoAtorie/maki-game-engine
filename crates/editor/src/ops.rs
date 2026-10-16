@@ -18,8 +18,9 @@ use maki_events::{
 };
 use maki_gameplay::GameCommand;
 use maki_scene::{
-    ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef,
-    PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
+    ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, ObjectRef,
+    PoseDef, PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text,
+    read_prefab,
 };
 
 use crate::ron_text::Notes;
@@ -157,36 +158,39 @@ impl Document {
         }
         let mut users = 0;
         if let Some(old) = &old {
+            // Only the name form: a reference by id stays right after a rename.
+            let is_old = |name: &ObjectRef| name.name() == Some(old.as_str());
+            let to_new = || ObjectRef::Name(new.clone());
             // A command names the object by the kind that it wants; an object can
             // be each kind.
             users += self.rename_in_events(registry, |command: &Builtin| match command {
-                Builtin::LightOn(name) if name == old => Some(Builtin::LightOn(new.clone())),
-                Builtin::LightOff(name) if name == old => Some(Builtin::LightOff(new.clone())),
-                Builtin::LightIntensity(name, value) if name == old => {
-                    Some(Builtin::LightIntensity(new.clone(), *value))
+                Builtin::LightOn(name) if is_old(name) => Some(Builtin::LightOn(to_new())),
+                Builtin::LightOff(name) if is_old(name) => Some(Builtin::LightOff(to_new())),
+                Builtin::LightIntensity(name, value) if is_old(name) => {
+                    Some(Builtin::LightIntensity(to_new(), *value))
                 }
-                Builtin::OpenDoor(name) if name == old => Some(Builtin::OpenDoor(new.clone())),
-                Builtin::CloseDoor(name) if name == old => Some(Builtin::CloseDoor(new.clone())),
-                Builtin::Signal(name, output) if name == old => {
-                    Some(Builtin::Signal(new.clone(), output.clone()))
+                Builtin::OpenDoor(name) if is_old(name) => Some(Builtin::OpenDoor(to_new())),
+                Builtin::CloseDoor(name) if is_old(name) => Some(Builtin::CloseDoor(to_new())),
+                Builtin::Signal(name, output) if is_old(name) => {
+                    Some(Builtin::Signal(to_new(), output.clone()))
                 }
-                Builtin::SetField(name, component, field, value) if name == old => Some(
-                    Builtin::SetField(new.clone(), component.clone(), field.clone(), value.clone()),
+                Builtin::SetField(name, component, field, value) if is_old(name) => Some(
+                    Builtin::SetField(to_new(), component.clone(), field.clone(), value.clone()),
                 ),
                 _ => None,
             });
             users += self.rename_in_events(registry, |command: &AudioCommand| match command {
-                AudioCommand::SoundOn(name) if name == old => {
-                    Some(AudioCommand::SoundOn(new.clone()))
+                AudioCommand::SoundOn(name) if is_old(name) => {
+                    Some(AudioCommand::SoundOn(to_new()))
                 }
-                AudioCommand::SoundOff(name) if name == old => {
-                    Some(AudioCommand::SoundOff(new.clone()))
+                AudioCommand::SoundOff(name) if is_old(name) => {
+                    Some(AudioCommand::SoundOff(to_new()))
                 }
                 _ => None,
             });
             users += self.rename_in_events(registry, |command: &GameCommand| match command {
-                GameCommand::GiveControl(name) if name == old => {
-                    Some(GameCommand::GiveControl(new.clone()))
+                GameCommand::GiveControl(name) if is_old(name) => {
+                    Some(GameCommand::GiveControl(to_new()))
                 }
                 _ => None,
             });
@@ -195,8 +199,8 @@ impl Document {
                 let file = self.path.file_name().unwrap_or_default();
                 let file = file.to_string_lossy().into_owned();
                 users += self.rename_in_events(registry, |command: &Builtin| match command {
-                    Builtin::Transfer(room, to) if *room == file && to == old => {
-                        Some(Builtin::Transfer(room.clone(), new.clone()))
+                    Builtin::Transfer(room, to) if *room == file && is_old(to) => {
+                        Some(Builtin::Transfer(room.clone(), to_new()))
                     }
                     _ => None,
                 });
@@ -820,7 +824,7 @@ pub fn spawn_users(
         let mut found = false;
         registry.each_command(commands, &mut |command| {
             if let Some(Builtin::Transfer(room, spawn)) = command.get() {
-                found |= (room.as_str(), spawn.as_str()) == target;
+                found |= room == target.0 && spawn.name() == Some(target.1);
             }
         });
         found

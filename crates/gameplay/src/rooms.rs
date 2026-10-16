@@ -8,7 +8,9 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
 use maki_core::{App, Module, Settings, Startup, Update};
 use maki_platform::{Action, ActionState, Key, add_bindings};
-use maki_scene::{CurrentRoom, RoomRequest, RoomTarget, RoomValidators, load_requested_room};
+use maki_scene::{
+    CurrentRoom, ObjectRef, RoomRequest, RoomTarget, RoomValidators, load_requested_room,
+};
 use serde::{Deserialize, Serialize};
 
 /// Debug: reads the file of the current room again.
@@ -22,7 +24,7 @@ pub struct RoomSettings {
     /// The room file that the game starts in.
     pub start: Option<PathBuf>,
     /// The spawn point of that room where the player starts.
-    pub start_spawn: Option<String>,
+    pub start_spawn: Option<ObjectRef>,
 }
 
 impl Settings for RoomSettings {
@@ -33,7 +35,7 @@ impl Settings for RoomSettings {
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct StartRoom {
     pub path: PathBuf,
-    pub spawn: String,
+    pub spawn: ObjectRef,
 }
 
 impl StartRoom {
@@ -51,7 +53,7 @@ impl StartRoom {
 pub struct RoomsModule {
     /// The start room and its spawn point for a config file that names none.
     pub start_room: PathBuf,
-    pub start_spawn: String,
+    pub start_spawn: ObjectRef,
 }
 
 impl Module for RoomsModule {

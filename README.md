@@ -230,7 +230,7 @@ The player (`crates/gameplay`, `PlayerModule`) is a prefab file that the project
 | Key | Default | Meaning |
 |---|---|---|
 | `start` | not set | The room file that the game starts in. Not set: the start room of the project (`project.toml`). A path that is not absolute starts at the working directory |
-| `start_spawn` | not set | The spawn point of that room where the player starts. Not set: that of the project |
+| `start_spawn` | not set | The spawn point of that room where the player starts: its id or its name. Not set: that of the project |
 
 `[assets]` (`crates/assets`, `AssetsModule`):
 
@@ -364,7 +364,7 @@ An event has pages. A page has conditions, a trigger, and commands. The active p
 | `SetFlag("name", true)`, `SetVariable("name", 3)`, `AddVariable("name", 1)` | Change the game state |
 | `Wait(0.5)` | Seconds |
 | `If([Flag("name"), Variable("count", Equals, 3)], [...], [...])` | The first list if all conditions hold, else the second one |
-| `OpenDoor("name")`, `CloseDoor("name")` | Send a door or a mover to its other pose, and wait until it is there |
+| `OpenDoor(3)`, `CloseDoor(3)` | Send a door or a mover to its other pose, and wait until it is there. An object is named by its id (`3`) or its name (`"door"`) |
 | `LightOn("name")`, `LightOff("name")`, `LightIntensity("name", 4.0)` | Change a light of the room |
 | `Message("text")` | Show the text until the player presses interact |
 | `Choice("question", [("Yes", [...]), ("No", [...])])` | Show the question and the answers. The player moves the mark (up, down) and presses interact; the list of that answer runs, then the commands after the question |

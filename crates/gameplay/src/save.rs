@@ -304,7 +304,7 @@ mod tests {
             .add_module(crate::GameModule)
             .add_module(RoomsModule {
                 start_room: directory.join("a.ron"),
-                start_spawn: "start".to_owned(),
+                start_spawn: "start".into(),
             })
             .add_module(SaveModule {
                 file: directory.join("save.ron"),

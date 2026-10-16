@@ -133,7 +133,7 @@ output = false",
                 commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
                 request.0 = Some(RoomTarget {
                     path: "../assets/rooms/room_d.ron".into(),
-                    spawn: Some("start".to_owned()),
+                    spawn: Some("start".into()),
                     text: None,
                 });
             },

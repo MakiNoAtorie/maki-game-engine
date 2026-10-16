@@ -17,10 +17,11 @@
 //! End
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use maki_events::{Builtin, CheckContext, Command, CommandRegistry, EventDef, Problem};
+use maki_scene::{ObjectRef, RoomDef};
 
 use crate::Document;
 
@@ -274,7 +275,8 @@ impl Names {
 pub struct OtherRoom {
     /// The file name: what a `Transfer` names.
     pub file: String,
-    pub spawns: BTreeSet<String>,
+    /// What a `Transfer` into the room can name.
+    pub room: RoomDef,
     pub events: Vec<EventDef>,
 }
 
@@ -302,7 +304,7 @@ pub fn other_rooms(room: &Path, registry: &CommandRegistry) -> Vec<OtherRoom> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            spawns: def.spawn_names().into_iter().collect(),
+            room: def,
             events,
         });
     }
@@ -337,9 +339,9 @@ pub fn problems(
     others: &[OtherRoom],
     registry: &CommandRegistry,
 ) -> Vec<Problem> {
-    let spawn = |file: &str, spawn: &str| {
-        let room = others.iter().find(|room| room.file == file)?;
-        Some(room.spawns.contains(spawn))
+    let spawn = |file: &str, spawn: &ObjectRef| {
+        let other = others.iter().find(|other| other.file == file)?;
+        Some(other.room.spawn(spawn).is_some())
     };
     let context = CheckContext {
         room: &document.room,
@@ -420,9 +422,7 @@ mod tests {
         let wait = row("Wait 1 s");
         assert_eq!(wait.list, [(1, 0), (1, 1)]);
         let (list, index) = wait.insert_place(commands, &registry);
-        let light = registry
-            .command(Builtin::LightOff("lamp".to_owned()))
-            .unwrap();
+        let light = registry.command(Builtin::LightOff("lamp".into())).unwrap();
         edit_list(commands, &list, &registry, |list| list.insert(index, light)).unwrap();
         assert_eq!(texts(commands)[6], "    Light lamp: off");
         // The first line of an `If`: into its first list. `Else`: into the second.

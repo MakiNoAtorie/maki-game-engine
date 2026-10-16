@@ -35,7 +35,7 @@ use maki_assets::{
 use maki_core::{Fields, Interpolated, Transform};
 use serde::{Deserialize, Serialize};
 
-use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
+use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId, ObjectRef};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
     Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
@@ -125,11 +125,17 @@ impl RoomDef {
         self.objects.iter().enumerate().find(named)
     }
 
-    /// The position of the spawn point `name`: of the object of that name with the
+    /// The first object of the reference, with its index (its `RoomItem`).
+    pub fn find(&self, object: &ObjectRef) -> Option<(usize, &ObjectDef)> {
+        let found = |(_, def): &(usize, &ObjectDef)| object.is_object(def);
+        self.objects.iter().enumerate().find(found)
+    }
+
+    /// The position of a spawn point: of the object of the reference with the
     /// component `spawn`.
-    pub fn spawn(&self, name: &str) -> Option<[f32; 3]> {
-        let named = |object: &&ObjectDef| object.is_spawn() && object.name.as_deref() == Some(name);
-        Some(self.objects.iter().find(named)?.pose.position)
+    pub fn spawn(&self, spawn: &ObjectRef) -> Option<[f32; 3]> {
+        let found = |object: &&ObjectDef| object.is_spawn() && spawn.is_object(object);
+        Some(self.objects.iter().find(found)?.pose.position)
     }
 
     /// The names of the spawn points, in name order.
@@ -1068,8 +1074,16 @@ pub fn check_room(path: &Path, text: &str, validators: &RoomValidators) -> Resul
         }
     }
     for (index, object) in room.objects.iter().enumerate() {
+        let name = object.name.as_deref().unwrap_or("");
+        if let Some(parent) = &object.parent
+            && room.find(parent).is_none()
+        {
+            return Err(anyhow!(
+                "{}: object {index} {name}: no parent object `{parent}`",
+                path.display()
+            ));
+        }
         if object.door().is_some() && object.doorway().is_none() {
-            let name = object.name.as_deref().unwrap_or("");
             return Err(anyhow!(
                 "{}: object {index} {name}: a door needs a doorway in the same object",
                 path.display()
@@ -1143,7 +1157,7 @@ pub struct RoomTarget {
     pub path: PathBuf,
     /// The spawn point of the room where the player goes. `None`: the player stays
     /// where it is (a reload of the same room).
-    pub spawn: Option<String>,
+    pub spawn: Option<ObjectRef>,
     /// `Some`: the text of the room, in place of the text of the file (a tool shows a
     /// room that is not saved). `path` then is the name of the room, and its
     /// directory is where the files that the room names are. The validators do not
@@ -1351,8 +1365,8 @@ pub fn load_requested_room(
     let loaded = read.and_then(|(def, source)| {
         let spawn =
             match &target.spawn {
-                Some(name) => Some(def.spawn(name).with_context(|| {
-                    format!("{}: no spawn point `{name}`", target.path.display())
+                Some(spawn) => Some(def.spawn(spawn).with_context(|| {
+                    format!("{}: no spawn point `{spawn}`", target.path.display())
                 })?),
                 None => None,
             };
@@ -2293,7 +2307,7 @@ mod tests {
         let load = |app: &mut App, path: &Path, spawn: Option<&str>| {
             app.write_message(RequestRoom(RoomTarget {
                 path: path.to_owned(),
-                spawn: spawn.map(str::to_owned),
+                spawn: spawn.map(ObjectRef::from),
                 text: None,
             }));
             app.advance(Duration::from_millis(16));
@@ -2545,7 +2559,7 @@ watch = true",
             .add_module(SceneModule);
         app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
             path: directory.join("room.ron"),
-            spawn: Some("start".to_owned()),
+            spawn: Some("start".into()),
             text: None,
         });
         // The color of the floor texture, the mesh of the cube, the model, and the
