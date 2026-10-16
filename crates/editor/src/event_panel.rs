@@ -57,12 +57,12 @@ pub struct EventUi {
     shown: (usize, usize),
     /// The `SetField` lists and the room and directory they are of: a prefab file is
     /// read again only when the document changes.
-    live: Option<(RoomDef, std::path::PathBuf, LiveLists)>,
+    pub(crate) live: Option<(RoomDef, std::path::PathBuf, LiveLists)>,
 }
 
 /// The parts of [`Lists`] that `live_lists` fills.
 #[derive(Clone, Default)]
-struct LiveLists {
+pub(crate) struct LiveLists {
     objects: Vec<(String, Vec<String>)>,
     fields: BTreeMap<String, Vec<Field>>,
     current: BTreeMap<(String, String, String), Value>,
@@ -232,7 +232,7 @@ type ObjectNames = Vec<(ObjectId, String)>;
 
 /// The names that the pickers offer.
 #[derive(Default)]
-struct Lists {
+pub(crate) struct Lists {
     flags: Vec<String>,
     variables: Vec<String>,
     /// The flags and the variables that an event reads and no event writes.
@@ -742,7 +742,7 @@ fn condition_row<T: Fields + DeserializeOwned>(
 
 /// The names that the pickers offer for the open room, and what the checks find in
 /// one event.
-fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>) {
+pub(crate) fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>) {
     let registry = editor.registry.clone();
     let others = editor.others().to_vec();
     let used = names(&editor.document, &others, &registry);
@@ -802,7 +802,7 @@ fn lists_and_problems(editor: &mut Editor, index: usize) -> (Lists, Vec<Problem>
 }
 
 /// Fills `lists` from the cache, made again when the room or its directory changed.
-fn cached_live_lists(
+pub(crate) fn cached_live_lists(
     world: &World,
     room: &RoomDef,
     directory: &std::path::Path,
@@ -1157,7 +1157,7 @@ pub(crate) fn empty_page() -> Page {
 }
 
 /// The middle part of the event panel: the command rows of a page.
-fn command_rows(
+pub(crate) fn command_rows(
     ui: &mut Ui,
     list: &mut Vec<Command>,
     event_ui: &mut EventUi,
@@ -1340,7 +1340,7 @@ fn command_rows(
 
 /// The right part of the event panel: the arguments of the selected command row, or
 /// the text of a command that is typed.
-fn command_arguments(
+pub(crate) fn command_arguments(
     ui: &mut Ui,
     list: &mut Vec<Command>,
     event_ui: &mut EventUi,

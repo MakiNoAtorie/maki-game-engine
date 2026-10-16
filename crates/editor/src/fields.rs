@@ -63,6 +63,7 @@ fn extensions(group: &str) -> &'static [&'static str] {
         "picture" => &PICTURES,
         "sound" => &SOUNDS,
         "prefab" => &PREFABS,
+        "routine" => &crate::widgets::ROUTINES,
         _ => &[],
     }
 }

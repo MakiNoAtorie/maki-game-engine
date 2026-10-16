@@ -45,9 +45,17 @@ pub(crate) fn files(
         .iter()
         .filter(|path| path.is_dir())
         .flat_map(|path| files_of(path));
+    // The end of the name: an extension can have a dot (`routine.ron`).
     let wanted = |path: &PathBuf| {
-        let extension = path.extension().and_then(|extension| extension.to_str());
-        extension.is_some_and(|extension| extensions.contains(&extension.to_lowercase().as_str()))
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_lowercase());
+        let ends = |name: &String| {
+            extensions
+                .iter()
+                .any(|end| name.ends_with(&format!(".{end}")))
+        };
+        name.is_some_and(|name| ends(&name))
     };
     let mut found: Vec<PathBuf> = top.iter().cloned().chain(below).filter(wanted).collect();
     found.extend(converters.missing_results(directory, extensions));
@@ -180,6 +188,8 @@ pub(crate) const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
 pub(crate) const MODELS: [&str; 2] = ["gltf", "glb"];
 /// The extension of the prefab files.
 pub(crate) const PREFABS: [&str; 1] = ["prefab"];
+/// The end of the name of the routine files.
+pub(crate) const ROUTINES: [&str; 1] = [maki_events::ROUTINE_EXTENSION];
 
 #[cfg(test)]
 mod tests {
