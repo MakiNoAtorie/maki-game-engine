@@ -22,6 +22,9 @@ use crate::widgets::{
 pub struct Lists<'a> {
     /// The names of a list of the document, for a field with `pick`.
     pub names: &'a dyn Fn(&str) -> Vec<String>,
+    /// `Some`: the list takes a new name ("New..."), and these names of it have the
+    /// mark of a name that no event writes (the flags and the variables).
+    pub open: &'a dyn Fn(&str) -> Option<Vec<String>>,
     /// The objects of the room, for a field of the kind `Object`
     /// (`crate::widgets::object_names`).
     pub objects: &'a [(ObjectId, String)],
@@ -32,6 +35,7 @@ impl<'a> Lists<'a> {
     pub fn objects(objects: &'a [(ObjectId, String)]) -> Self {
         Self {
             names: &|_| Vec::new(),
+            open: &|_| None,
             objects,
         }
     }
@@ -137,7 +141,13 @@ fn value(
         }
         Kind::Pick { list, text: true } => {
             let mut name = tree.as_str().unwrap_or_default().to_owned();
-            let changed = pick(ui, label, &mut name, &(lists.names)(list));
+            let known = (lists.names)(list);
+            let changed = match (lists.open)(list) {
+                Some(unset) => row(ui, label, |ui| {
+                    crate::event_panel::pick_or_new(ui, list, &mut name, &known, &unset)
+                }),
+                None => pick(ui, label, &mut name, &known),
+            };
             if changed {
                 *tree = Value::String(name);
             }
@@ -219,13 +229,15 @@ fn value(
                 .map(|variant| variant.label)
                 .zip((0..).map(Some))
                 .collect();
-            let mut index = variant_of(variants, tree);
+            let before = variant_of(variants, tree);
+            let mut index = before;
             let mut changed = choice(ui, label, &mut index, &options, PartialEq::eq);
             let Some(variant) = index.and_then(|index| variants.get(index)) else {
                 return changed;
             };
             if changed {
-                *tree = variant.zero();
+                let before = before.and_then(|index| variants.get(index));
+                *tree = change_variant(before, tree.take(), variant);
             }
             if !variant.fields.is_empty() {
                 let rows = |ui: &mut Ui| variant_fields(ui, variant, tree, lists);
@@ -234,6 +246,28 @@ fn value(
             changed
         }
     }
+}
+
+/// The tree of the variant `to` when a tool chooses it in place of `before` (the
+/// tree `old`). A field of the same kind at the same place keeps its value, so a
+/// change of "flag is set" to "flag is not set" keeps the flag.
+pub(crate) fn change_variant(before: Option<&Variant>, mut old: Value, to: &Variant) -> Value {
+    let mut tree = to.zero();
+    let Some(before) = before else {
+        return tree;
+    };
+    for (index, field) in to.fields.iter().enumerate() {
+        let same = before
+            .fields
+            .get(index)
+            .is_some_and(|old| old.kind == field.kind);
+        if let (true, Some(value)) = (same, before.part(&mut old, index))
+            && let Some(part) = to.part(&mut tree, index)
+        {
+            *part = value.take();
+        }
+    }
+    tree
 }
 
 /// The rows of the fields of the variant that a tree of an enum has.
