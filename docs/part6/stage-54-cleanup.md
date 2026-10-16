@@ -13,10 +13,13 @@ Beside this stage, outside the stages (a branch and a pull request of its own): 
 
 | Ticket | Content |
 |---|---|
-| (by `/to-tickets`) | The three defects |
-| (by `/to-tickets`) | `SetField`: a live form for `light`, the check of the field, the components of a prefab instance in the check |
-| (by `/to-tickets`) | Wires: the index of the wire in a problem, the state of the play for signals and `entered`, `Trigger::Interact`, the output names in one place |
-| (by `/to-tickets`) | The rough edges of the editor |
+| #24 | Commands from a menu or the palette run after the UI is drawn |
+| #25 | "New script" writes a `lib.rs` that builds |
+| #26 | A `CallScript` row can call a script function that waits |
+| #27 | `SetField` on any object |
+| #28 | Wires start on their own, only in play (blocked by #26) |
+| #29 | The rough edges of the editor |
+| #30 | Beside the stage: the measure of the symbol limit (spec #23) |
 
 ## The way
 
