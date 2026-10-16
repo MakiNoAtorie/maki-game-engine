@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::schedule::common_conditions::resource_exists_and_changed;
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update};
 use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
@@ -123,6 +124,12 @@ impl Module for EventsModule {
             .add_systems(
                 Update,
                 interpreter::load_room_events.after(load_requested_room),
+            )
+            .add_systems(
+                Update,
+                check::copy_component_types
+                    .run_if(resource_exists_and_changed::<maki_scene::ComponentTypes>)
+                    .before(load_requested_room),
             );
     }
 }

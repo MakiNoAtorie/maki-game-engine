@@ -108,6 +108,45 @@ impl ObjectDef {
     }
 }
 
+impl ObjectDef {
+    /// The components that `SetField` on the object reaches: its own, then those of
+    /// the objects of its prefab with the changes of the instance (the first object
+    /// with a component gives its text). `directory`: of the room file. A prefab file
+    /// that does not read adds nothing.
+    pub fn reached_components(
+        &self,
+        directory: &Path,
+        types: &ComponentTypes,
+    ) -> BTreeMap<String, ComponentText> {
+        let mut components = self.components.clone();
+        let Some(Ok(used)) = self.prefab() else {
+            return components;
+        };
+        let Ok(prefab) = read_prefab(&directory.join(&used.file)) else {
+            return components;
+        };
+        for object in instance_objects(&used, &prefab, types) {
+            for (name, text) in object.components {
+                components.entry(name).or_insert(text);
+            }
+        }
+        components
+    }
+}
+
+impl crate::RoomDef {
+    /// The names of the objects with a component that has a live form: the objects
+    /// that `SetField` can change in the game. `directory`: of the room file.
+    pub fn live_objects(&self, directory: &Path, types: &ComponentTypes) -> Vec<String> {
+        let live = |object: &&ObjectDef| {
+            let components = object.reached_components(directory, types);
+            components.keys().any(|name| types.is_live(name))
+        };
+        let objects = self.objects.iter().filter(live);
+        objects.filter_map(|object| object.name.clone()).collect()
+    }
+}
+
 /// The key of a component of an object of a prefab file in the changes of an
 /// instance: the name of the object (its index if it has none), and the component.
 pub fn change_key(index: usize, object: &ObjectDef, component: &str) -> String {

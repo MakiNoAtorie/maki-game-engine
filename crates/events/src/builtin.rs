@@ -11,8 +11,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, RoomRequest, RoomTarget,
-    ScreenFade,
+    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, Name, RoomItem, RoomRequest,
+    RoomTarget, ScreenFade,
 };
 use serde::{Deserialize, Serialize};
 
@@ -228,15 +228,25 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
         );
         return;
     };
-    let mut named = world.query::<(Entity, &Name)>();
-    let entities: Vec<Entity> = named
-        .iter(world)
-        .filter(|(_, name)| name.0 == *object)
-        .map(|(entity, _)| entity)
-        .collect();
-    let found = entities
-        .into_iter()
-        .find_map(|entity| Some((entity, get(world, entity)?)));
+    // The entities of the name, then those of the item of the object: the objects of
+    // a prefab instance have the item of the instance and names of the prefab.
+    let def = &world.resource::<CurrentRoom>().def;
+    let item = def
+        .objects
+        .iter()
+        .position(|found| found.name.as_deref() == Some(object.as_str()));
+    let mut all = world.query::<(Entity, Option<&Name>, Option<&RoomItem>)>();
+    let mut named = Vec::new();
+    let mut of_item = Vec::new();
+    for (entity, name, found) in all.iter(world) {
+        if name.is_some_and(|name| name.0 == *object) {
+            named.push(entity);
+        } else if item.is_some() && found.map(|found| found.0) == item {
+            of_item.push(entity);
+        }
+    }
+    let mut entities = named.into_iter().chain(of_item);
+    let found = entities.find_map(|entity| Some((entity, get(world, entity)?)));
     let Some((entity, mut tree)) = found else {
         tracing::warn!(
             object,
@@ -259,8 +269,9 @@ fn set_field(world: &mut World, [object, component, field]: [&String; 3], value:
         return;
     }
     *slot = value.clone();
-    if let Err(error) = set(world, entity, tree) {
-        tracing::warn!(object, component, field, "SetField: {error}");
+    match set(world, entity, tree) {
+        Ok(()) => tracing::debug!(object, component, field, %value, "SetField"),
+        Err(error) => tracing::warn!(object, component, field, "SetField: {error}"),
     }
 }
 
@@ -398,15 +409,9 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
             ))),
             None => Some(Finding::warning(format!("no room file `{file}`"))),
         },
-        Builtin::SetField(object, component, ..) => {
-            match room.objects.iter().find(|found| named(&found.name, object)) {
-                None => Some(Finding::error(format!("the room has no object `{object}`"))),
-                Some(found) if !found.components.contains_key(component) => Some(Finding::error(
-                    format!("the object `{object}` has no component `{component}`"),
-                )),
-                Some(_) => None,
-            }
-        }
+        Builtin::SetField(object, component, field, value) => context
+            .field_problem(object, component, field, value)
+            .map(Finding::error),
         Builtin::Signal(object, output) => {
             context.output_problem(object, output).map(Finding::error)
         }

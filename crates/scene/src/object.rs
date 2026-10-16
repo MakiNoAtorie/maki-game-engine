@@ -166,6 +166,7 @@ fn compact(text: &str) -> String {
 pub type Insert = fn(&ComponentText, &mut EntityCommands) -> Result<(), String>;
 
 /// A type of component that a tool can read and write as a tree.
+#[derive(Clone)]
 pub struct ComponentType {
     /// The tree of a text. `Err`: why the type does not read it.
     pub tree: fn(&ComponentText) -> Result<Value, String>,
@@ -195,12 +196,46 @@ pub struct Live {
 }
 
 /// The types of components by name. [`add_component_type`] adds one.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub struct ComponentTypes(BTreeMap<&'static str, ComponentType>);
 
 impl ComponentTypes {
     pub fn get(&self, name: &str) -> Option<&ComponentType> {
         self.0.get(name)
+    }
+
+    /// True if the type has a value in the game that `SetField` changes.
+    pub fn is_live(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|found| found.live.is_some())
+    }
+
+    /// The value of a field in the text of a component. `None`: no such type, a text
+    /// that does not read, or no such field.
+    pub fn field(&self, component: &str, text: &ComponentText, field: &str) -> Option<Value> {
+        let tree = (self.get(component)?.tree)(text).ok()?;
+        tree.get(field).cloned()
+    }
+
+    /// What is wrong with `value` for a field of a component, from its table of
+    /// fields: a field that the type does not have, or a value that is not of its
+    /// kind. `None`: the value reads, or the type or its text is not known here.
+    pub fn field_problem(
+        &self,
+        component: &str,
+        text: &ComponentText,
+        field: &str,
+        value: &Value,
+    ) -> Option<String> {
+        let found = self.get(component)?;
+        let mut tree = (found.tree)(text).ok()?;
+        let Some(slot) = tree.get_mut(field) else {
+            return Some(format!(
+                "the component `{component}` has no field `{field}`"
+            ));
+        };
+        *slot = value.clone();
+        let wrong = (found.text)(text, &tree).is_err();
+        wrong.then(|| format!("{value} is not a value of the field `{component}.{field}`"))
     }
 }
 
@@ -212,6 +247,17 @@ pub fn add_component_type<T: Fields + Serialize + DeserializeOwned>(
     name: &'static str,
 ) {
     register::<T>(app, name, None, None);
+}
+
+/// Registers a type of component whose value in the game is another component (a
+/// light of the file is a `Light` with the pose apart): as [`add_component_type`],
+/// with the live form that maps the two.
+pub fn add_live_component_type<T: Fields + Serialize + DeserializeOwned>(
+    app: &mut App,
+    name: &'static str,
+    live: Live,
+) {
+    register::<T>(app, name, None, Some(live));
 }
 
 /// Registers a type of component that is also a component of `bevy_ecs`: as

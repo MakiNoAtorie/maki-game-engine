@@ -217,6 +217,9 @@ pub type ScriptFunction = fn(&mut ScriptContext);
 // holds a clone, and sees the commands that modules add after it was made.
 #[derive(Resource, Clone, Default)]
 pub struct CommandRegistry {
+    /// A copy of `maki_scene::ComponentTypes`, for the check of `SetField`
+    /// (`crate::check`).
+    pub(crate) component_types: Arc<RwLock<maki_scene::ComponentTypes>>,
     sets: Arc<RwLock<Vec<Set>>>,
     functions: Arc<RwLock<BTreeMap<&'static str, ScriptFunction>>>,
     /// The outputs of each component type, by its name: what a wire joins.

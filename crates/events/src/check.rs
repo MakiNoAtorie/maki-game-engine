@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use maki_scene::{RoomCheck, RoomDef, RoomProblem, RoomValidator};
+use bevy_ecs::system::Res;
+use maki_core::fields::Value;
+use maki_scene::{ComponentTypes, RoomCheck, RoomDef, RoomProblem, RoomValidator};
 
 use crate::builtin::Builtin;
 use crate::command::{Command, CommandRegistry, Stop};
@@ -53,6 +55,43 @@ impl CheckContext<'_> {
         }
         (self.spawn)(file, spawn)
     }
+}
+
+impl CheckContext<'_> {
+    /// What is wrong with a `SetField` row: an object that the room does not have, a
+    /// component that the object (or its prefab) does not have, a field that the
+    /// component does not have, a value that is not of the kind of the field. `None`:
+    /// the row is right.
+    pub fn field_problem(
+        &self,
+        object: &str,
+        component: &str,
+        field: &str,
+        value: &Value,
+    ) -> Option<String> {
+        let named = |found: &&maki_scene::ObjectDef| found.name.as_deref() == Some(object);
+        let Some(found) = self.room.objects.iter().find(named) else {
+            return Some(format!("the room has no object `{object}`"));
+        };
+        let types = self
+            .registry
+            .component_types
+            .read()
+            .expect("no writer panics");
+        let components = found.reached_components(self.directory, &types);
+        let Some(text) = components.get(component) else {
+            return Some(format!(
+                "the object `{object}` has no component `{component}`"
+            ));
+        };
+        types.field_problem(component, text, field, value)
+    }
+}
+
+/// Copies the types of components into the registry when they change: the check of
+/// a room file has no world.
+pub(crate) fn copy_component_types(types: Res<ComponentTypes>, registry: Res<CommandRegistry>) {
+    *registry.component_types.write().expect("no writer panics") = types.clone();
 }
 
 /// What the check of a command found.
