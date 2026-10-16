@@ -6,7 +6,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 
 - The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
 - `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
-- Next: stage 54 (`stage-54-cleanup.md`, spec issue #22), and beside it the measure of the symbol limit (spec issue #23). The tickets come from `/to-tickets`, which the owner starts.
+- Next: stage 54 (`stage-54-cleanup.md`, spec issue #22). The tickets come from `/to-tickets`, which the owner starts.
 - A run by hand of stages 50 to 53 in the editor found three panics and ten rough edges: `PLANNING-HANDOVER.md`, group F, "To fix". Stage 54 has them.
 
 ## State
@@ -83,7 +83,7 @@ Where the lanes meet, and what to agree before they start:
 - **`crates/scene/src/object.rs`**: #6 (the changes of an instance against its prefab, on the tree) and #8 (an "insert" of a component of `bevy_ecs` in `ComponentType`) both change the registry. Agree the fields of `ComponentType` first, or let #8 merge first; #6 keeps its code in `prefab.rs`.
 - **The room files**: #7 (the player as a prefab object) and #12 (events into objects) both rewrite `game/assets/rooms/*.ron`. Not at the same time: #12 is late in lane B, so the order comes by itself if lane A is not late.
 - **`crates/editor/src/panels.rs`, `lib.rs`**: #6 (marks of changed values), #16 (play and stop). Small, separate places; merge one after the other.
-- **The symbols of the engine DLL**: 57,962 of 65,535 after stage 48. Each lane adds types. Count after each merge (a reader of the export table of the DLL); the way out is `opt-level = 2` for the engine crates in the profile `dynamic`, not measured.
+- **The symbols of the engine DLL**: 16,460 of 65,535 (`symbol-limit.md`). The step "symbol count" of `check.sh` counts after each build and fails above 60,000.
 - **One machine for the GPU**: benchmark and validation runs one at a time, never two lanes at once. `tools/bench.py run --behind` keeps the window behind the owner's work. The base of the next benchmark is `s49`; a step is compared with the commit before, built in the scratchpad and run back to back (the machine drifts up to 20 % in a day).
 - **Reports**: each stage keeps its report (`stage-49.md` ... ). With lanes, a stage is done when its tickets are merged and the stage loop of `CLAUDE.md` passed on the merged branch.
 
@@ -110,5 +110,5 @@ Open from stage 48 (report, sections 3 and 6): the names of the component types 
 
 The list is in `CLAUDE.md` (working agreement, "Stop and ask"). Of part 6 only:
 
-- The symbol limit of the engine DLL: a split into two DLLs changes 2.3.
+- The step "symbol count" fails (above 60,000): the next way out is a split into two DLLs, which changes 2.3.
 - A GPU time step with equal pictures: `bench.py confirm` first (`docs/CONVENTIONS.md`); ask only if it stays.

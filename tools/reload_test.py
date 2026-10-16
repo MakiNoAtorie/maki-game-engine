@@ -33,11 +33,12 @@ def main() -> int:
     target = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, check=True).stdout.split("host: ")[1].split()[0]
     env = dict(os.environ, PATH=str(Path(sysroot) / "lib" / "rustlib" / target / "lib") + os.pathsep + os.environ["PATH"])
 
-    old = SOURCE.read_text(encoding="utf-8")
+    # Bytes, not text: the file goes back with its own line ends.
+    old = SOURCE.read_bytes()
     new = old
     for before, after in CHANGES:
-        assert before in new, before
-        new = new.replace(before, after)
+        assert before.encode() in new, before
+        new = new.replace(before.encode(), after.encode())
 
     host = subprocess.Popen(
         [str(ROOT / "target" / "dynamic" / "reload_test.exe"), "game", "2"],
@@ -48,7 +49,7 @@ def main() -> int:
             print("host |", line.rstrip())
             if line.strip() == "waiting":
                 break
-        SOURCE.write_text(new, encoding="utf-8", newline="\n")
+        SOURCE.write_bytes(new)
         start = time.perf_counter()
         subprocess.run(BUILD, cwd=ROOT, check=True)
         print(f"build_s,{time.perf_counter() - start:.2f}")
@@ -57,7 +58,7 @@ def main() -> int:
         return host.wait(timeout=30)
     finally:
         host.kill()
-        SOURCE.write_text(old, encoding="utf-8", newline="\n")
+        SOURCE.write_bytes(old)
         # The DLL of the source as it is in the repository.
         subprocess.run(BUILD, cwd=ROOT, check=True, capture_output=True)
 

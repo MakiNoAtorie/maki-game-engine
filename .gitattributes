@@ -1,0 +1,2 @@
+# The repository stores LF; a checkout has the line ends of the machine. A tool that writes LF or CRLF makes no diff.
+* text=auto
