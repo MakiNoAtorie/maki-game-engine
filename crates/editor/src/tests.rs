@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use bevy_ecs::query::With;
 use glam::Vec3;
-use maki_core::{App, ConfigFile, Interpolated, Time};
+use maki_core::{App, ConfigFile, Interpolated, PlayState, Time};
 use maki_events::{EventsModule, GameState};
-use maki_gameplay::{CameraModule, ControlsModule, PlayerModule, RoomsModule};
+use maki_gameplay::{CameraModule, ControlsModule, GameModule, PlayerModule, RoomsModule};
 use maki_platform::{InputMode, PlatformModule, QuitRequested};
 use maki_scene::{
     ActiveCamera, CurrentRoom, Light, MeshDef, MeshInstance, Player, RoomItem, SceneModule,
@@ -76,6 +76,7 @@ output = false",
         .add_module(maki_audio::AudioModule)
         .add_module(ControlsModule)
         .add_module(PlayerModule::default())
+        .add_module(GameModule)
         .add_module(CameraModule)
         .add_module(RoomsModule {
             start_room: directory.join("a.ron"),
@@ -259,9 +260,12 @@ fn play_runs_the_game_and_stop_brings_back_the_room_and_the_game_state() {
         assert_eq!(players.iter(world).count(), 1);
 
         // The quit action of the game, or the close button: a stop, not the end.
+        // A pause of the game does not stay after the stop.
+        app.resource_mut::<PlayState>().change(PlayState::Pause);
         app.resource_mut::<QuitRequested>().0 = true;
         frames(&mut app, 2);
         let world = app.world();
+        assert_eq!(*world.resource::<PlayState>(), PlayState::Play);
         assert!(!world.resource::<QuitRequested>().0);
         let editor = world.resource::<Editor>();
         assert!(!editor.playing());

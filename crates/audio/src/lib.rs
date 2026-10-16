@@ -26,7 +26,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Query, Res, ResMut};
 use glam::{Mat3, Quat, Vec3};
 use maki_assets::{AssetChanged, AssetWatch};
-use maki_core::{App, Extract, Module, ResetPlay, Settings, Time, Transform, Update};
+use maki_core::{App, Extract, Module, PlayState, ResetPlay, Settings, Time, Transform, Update};
 use maki_events::CommandRegistry;
 use maki_scene::{ActiveCamera, Camera, Player, SoundSource};
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,7 @@ fn play_frame(
     mut audio: ResMut<Audio>,
     settings: Res<AudioSettings>,
     time: Res<Time>,
+    state: Res<PlayState>,
     sources: Query<(Entity, &SoundSource, &Transform)>,
     players: Query<&Transform, With<Player>>,
     cameras: Query<&Camera, With<ActiveCamera>>,
@@ -145,8 +146,9 @@ fn play_frame(
         let position = player.map_or(camera.target, |player| player.translation);
         audio.set_listener(position, facing(camera));
     }
-    // A game that stands still (a tool that does not play) is silent.
-    let plays = |source: &SoundSource| source.on && !time.paused;
+    // A game that stands still (a tool that does not play, a pause) is silent.
+    let stands = time.paused || *state == PlayState::Pause;
+    let plays = |source: &SoundSource| source.on && !stands;
     let wanted: Vec<(Entity, &SoundSource, Vec3)> = sources
         .iter()
         .filter(|(_, source, _)| plays(source))
