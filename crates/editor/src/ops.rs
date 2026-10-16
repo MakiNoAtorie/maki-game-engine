@@ -16,6 +16,7 @@ use maki_core::Transform;
 use maki_events::{
     Builtin, Command, CommandRegistry, CommandSet, EventPages, Page, Trigger, TriggerArea,
 };
+use maki_gameplay::GameCommand;
 use maki_scene::{
     ComponentText, ComponentTypes, DoorLeaf, LightDef, MeshDef, MoverDef, ObjectDef, PoseDef,
     PrefabDef, PrefabUse, PropDef, RoomDef, instance_objects, pose_out, prefab_text, read_prefab,
@@ -133,7 +134,7 @@ impl Document {
 
     /// Call after the name of an object was changed from `old`. The new
     /// name is made unique, and the commands of the events of this room that name the
-    /// object (built-in, and of the audio module) get the new name. Returns a text for
+    /// object (built-in, of the audio module, and of the game module) get the new name. Returns a text for
     /// the user if something more than the name itself was changed.
     pub fn renamed(
         &mut self,
@@ -180,6 +181,12 @@ impl Document {
                 }
                 AudioCommand::SoundOff(name) if name == old => {
                     Some(AudioCommand::SoundOff(new.clone()))
+                }
+                _ => None,
+            });
+            users += self.rename_in_events(registry, |command: &GameCommand| match command {
+                GameCommand::GiveControl(name) if name == old => {
+                    Some(GameCommand::GiveControl(new.clone()))
                 }
                 _ => None,
             });
@@ -836,7 +843,8 @@ mod tests {
         let mut app = maki_core::App::new(maki_core::ConfigFile::default()).unwrap();
         app.add_module(maki_platform::PlatformModule)
             .add_module(maki_scene::SceneModule)
-            .add_module(maki_events::EventsModule);
+            .add_module(maki_events::EventsModule)
+            .add_module(maki_gameplay::GameModule);
         app.world().resource::<CommandRegistry>().clone()
     }
 
@@ -860,6 +868,7 @@ mod tests {
                 (name: "start", components: {"spawn": ()}),
                 (name: "switch", components: {"event": (pages: [(trigger: Interact, commands: [
                     LightOff("lamp"),
+                    GiveControl("lamp"),
                     SetField("lamp", "light", "intensity", 2.0),
                     If([Flag("open")], [OpenDoor("east"), LightOn("lamp")], [CloseDoor("door")]),
                     Transfer("room.ron", "start"),
@@ -878,9 +887,10 @@ mod tests {
 
         document.room.objects[2].name = Some("bulb".to_owned());
         let status = document.renamed(&lamp, Some("lamp".to_owned()), &registry);
-        assert!(status.contains("3 event commands"), "{status}");
+        assert!(status.contains("4 event commands"), "{status}");
         let text = document.text();
         assert!(text.contains(r#"LightOff("bulb")"#) && text.contains(r#"LightOn("bulb")"#));
+        assert!(text.contains(r#"GiveControl("bulb")"#));
         assert!(text.contains(r#"SetField("bulb", "light", "intensity", 2.0)"#));
         assert!(!text.contains("\"lamp\""), "{text}");
 

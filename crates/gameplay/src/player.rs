@@ -141,8 +141,7 @@ impl Module for PlayerModule {
             .init_resource::<MoveCapture>()
             .init_resource::<Controller>()
             .add_systems(Startup, spawn_player)
-            // They have the world: their order to the loader and the placement is
-            // the one that counts.
+            // Exclusive systems: only the order to the loader and the placement counts.
             .add_systems(ResetPlay, control_home.ambiguous_with_all())
             .add_systems(
                 Update,

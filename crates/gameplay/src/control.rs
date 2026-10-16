@@ -38,7 +38,6 @@ pub fn give_control(world: &mut World, target: Entity) -> bool {
     if before == [target] {
         return true;
     }
-    // The pawn before, or the home body if a room removed the pawn.
     let home = world.resource::<Controller>().home;
     let source = before.first().copied().or(home);
     let walker = source.and_then(|source| world.get::<Walker>(source).copied());

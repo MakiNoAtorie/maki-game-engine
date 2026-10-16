@@ -227,8 +227,7 @@ impl EventRunner {
         // An interact press that goes to a running event (it closes a message)
         // starts no other event in the same step.
         let mut blocked = self.blocks_player();
-        // Only in play: in a title, a cutscene, or the end, the player starts nothing.
-        // A message still closes: its command reads the press itself.
+        // Outside play the player starts nothing; a message reads the press itself.
         let playing = world
             .get_resource::<PlayState>()
             .is_none_or(|state| *state == PlayState::Play);

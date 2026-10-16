@@ -25,8 +25,7 @@ pub enum PlayState {
 
 impl PlayState {
     /// True: the game can go from `self` to `to`.
-    // ponytail: a pause goes back to play only, not to a cutscene. Keep the state
-    // before the pause when a pause in a cutscene is needed.
+    // ponytail: a pause goes back to play only; keep the state before it for a pause in a cutscene.
     pub fn can_change(self, to: PlayState) -> bool {
         use PlayState::*;
         matches!(
