@@ -32,6 +32,7 @@
 
 mod commands;
 mod events;
+mod game_ui;
 mod help;
 mod overlay;
 mod render_panel;
@@ -60,6 +61,7 @@ pub use commands::{
 };
 pub use egui;
 pub use events::{EventsUiModule, game_state_panel};
+pub use game_ui::{GAME_FONT, GameUiModule, GameUiSettings, game_fonts};
 pub use help::TOGGLE_HELP;
 pub use render_panel::RenderPanelModule;
 pub use shell::{Layout, SearchRow};

@@ -1776,6 +1776,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_dock",
+ "maki-assets",
  "maki-core",
  "maki-events",
  "maki-gpu",

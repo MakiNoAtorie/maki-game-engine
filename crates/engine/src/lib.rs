@@ -192,7 +192,8 @@ fn add_modules(
         .add_module(maki_ui::StatsPanelModule)
         .add_module(maki_ui::RenderPanelModule)
         .add_module(maki_devtools::GameplayPanelModule)
-        .add_module(maki_ui::EventsUiModule);
+        .add_module(maki_ui::EventsUiModule)
+        .add_module(maki_ui::GameUiModule);
 }
 
 /// Runs the game of a project. `project`: the project folder (the folder of the
