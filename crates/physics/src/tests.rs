@@ -91,8 +91,8 @@ fn a_room_gives_a_fixed_collider_at_each_box_and_a_ray_hits_the_wall() {
         .map(|(entity, collider)| (entity, *collider))
         .collect();
     let physics = physics(&app);
-    // Three walls, two beside the doorway, one at its end, the crate, the door.
-    assert_eq!(boxes.len(), 8);
+    // Three walls, two beside the doorway, one at its end, the crate. The door leaf is kinematic.
+    assert_eq!(boxes.len(), 7);
     for (entity, collider) in &boxes {
         let handle = physics.links[entity].fixed.expect("a fixed collider");
         let aabb = physics.world.colliders[handle].compute_aabb();
@@ -100,7 +100,7 @@ fn a_room_gives_a_fixed_collider_at_each_box_and_a_ray_hits_the_wall() {
         assert!(close(vec3(aabb.maxs), collider.max), "{entity}");
     }
     let fixed = physics.world.colliders.iter();
-    assert_eq!(fixed.filter(|(_, c)| c.parent().is_none()).count(), 8);
+    assert_eq!(fixed.filter(|(_, c)| c.parent().is_none()).count(), 7);
 
     // From the middle of the room to the wall at +X, 4 m away.
     let filter = QueryFilter::default();
@@ -164,15 +164,12 @@ fn a_door_leaf_and_a_mover_are_kinematic_bodies_that_follow_their_pose() {
             );
         }
     }
-    // Open: the leaf turned, the lift is at B, and the blocker of the door is off.
+    // Open: the leaf turned, and the lift is at B.
     let (open, _) = body_and_pose(&app, door);
     assert!(open.rotation.angle_between(closed.rotation) > 1.0);
     let lift_at = body_and_pose(&app, lift).0.translation;
     assert!(close(lift_at, Vec3::new(-2.0, 0.0, 0.0)), "{lift_at}");
     let physics = physics(&app);
-    assert!(app.world().get::<Collider>(door).is_none());
-    let blocker = physics.links[&door].fixed.unwrap();
-    assert!(!physics.world.colliders[blocker].is_enabled());
     // The open leaf blocks: a ray along the wall, 0.5 m in the room, hits it.
     let from = closed.translation + Vec3::new(-1.0, 1.0, 0.5);
     let hit = physics.ray(from, Vec3::X, 2.0, QueryFilter::default());

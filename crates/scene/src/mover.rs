@@ -1,14 +1,8 @@
-//! Movers: entities that go between two poses. A door is a mover with a collider.
+//! Movers: entities that go between two poses. A door is a mover whose leaf turns.
 
-use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
-use bevy_ecs::entity::Entity;
-use bevy_ecs::query::Has;
-use bevy_ecs::system::{Commands, Query, Res};
-use bevy_ecs::world::Ref;
+use bevy_ecs::system::{Query, Res};
 use maki_core::{Interpolated, Time, Transform};
-
-use crate::Collider;
 
 /// Where a mover is. The number of a moving state is the part of the way from A to B
 /// that is done: 0.0 at A, 1.0 at B.
@@ -109,43 +103,16 @@ pub fn move_movers(time: Res<Time>, mut movers: Query<(&mut Mover, &mut Interpol
     }
 }
 
-/// A door: a [`Mover`] that is closed at A and open at B. While it is not fully open,
-/// the entity has the `blocker` as its [`Collider`].
+/// A door: a [`Mover`] that is closed at A and open at B. The physics gives its leaf a
+/// kinematic collider (the box of its mesh), which blocks at each pose.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct Door {
-    /// The space that the closed door fills.
-    pub blocker: Collider,
-}
-
-/// Gives each door its collider, and takes it away while the door is open.
-// ponytail: an open door blocks nothing: the player walks through the door leaf. Add
-// a second box for the open leaf when that shows.
-pub fn block_doors(
-    mut commands: Commands,
-    doors: Query<(Entity, &Door, Ref<Mover>, Has<Collider>)>,
-) {
-    for (entity, door, mover, blocks) in &doors {
-        if !mover.is_changed() {
-            continue;
-        }
-        let open = mover.state == MoverState::AtB;
-        if open && blocks {
-            commands.entity(entity).remove::<Collider>();
-        } else if !open && !blocks {
-            commands.entity(entity).insert(door.blocker);
-        }
-    }
-}
+pub struct Door;
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use glam::Vec3;
-    use maki_core::{App, ConfigFile, Startup};
 
     use super::*;
-    use crate::SceneModule;
 
     #[test]
     fn a_mover_goes_to_b_and_back_and_turns_around_on_the_way() {
@@ -170,48 +137,5 @@ mod tests {
         assert_eq!(mover.step(0.5), Some(b));
         assert_eq!(mover.state, MoverState::AtB);
         assert!(!mover.is_moving());
-    }
-
-    #[test]
-    fn a_door_blocks_until_it_is_fully_open() {
-        use bevy_ecs::schedule::IntoScheduleConfigs;
-        use maki_core::FixedUpdate;
-
-        // 50 Hz: one fixed step per 20 ms. The door takes 2 steps.
-        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
-        let blocker = Collider::new(Vec3::ZERO, Vec3::ONE);
-        app.add_module(SceneModule)
-            .add_systems(Startup, move |mut commands: Commands| {
-                commands.spawn((
-                    Door { blocker },
-                    Mover::new(Transform::IDENTITY, Transform::IDENTITY, 0.04),
-                    Interpolated::at(Transform::IDENTITY),
-                ));
-            })
-            // Opens the door in step 2 and closes it in step 4.
-            .add_systems(
-                FixedUpdate,
-                (|time: Res<Time>, mut movers: Query<&mut Mover>| match time.fixed_tick {
-                    2 => movers.single_mut().unwrap().go_to_b(),
-                    4 => movers.single_mut().unwrap().go_to_a(),
-                    _ => {}
-                })
-                .before(move_movers),
-            );
-        app.run(|mut app| {
-            let mut colliders_after_step = || {
-                app.advance(Duration::from_millis(20));
-                let mut colliders = app.world().try_query::<&Collider>().unwrap();
-                colliders.iter(app.world()).count()
-            };
-            // Closed: the door gets its collider in the first step.
-            assert_eq!(colliders_after_step(), 1);
-            // On its way.
-            assert_eq!(colliders_after_step(), 1);
-            // Open.
-            assert_eq!(colliders_after_step(), 0);
-            // It blocks again from the first step of the way back.
-            assert_eq!(colliders_after_step(), 1);
-        });
     }
 }

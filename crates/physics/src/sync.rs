@@ -52,8 +52,8 @@ pub(crate) fn add_mover_shapes(
 
 /// Makes the world of the physics like the entities: a new box or body for a new
 /// entity, a changed one where its component changed, and a removed one where its
-/// entity is gone. A `Hidden` entity, and a door whose `Collider` went away (it is
-/// open), keep their handles with the colliders off.
+/// entity is gone. A `Hidden` entity, and an entity whose `Collider` or `Kinematic`
+/// went away, keep their handles with the colliders off.
 pub(crate) fn sync_world(
     mut physics: ResMut<Physics>,
     entities: &Entities,

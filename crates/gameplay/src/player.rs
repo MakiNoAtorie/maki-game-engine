@@ -2,8 +2,11 @@
 //! the player, a walker that the move actions steer.
 //!
 //! The player is data: a prefab file that the project file names. Its object has the
-//! component `player` ([`PlayerDef`]: the speeds and the radius) and `prop` (its mesh:
-//! a capsule, or a model file).
+//! component `player` ([`PlayerDef`]: the speeds, the radius, the step, and the slope)
+//! and `prop` (its mesh: a capsule, or a model file).
+//!
+//! A walker is the character controller of the physics: an upright capsule that slides
+//! along the colliders. It is also a [`Kinematic`] body, so areas and queries see it.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +15,7 @@ use maki_assets::FileRef;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::query::{With, Without};
+use bevy_ecs::query::{Changed, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, EntityCommands, Local, Query, Res, ResMut};
 use glam::{Quat, Vec3};
@@ -24,10 +27,11 @@ use maki_core::{
     interpolate_transforms,
 };
 use maki_events::run_events;
+use maki_physics::{CharacterSettings, Kinematic, Physics, PhysicsSet, QueryFilter, Shape};
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ActiveCamera, Camera, Collider, CurrentRoom, MeshDef, MeshInstance, ObjectDef, Player,
-    add_component_type, move_circle, read_prefab,
+    ActiveCamera, Camera, CurrentRoom, MeshDef, MeshInstance, ObjectDef, Player,
+    add_component_type, read_prefab,
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,12 +43,34 @@ use crate::controls::{MoveCapture, RUN, move_direction};
 /// for its characters).
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Walker {
-    /// The entity is a circle of this radius for collisions, in meters.
+    /// The entity is an upright capsule of this radius for collisions, in meters.
     pub radius: f32,
+    /// The full height of the capsule, in meters. It stands on the pose of the entity.
+    pub height: f32,
+    /// The highest step that the walker goes up, in meters.
+    pub step_height: f32,
+    /// The steepest slope that the walker goes up, in degrees.
+    pub max_slope: f32,
     /// Where to walk: a direction on the floor of length 1, or zero to stand.
     pub direction: Vec3,
     /// Meters per second.
     pub speed: f32,
+}
+
+impl Walker {
+    /// The collider of the walker: the capsule, from the pose up. A height of less than
+    /// two radii gives a sphere.
+    pub fn body(&self) -> Kinematic {
+        let half_height = (self.height * 0.5 - self.radius).max(0.0);
+        Kinematic {
+            shape: Shape::Capsule {
+                radius: self.radius,
+                half_height,
+            },
+            center: Vec3::Y * (half_height + self.radius),
+            sensor: false,
+        }
+    }
 }
 
 /// The component `player` of the player prefab, and of the player entity.
@@ -58,9 +84,16 @@ pub struct PlayerDef {
     /// With the run action.
     #[field(label = "run speed", range = 0.0..=10.0, step = 0.05)]
     pub run_speed: f32,
-    /// The player is a circle of this radius for collisions, in meters.
+    /// The player is a capsule of this radius for collisions, in meters. Its height is
+    /// that of the capsule mesh, or 1.7 m for a model file.
     #[field(range = 0.05..=2.0, step = 0.01)]
     pub radius: f32,
+    /// The highest step that the player goes up, in meters.
+    #[field(label = "step height", range = 0.0..=1.0, step = 0.01)]
+    pub step_height: f32,
+    /// The steepest slope that the player goes up, in degrees.
+    #[field(label = "max slope", range = 0.0..=90.0, step = 1.0)]
+    pub max_slope: f32,
 }
 
 impl PlayerDef {
@@ -73,6 +106,12 @@ impl PlayerDef {
         if !(self.radius.is_finite() && self.radius > 0.0) {
             return Err("radius must be a positive number".to_owned());
         }
+        if !(self.step_height.is_finite() && self.step_height >= 0.0) {
+            return Err("step_height must be zero or a positive number".to_owned());
+        }
+        if !(0.0..=90.0).contains(&self.max_slope) {
+            return Err("max_slope must be from 0 to 90 degrees".to_owned());
+        }
         if let MeshDef::Capsule { radius, height } = mesh
             && !(*radius > 0.0 && *height >= 2.0 * radius)
         {
@@ -82,6 +121,22 @@ impl PlayerDef {
         }
         Ok(())
     }
+
+    /// The walker of a player of these values and this mesh, at rest.
+    fn walker(&self, mesh: &MeshDef) -> Walker {
+        let height = match mesh {
+            MeshDef::Capsule { height, .. } => *height,
+            _ => HEIGHT,
+        };
+        Walker {
+            radius: self.radius,
+            height,
+            step_height: self.step_height,
+            max_slope: self.max_slope,
+            direction: Vec3::ZERO,
+            speed: 0.0,
+        }
+    }
 }
 
 impl Default for PlayerDef {
@@ -90,14 +145,19 @@ impl Default for PlayerDef {
             walk_speed: 1.6,
             run_speed: 3.6,
             radius: 0.3,
+            step_height: 0.25,
+            max_slope: 45.0,
         }
     }
 }
 
+/// The height of a player with no prefab file, and of one with a model file.
+const HEIGHT: f32 = 1.7;
+
 /// The mesh of a player with no prefab file, and of a model that does not load.
 const CAPSULE: MeshDef = MeshDef::Capsule {
     radius: 0.3,
-    height: 1.7,
+    height: HEIGHT,
 };
 
 /// The model of the player while it loads. `attach_player_model` replaces it with a
@@ -119,8 +179,8 @@ pub(crate) struct PlayerFile {
 
 /// Spawns the player from its prefab file, steers it with the move actions, moves it
 /// to the spawn point of a room that loads, and moves each [`Walker`]. Needs
-/// `ControlsModule` (the move actions), `maki_events::EventsModule`, and
-/// `GameModule` (the rules: when the control is on).
+/// `ControlsModule` (the move actions), `maki_events::EventsModule`,
+/// `maki_physics::PhysicsModule`, and `GameModule` (the rules: when the control is on).
 #[derive(Debug, Clone, Default)]
 pub struct PlayerModule {
     /// The folder of the room files: a file name in the prefab starts there, as in
@@ -154,7 +214,13 @@ impl Module for PlayerModule {
             )
             // After the events: a transfer command and the player then agree in each step
             // on who moves the player.
-            .add_systems(FixedUpdate, (steer_player, walk).chain().after(run_events))
+            .add_systems(
+                FixedUpdate,
+                (steer_player, fit_walker_bodies, walk)
+                    .chain()
+                    .after(run_events)
+                    .before(PhysicsSet::Step),
+            )
             // Before the interpolation: the player shows at the spawn point in the
             // frame of the load.
             .add_systems(
@@ -243,11 +309,7 @@ pub(crate) fn spawn_player(
 ) {
     let (def, mesh) = file.read_or_default();
     // `place_player` moves the player to a spawn point.
-    let walker = Walker {
-        radius: def.radius,
-        direction: Vec3::ZERO,
-        speed: 0.0,
-    };
+    let walker = def.walker(&mesh);
     let mut entity = commands.spawn((Player, walker, def, Interpolated::at(Transform::IDENTITY)));
     controller.home = Some(entity.id());
     let stores = (&mut *meshes, &mut *models, &mut *textures);
@@ -349,7 +411,11 @@ fn reload_player(
             (None, None) => {}
         }
         let (def, mesh) = file.read_or_default();
-        walker.radius = def.radius;
+        *walker = Walker {
+            direction: walker.direction,
+            speed: walker.speed,
+            ..def.walker(&mesh)
+        };
         let mut entity = commands.entity(entity);
         entity
             .remove::<(MeshInstance, PendingPlayerModel, PlayerModel)>()
@@ -433,26 +499,97 @@ pub fn steer_player(
     }
 }
 
-/// Runs in `FixedUpdate`: one step of each walker. A system that steers a walker runs
-/// `.before(walk)`.
-pub fn walk(
-    time: Res<Time>,
-    colliders: Query<&Collider, Without<maki_scene::Hidden>>,
-    mut walkers: Query<(&mut Interpolated, &Walker)>,
+/// Runs in `FixedUpdate`: gives each walker the [`Kinematic`] of its capsule, and a new
+/// one when its size changes.
+fn fit_walker_bodies(
+    mut commands: Commands,
+    walkers: Query<(Entity, &Walker, Option<&Kinematic>), Changed<Walker>>,
 ) {
-    // Few boxes: a copy for each step costs less than a search structure.
-    let colliders: Vec<Collider> = colliders.iter().copied().collect();
-    for (mut pose, walker) in &mut walkers {
-        if walker.direction == Vec3::ZERO {
-            continue;
+    for (entity, walker, body) in &walkers {
+        let fitted = walker.body();
+        // No write of the same body: a write makes the physics build its shape again.
+        if body != Some(&fitted) {
+            commands.entity(entity).insert(fitted);
         }
-        let step = walker.direction * walker.speed * time.fixed_delta.as_secs_f32();
-        pose.current.translation =
-            move_circle(pose.current.translation, step, walker.radius, &colliders);
-        // The walker faces the way it walks: +Z of the model is its front.
-        pose.current.rotation = Quat::from_rotation_y(walker.direction.x.atan2(walker.direction.z));
     }
 }
+
+/// How fast a walker above the floor falls, in meters per second.
+// ponytail: a fall at one speed. Add a vertical speed to `Walker` when a character can fall far.
+const FALL_SPEED: f32 = 5.0;
+
+/// A step of the controller shorter than this, in meters, is no step, and a walker this
+/// near the floor is on it. Against a wall the controller moves by some 1e-7 m in each
+/// step: the walker must stand still (the scripts of the benchmark wait for it).
+const STILL: f32 = 1e-4;
+
+/// Runs in `FixedUpdate`: one step of each walker, by the character controller of the
+/// physics. A system that steers a walker runs `.before(walk)`.
+///
+/// The rooms are flat, with the floor at y = 0 and no collider under it: a walker
+/// above the floor (on a step) falls to it, and never goes below it. The fall is a move
+/// of its own after the walk: in the move of the walk it would slide the walker down a
+/// slope that it can stand on. A walker that stands on a collider after the walk does
+/// not fall: the round end of the capsule goes up the edge of a step as up a slope.
+///
+/// A standing walker makes no move: Rapier then pushes the capsule out of what it
+/// overlaps, also into a wall. So a door leaf that turns into a walker does not push
+/// it: the leaf goes through, and the walker can walk out of it.
+pub fn walk(
+    time: Res<Time>,
+    physics: Res<Physics>,
+    mut walkers: Query<(Entity, &mut Interpolated, &Walker)>,
+) {
+    let seconds = time.fixed_delta.as_secs_f32();
+    for (entity, mut pose, walker) in &mut walkers {
+        let at = pose.current.translation;
+        if walker.direction == Vec3::ZERO && at.y <= 0.0 {
+            continue;
+        }
+        let body = walker.body();
+        let settings = CharacterSettings {
+            step_height: walker.step_height,
+            max_slope_degrees: walker.max_slope,
+            ..CharacterSettings::default()
+        };
+        let filter = QueryFilter {
+            exclude: Some(entity),
+            ..QueryFilter::default()
+        };
+        // The place after a move from `from` by `wanted`, and whether it stands on a collider.
+        let moved = |from: Vec3, wanted: Vec3| {
+            let center = from + body.center;
+            let moved = physics.move_character(body.shape, center, wanted, &settings, filter);
+            let step = if moved.step.length() < STILL {
+                Vec3::ZERO
+            } else {
+                moved.step
+            };
+            (from + step, moved.grounded)
+        };
+        let (mut end, grounded) = if walker.direction == Vec3::ZERO {
+            (at, false)
+        } else {
+            moved(at, walker.direction * walker.speed * seconds)
+        };
+        let fall = end.y.clamp(0.0, FALL_SPEED * seconds);
+        if fall > 0.0 && !grounded {
+            end = moved(end, Vec3::NEG_Y * fall).0;
+        }
+        if end.y < STILL {
+            end.y = 0.0;
+        }
+        pose.current.translation = end;
+        if walker.direction != Vec3::ZERO {
+            // The walker faces the way it walks: +Z of the model is its front.
+            let facing = walker.direction.x.atan2(walker.direction.z);
+            pose.current.rotation = Quat::from_rotation_y(facing);
+        }
+    }
+}
+
+#[cfg(test)]
+mod walk_tests;
 
 #[cfg(test)]
 mod tests {
@@ -474,34 +611,6 @@ mod tests {
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]}"#;
 
     #[test]
-    fn a_walker_goes_through_a_hidden_collider() {
-        let mut world = bevy_ecs::world::World::new();
-        let mut time = Time::default();
-        time.fixed_delta = Duration::from_secs(1);
-        world.insert_resource(time);
-        let wall = Collider::new(Vec3::new(1.0, 0.0, -5.0), Vec3::new(9.0, 2.0, 5.0));
-        let wall = world.spawn(wall).id();
-        let walker = Walker {
-            radius: 0.25,
-            direction: Vec3::X,
-            speed: 3.0,
-        };
-        let mut schedule = bevy_ecs::schedule::Schedule::default();
-        schedule.add_systems(walk);
-        // Where a walker from the origin is after one step of 3 m.
-        let mut end = |world: &mut bevy_ecs::world::World| {
-            let at = world
-                .spawn((Interpolated::at(Transform::IDENTITY), walker))
-                .id();
-            schedule.run(world);
-            world.get::<Interpolated>(at).unwrap().current.translation.x
-        };
-        assert!(end(&mut world) < 1.0);
-        world.entity_mut(wall).insert(maki_scene::Hidden {});
-        assert_eq!(end(&mut world), 3.0);
-    }
-
-    #[test]
     fn the_player_is_made_from_its_prefab_and_follows_its_files() {
         let directory = std::env::temp_dir().join(format!("maki-player-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -518,6 +627,7 @@ mod tests {
         app.add_module(PlatformModule)
             .add_module(maki_assets::AssetsModule)
             .add_module(SceneModule)
+            .add_module(maki_physics::PhysicsModule)
             .add_module(EventsModule)
             .add_module(ControlsModule)
             .add_module(PlayerModule {
@@ -548,6 +658,11 @@ mod tests {
             let (first, speeds, count) = state(&app);
             assert!(first.is_some() && count == 1);
             assert_eq!(speeds, (1.5, 0.25));
+            // The body of the player, for areas and queries: a capsule of the radius.
+            let world = app.world();
+            let mut bodies = world.try_query_filtered::<&Kinematic, With<Player>>().unwrap();
+            let body = bodies.single(world).unwrap();
+            assert!(matches!(body.shape, Shape::Capsule { radius: 0.25, .. }));
 
             // Another file changed: nothing. The model file: a new mesh, and the
             // old one is gone from the store.
