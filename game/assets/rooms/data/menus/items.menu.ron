@@ -1,0 +1,7 @@
+(
+    title: Some("items.title"),
+    rows: [
+        Items,
+        Commands(text: "items.back", commands: [CloseMenu]),
+    ],
+)

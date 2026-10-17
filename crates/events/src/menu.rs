@@ -32,7 +32,9 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Local, Res, ResMut};
 use bevy_ecs::world::World;
-use maki_assets::{AssetChanged, AssetWatch, DataAsset, DataRef};
+use maki_assets::{
+    AssetChanged, AssetWatch, DataAsset, DataAssets, DataRef, DataTypes, FileRef, path_of_id,
+};
 use maki_core::{App, Fields, PlayState, ResetPlay, Time, Update};
 use maki_platform::{ActionState, FixedActionState};
 use maki_scene::ObjectId;
@@ -44,8 +46,10 @@ use crate::command::{Command, CommandRegistry, Step};
 use crate::interpreter::{RunningEvent, Start};
 use crate::items::room_directory;
 use crate::model::{Condition, Facts, all_hold};
+use crate::routine::{Arguments, RoutineCommand};
 use crate::text::TextKey;
 use crate::{BACK, CHOICE_DOWN, CHOICE_UP, EventRunner, GameState, INTERACT, MessageBox};
+use crate::{Inventory, ItemKind};
 
 /// A menu: what a menu file holds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
@@ -107,6 +111,14 @@ pub enum MenuRow {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         commands: Vec<Command>,
     },
+    /// One line for each item kind of the inventory with a count above 0, in the order
+    /// of the paths of the item files: the name and the count. A pick runs the
+    /// routine `use_routine` of the item. The description of the item of the focus
+    /// shows under the lines.
+    Items,
+    /// A line of text with the `{name}` of the variables. It takes no focus and no
+    /// pick: with `focus: false` for the menu, a HUD.
+    Text(TextKey),
 }
 
 impl MenuRow {
@@ -114,6 +126,7 @@ impl MenuRow {
     pub fn conditions(&self) -> &[Condition] {
         match self {
             MenuRow::Commands { conditions, .. } => conditions,
+            MenuRow::Items | MenuRow::Text(_) => &[],
         }
     }
 }
@@ -187,6 +200,8 @@ pub struct OpenMenu {
     pub menu: Menu,
     /// The index in `menu.rows` of the row with the focus.
     pub row: usize,
+    /// The item with the focus, when that row is `Items`: the index in the item list.
+    pub item: usize,
     /// The object of the event or the script that opened the menu: the commands of a
     /// row run with it (`CallScript` needs it). `None`: no object.
     pub object: Option<Entity>,
@@ -203,6 +218,7 @@ impl Menus {
         self.0.push(OpenMenu {
             menu,
             row: 0,
+            item: 0,
             object,
         });
     }
@@ -296,6 +312,59 @@ fn rows_that_hold(world: &World, open: &OpenMenu) -> Vec<bool> {
     rows.map(|row| all_hold(row.conditions(), &facts)).collect()
 }
 
+/// An item kind of the inventory with a count above 0.
+struct ListedItem {
+    /// The item file: its path from the room directory, and its id.
+    file: FileRef,
+    count: i32,
+}
+
+/// The items of the inventory with a count above 0, in the order of the paths of
+/// the item files. An id with no item file is left out.
+fn item_list(world: &World) -> Vec<ListedItem> {
+    let directory = room_directory(world);
+    let mut items: Vec<ListedItem> = world
+        .resource::<Inventory>()
+        .0
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .filter_map(|(id, count)| {
+            let path = path_of_id(directory, *id)?;
+            (DataTypes::type_of(&path) == Some(ItemKind::NAME)).then_some(())?;
+            let path = path.strip_prefix(directory).unwrap_or(&path).to_owned();
+            let file = FileRef {
+                path,
+                id: Some(*id),
+            };
+            Some(ListedItem {
+                file,
+                count: *count,
+            })
+        })
+        .collect();
+    items.sort_by(|a, b| a.file.path.cmp(&b.file.path));
+    items
+}
+
+/// The places of the focus, in order: a row of commands that holds, or an item of an
+/// `Items` row, as (row, item). A `Text` row has none.
+fn focus_slots(world: &World, open: &OpenMenu) -> Vec<(usize, usize)> {
+    let holds = rows_that_hold(world, open);
+    let mut slots = Vec::new();
+    let mut items = None;
+    for (index, row) in open.menu.rows.iter().enumerate() {
+        match row {
+            MenuRow::Commands { .. } if holds[index] => slots.push((index, 0)),
+            MenuRow::Items => {
+                let count = items.get_or_insert_with(|| item_list(world).len());
+                slots.extend((0..*count).map(|item| (index, item)));
+            }
+            _ => {}
+        }
+    }
+    slots
+}
+
 /// The input of one step to the top menu with focus.
 #[derive(Debug, Clone, Copy, Default)]
 struct MenuInput {
@@ -333,36 +402,40 @@ fn take_input(world: &mut World, input: MenuInput) {
         return;
     };
     let open = &menus.0[top];
-    let holds = rows_that_hold(world, open);
-    let mut row = open.row;
-    // A row that does not hold has no focus: the first row that holds takes it.
-    if !holds.get(row).copied().unwrap_or(false) {
-        row = holds.iter().position(|holds| *holds).unwrap_or(0);
+    let slots = focus_slots(world, open);
+    // A place that is gone has no focus: the first place takes it.
+    let mut at = slots
+        .iter()
+        .position(|slot| *slot == (open.row, open.item))
+        .unwrap_or(0);
+    // The focus stops at the first and at the last place.
+    if input.down {
+        at = (at + 1).min(slots.len().saturating_sub(1));
     }
-    // The focus stops at the first and at the last row that holds.
-    if input.down
-        && let Some(next) = (row + 1..holds.len()).find(|index| holds[*index])
-    {
-        row = next;
+    if input.up {
+        at = at.saturating_sub(1);
     }
-    if input.up
-        && let Some(before) = (0..row).rev().find(|index| holds[*index])
-    {
-        row = before;
-    }
+    let slot = slots.get(at).copied();
     let back = input.back && open.menu.back;
-    let pick = (input.pick && holds.get(row).copied().unwrap_or(false))
-        .then(|| (open.menu.rows[row].clone(), open.object));
+    let object = open.object;
+    let pick = slot.filter(|_| input.pick);
+    let (row, item) = slot.unwrap_or((open.row, open.item));
     let mut menus = world.resource_mut::<Menus>();
-    if menus.0[top].row != row {
+    if (menus.0[top].row, menus.0[top].item) != (row, item) {
         menus.0[top].row = row;
+        menus.0[top].item = item;
     }
     if back {
         menus.0.remove(top);
         return;
     }
-    let Some((MenuRow::Commands { commands, .. }, object)) = pick else {
+    let Some((row, item)) = pick else {
         return;
+    };
+    let commands = match menus.0[top].menu.rows[row].clone() {
+        MenuRow::Commands { commands, .. } => commands,
+        MenuRow::Items => use_commands(world, item),
+        MenuRow::Text(_) => return,
     };
     // The object can be gone: a room change after the menu opened.
     let object = object.filter(|entity| world.get_entity(*entity).is_ok());
@@ -375,6 +448,28 @@ fn take_input(world: &mut World, input: MenuInput) {
         .bypass_change_detection()
         .running
         .push(running);
+}
+
+/// The commands of a pick of an item: a call of its routine, if it has one.
+fn use_commands(world: &mut World, item: usize) -> Vec<Command> {
+    let directory = room_directory(world).to_owned();
+    let Some(listed) = item_list(world).into_iter().nth(item) else {
+        return Vec::new();
+    };
+    let kind = world
+        .resource_mut::<DataAssets>()
+        .get::<ItemKind>(&listed.file, &directory);
+    let routine = match kind {
+        Ok(kind) if !kind.use_routine.path.as_os_str().is_empty() => kind.use_routine.clone(),
+        Ok(_) => return Vec::new(),
+        Err(error) => {
+            tracing::error!("menu item: {error}");
+            return Vec::new();
+        }
+    };
+    let call = RoutineCommand::CallRoutine(routine, Arguments::default());
+    let command = world.resource::<CommandRegistry>().command(call);
+    command.into_iter().collect()
 }
 
 /// `run_events` calls it before the events: the menu has the input of the step, and
@@ -409,8 +504,11 @@ fn paused(state: Res<PlayState>) -> bool {
 pub struct ShownMenu {
     pub place: MenuPlace,
     pub title: Option<String>,
-    /// The rows whose conditions hold, in order.
+    /// The rows whose conditions hold, in order; an `Items` row gives a line for each
+    /// item.
     pub rows: Vec<ShownRow>,
+    /// The description of the item with the focus, if an item has it.
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -418,6 +516,8 @@ pub struct ShownRow {
     pub text: String,
     /// True: the row has the focus of the menu that has the input.
     pub focus: bool,
+    /// The count of an item line.
+    pub count: Option<i32>,
 }
 
 /// The open menus as the player sees them, the bottom one first. With the
@@ -427,25 +527,55 @@ pub fn shown_menus(world: &mut World) -> Vec<ShownMenu> {
     let top = menus.top_with_focus();
     let variables = world.resource::<GameState>().variables.clone();
     let variable = |name: &str| variables.get(name).copied().unwrap_or(0);
+    let directory = room_directory(world).to_owned();
     let mut shown = Vec::new();
     for (index, open) in menus.0.iter().enumerate() {
         let holds = rows_that_hold(world, open);
         let title = open.menu.title.as_ref();
         let title = title.map(|key| crate::text(world, &key.0, variable));
+        let has_focus = Some(index) == top;
         let mut rows = Vec::new();
+        let mut description = None;
         for (row_index, row) in open.menu.rows.iter().enumerate() {
-            let MenuRow::Commands { text, .. } = row;
-            if holds[row_index] {
-                rows.push(ShownRow {
+            let at_row = has_focus && row_index == open.row;
+            match row {
+                MenuRow::Commands { text, .. } if holds[row_index] => {
+                    rows.push(ShownRow {
+                        text: crate::text(world, &text.0, variable),
+                        focus: at_row,
+                        count: None,
+                    });
+                }
+                MenuRow::Text(text) => rows.push(ShownRow {
                     text: crate::text(world, &text.0, variable),
-                    focus: Some(index) == top && row_index == open.row,
-                });
+                    focus: false,
+                    count: None,
+                }),
+                MenuRow::Items => {
+                    for (item, listed) in item_list(world).into_iter().enumerate() {
+                        let kind = world
+                            .resource_mut::<DataAssets>()
+                            .get::<ItemKind>(&listed.file, &directory);
+                        let Ok(kind) = kind else { continue };
+                        let focus = at_row && item == open.item;
+                        if focus {
+                            description = Some(crate::text(world, &kind.description.0, variable));
+                        }
+                        rows.push(ShownRow {
+                            text: crate::text(world, &kind.name.0, variable),
+                            focus,
+                            count: Some(listed.count),
+                        });
+                    }
+                }
+                MenuRow::Commands { .. } => {}
             }
         }
         shown.push(ShownMenu {
             place: open.menu.place,
             title,
             rows,
+            description,
         });
     }
     shown
