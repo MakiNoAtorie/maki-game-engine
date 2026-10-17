@@ -129,14 +129,13 @@ pub(crate) fn data_menu(ui: &mut Ui, world: &World, editor: &mut Editor, new: &m
             new.type_name = first.map(|t| t.name.to_owned()).unwrap_or_default();
         }
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("new data type")
-                .selected_text(&new.type_name)
-                .show_ui(ui, |ui| {
-                    for data_type in types.iter() {
-                        let name = data_type.name.to_owned();
-                        ui.selectable_value(&mut new.type_name, name, data_type.name);
-                    }
-                });
+            // A submenu, not a combo box: the popup of a combo box closes the menu.
+            ui.menu_button(new.type_name.clone(), |ui| {
+                for data_type in types.iter() {
+                    let name = data_type.name.to_owned();
+                    ui.selectable_value(&mut new.type_name, name, data_type.name);
+                }
+            });
             let field = egui::TextEdit::singleline(&mut new.name)
                 .desired_width(120.0)
                 .hint_text("name of the data asset");

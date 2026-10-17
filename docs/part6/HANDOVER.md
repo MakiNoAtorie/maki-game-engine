@@ -6,8 +6,8 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 
 - The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
 - `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
-- Stages 54 (#22) and 55 (#40 to #47) and the symbol limit (#23, `symbol-limit.md`) are done.
-- Next: stage 57 (data assets, 2.15). The session writes its stage file and proposes the tickets; the owner approves the breakdown.
+- Stages 54 to 57 and the symbol limit (#23, `symbol-limit.md`) are done.
+- Next: stage 58 (text in tables, item 11). The session writes its stage file and proposes the tickets; the owner approves the breakdown.
 
 ## State
 
@@ -30,6 +30,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - Stage 54 (what the object model left): issues #22, #24 to #29. Report: `stage-54.md`. The base of the GPU time is now `s54`; the pictures go through `bench.py gate`. Its run by hand is open (section 3 of the report).
 - Stage 55 (object ids, files with an id): issues #40 to #47. Report: `stage-55.md`. The base of the GPU time is now `s55`. Its run by hand was done by the input script (section 3 of the report).
 - Stage 56 (the gaps of the events): issues #50 to #56. Report: `stage-56.md`. The base of the GPU time is now `s56`.
+- Stage 57 (data assets): issues #58 to #61. Report: `stage-57.md`. The base of the GPU time is now `s57`.
 - `CLAUDE.md` has the "Current target" block of part 6, the workspace of stage 43, rule 8 in its new words, and the working agreement of part 6.
 - `spike/` is gone. The profile `dynamic` is the build of the editor.
 
