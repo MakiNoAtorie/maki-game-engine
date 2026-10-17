@@ -19,6 +19,7 @@ mod command;
 mod flow;
 mod interpreter;
 mod items;
+mod menu;
 mod model;
 mod numbers;
 mod objects;
@@ -45,6 +46,10 @@ pub use interpreter::{
     run_events, start_event,
 };
 pub use items::{Inventory, ItemCommand, ItemKind, item_id};
+pub use menu::{
+    Menu, MenuCommand, MenuFiles, MenuPlace, MenuRow, Menus, OpenMenu, ShownMenu, ShownRow,
+    menu_text, read_menu, shown_menus,
+};
 pub use model::{
     Area, Compare, Condition, EventDef, EventPages, Facts, Page, Trigger, Wire, active_page,
     all_hold, short_events,
@@ -72,6 +77,8 @@ pub const INTERACT: Action = Action("interact");
 /// Move the mark of a question (`Choice`) to the answer above or below.
 pub const CHOICE_UP: Action = Action("choice_up");
 pub const CHOICE_DOWN: Action = Action("choice_down");
+/// Closes the top menu with focus, if its `back` is on.
+pub const BACK: Action = Action("back");
 
 /// What the player has done, as flags (yes or no) and variables (whole numbers), each
 /// with a name. Events set them and have them as conditions. A name that was never
@@ -124,6 +131,9 @@ impl Module for EventsModule {
                 (Key::W, CHOICE_UP, "Question: the answer above"),
                 (Key::ArrowDown, CHOICE_DOWN, "Question: the answer below"),
                 (Key::S, CHOICE_DOWN, "Question: the answer below"),
+                // Not `Esc` (the debug quit) and not `P` (the pause).
+                (Key::X, BACK, "Menu: back"),
+                (Key::Backspace, BACK, "Menu: back"),
             ],
         );
         app.init_resource::<GameState>()
@@ -146,6 +156,8 @@ impl Module for EventsModule {
         state::add(app, &registry);
         // Item kinds and the inventory.
         items::add(app, &registry);
+        // The menus and their stack.
+        menu::add(app, &registry);
         // The text tables and the texts of the game.
         text::add(app);
         let fallback = &app.world().resource::<TextSettings>().fallback;

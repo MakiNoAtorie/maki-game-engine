@@ -1,7 +1,8 @@
 //! The UI of a game: what the player sees over the picture. The text box (a message,
-//! a question with its answers) now; the menus later.
+//! a question with its answers), and the open menus.
 //!
-//! The module draws what resources of `maki_events` hold (`MessageBox`, `ChoiceBox`):
+//! The module draws what resources of `maki_events` hold (`MessageBox`, `ChoiceBox`,
+//! `Menus`):
 //! the events and the gameplay know nothing of egui (rule 1 of `CLAUDE.md`).
 //!
 //! The text of the game has a font family of its own, [`GAME_FONT`]: the font file of
@@ -16,13 +17,19 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Res, ResMut};
 use maki_assets::AssetChanged;
 use maki_core::{App, Module, Settings, Startup, Update};
-use maki_events::{CHOICE_DOWN, CHOICE_UP, ChoiceBox, Choices, INTERACT, MessageBox};
+use maki_events::{
+    CHOICE_DOWN, CHOICE_UP, ChoiceBox, Choices, INTERACT, MenuPlace, Menus, MessageBox, ShownMenu,
+    shown_menus,
+};
 use maki_platform::{Action, Bindings};
 use serde::{Deserialize, Serialize};
 
 use crate::{Panels, UiContext, add_overlay};
 
 const MESSAGE: &str = "Message";
+const MENUS: &str = "Menus";
+const TEXT: egui::Color32 = egui::Color32::from_gray(235);
+const MARK: egui::Color32 = egui::Color32::from_rgb(255, 225, 120);
 
 /// The name of the font family of the game.
 pub const GAME_FONT: &str = "game";
@@ -58,13 +65,18 @@ impl Settings for GameUiSettings {
     }
 }
 
-/// Adds the UI of the game: the text box. Needs `UiModule` to show it.
+/// Adds the UI of the game: the text box and the menus. Needs `UiModule` to show it.
 pub struct GameUiModule;
 
 impl Module for GameUiModule {
     fn build(&self, app: &mut App) {
         app.add_settings::<GameUiSettings>();
         let scale = app.world().resource::<GameUiSettings>().scale;
+        add_overlay(app, MENUS, false, move |ui, world| {
+            for (index, menu) in shown_menus(world).iter().enumerate() {
+                menu_box(ui, index, menu, scale);
+            }
+        });
         // The text of a `Message` or a `Choice` command, on the picture.
         add_overlay(app, MESSAGE, false, move |ui, world| {
             let Some(text) = world.resource::<MessageBox>().0.clone() else {
@@ -85,7 +97,7 @@ impl Module for GameUiModule {
         });
         app.add_message::<AssetChanged>()
             .add_systems(Startup, install_fonts)
-            .add_systems(Update, (show_message, font_changed));
+            .add_systems(Update, (show_message, show_menus, font_changed));
     }
 }
 
@@ -145,19 +157,12 @@ fn font_changed(
 /// text sizes.
 fn text_box(ui: &mut egui::Ui, text: &str, choices: Option<&Choices>, hint: &str, scale: f32) {
     const MARGIN: f32 = 24.0;
-    const TEXT: egui::Color32 = egui::Color32::from_gray(235);
-    const MARK: egui::Color32 = egui::Color32::from_rgb(255, 225, 120);
-    let font =
-        |size: f32| egui::FontId::new(size * scale, egui::FontFamily::Name(GAME_FONT.into()));
+    let font = |size: f32| game_font(size, scale);
     // The picture: the UI gives it to an overlay as its clip rectangle.
     let picture = ui.clip_rect();
     let width = (picture.width() - 2.0 * MARGIN).clamp(120.0, 760.0);
-    let frame = egui::Frame::new()
-        .fill(egui::Color32::from_rgba_unmultiplied(10, 10, 14, 235))
-        .stroke(egui::Stroke::new(1.5, egui::Color32::from_gray(170)))
-        .corner_radius(6)
-        .inner_margin(16);
-    egui::Area::new(egui::Id::new("text box of the game"))
+    let frame = box_frame();
+    let shown = egui::Area::new(egui::Id::new("text box of the game"))
         .pivot(egui::Align2::CENTER_BOTTOM)
         .fixed_pos(picture.center_bottom() - egui::vec2(0.0, MARGIN))
         .interactable(false)
@@ -183,6 +188,63 @@ fn text_box(ui: &mut egui::Ui, text: &str, choices: Option<&Choices>, hint: &str
                 ui.label(egui::RichText::new(hint).font(font(13.0)).weak());
             });
         });
+    // Over a menu that opened after it.
+    ui.ctx().move_to_top(shown.response.layer_id);
+}
+
+/// The font of the text of the game, of a size of the default scale.
+fn game_font(size: f32, scale: f32) -> egui::FontId {
+    egui::FontId::new(size * scale, egui::FontFamily::Name(GAME_FONT.into()))
+}
+
+/// The frame of a box of the game: the text box, a menu.
+fn box_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(10, 10, 14, 235))
+        .stroke(egui::Stroke::new(1.5, egui::Color32::from_gray(170)))
+        .corner_radius(6)
+        .inner_margin(16)
+}
+
+/// A menu at its place on the picture: the title, and the rows with a mark at the
+/// row of the focus. `index`: in the stack, for the id of its area.
+fn menu_box(ui: &mut egui::Ui, index: usize, menu: &ShownMenu, scale: f32) {
+    const MARGIN: f32 = 24.0;
+    let align = match menu.place {
+        MenuPlace::Center => egui::Align2::CENTER_CENTER,
+        MenuPlace::Top => egui::Align2::CENTER_TOP,
+        MenuPlace::Bottom => egui::Align2::CENTER_BOTTOM,
+        MenuPlace::TopLeft => egui::Align2::LEFT_TOP,
+        MenuPlace::TopRight => egui::Align2::RIGHT_TOP,
+        MenuPlace::BottomLeft => egui::Align2::LEFT_BOTTOM,
+        MenuPlace::BottomRight => egui::Align2::RIGHT_BOTTOM,
+    };
+    let picture = ui.clip_rect().shrink(MARGIN);
+    egui::Area::new(egui::Id::new(("menu of the game", index)))
+        .pivot(align)
+        .fixed_pos(align.pos_in_rect(&picture))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            box_frame().show(ui, |ui| {
+                if let Some(title) = &menu.title {
+                    ui.label(
+                        egui::RichText::new(title)
+                            .font(game_font(22.0, scale))
+                            .color(TEXT),
+                    );
+                    ui.add_space(8.0);
+                }
+                for row in &menu.rows {
+                    let (mark, color) = if row.focus {
+                        ("> ", MARK)
+                    } else {
+                        ("   ", TEXT)
+                    };
+                    let line = egui::RichText::new(format!("{mark}{}", row.text));
+                    ui.label(line.font(game_font(20.0, scale)).color(color));
+                }
+            });
+        });
 }
 
 /// The keys of an action, as the binding table has them: "Z or Enter".
@@ -200,6 +262,14 @@ fn show_message(message: Res<MessageBox>, mut panels: ResMut<Panels>) {
     }
 }
 
+/// The menus show while one is open.
+fn show_menus(menus: Res<Menus>, mut panels: ResMut<Panels>) {
+    let open = !menus.0.is_empty();
+    if panels.is_open(MENUS) != open {
+        panels.set_open(MENUS, open);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,13 +277,16 @@ mod tests {
     /// The texts of the text box in egui frames. The second frame: egui measures a
     /// new area in its first one and does not show it.
     fn shown(text: &str, choices: Option<&Choices>) -> Vec<String> {
+        drawn(|ui| text_box(ui, text, choices, "Z: go on", 1.0))
+    }
+
+    /// The texts that a drawing shows, in the second of two egui frames.
+    fn drawn(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<String> {
         let ctx = egui::Context::default();
         let (fonts, _) = game_fonts(None);
         ctx.set_fonts(fonts);
-        let frame = || {
-            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                text_box(ui, text, choices, "Z: go on", 1.0);
-            });
+        let mut frame = || {
+            let mut output = ctx.run_ui(egui::RawInput::default(), &mut draw);
             // No renderer takes the font image: egui panics at a delta that nobody read.
             output.textures_delta.clear();
             output
@@ -241,6 +314,21 @@ mod tests {
         };
         let texts = shown("Open it?", Some(&choices));
         assert_eq!(texts, ["Open it?", "   Yes", "> No", "Z: go on"]);
+    }
+
+    #[test]
+    fn a_menu_shows_its_title_and_its_rows_with_a_mark_at_the_focus() {
+        let row = |text: &str, focus| maki_events::ShownRow {
+            text: text.to_owned(),
+            focus,
+        };
+        let menu = ShownMenu {
+            place: MenuPlace::TopRight,
+            title: Some("Pause".to_owned()),
+            rows: vec![row("Back", false), row("Items", true)],
+        };
+        let texts = drawn(|ui| menu_box(ui, 0, &menu, 1.0));
+        assert_eq!(texts, ["Pause", "   Back", "> Items"]);
     }
 
     #[test]
