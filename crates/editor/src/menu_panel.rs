@@ -241,12 +241,10 @@ fn menu_fields(ui: &mut Ui, menu: &mut Menu, lists: &Lists) -> bool {
     }
 }
 
-// `_` arms: the kinds of row that #72 adds have no editor here yet.
-#[allow(unreachable_patterns)]
 fn commands_of(row: &mut MenuRow) -> Option<&mut Vec<Command>> {
     match row {
         MenuRow::Commands { commands, .. } => Some(commands),
-        _ => None,
+        MenuRow::Items | MenuRow::Text(_) => None,
     }
 }
 
@@ -262,15 +260,29 @@ fn row_list(ui: &mut Ui, rows: &mut Vec<MenuRow>, select: &mut usize) -> bool {
         }
     }
     ui.horizontal(|ui| {
-        if ui.button("Add").clicked() {
-            rows.push(MenuRow::Commands {
-                text: TextKey::default(),
-                conditions: Vec::new(),
-                commands: Vec::new(),
-            });
-            *select = rows.len() - 1;
-            changed = true;
-        }
+        ui.menu_button("Add", |ui| {
+            let kinds = [
+                ("A row with commands", "A pick runs its commands."),
+                ("The items", "A line for each item that the player has."),
+                ("A text", "A line with no pick: with no focus, a HUD."),
+            ];
+            for (index, (label, help)) in kinds.into_iter().enumerate() {
+                if ui.button(label).on_hover_text(help).clicked() {
+                    rows.push(match index {
+                        0 => MenuRow::Commands {
+                            text: TextKey::default(),
+                            conditions: Vec::new(),
+                            commands: Vec::new(),
+                        },
+                        1 => MenuRow::Items,
+                        _ => MenuRow::Text(TextKey::default()),
+                    });
+                    *select = rows.len() - 1;
+                    changed = true;
+                    ui.close();
+                }
+            }
+        });
         let at = *select;
         if ui
             .add_enabled(at < rows.len(), egui::Button::new("Remove"))
@@ -300,17 +312,18 @@ fn row_list(ui: &mut Ui, rows: &mut Vec<MenuRow>, select: &mut usize) -> bool {
     changed
 }
 
-#[allow(unreachable_patterns)]
 fn row_label(row: &MenuRow) -> String {
     match row {
-        MenuRow::Commands { text, .. } if text.0.is_empty() => "(no text key)".to_owned(),
+        MenuRow::Commands { text, .. } | MenuRow::Text(text) if text.0.is_empty() => {
+            "(no text key)".to_owned()
+        }
         MenuRow::Commands { text, .. } => text.0.clone(),
-        _ => "(row with no editor)".to_owned(),
+        MenuRow::Text(text) => format!("text: {}", text.0),
+        MenuRow::Items => "(the items)".to_owned(),
     }
 }
 
 /// The text key, the conditions, and the command rows of a row. True: a change.
-#[allow(unreachable_patterns)]
 fn row_editor(
     ui: &mut Ui,
     row: Option<&mut MenuRow>,
@@ -332,8 +345,15 @@ fn row_editor(
             ui.label("Commands of a pick");
             changed |= command_rows(ui, commands, event_ui, (lists, registry, room), &[], 0);
         }
-        Some(_) => {
-            ui.weak("This kind of row has no editor yet.");
+        Some(MenuRow::Text(text)) => {
+            ui.label("Text: a `{name}` in it shows the variable.");
+            changed |= pick_key(ui, "menu row text", text, lists);
+        }
+        Some(MenuRow::Items) => {
+            ui.weak(
+                "A line for each item that the player has, with its count. A pick runs the \
+                 routine of the item kind (`use_routine`).",
+            );
         }
         None => {
             ui.weak("No row. \"Add\" makes one.");
@@ -347,6 +367,25 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
 
     use super::*;
+
+    #[test]
+    fn each_kind_of_row_has_its_label() {
+        let commands = MenuRow::Commands {
+            text: "title.new".into(),
+            conditions: Vec::new(),
+            commands: Vec::new(),
+        };
+        assert_eq!(row_label(&commands), "title.new");
+        assert_eq!(
+            row_label(&MenuRow::Text("hud.coins".into())),
+            "text: hud.coins"
+        );
+        assert_eq!(
+            row_label(&MenuRow::Text(TextKey::default())),
+            "(no text key)"
+        );
+        assert_eq!(row_label(&MenuRow::Items), "(the items)");
+    }
 
     /// The texts that the event panel showed, with a menu open.
     #[derive(bevy_ecs::resource::Resource, Default)]
