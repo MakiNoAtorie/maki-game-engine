@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.9 ("Physics crate"), 2.15 ("Physics (Rapier)", "
 Goal: one system of collision, on the library Rapier, in a crate `physics` with no type of Rapier in its public API. The walls, the props, the doors, and the movers are colliders of it; the walking controller is its character controller; an `area` is a sensor of it (the same component, outputs, and hooks); an object can have a body that falls, hits, and is pushed; scripts get ray and shape queries. The open leaf of a door blocks.
 Gate: a test in code: the player walks into a wall and slides along it, stops at a prop, and goes through a door only when it is open, and the open leaf blocks; an area tells "entered" and "left" and its interact as before; a box with a dynamic body falls to the floor and the player pushes it; a ray from a script hits the first collider and misses a hidden object. The game plays as before: the trip run passes with the same events and room loads; `bench.py gate`; the GPU time against `s59`; the symbol count of the engine DLL stays under the limit of `check.sh`.
 
-State: written by the session from the plan and the code at commit `dcc46a2`. Not seen by the owner.
+State: written by the session from the plan and the code at commit `dcc46a2`. Approved by the owner (2026-10-17).
 
 ## Now (the code at stage 59)
 
@@ -29,17 +29,17 @@ State: written by the session from the plan and the code at commit `dcc46a2`. No
 
 ## Tickets
 
-Proposed, not approved.
+Approved by the owner (2026-10-17). GitHub issues #76 to #80.
 
 | Ticket | Blocked by |
 |---|---|
-| A. The crate `physics` on Rapier: the world, the step, colliders of the room as fixed and kinematic colliders, the symbol count (prefactor) | none |
-| B. The walking controller on the character controller; the open door leaf blocks | A |
-| C. Areas on sensors | A |
-| D. Bodies that fall and are pushed, colliders of any object, and a measure of many bodies | B |
-| E. Ray and shape queries for scripts | A |
+| #76 The crate `physics` on Rapier: the world, the step, colliders of the room as fixed and kinematic colliders, the symbol count (prefactor) | none |
+| #77 The walking controller on the character controller; the open door leaf blocks | #76 |
+| #78 Areas on sensors | #76 |
+| #80 Bodies that fall and are pushed, colliders of any object, and a measure of many bodies | #77 |
+| #79 Ray and shape queries for scripts | #76 |
 
-B, C, and E can run at the same time after A: B writes `crates/gameplay` (the walk) and `crates/scene` (the door leaf), C writes the area of `crates/events`, E writes the queries of the crate and `ScriptContext`. D after B: the player pushes a body through the character controller.
+#77, #78, and #79 can run at the same time after #76: #77 writes `crates/gameplay` (the walk) and `crates/scene` (the door leaf), #78 writes the area of `crates/events`, #79 writes the queries of the crate and `ScriptContext`. #80 after #77: the player pushes a body through the character controller.
 
 ## Done when
 
