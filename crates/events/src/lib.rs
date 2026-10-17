@@ -13,6 +13,7 @@
 //! picture only through data: a `Light`, a `Mover`, [`MessageBox`],
 //! `maki_scene::ScreenFade`.
 
+mod area;
 mod builtin;
 mod check;
 mod command;
@@ -34,6 +35,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::schedule::common_conditions::resource_exists_and_changed;
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update};
+use maki_physics::PhysicsSet;
 use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
 
@@ -142,7 +144,16 @@ impl Module for EventsModule {
             .init_resource::<MessageBox>()
             .init_resource::<ChoiceBox>()
             .init_resource::<RoomValidators>()
-            .init_resource::<script::ScriptRunners>();
+            .init_resource::<script::ScriptRunners>()
+            // Areas need `PhysicsModule`; with no module the world is empty.
+            .init_resource::<maki_physics::Physics>()
+            .add_systems(
+                FixedUpdate,
+                (
+                    area::add_sensors.after(run_events).before(PhysicsSet::Step),
+                    area::track_player.after(run_events).after(PhysicsSet::Step),
+                ),
+            );
         // The area of an object, for the hooks of its scripts and for its event.
         maki_scene::add_object_component::<TriggerArea>(app, "area");
         registry.add_outputs("area", TriggerArea::OUTPUTS);
