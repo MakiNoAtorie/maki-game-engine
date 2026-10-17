@@ -88,3 +88,33 @@ fn a_changed_table_shows_its_new_text() {
     });
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn an_empty_text_keeps_the_fallback_and_a_new_table_shows_with_the_watch() {
+    let directory = directory("text-new-table");
+    table(&directory, "en", &[("door.locked", "Locked.")]);
+    std::fs::write(directory.join("a.ron"), room("")).unwrap();
+    let mut app = text_game(&directory);
+    app.resource_mut::<maki_assets::AssetWatch>().on = true;
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        app.resource_mut::<Texts>().set_language("ja");
+        assert_eq!(get(&mut app, "door.locked"), "Locked.");
+        // A new table file, as "New language" writes it: no room load, no watch message.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        table(&directory, "ja", &[("door.locked", "")]);
+        app.update();
+        // Its text is empty: not yet written, so the fallback shows.
+        assert_eq!(get(&mut app, "door.locked"), "Locked.");
+        table(&directory, "ja", &[("door.locked", "Shimatte iru.")]);
+        let path = directory.join("data/text/ja.text.ron");
+        app.resource_mut::<Messages<AssetChanged>>()
+            .write(AssetChanged(path));
+        app.update();
+        assert_eq!(get(&mut app, "door.locked"), "Shimatte iru.");
+        // A stop and a play: the language of the settings again.
+        app.reset_play();
+        assert_eq!(get(&mut app, "door.locked"), "Locked.");
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}

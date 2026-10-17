@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use bevy_ecs::system::Res;
-use maki_assets::{DataAsset, DataTypes, read_data};
+use maki_assets::read_data;
 use maki_core::fields::Value;
 use maki_scene::{ComponentTypes, ObjectId, RoomCheck, RoomDef, RoomProblem, RoomValidator};
 
@@ -399,13 +399,11 @@ impl Default for TextCheck {
 impl TextCheck {
     /// Reads the tables under `directory/data` if they are not the ones of before.
     fn read(&mut self, directory: &Path) {
-        let files: Vec<(PathBuf, Option<SystemTime>)> = DataTypes::default()
-            .files(directory)
+        let files: Vec<(PathBuf, Option<SystemTime>)> = crate::text::table_files(directory)
             .into_iter()
-            .filter(|file| file.type_name == TextTable::NAME)
-            .map(|file| {
-                let metadata = std::fs::metadata(directory.join(&file.path));
-                (file.path, metadata.and_then(|data| data.modified()).ok())
+            .map(|path| {
+                let metadata = std::fs::metadata(directory.join(&path));
+                (path, metadata.and_then(|data| data.modified()).ok())
             })
             .collect();
         if self.directory == directory && self.files == files {
@@ -444,7 +442,10 @@ impl TextCheck {
                 }
                 first.insert(place, path.clone());
                 if table.language == self.fallback {
-                    self.keys.insert(entry.key.clone());
+                    // An empty text is a text not yet written: the key shows.
+                    if !entry.text.is_empty() {
+                        self.keys.insert(entry.key.clone());
+                    }
                     self.texts.push((entry.key.clone(), entry.text.clone()));
                 }
             }

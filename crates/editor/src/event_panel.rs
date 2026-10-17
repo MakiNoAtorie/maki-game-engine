@@ -461,19 +461,13 @@ fn pick_key(ui: &mut Ui, salt: &str, key: &mut TextKey, lists: &Lists) -> bool {
 /// Adds a key with an empty text to the first table of the fallback language, and
 /// writes the file. A language with no table gets `data/text/<language>.text.ron`.
 fn add_key(directory: &std::path::Path, texts: &FallbackTexts, key: &str) -> Result<(), String> {
-    let new_file = || {
-        let name = format!("{}.text.ron", texts.language);
-        std::path::Path::new(maki_assets::DATA_FOLDER)
-            .join("text")
-            .join(name)
+    let path = match &texts.table {
+        Some(table) => directory.join(table),
+        None => maki_events::table_path(directory, &texts.language),
     };
-    let path = directory.join(texts.table.clone().unwrap_or_else(new_file));
     let mut table = match path.exists() {
         true => maki_assets::read_data::<TextTable>(&path)?,
-        false => TextTable {
-            language: texts.language.clone(),
-            texts: Vec::new(),
-        },
+        false => TextTable::new(&texts.language),
     };
     table.texts.push(TextEntry {
         key: key.to_owned(),

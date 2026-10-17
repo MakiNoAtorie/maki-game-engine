@@ -61,7 +61,10 @@ pub use state::{
     NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,
     room_key,
 };
-pub use text::{TextEntry, TextKey, TextSettings, TextTable, Texts, fill, text, texts};
+pub use text::{
+    TEXT_FOLDER, TextEntry, TextKey, TextSettings, TextTable, Texts, fill, table_files, table_path,
+    text, texts,
+};
 
 /// Starts the event that the player faces, closes a message, and takes the marked
 /// answer of a question.

@@ -16,16 +16,19 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+use std::time::SystemTime;
 
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Res, ResMut};
+use bevy_ecs::system::{Local, Res, ResMut};
 use bevy_ecs::world::World;
-use maki_assets::{AssetChanged, DataAsset, DataAssets, DataTypes, add_data_type};
+use maki_assets::{
+    AssetChanged, AssetWatch, DATA_FOLDER, DataAsset, DataAssets, DataTypes, add_data_type,
+};
 use maki_core::fields::{Kind, Value};
-use maki_core::{App, Fields, Settings, Update};
+use maki_core::{App, Fields, ResetPlay, Settings, Update};
 use maki_scene::CurrentRoom;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +44,32 @@ pub struct TextTable {
 
 impl DataAsset for TextTable {
     const NAME: &'static str = "text";
+}
+
+impl TextTable {
+    /// A table of a language with no text.
+    pub fn new(language: &str) -> Self {
+        Self {
+            language: language.to_owned(),
+            texts: Vec::new(),
+        }
+    }
+}
+
+/// The folder of the text tables in the data folder: a new table goes there.
+pub const TEXT_FOLDER: &str = "text";
+
+/// The text table files under `directory/data`, from `directory`, in the order of the paths.
+pub fn table_files(directory: &Path) -> Vec<PathBuf> {
+    let files = DataTypes::default().files(directory).into_iter();
+    let tables = files.filter(|file| file.type_name == TextTable::NAME);
+    tables.map(|file| file.path).collect()
+}
+
+/// The file of a new table of a language: `directory/data/text/<language>.text.ron`.
+pub fn table_path(directory: &Path, language: &str) -> PathBuf {
+    let name = format!("{language}.{}", DataTypes::extension(TextTable::NAME));
+    directory.join(DATA_FOLDER).join(TEXT_FOLDER).join(name)
 }
 
 /// One text of a table.
@@ -158,13 +187,10 @@ impl Texts {
     }
 
     /// Reads the tables of the language and of the fallback under `directory`.
-    fn build(&mut self, directory: &Path, types: &DataTypes, data: &mut DataAssets) {
+    fn build(&mut self, directory: &Path, data: &mut DataAssets) {
         let mut tables = Vec::new();
-        for file in types.files(directory) {
-            if file.type_name != TextTable::NAME {
-                continue;
-            }
-            match data.get::<TextTable>(&file.path.clone().into(), directory) {
+        for path in table_files(directory) {
+            match data.get::<TextTable>(&path.into(), directory) {
                 Ok(table) => tables.push(table),
                 Err(error) => tracing::error!("text table: {error}"),
             }
@@ -173,7 +199,8 @@ impl Texts {
         // The fallback first: the language writes its texts over it.
         for language in [&self.fallback, &self.language] {
             for table in tables.iter().filter(|table| table.language == *language) {
-                for entry in &table.texts {
+                // An empty text is a text not yet written: the fallback stays.
+                for entry in table.texts.iter().filter(|entry| !entry.text.is_empty()) {
                     self.texts.insert(entry.key.clone(), entry.text.clone());
                 }
             }
@@ -192,12 +219,9 @@ pub fn text(world: &mut World, key: &str, variable: impl Fn(&str) -> i32) -> Str
 pub fn texts(world: &mut World) -> &Texts {
     if world.resource::<Texts>().stale {
         let directory = room_directory(world);
-        world.init_resource::<DataTypes>();
         world.init_resource::<DataAssets>();
         world.resource_scope(|world, mut texts: bevy_ecs::world::Mut<Texts>| {
-            world.resource_scope(|world, mut data: bevy_ecs::world::Mut<DataAssets>| {
-                texts.build(&directory, world.resource::<DataTypes>(), &mut data);
-            });
+            texts.build(&directory, &mut world.resource_mut::<DataAssets>());
         });
     }
     world.resource::<Texts>()
@@ -241,17 +265,39 @@ fn name_at(text: &str) -> Option<&str> {
 }
 
 /// Runs in `Update`: the texts are stale after a room load (another directory can
-/// have other tables) and after a change of a table file.
+/// have other tables) and after a change of a table file. With the watch on (the
+/// editor), also after a new table file: the times of the two folders change then.
+// ponytail: a new table in another folder under `data/` shows at the next room load.
 fn mark_stale(
     room: Option<Res<CurrentRoom>>,
     mut changed: MessageReader<AssetChanged>,
+    watch: Option<Res<AssetWatch>>,
+    mut folders: Local<[Option<SystemTime>; 2]>,
     mut texts: ResMut<Texts>,
 ) {
     let table = |path: &PathBuf| DataTypes::type_of(path) == Some(TextTable::NAME);
-    let files = changed.read().any(|AssetChanged(path)| table(path));
-    if files || room.is_some_and(|room| room.is_changed()) {
+    let mut stale = changed.read().any(|AssetChanged(path)| table(path));
+    stale |= room.as_ref().is_some_and(|room| room.is_changed());
+    if let Some(room) = room.filter(|_| watch.is_some_and(|watch| watch.on)) {
+        let data = room
+            .path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(DATA_FOLDER);
+        let time = |folder: &Path| std::fs::metadata(folder).and_then(|m| m.modified()).ok();
+        let now = [time(&data), time(&data.join(TEXT_FOLDER))];
+        stale |= *folders != now;
+        *folders = now;
+    }
+    if stale {
         texts.stale = true;
     }
+}
+
+/// Runs in `ResetPlay`: the language of the settings again; a script of the play changed it.
+fn reset_language(settings: Res<TextSettings>, mut texts: ResMut<Texts>) {
+    let language = settings.language.clone();
+    texts.set_language(&language);
 }
 
 /// Adds the text tables, the settings, and the texts.
@@ -261,7 +307,8 @@ pub(crate) fn add(app: &mut App) {
     let settings = app.world().resource::<TextSettings>().clone();
     app.insert_resource(Texts::new(&settings.language, &settings.fallback))
         .add_message::<AssetChanged>()
-        .add_systems(Update, mark_stale.after(maki_scene::load_requested_room));
+        .add_systems(Update, mark_stale.after(maki_scene::load_requested_room))
+        .add_systems(ResetPlay, reset_language);
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use bevy_ecs::world::World;
-use maki_assets::{DATA_FOLDER, DataTypes, data_text, read_data};
+use maki_assets::{data_text, read_data};
 use maki_events::{TextEntry, TextTable, Texts};
 use maki_ui::ToolCommand;
 
@@ -96,26 +96,26 @@ pub fn read_csv(text: &str) -> Result<Vec<Vec<String>>, String> {
 }
 
 /// Each text table under `directory`, with its path, in the order of the paths.
-fn read_tables(directory: &Path, types: &DataTypes) -> Result<Vec<(PathBuf, TextTable)>, String> {
+fn read_tables(directory: &Path) -> Result<Vec<(PathBuf, TextTable)>, String> {
     let mut tables = Vec::new();
-    for file in types.files(directory) {
-        if file.type_name == "text" {
-            let path = directory.join(file.path);
-            tables.push((path.clone(), read_data::<TextTable>(&path)?));
-        }
+    for path in maki_events::table_files(directory) {
+        let path = directory.join(path);
+        tables.push((path.clone(), read_data::<TextTable>(&path)?));
     }
     Ok(tables)
 }
 
 /// Writes the CSV file of all text tables: its path. The fallback language is the
 /// first column, the others follow by name.
-pub fn export(directory: &Path, types: &DataTypes, fallback: &str) -> Result<PathBuf, String> {
-    let mut tables = read_tables(directory, types)?;
+pub fn export(directory: &Path, fallback: &str) -> Result<PathBuf, String> {
+    let mut tables = read_tables(directory)?;
     // Stable: the tables of one language keep the order of their paths.
     tables.sort_by(|a, b| {
         let rank = |t: &TextTable| (t.language != fallback, t.language.clone());
         rank(&a.1).cmp(&rank(&b.1))
     });
+    // A table with no language has no column: the check reports it.
+    tables.retain(|(_, table)| !table.language.is_empty());
     let mut languages: Vec<&str> = Vec::new();
     for (_, table) in &tables {
         if !languages.contains(&table.language.as_str()) {
@@ -155,7 +155,7 @@ pub fn export(directory: &Path, types: &DataTypes, fallback: &str) -> Result<Pat
 /// Reads the CSV file into the tables: the count of texts that changed. A filled
 /// cell that differs from the table changes it; an empty cell changes nothing; no key
 /// is removed. Only a table that changed is written.
-pub fn import(directory: &Path, types: &DataTypes) -> Result<usize, String> {
+pub fn import(directory: &Path) -> Result<usize, String> {
     let path = directory.join(CSV_PATH);
     let text = std::fs::read_to_string(&path)
         .map_err(|error| format!("{} not read: {error}", path.display()))?;
@@ -174,10 +174,11 @@ pub fn import(directory: &Path, types: &DataTypes) -> Result<usize, String> {
         return Err(format!("\"{bad}\" is not a language code."));
     }
 
-    let mut tables = read_tables(directory, types)?;
+    let mut tables = read_tables(directory)?;
     let mut changed = HashSet::new();
     let mut count = 0;
-    for row in rows.iter().filter(|row| row.iter().any(|c| !c.is_empty())) {
+    // A row with no key is no text of a key.
+    for row in rows.iter().filter(|row| !row[0].trim().is_empty()) {
         let key = &row[0];
         for (column, language) in header.iter().enumerate().skip(1) {
             let cell = row.get(column).map_or("", String::as_str);
@@ -189,16 +190,21 @@ pub fn import(directory: &Path, types: &DataTypes) -> Result<usize, String> {
                 .iter()
                 .position(|(_, t)| t.language == *language && t.texts.iter().any(|e| e.key == *key))
                 .or_else(|| tables.iter().position(|(_, t)| t.language == *language));
-            let index = index.unwrap_or_else(|| {
-                let file = format!("{language}.text.ron");
-                let path = directory.join(DATA_FOLDER).join("text").join(file);
-                let table = TextTable {
-                    language: language.clone(),
-                    texts: Vec::new(),
-                };
-                tables.push((path, table));
-                tables.len() - 1
-            });
+            let index = match index {
+                Some(index) => index,
+                None => {
+                    let path = maki_events::table_path(directory, language);
+                    // A file of that name is a table of another language: not written over.
+                    if path.exists() {
+                        return Err(format!(
+                            "{} is a table of another language than \"{language}\".",
+                            path.display()
+                        ));
+                    }
+                    tables.push((path, TextTable::new(language)));
+                    tables.len() - 1
+                }
+            };
             let table = &mut tables[index].1;
             match table.texts.iter_mut().find(|e| e.key == *key) {
                 Some(entry) if entry.text == cell => continue,
@@ -226,7 +232,7 @@ fn export_texts(world: &mut World) {
     let fallback = world
         .get_resource::<Texts>()
         .map_or("en".to_owned(), |texts| texts.fallback().to_owned());
-    let result = export(&directory, world.resource::<DataTypes>(), &fallback);
+    let result = export(&directory, &fallback);
     let mut editor = world.resource_mut::<Editor>();
     match result {
         Ok(path) => editor.status = format!("{} written.", path.display()),
@@ -236,7 +242,7 @@ fn export_texts(world: &mut World) {
 
 fn import_texts(world: &mut World) {
     let directory = world.resource::<Editor>().document.directory();
-    let result = import(&directory, world.resource::<DataTypes>());
+    let result = import(&directory);
     let mut editor = world.resource_mut::<Editor>();
     match result {
         Ok(count) => editor.status = format!("{count} texts changed."),
@@ -268,10 +274,6 @@ mod tests {
 
     use super::*;
 
-    fn types() -> DataTypes {
-        DataTypes::default()
-    }
-
     fn table(language: &str, texts: &[(&str, &str)]) -> String {
         let texts = texts
             .iter()
@@ -297,7 +299,7 @@ mod tests {
     }
 
     fn tables_of(dir: &Path) -> Vec<TextTable> {
-        let tables = read_tables(dir, &types()).unwrap();
+        let tables = read_tables(dir).unwrap();
         tables.into_iter().map(|(_, t)| t).collect()
     }
 
@@ -316,8 +318,8 @@ mod tests {
             )
         };
         let before = times(&dir);
-        export(&dir, &types(), "en").unwrap();
-        assert_eq!(import(&dir, &types()), Ok(0));
+        export(&dir, "en").unwrap();
+        assert_eq!(import(&dir), Ok(0));
         assert_eq!(before, times(&dir));
         let csv = std::fs::read_to_string(dir.join(CSV_PATH)).unwrap();
         assert!(csv.starts_with("\u{feff}key,en,ja\r\na,A,ja-a\r\nb,B,\r\n"));
@@ -327,14 +329,14 @@ mod tests {
     fn a_text_with_comma_quote_and_line_end_goes_out_and_back() {
         let tricky = "Hi, \"you\"\nline two\r\nend";
         let dir = project("tricky", &[("a", tricky)], &[]);
-        export(&dir, &types(), "en").unwrap();
+        export(&dir, "en").unwrap();
         // The table changes on the disk, then the CSV brings the text back.
         std::fs::write(
             dir.join("data/text/en.text.ron"),
             table("en", &[("a", "x")]),
         )
         .unwrap();
-        assert_eq!(import(&dir, &types()), Ok(1));
+        assert_eq!(import(&dir), Ok(1));
         assert_eq!(tables_of(&dir)[0].texts[0].text, tricky);
     }
 
@@ -342,7 +344,7 @@ mod tests {
     fn an_empty_cell_changes_nothing_and_no_key_is_removed() {
         let dir = project("empty", &[("a", "A"), ("b", "B")], &[("a", "ja-a")]);
         std::fs::write(dir.join(CSV_PATH), "key,en,ja\na,,\n").unwrap();
-        assert_eq!(import(&dir, &types()), Ok(0));
+        assert_eq!(import(&dir), Ok(0));
         let tables = tables_of(&dir);
         assert_eq!(tables[0].texts.len(), 2);
         assert_eq!(tables[1].texts[0].text, "ja-a");
@@ -352,7 +354,7 @@ mod tests {
     fn a_new_key_and_a_new_language_go_into_the_tables() {
         let dir = project("new", &[("a", "A")], &[]);
         std::fs::write(dir.join(CSV_PATH), "key,en,ja,fr\na,A,,Ah\nb,B,ja-b,\n").unwrap();
-        assert_eq!(import(&dir, &types()), Ok(3));
+        assert_eq!(import(&dir), Ok(3));
         let tables = tables_of(&dir);
         let find = |lang: &str| tables.iter().find(|t| t.language == lang).unwrap();
         let en: Vec<_> = find("en").texts.iter().map(|e| e.key.as_str()).collect();
@@ -361,6 +363,18 @@ mod tests {
         assert_eq!((ja[0].key.as_str(), ja[0].text.as_str()), ("b", "ja-b"));
         assert_eq!(find("fr").texts[0].text, "Ah");
         assert!(dir.join("data/text/fr.text.ron").exists());
+    }
+
+    #[test]
+    fn a_row_with_no_key_is_skipped_and_a_file_of_another_language_stays() {
+        let dir = project("other", &[("a", "A")], &[]);
+        std::fs::write(dir.join(CSV_PATH), "key,en\n,lost\na,A\n").unwrap();
+        assert_eq!(import(&dir), Ok(0));
+        // `fr.text.ron` holds the language `de`: an import of `fr` does not write over it.
+        let other = TextTable::new("de");
+        std::fs::write(dir.join("data/text/fr.text.ron"), data_text(&other)).unwrap();
+        std::fs::write(dir.join(CSV_PATH), "key,fr\na,Ah\n").unwrap();
+        assert!(import(&dir).unwrap_err().contains("another language"));
     }
 
     #[test]

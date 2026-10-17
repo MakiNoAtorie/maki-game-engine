@@ -6,17 +6,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use bevy_ecs::world::{Mut, World};
-use maki_assets::{DATA_FOLDER, DataAsset, DataTypes, data_text, read_data};
+use bevy_ecs::world::Mut;
+use maki_assets::{DATA_FOLDER, data_text, read_data};
+use maki_events::TEXT_FOLDER;
 use maki_events::{TextEntry, TextTable};
 use maki_ui::egui::{self, Ui};
 use maki_ui::theme::icon;
 use maki_ui::{THEME, ToolPanel, ToolPlace, add_tool_panel};
 
 use crate::Editor;
-
-/// The folder of the text tables, in the data folder.
-const FOLDER: &str = "text";
 
 /// A text table file. `data` is `None` when the file does not read: the time stays,
 /// so the file is read again only after the next change.
@@ -144,16 +142,12 @@ fn add_language(directory: &Path, tables: &[Table], code: &str) -> Result<PathBu
         return Err("A language code has letters, numbers, `_`, and `-`.".to_owned());
     }
     let mut data = tables.iter().filter_map(|t| t.data.as_ref());
-    let folder = directory.join(DATA_FOLDER).join(FOLDER);
-    let path = folder.join(format!("{code}.{}", DataTypes::extension(TextTable::NAME)));
+    let path = maki_events::table_path(directory, code);
     if path.exists() || data.any(|t| t.language == code) {
         return Err(format!("The language \"{code}\" is there already."));
     }
-    let table = TextTable {
-        language: code.to_owned(),
-        texts: Vec::new(),
-    };
-    std::fs::create_dir_all(&folder)
+    let table = TextTable::new(code);
+    std::fs::create_dir_all(path.parent().unwrap_or(directory))
         .and_then(|()| std::fs::write(&path, data_text(&table)))
         .map_err(|error| format!("{} not written: {error}", path.display()))?;
     Ok(path)
@@ -174,9 +168,12 @@ pub(crate) struct TextPanel {
 
 impl TextPanel {
     /// Reads the table files again when the directory, the folder, or a file changed.
-    fn refresh(&mut self, directory: &Path, types: &DataTypes, error: &mut Option<String>) {
+    fn refresh(&mut self, directory: &Path, error: &mut Option<String>) {
         let data_folder = directory.join(DATA_FOLDER);
-        let folder_time = [time_of(&data_folder), time_of(&data_folder.join(FOLDER))];
+        let folder_time = [
+            time_of(&data_folder),
+            time_of(&data_folder.join(TEXT_FOLDER)),
+        ];
         let same = |table: &Table| time_of(&table.path) == table.time;
         let unchanged = self.directory == directory && self.folder_time == folder_time;
         if unchanged && self.tables.iter().all(same) {
@@ -185,11 +182,8 @@ impl TextPanel {
         self.directory = directory.to_owned();
         self.folder_time = folder_time;
         self.tables.clear();
-        for file in types.files(directory) {
-            if file.type_name != TextTable::NAME || !file.known {
-                continue;
-            }
-            let path = directory.join(file.path);
+        for path in maki_events::table_files(directory) {
+            let path = directory.join(path);
             let time = time_of(&path);
             let data = read_data::<TextTable>(&path);
             let data = data.map_err(|message| *error = Some(message)).ok();
@@ -208,22 +202,17 @@ pub(crate) fn add(app: &mut maki_core::App) {
     };
     let mut state = TextPanel::default();
     add_tool_panel(app, panel, move |ui, world| {
-        world.resource_scope(|world, mut editor: Mut<Editor>| {
-            text_panel(ui, world, &mut editor, &mut state)
-        });
+        world.resource_scope(|_, mut editor: Mut<Editor>| text_panel(ui, &mut editor, &mut state));
     });
 }
 
-fn text_panel(ui: &mut Ui, world: &World, editor: &mut Editor, state: &mut TextPanel) {
-    let Some(types) = world.get_resource::<DataTypes>() else {
-        return;
-    };
+fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
     if editor.playing() {
         ui.weak("A game runs. Stop it to edit the texts.");
         return;
     }
     let directory = editor.document.directory();
-    state.refresh(&directory, types, &mut editor.error);
+    state.refresh(&directory, &mut editor.error);
 
     ui.horizontal(|ui| {
         ui.label(icon::SEARCH);
@@ -299,7 +288,6 @@ fn text_panel(ui: &mut Ui, world: &World, editor: &mut Editor, state: &mut TextP
 #[cfg(test)]
 mod tests {
     use bevy_ecs::resource::Resource;
-    use maki_assets::add_data_type;
 
     use super::*;
 
@@ -327,18 +315,9 @@ mod tests {
         directory
     }
 
-    fn types() -> DataTypes {
-        let mut app = maki_core::App::new(maki_core::ConfigFile::default()).unwrap();
-        app.add_module(maki_assets::AssetsModule);
-        add_data_type::<TextTable>(&mut app);
-        let mut types = DataTypes::default();
-        std::mem::swap(&mut types, &mut *app.resource_mut::<DataTypes>());
-        types
-    }
-
     fn loaded(directory: &Path) -> TextPanel {
         let mut state = TextPanel::default();
-        state.refresh(directory, &types(), &mut None);
+        state.refresh(directory, &mut None);
         state
     }
 
@@ -425,7 +404,7 @@ mod tests {
         assert!(add_language(&directory, &state.tables, "../x").is_err());
 
         // The new file shows at the next draw, and the key goes to it too.
-        state.refresh(&directory, &types(), &mut None);
+        state.refresh(&directory, &mut None);
         assert_eq!(grid(&state.tables, "").languages, ["en", "fr", "ja"]);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -434,11 +413,11 @@ mod tests {
     #[derive(Resource, Default)]
     struct Shown(Vec<String>);
 
-    fn draw(world: &mut World) {
+    fn draw(world: &mut bevy_ecs::world::World) {
         let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
             world.resource_scope(|world, mut editor: Mut<Editor>| {
-                world.resource_scope(|world, mut state: Mut<TextPanel>| {
-                    text_panel(ui, world, &mut editor, &mut state)
+                world.resource_scope(|_, mut state: Mut<TextPanel>| {
+                    text_panel(ui, &mut editor, &mut state)
                 });
             });
         });
