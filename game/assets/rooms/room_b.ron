@@ -81,14 +81,14 @@
                                 PlaySound("sounds/click.wav", 1.0),
                                 SetFlag("power_off", true),
                                 LightOff(6),
-                                Message("Click. The lamp dies. Far away, a lock lets go."),
+                                Message("room_b.switch_off"),
                                 SavePoint,
                             ],
                         ),
                         (
                             conditions: [Flag("power_off")],
                             trigger: Interact,
-                            commands: [Message("The switch does not move.")],
+                            commands: [Message("room_b.switch_stuck")],
                         ),
                     ],
                 ),
@@ -115,13 +115,7 @@
                 "area": (width: 0.8, depth: 0.8),
                 "event": (
                     pages: [
-                        (
-                            trigger: Interact,
-                            commands: [
-                                ShakeCamera(0.6, 0.06),
-                                Message("The ball rings. Something under the floor answers."),
-                            ],
-                        ),
+                        (trigger: Interact, commands: [ShakeCamera(0.6, 0.06), Message("room_b.ball_rings")]),
                     ],
                 ),
             },

@@ -86,14 +86,11 @@
                 "area": (width: 1.0, depth: 0.8),
                 "event": (
                     pages: [
-                        (
-                            trigger: Interact,
-                            commands: [Message("The door is locked. Something hums behind it.")],
-                        ),
+                        (trigger: Interact, commands: [Message("room_a.door_locked")]),
                         (
                             conditions: [Flag("power_off")],
                             trigger: Interact,
-                            commands: [Message("The lock is dead. The door gives way."), OpenDoor(8)],
+                            commands: [Message("room_a.door_opens"), OpenDoor(8)],
                         ),
                     ],
                 ),
