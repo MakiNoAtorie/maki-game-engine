@@ -54,6 +54,10 @@
             text: "Back",
         ),
         (
+            key: "menu.items",
+            text: "Items",
+        ),
+        (
             key: "menu.to_title",
             text: "Quit to title",
         ),

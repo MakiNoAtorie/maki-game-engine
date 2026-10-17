@@ -469,8 +469,9 @@ mod tests {
             let menu = menu.unwrap();
             assert!(has(&menu.title.unwrap().0), "{name}");
             for row in &menu.rows {
-                let MenuRow::Commands { text, .. } = row;
-                assert!(has(&text.0), "{name}: {}", text.0);
+                if let MenuRow::Commands { text, .. } | MenuRow::Text(text) = row {
+                    assert!(has(&text.0), "{name}: {}", text.0);
+                }
             }
         }
         std::fs::remove_dir_all(&directory).unwrap();

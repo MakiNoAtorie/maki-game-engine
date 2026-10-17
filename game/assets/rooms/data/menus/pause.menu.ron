@@ -2,6 +2,7 @@
     title: "menu.pause",
     rows: [
         Commands(text: "menu.back", commands: [CloseMenu]),
+        Commands(text: "menu.items", commands: [OpenMenu("data/menus/items.menu.ron")]),
         Commands(text: "menu.to_title", commands: [SetPlayState(Title)]),
     ],
 )
