@@ -13,6 +13,7 @@
 
 use bevy_ecs::component::Component;
 use bevy_ecs::world::Mut;
+use maki_engine::assets::{DataAsset, DataRef, add_data_type};
 use maki_engine::core::{App, Fields};
 use maki_engine::events::{Builtin, Script, ScriptContext, add_script, add_script_function};
 use maki_engine::scene::{Light, ObjectId};
@@ -33,6 +34,9 @@ pub struct Beacon {
     /// The largest change of the brightness, as a part of it.
     #[field(range = 0.0..=1.0, step = 0.05)]
     pub strength: f32,
+    /// A style file: its pulses and strength replace those above at the start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<DataRef<BeaconStyle>>,
     /// The brightness of the light at the start. Not in the file.
     #[serde(skip)]
     #[field(skip)]
@@ -49,10 +53,38 @@ impl Default for Beacon {
             light: ObjectId::default(),
             pulses: 1.5,
             strength: 0.6,
+            style: None,
             base: 0.0,
             time: None,
         }
     }
+}
+
+/// A data asset of this game: a look of a beacon that many beacons share
+/// (`data/<name>.beacon_style.ron`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(default, deny_unknown_fields)]
+#[fields(default)]
+pub struct BeaconStyle {
+    /// Pulses in a second.
+    #[field(range = 0.1..=10.0, step = 0.1)]
+    pub pulses: f32,
+    /// The largest change of the brightness, as a part of it.
+    #[field(range = 0.0..=1.0, step = 0.05)]
+    pub strength: f32,
+}
+
+impl Default for BeaconStyle {
+    fn default() -> Self {
+        Self {
+            pulses: 1.5,
+            strength: 0.6,
+        }
+    }
+}
+
+impl DataAsset for BeaconStyle {
+    const NAME: &'static str = "beacon_style";
 }
 
 impl Beacon {
@@ -69,6 +101,14 @@ impl Beacon {
 
 impl Script for Beacon {
     fn start(&mut self, context: &mut ScriptContext) {
+        let style = self
+            .style
+            .as_ref()
+            .map(|style| style.file.to_string_lossy());
+        if let Some(style) = style.and_then(|file| context.data::<BeaconStyle>(&file)) {
+            self.pulses = style.pulses;
+            self.strength = style.strength;
+        }
         self.base = self.light(context).map_or(0.0, |light| light.intensity);
     }
 
@@ -111,6 +151,7 @@ fn forget(context: &mut ScriptContext) {
 
 pub fn add(app: &mut App) {
     add_script::<Beacon>(app, "beacon");
+    add_data_type::<BeaconStyle>(app);
     add_script_function(app, "beacon_forget", forget);
 }
 
@@ -193,6 +234,51 @@ mod tests {
     }
 
     #[test]
+    fn a_beacon_with_a_style_takes_its_pulses_from_the_file() {
+        let directory = std::env::temp_dir().join(format!("maki-beacon-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("data")).unwrap();
+        let style = BeaconStyle {
+            pulses: 4.0,
+            strength: 0.2,
+        };
+        let text = maki_engine::assets::data_text(&style);
+        std::fs::write(directory.join("data/fast.beacon_style.ron"), text).unwrap();
+        let room = maki_engine::scene::room_text(
+            8.0,
+            8.0,
+            3.0,
+            &[r#"(pose: (position: (0.0, 0.0, 1.0)), components: {
+                "beacon": (style: "data/fast.beacon_style.ron"),
+                "area": (width: 1.0, depth: 1.0)})"#],
+        );
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
+        app.add_module(PlatformModule)
+            .add_module(SceneModule)
+            .add_module(EventsModule);
+        add(&mut app);
+        let path = directory.join("beacon.ron");
+        app.add_systems(
+            Startup,
+            move |mut request: bevy_ecs::system::ResMut<RoomRequest>| {
+                request.0 = Some(RoomTarget {
+                    path: path.clone(),
+                    spawn: None,
+                    text: Some(room.to_owned()),
+                });
+            },
+        );
+        app.run(|mut app| {
+            for _ in 0..4 {
+                app.advance(Duration::from_millis(20));
+            }
+            let mut beacons = app.world().try_query::<&Beacon>().unwrap();
+            let beacon = beacons.single(app.world()).unwrap();
+            assert_eq!((beacon.pulses, beacon.strength), (4.0, 0.2));
+        });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn a_row_calls_the_function_that_the_beacon_adds() {
         let mut app = App::new(ConfigFile::default()).unwrap();
         app.add_module(PlatformModule)
@@ -201,5 +287,7 @@ mod tests {
         add(&mut app);
         let registry = app.world().resource::<CommandRegistry>();
         assert!(registry.functions().contains(&"beacon_forget"));
+        let types = app.world().resource::<maki_engine::assets::DataTypes>();
+        assert!(types.get("beacon_style").is_some());
     }
 }

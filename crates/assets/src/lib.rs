@@ -5,6 +5,7 @@
 //! returns `None` until the asset is ready. Code that obeys this rule does not change
 //! when a loader becomes asynchronous or reads a different file format.
 
+mod data;
 mod file_ref;
 mod mesh;
 mod model;
@@ -21,6 +22,10 @@ use maki_core::{App, Module, Settings, Update};
 use serde::{Deserialize, Serialize};
 use slotmap::{DefaultKey, SlotMap};
 
+pub use data::{
+    DATA_FOLDER, DataAsset, DataAssets, DataFile, DataRef, DataType, DataTypes, add_data_type,
+    data_text, read_data,
+};
 pub use file_ref::{FileId, FileRef, forget_id_tables};
 pub use mesh::{Doorway, Material, Mesh, Wall};
 pub use model::{Model, ModelLight, ModelLoads, check_model, load_gltf};
@@ -198,6 +203,15 @@ impl Module for AssetsModule {
             .add_systems(
                 Update,
                 (watch::watch_files, forget_changed, watch::watch_textures).chain(),
+            );
+        // The data files, as the routine files: read at the first use, forgotten at a change.
+        app.init_resource::<DataTypes>()
+            .init_resource::<DataAssets>()
+            .add_systems(
+                Update,
+                (data::forget_changed_data, data::watch_data)
+                    .chain()
+                    .after(watch::watch_files),
             );
         app.resource_mut::<AssetWatch>().on |= watch;
         // The scene module makes the same resource: the order of the two is free.

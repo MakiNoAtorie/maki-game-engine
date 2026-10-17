@@ -122,6 +122,17 @@ impl<'w> ScriptContext<'w> {
         self.world.resource_mut::<GameState>()
     }
 
+    /// The items of the player: the store of the item commands too.
+    pub fn items(&mut self) -> Mut<'_, crate::Inventory> {
+        self.world.resource_mut::<crate::Inventory>()
+    }
+
+    /// The id of an item file (from the directory of the room file), the key of the
+    /// inventory. `None`: the file has no id.
+    pub fn item(&self, file: &str) -> Option<maki_assets::FileId> {
+        crate::item_id(&file.into(), crate::items::room_directory(self.world))
+    }
+
     /// The name of the object. Empty: it has none.
     pub fn name(&self) -> &str {
         self.world
@@ -192,6 +203,22 @@ impl<'w> ScriptContext<'w> {
     pub fn routine(&mut self, file: &str, arguments: &[i32]) {
         let arguments = crate::Arguments(arguments.to_vec());
         self.call(crate::RoutineCommand::CallRoutine(file.into(), arguments));
+    }
+
+    /// The value of a data file (from the directory of the room file), as its type.
+    /// `None`: no file, or it does not read as `T`; the error is in the log.
+    pub fn data<T: maki_assets::DataAsset>(&mut self, file: &str) -> Option<std::sync::Arc<T>> {
+        let directory = crate::items::room_directory(self.world).to_owned();
+        let mut data = self
+            .world
+            .get_resource_or_insert_with(maki_assets::DataAssets::default);
+        match data.get::<T>(&file.into(), &directory) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::error!(script = self.name(), "data: {error}");
+                None
+            }
+        }
     }
 
     /// The id of the object of this script.

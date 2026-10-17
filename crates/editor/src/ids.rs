@@ -11,7 +11,8 @@ use crate::document::Document;
 
 /// The texts before a file reference with a path only, in the compact RON text.
 // ponytail: found by the field names of the engine types; a walk of the field tables if a script type has another name.
-const BARE: [&str; 3] = ["path:", "file:", "File("];
+// `Item(`: also `GiveItem(` and `TakeItem(`; the inventory names an item by the id.
+const BARE: [&str; 4] = ["path:", "file:", "File(", "Item("];
 
 /// Gives each reference of the document that resolves by its id the new path, and
 /// each reference with a path only the id of its file, and marks the document as
@@ -201,6 +202,7 @@ mod tests {
                 r#"(name: "cabinet", components: {"prop": (mesh: File("cabinet.glb"))})"#,
                 r#"(name: "other", components: {"prop": (mesh: File("other.glb"))})"#,
                 r#"(name: "go", components: {"event": (pages: [(commands: [Transfer("b.ron", 1)])])})"#,
+                r#"(name: "give", components: {"event": (pages: [(commands: [GiveItem("cabinet.glb", 1)])])})"#,
             ],
         );
         let mut document = Document {
@@ -209,8 +211,13 @@ mod tests {
             notes: Default::default(),
             dirty: false,
         };
-        assert_eq!(correct_paths(&mut document), 1);
+        assert_eq!(correct_paths(&mut document), 2);
         assert!(document.dirty);
+        let give = ron_options().to_string(&document.room.objects[3]).unwrap();
+        assert!(
+            give.contains(r#"GiveItem((path:"cabinet.glb",id:"0123456789abcdef"),1)"#),
+            "{give}"
+        );
         let mesh = |index: usize| {
             document.room.objects[index]
                 .component::<maki_scene::PropDef>("prop")
