@@ -1,6 +1,6 @@
 //! Save and load: one file with the room, the pose of the player, the flags and
-//! variables, the state of the objects, and the inventory. The event command `SavePoint` writes it; the start of the game and a
-//! debug key read it.
+//! variables, the state of the objects, and the inventory. The event command
+//! `SavePoint` writes it; the start of the game and a debug key read it.
 //!
 //! The rest of a room is not in the file: the room file gives it, and an `Autorun`
 //! page with a condition sets right what an event changed (a lamp that is off).

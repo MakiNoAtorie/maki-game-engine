@@ -208,12 +208,7 @@ impl<'w> ScriptContext<'w> {
     /// The value of a data file (from the directory of the room file), as its type.
     /// `None`: no file, or it does not read as `T`; the error is in the log.
     pub fn data<T: maki_assets::DataAsset>(&mut self, file: &str) -> Option<std::sync::Arc<T>> {
-        let room = self.world.resource::<maki_scene::CurrentRoom>();
-        let directory = room
-            .path
-            .parent()
-            .unwrap_or(std::path::Path::new(""))
-            .to_owned();
+        let directory = crate::items::room_directory(self.world).to_owned();
         let mut data = self
             .world
             .get_resource_or_insert_with(maki_assets::DataAssets::default);

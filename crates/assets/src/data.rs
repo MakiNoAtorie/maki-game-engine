@@ -30,7 +30,7 @@ use std::sync::Arc;
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Res, ResMut};
+use bevy_ecs::system::{Local, Res, ResMut};
 use maki_core::fields::{self, Kind, Value};
 use maki_core::{App, Fields};
 use serde::de::DeserializeOwned;
@@ -310,14 +310,22 @@ pub(crate) fn forget_changed_data(
     }
 }
 
-/// Runs in `Update`: tells the watch the data files that were read.
-pub(crate) fn watch_data(data: Res<DataAssets>, mut watch: ResMut<AssetWatch>) {
-    if watch.on && data.is_changed() {
-        let files = data
-            .0
-            .iter()
-            .map(|(path, loaded)| (path.clone(), loaded.check));
+/// Runs in `Update`: tells the watch the data files that were read. Each read marks
+/// the store as changed, so the list of paths is compared with the one told before.
+pub(crate) fn watch_data(
+    data: Res<DataAssets>,
+    mut watch: ResMut<AssetWatch>,
+    mut told: Local<Vec<PathBuf>>,
+) {
+    if !watch.on || !data.is_changed() {
+        return;
+    }
+    let mut paths: Vec<PathBuf> = data.0.keys().cloned().collect();
+    paths.sort();
+    if *told != paths {
+        let files = paths.iter().map(|path| (path.clone(), data.0[path].check));
         watch.set("data", files.collect());
+        *told = paths;
     }
 }
 

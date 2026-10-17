@@ -17,6 +17,14 @@ pub struct DataEdit {
     pub path: PathBuf,
     pub type_name: String,
     pub tree: Value,
+    /// The time of the file at the last read or write: a newer file is read again.
+    pub time: Option<std::time::SystemTime>,
+}
+
+fn time_of(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|data| data.modified())
+        .ok()
 }
 
 impl DataEdit {
@@ -34,14 +42,17 @@ impl DataEdit {
             path: path.to_owned(),
             type_name: type_name.to_owned(),
             tree,
+            time: time_of(path),
         })
     }
 
-    pub fn save(&self, types: &DataTypes) -> Result<(), String> {
+    pub fn save(&mut self, types: &DataTypes) -> Result<(), String> {
         let data_type = types.get(&self.type_name).ok_or("The data type is gone.")?;
         let text = (data_type.text)(&self.tree)?;
         std::fs::write(&self.path, text)
-            .map_err(|error| format!("{} not written: {error}", self.path.display()))
+            .map_err(|error| format!("{} not written: {error}", self.path.display()))?;
+        self.time = time_of(&self.path);
+        Ok(())
     }
 }
 
@@ -151,6 +162,17 @@ pub(crate) fn data_menu(ui: &mut Ui, world: &World, editor: &mut Editor, new: &m
 
 /// The inspector with a data file open. True: it showed the file.
 pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor) -> bool {
+    let playing = editor.playing();
+    let Some(edit) = editor.data.as_mut() else {
+        return false;
+    };
+    // Another program wrote the file: show its values, so a change does not undo them.
+    if time_of(&edit.path) != edit.time {
+        match DataEdit::open(&edit.path, types) {
+            Ok(new) => *edit = new,
+            Err(error) => editor.error = Some(error),
+        }
+    }
     let Some(edit) = editor.data.as_mut() else {
         return false;
     };
@@ -161,7 +183,10 @@ pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor
     });
     let mut changed = false;
     if let Some(data_type) = types.get(&edit.type_name) {
-        changed = crate::fields::show(ui, &data_type.kind, &mut edit.tree, Lists::objects(&[]));
+        let tree = &mut edit.tree;
+        ui.add_enabled_ui(!playing, |ui| {
+            changed = crate::fields::show(ui, &data_type.kind, tree, Lists::objects(&[]));
+        });
     }
     let saved = if changed { edit.save(types) } else { Ok(()) };
     if let Err(error) = saved {

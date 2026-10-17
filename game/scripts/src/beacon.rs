@@ -243,15 +243,15 @@ mod tests {
         };
         let text = maki_engine::assets::data_text(&style);
         std::fs::write(directory.join("data/fast.beacon_style.ron"), text).unwrap();
-        let room = r#"(width: 8, depth: 8, height: 3, objects: [
-            (pose: (position: (0.0, 0.0, 1.0)), components: {
+        let room = maki_engine::scene::room_text(
+            8.0,
+            8.0,
+            3.0,
+            &[r#"(pose: (position: (0.0, 0.0, 1.0)), components: {
                 "beacon": (style: "data/fast.beacon_style.ron"),
-                "area": (width: 1.0, depth: 1.0)})])"#;
-        let mut app = App::new(ConfigFile::from_text(
-            "[time]
-fixed_hz = 50.0",
-        ))
-        .unwrap();
+                "area": (width: 1.0, depth: 1.0)})"#],
+        );
+        let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.add_module(PlatformModule)
             .add_module(SceneModule)
             .add_module(EventsModule);
