@@ -16,7 +16,8 @@ use bevy_ecs::world::World;
 use glam::Quat;
 use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Update};
 use maki_events::{
-    CommandRegistry, EventRunner, GameState, Inventory, ObjectStates, RunningEvent, run_events,
+    CommandRegistry, EventRunner, GameState, Inventory, ObjectStates, RunningEvent, SavedGame,
+    run_events,
 };
 use maki_platform::{Action, ActionState, Key, add_bindings};
 use maki_scene::{
@@ -127,7 +128,9 @@ impl Module for SaveModule {
             |_| Some("Saves the game: the room, the place of the player, the flags and variables. The file is written when the event ends."),
         );
         registry.add_defaults(|_, _| Some(SaveCommand::SavePoint));
+        let saved = file.as_ref().is_some_and(|file| file.is_file());
         app.insert_resource(SaveFile(file))
+            .insert_resource(SavedGame(saved))
             .init_resource::<SaveRequest>()
             // It reads `Controller::home` only; `apply_rules` writes `active`.
             .add_systems(
@@ -160,7 +163,12 @@ fn save_when_the_event_ends(
     file: Res<SaveFile>,
     runner: Res<EventRunner>,
     room: Res<CurrentRoom>,
-    (state, objects, items): (Res<GameState>, Res<ObjectStates>, Res<Inventory>),
+    (state, objects, items, mut saved): (
+        Res<GameState>,
+        Res<ObjectStates>,
+        Res<Inventory>,
+        ResMut<SavedGame>,
+    ),
     controller: Option<Res<Controller>>,
     poses: Query<&Interpolated>,
 ) {
@@ -192,7 +200,12 @@ fn save_when_the_event_ends(
         items: items.clone(),
     };
     match write(file, &save) {
-        Ok(()) => tracing::info!(file = %file.display(), room = %save.room.display(), "game saved"),
+        Ok(()) => {
+            tracing::info!(file = %file.display(), room = %save.room.display(), "game saved");
+            if !saved.0 {
+                saved.0 = true;
+            }
+        }
         Err(error) => tracing::error!("game not saved: {error:#}"),
     }
 }
@@ -217,10 +230,13 @@ pub fn read(file: &Path) -> Result<Option<SaveData>> {
 }
 
 /// Goes to the state of the save file of this run, if there is one. An error: no
-/// change.
-fn load(world: &mut World) {
-    let Some(file) = world.resource::<SaveFile>().0.clone() else {
-        return;
+/// change. True: the game is at the state of the save now.
+pub(crate) fn load(world: &mut World) -> bool {
+    let file = world
+        .get_resource::<SaveFile>()
+        .and_then(|file| file.0.clone());
+    let Some(file) = file else {
+        return false;
     };
     let loaded = read(&file).and_then(|save| match save {
         Some(save) => apply(world, &save).map(|()| Some(save)),
@@ -228,10 +244,17 @@ fn load(world: &mut World) {
     });
     match loaded {
         Ok(Some(save)) => {
-            tracing::info!(file = %file.display(), room = %save.room.display(), "game loaded")
+            tracing::info!(file = %file.display(), room = %save.room.display(), "game loaded");
+            true
         }
-        Ok(None) => tracing::debug!(file = %file.display(), "no save file"),
-        Err(error) => tracing::error!("save file not loaded: {error:#}"),
+        Ok(None) => {
+            tracing::debug!(file = %file.display(), "no save file");
+            false
+        }
+        Err(error) => {
+            tracing::error!("save file not loaded: {error:#}");
+            false
+        }
     }
 }
 

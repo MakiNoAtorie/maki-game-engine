@@ -353,6 +353,7 @@ fn condition_text(condition: &Condition) -> String {
             )
         }
         Condition::Any(conditions) => format!("({})", conditions_text(conditions, " or ")),
+        Condition::SaveExists => "a save exists".to_owned(),
     }
 }
 

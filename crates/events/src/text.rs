@@ -32,6 +32,9 @@ use maki_core::{App, Fields, ResetPlay, Settings, Update};
 use maki_scene::CurrentRoom;
 use serde::{Deserialize, Serialize};
 
+use crate::CommandRegistry;
+use crate::command::Step;
+
 /// The texts of one language: a data asset (`<name>.text.ron`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
 #[serde(default, deny_unknown_fields)]
@@ -300,8 +303,31 @@ fn reset_language(settings: Res<TextSettings>, mut texts: ResMut<Texts>) {
     texts.set_language(&language);
 }
 
-/// Adds the text tables, the settings, and the texts.
-pub(crate) fn add(app: &mut App) {
+/// The commands of the texts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+pub enum TextCommand {
+    /// The texts show in this language from now: an options menu. A new play starts
+    /// in the language of the settings again.
+    SetLanguage(#[field(label = "language")] String),
+}
+
+fn run(command: &TextCommand, _: &mut Step, world: &mut World) -> bool {
+    let TextCommand::SetLanguage(language) = command;
+    if world.resource::<Texts>().language() != language {
+        world.resource_mut::<Texts>().set_language(language);
+    }
+    true
+}
+
+/// Adds the text tables, the settings, the texts, and the command `SetLanguage`.
+pub(crate) fn add(app: &mut App, registry: &CommandRegistry) {
+    registry.add(run);
+    registry.add_fields::<TextCommand>();
+    registry.add_texts(
+        |TextCommand::SetLanguage(language): &TextCommand| Some(format!("Language: {language}")),
+        |name| (name == "SetLanguage").then_some("The texts show in another language."),
+    );
+    registry.add_defaults(|_, _| Some(TextCommand::SetLanguage("en".to_owned())));
     add_data_type::<TextTable>(app);
     app.add_settings::<TextSettings>();
     let settings = app.world().resource::<TextSettings>().clone();

@@ -18,6 +18,7 @@ mod light_control;
 mod player;
 mod rooms;
 mod save;
+mod screens;
 
 pub use camera::{CameraModule, CameraSettings, FollowCamera, follow_player};
 pub use control::{Controller, give_control};
@@ -33,3 +34,4 @@ pub use light_control::{
 pub use player::{PlayerDef, PlayerModule, Walker, steer_player, walk};
 pub use rooms::{RELOAD_ROOM, RoomSettings, RoomsModule, StartRoom, check_start_room};
 pub use save::{LOAD_GAME, SaveCommand, SaveData, SaveFile, SaveModule, SaveSettings};
+pub use screens::{PlayCommand, ScreenSettings, ScreensModule};
