@@ -253,7 +253,9 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
     // At most one cell changes in a frame.
     let mut change = None;
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-        egui::Grid::new("texts").striped(true).show(ui, |ui| {
+        // A grid gives a column the width of its first frame: a cell takes its width here.
+        let grid = egui::Grid::new("texts").striped(true).min_col_width(240.0);
+        grid.show(ui, |ui| {
             ui.strong("key");
             for language in &languages {
                 ui.strong(language);
