@@ -69,6 +69,29 @@ fn a_key_shows_the_text_of_the_language_then_of_the_fallback_then_itself() {
 }
 
 #[test]
+fn the_language_command_changes_the_texts() {
+    let directory = directory("text-command");
+    table(&directory, "en", &[("door.locked", "Locked.")]);
+    table(&directory, "ja", &[("door.locked", "Shimatte iru.")]);
+    let options = r#"(id: 10, name: "options", pages: [
+        (conditions: [Flag("ja")], trigger: Autorun, commands: [SetLanguage("ja")]),
+    ])"#;
+    std::fs::write(directory.join("a.ron"), room(options)).unwrap();
+    let app = text_game(&directory);
+    app.run(|mut app| {
+        steps(&mut app, 2);
+        assert_eq!(get(&mut app, "door.locked"), "Locked.");
+        app.resource_mut::<GameState>().set_flag("ja", true);
+        steps(&mut app, 2);
+        assert_eq!(get(&mut app, "door.locked"), "Shimatte iru.");
+        let registry = app.world().resource::<CommandRegistry>().clone();
+        let command = registry.parse_command(r#"SetLanguage("ja")"#).unwrap();
+        assert_eq!(registry.row_text(&command).as_deref(), Some("Language: ja"));
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn a_changed_table_shows_its_new_text() {
     let directory = directory("text-changed");
     table(&directory, "en", &[("door.locked", "Locked.")]);

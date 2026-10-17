@@ -51,8 +51,8 @@ pub use menu::{
     menu_text, read_menu, shown_menus,
 };
 pub use model::{
-    Area, Compare, Condition, EventDef, EventPages, Facts, Page, Trigger, Wire, active_page,
-    all_hold, short_events,
+    Area, Compare, Condition, EventDef, EventPages, Facts, Page, SavedGame, Trigger, Wire,
+    active_page, all_hold, short_events,
 };
 pub use numbers::{EventsSettings, Numbers, Random};
 pub use objects::ObjectCommand;
@@ -67,8 +67,8 @@ pub use state::{
     room_key,
 };
 pub use text::{
-    TEXT_FOLDER, TextEntry, TextKey, TextSettings, TextTable, Texts, fill, table_files, table_path,
-    text, texts,
+    TEXT_FOLDER, TextCommand, TextEntry, TextKey, TextSettings, TextTable, Texts, fill,
+    table_files, table_path, text, texts,
 };
 
 /// Starts the event that the player faces, closes a message, and takes the marked
@@ -159,7 +159,7 @@ impl Module for EventsModule {
         // The menus and their stack.
         menu::add(app, &registry);
         // The text tables and the texts of the game.
-        text::add(app);
+        text::add(app, &registry);
         let fallback = &app.world().resource::<TextSettings>().fallback;
         registry.texts.lock().expect("no holder panics").fallback = fallback.clone();
         let check = registry.validator();

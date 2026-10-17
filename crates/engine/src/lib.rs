@@ -184,6 +184,9 @@ fn add_modules(
         .add_module(maki_gameplay::SaveModule {
             file: project.save.clone(),
             active: !editor,
+        })
+        .add_module(maki_gameplay::ScreensModule {
+            screens: project.screens.clone(),
         });
     project_modules(app);
     app.add_module(maki_render::RenderModule)

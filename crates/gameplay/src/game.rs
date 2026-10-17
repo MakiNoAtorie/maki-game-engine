@@ -154,7 +154,11 @@ pub(crate) fn apply_rules(
 
 /// Runs in `Update`: the pause action changes between play and pause. In `Update`,
 /// as no fixed step runs in a pause.
-fn pause_on_action(actions: Res<ActionState>, rules: Res<GameRules>, mut state: ResMut<PlayState>) {
+pub(crate) fn pause_on_action(
+    actions: Res<ActionState>,
+    rules: Res<GameRules>,
+    mut state: ResMut<PlayState>,
+) {
     if !(rules.pause && actions.just_pressed(PAUSE)) {
         return;
     }

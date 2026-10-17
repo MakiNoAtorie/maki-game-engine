@@ -1,0 +1,7 @@
+(
+    title: "menu.pause",
+    rows: [
+        Commands(text: "menu.back", commands: [CloseMenu]),
+        Commands(text: "menu.to_title", commands: [SetPlayState(Title)]),
+    ],
+)

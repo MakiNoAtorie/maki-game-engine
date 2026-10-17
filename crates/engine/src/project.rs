@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use maki_assets::FileRef;
+use maki_gameplay::ScreenSettings;
 use maki_scene::ObjectId;
 use serde::Deserialize;
 
@@ -24,6 +25,9 @@ struct ProjectFile {
     /// The prefab file of the player, from `rooms`. No key: a capsule.
     #[serde(default)]
     player: Option<FileRef>,
+    /// The menus of the title, the pause, and the game over, from `rooms`.
+    #[serde(default)]
+    screens: ScreenSettings,
 }
 
 /// A project: a folder with `project.toml`, the assets, and the script crate. The
@@ -49,6 +53,8 @@ pub struct Project {
     /// The prefab file of the player, from `rooms` (a file name in it starts there,
     /// as in a prefab that a room names). `None`: a capsule.
     pub player: Option<FileRef>,
+    /// The menus of the screens, from `rooms`, for a config file that names none.
+    pub screens: ScreenSettings,
 }
 
 impl Project {
@@ -77,6 +83,7 @@ impl Project {
             save: below(&file.save),
             scripts: file.scripts,
             player: file.player,
+            screens: file.screens,
             dir: slashes(dir.to_owned()),
         })
     }
@@ -115,5 +122,11 @@ mod tests {
         // A name is no longer a spawn point.
         let named = text.replace("start_spawn = 2", r#"start_spawn = "start""#);
         assert!(Project::parse(Path::new("game"), &named).is_err());
+        // The menus of the screens, from `rooms`; no table: none.
+        assert_eq!(project.screens, ScreenSettings::default());
+        let screens = format!("{text}\n[screens]\ntitle = \"data/menus/t.menu.ron\"");
+        let project = Project::parse(Path::new("game"), &screens).unwrap();
+        let title = project.screens.title.unwrap();
+        assert_eq!(title.file.path, Path::new("data/menus/t.menu.ron"));
     }
 }

@@ -15,6 +15,7 @@ use std::fmt;
 use std::path::Path;
 
 use bevy_ecs::component::Component;
+use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_assets::DataRef;
 use maki_core::Fields;
@@ -199,6 +200,9 @@ pub enum Condition {
     /// One of the conditions holds ("or"). With no condition: it does not hold.
     #[field(label = "any of")]
     Any(Vec<Condition>),
+    /// The save file of the game exists: a "Continue" row of a title menu.
+    #[field(label = "a save exists")]
+    SaveExists,
 }
 
 /// How a variable is compared with a number.
@@ -249,6 +253,7 @@ impl Condition {
             }
             Condition::Item(item, compare, value) => compare.holds(state.item(item), *value),
             Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
+            Condition::SaveExists => state.save,
         }
     }
 
@@ -264,10 +269,16 @@ impl Condition {
             Condition::Switch(..)
             | Condition::NotSwitch(..)
             | Condition::Number(..)
-            | Condition::Item(..) => Vec::new(),
+            | Condition::Item(..)
+            | Condition::SaveExists => Vec::new(),
         }
     }
 }
+
+/// True: the save file of the game exists. The save module of the game sets it; a
+/// condition reads it at each step, so no condition reads the disk.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SavedGame(pub bool);
 
 /// What a condition reads: the flags and variables as a command sees them (with the
 /// arguments of a routine), the state of the objects of the current room, the object
@@ -280,6 +291,8 @@ pub struct Facts<'a> {
     pub inventory: Option<&'a Inventory>,
     /// The directory of the room file: an item file starts there.
     pub directory: &'a Path,
+    /// True: the save file of the game exists ([`SavedGame`]).
+    pub save: bool,
 }
 
 impl<'a> Facts<'a> {
@@ -293,6 +306,9 @@ impl<'a> Facts<'a> {
             this,
             inventory: world.get_resource::<Inventory>(),
             directory: crate::items::room_directory(world),
+            save: world
+                .get_resource::<SavedGame>()
+                .is_some_and(|saved| saved.0),
         }
     }
 
@@ -304,6 +320,7 @@ impl<'a> Facts<'a> {
             this: None,
             inventory: None,
             directory: Path::new(""),
+            save: false,
         }
     }
 

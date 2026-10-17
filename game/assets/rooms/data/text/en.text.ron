@@ -29,5 +29,37 @@
             key: "beacon.forget",
             text: "dial turns. The lamp forgets.",
         ),
+        (
+            key: "menu.title",
+            text: "maki",
+        ),
+        (
+            key: "menu.new_game",
+            text: "New game",
+        ),
+        (
+            key: "menu.continue",
+            text: "Continue",
+        ),
+        (
+            key: "menu.quit",
+            text: "Quit",
+        ),
+        (
+            key: "menu.pause",
+            text: "Pause",
+        ),
+        (
+            key: "menu.back",
+            text: "Back",
+        ),
+        (
+            key: "menu.to_title",
+            text: "Quit to title",
+        ),
+        (
+            key: "menu.game_over",
+            text: "Game over",
+        ),
     ],
 )

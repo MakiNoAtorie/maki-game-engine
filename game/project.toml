@@ -13,3 +13,10 @@ save = "save.ron"
 player = { path = "prefabs/player.prefab", id = "86520338f7517f25" }
 # The cargo package that the editor builds and loads: the script crate as a DLL.
 scripts = "maki-game-dll"
+
+# The menus of the screens, from `rooms`. The game starts in play (`[rules] start`
+# of the config): the title shows after "Quit to title".
+[screens]
+title = "data/menus/title.menu.ron"
+pause = "data/menus/pause.menu.ron"
+game_over = "data/menus/game_over.menu.ron"
