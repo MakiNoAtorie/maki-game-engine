@@ -134,7 +134,20 @@ fn value(
             // A reference with an id is `{path, id}`; a new file drops the id of the old one.
             let shown = tree.as_str().or_else(|| tree.get("path")?.as_str());
             let mut path = PathBuf::from(shown.unwrap_or_default());
-            let changed = file(ui, label, &mut path, extensions(group));
+            // A group that is not fixed is a data type: its files end in `<type>.ron`.
+            let fixed = extensions(group);
+            let data = maki_assets::DataTypes::extension(group);
+            let data = [data.as_str()];
+            let changed = file(
+                ui,
+                label,
+                &mut path,
+                if fixed.is_empty() && !group.is_empty() {
+                    &data
+                } else {
+                    fixed
+                },
+            );
             if changed {
                 *tree = Value::String(path.to_string_lossy().replace('\\', "/"));
             }

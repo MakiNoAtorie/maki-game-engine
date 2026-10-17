@@ -56,6 +56,8 @@ pub struct DataType {
     pub kind: Kind,
     /// Reads a tree as the type: the tree of what was read, or why it does not read.
     pub check_tree: fn(&Value) -> Result<Value, String>,
+    /// The tree of the text of a file. `Err`: the text does not read as the type.
+    pub tree_of_text: fn(&str) -> Result<Value, String>,
     /// The text of a file of a tree. `Err`: the tree is not of the type.
     pub text: fn(&Value) -> Result<String, String>,
     /// The text of a file with the default value.
@@ -145,6 +147,12 @@ pub fn add_data_type<T: DataAsset>(app: &mut App) {
         kind: T::kind(),
         check_tree: |tree| {
             let value = fields::read::<T>(tree.clone()).map_err(|error| error.to_string())?;
+            Ok(value.tree())
+        },
+        tree_of_text: |text| {
+            let value: T = ron_options()
+                .from_str(text)
+                .map_err(|error| error.to_string())?;
             Ok(value.tree())
         },
         text: |tree| {
@@ -373,6 +381,10 @@ mod tests {
         std::fs::write(&path, (lamp.text)(&tree).unwrap()).unwrap();
         assert_eq!(read_data::<Lamp>(&path).unwrap().power, 5.0);
         assert!((lamp.text)(&serde_json::json!({"power": "x"})).is_err());
+        // The text of a file is a tree of the type, and the tree writes the same text.
+        let back = (lamp.tree_of_text)(&(lamp.default_text)()).unwrap();
+        assert_eq!(back, Lamp::default().tree());
+        assert!((lamp.tree_of_text)("(power: \"x\")").is_err());
     }
 
     #[test]
