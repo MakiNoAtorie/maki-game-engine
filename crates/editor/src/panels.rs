@@ -90,9 +90,11 @@ pub(crate) fn build(app: &mut App) {
     add_menu(app, "Add", Some(Box::new(add)));
     // The text of the name field of "New routine".
     let mut routine_name = String::new();
+    let mut new_data = crate::data_panel::NewData::default();
     let assets = move |ui: &mut Ui, world: &mut World| {
-        with_editor(world, |_, editor| {
+        with_editor(world, |world, editor| {
             crate::routine_panel::routine_menu(ui, editor, &mut routine_name);
+            crate::data_panel::data_menu(ui, world, editor, &mut new_data);
         });
     };
     add_menu(app, "Assets", Some(Box::new(assets)));
@@ -709,6 +711,11 @@ fn properties(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
     // For the file pickers of the widgets.
     let directory = editor.document.path.parent().unwrap_or(Path::new(""));
     crate::widgets::set_room_directory(ui, directory, &editor.converters);
+    if let Some(types) = world.get_resource::<maki_assets::DataTypes>()
+        && crate::data_panel::data_inspector(ui, types, editor)
+    {
+        return;
+    }
     let item = editor.primary();
     if editor.selection.len() > 1 {
         ui.weak(format!(

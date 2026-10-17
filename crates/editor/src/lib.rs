@@ -28,6 +28,7 @@
 
 mod audio;
 mod camera;
+mod data_panel;
 mod document;
 mod event_panel;
 mod events;
@@ -321,6 +322,8 @@ pub struct Editor {
     unpacked: Option<(PathBuf, maki_scene::PoseDef)>,
     /// The routine file that the event panel shows in place of an event.
     pub routine: Option<routine_panel::RoutineEdit>,
+    /// The data file that the inspector shows in place of the selection.
+    pub data: Option<data_panel::DataEdit>,
 }
 
 impl Editor {
@@ -1392,6 +1395,7 @@ impl Module for EditorModule {
             prefab_name: String::new(),
             unpacked: None,
             routine: None,
+            data: None,
         })
         .add_systems(Startup, camera::spawn)
         .add_systems(Input, take_quit_request)
