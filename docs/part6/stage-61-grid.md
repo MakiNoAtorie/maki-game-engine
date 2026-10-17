@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.15 ("Movement", "Grid", the slice item 6: an ene
 Goal: a room has a grid (a cell size, 1 m if not set). The walk of the player is free or on the grid, as a setting of the walking module. Characters that are not the player walk by a path search on a grid that the room load makes from the collision of the room. The physics gives the line of sight. An enemy made from the template "Chaser" rests, sees the player, follows the player around walls, and gives up when it loses the player out of its line of sight. The snap of the editor uses the grid of the room.
 Gate: a test in code: a room with a wall between a character and a place: `WalkTo` walks the character around the wall to the place and waits until it is there; on the grid, a press of a direction moves the player one cell and a cell with a wall does not take it; a ray of the line of sight is blocked by a wall and not by a sensor; a chaser follows the player that it sees, and stops and goes back to rest some seconds after a wall hides the player. The game plays as before with the free walk: the trip run, `bench.py gate`, the GPU time against `s60`.
 
-State: written by the session from the plan and the code at commit `4fd5c2f`. Not seen by the owner.
+State: written by the session from the plan and the code at commit `4fd5c2f`. Approved by the owner (2026-10-17); not started: the owner does it later.
 
 ## Now (the code at stage 60)
 
@@ -29,7 +29,7 @@ State: written by the session from the plan and the code at commit `4fd5c2f`. No
 
 ## Tickets
 
-Proposed, not approved.
+Approved by the owner (2026-10-17). The issues are not published yet: at the start of the stage.
 
 | Ticket | Blocked by |
 |---|---|
