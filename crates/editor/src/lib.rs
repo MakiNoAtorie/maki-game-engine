@@ -42,6 +42,7 @@ mod pictures;
 mod ron_text;
 mod routine_panel;
 pub mod sources;
+mod text_csv;
 mod view;
 pub mod widgets;
 
@@ -1427,6 +1428,7 @@ impl Module for EditorModule {
         );
         app.resource_mut::<AssetWatch>().on = true;
         add_commands(app);
+        text_csv::add_commands(app);
         panels::build(app);
     }
 }
