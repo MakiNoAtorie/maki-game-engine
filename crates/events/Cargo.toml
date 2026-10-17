@@ -8,6 +8,7 @@ maki-core.workspace = true
 maki-platform.workspace = true
 maki-scene.workspace = true
 maki-assets.workspace = true
+maki-physics.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
 glam.workspace = true

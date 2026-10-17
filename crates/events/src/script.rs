@@ -25,8 +25,9 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::{Mut, World};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use maki_core::{App, Fields, Interpolated, Time, Transform};
+use maki_physics::{Hit, Physics, QueryFilter, Shape};
 use maki_platform::{Action, FixedActionState};
 use maki_scene::{Name, ObjectId, add_object_component};
 use serde::de::DeserializeOwned;
@@ -305,6 +306,34 @@ impl<'w> ScriptContext<'w> {
                 .resource_mut::<EventRunner>()
                 .running
                 .push(running);
+        }
+    }
+
+    /// The first collider that a ray hits within `length` meters, not a hidden object,
+    /// a sensor, or this object. No `Physics` in the world (no module): no hit.
+    pub fn ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<Hit> {
+        let physics = self.world.get_resource::<Physics>()?;
+        physics.ray(from, direction, length, self.query_filter())
+    }
+
+    /// The entities with a collider in a shape at `center`, not hidden, not sensors,
+    /// not this object.
+    pub fn overlap(&self, shape: Shape, center: Vec3) -> Vec<Entity> {
+        let Some(physics) = self.world.get_resource::<Physics>() else {
+            return Vec::new();
+        };
+        physics.overlap(shape, center, Quat::IDENTITY, self.query_filter())
+    }
+
+    /// The id of an entity that a query found, if it is an object of the room.
+    pub fn object_id(&self, entity: Entity) -> Option<ObjectId> {
+        self.world.get::<ObjectId>(entity).copied()
+    }
+
+    fn query_filter(&self) -> QueryFilter {
+        QueryFilter {
+            exclude: Some(self.entity),
+            ..QueryFilter::default()
         }
     }
 }
