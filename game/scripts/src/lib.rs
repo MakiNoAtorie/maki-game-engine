@@ -45,6 +45,7 @@ output = false",
         .unwrap();
         app.add_module(platform::PlatformModule)
             .add_module(scene::SceneModule)
+            .add_module(maki_engine::physics::PhysicsModule)
             .add_module(events::EventsModule)
             .add_module(audio::AudioModule)
             .add_module(gameplay::CameraModule)

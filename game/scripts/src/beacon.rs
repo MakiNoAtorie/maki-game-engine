@@ -158,6 +158,7 @@ mod tests {
 
     use maki_engine::core::{ConfigFile, FixedFirst, Interpolated, Startup, Transform};
     use maki_engine::events::{CommandRegistry, EventsModule, GameState, MessageBox};
+    use maki_engine::physics::{Kinematic, Shape};
     use maki_engine::platform::{Key, PlatformModule, RawInput};
     use maki_engine::scene::{Player, RoomRequest, RoomTarget, SceneModule};
 
@@ -174,13 +175,23 @@ mod tests {
         let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
         app.add_module(PlatformModule)
             .add_module(SceneModule)
+            .add_module(maki_engine::physics::PhysicsModule)
             .add_module(EventsModule);
         add(&mut app);
         app.add_systems(
             Startup,
             move |mut commands: bevy_ecs::system::Commands,
                   mut request: bevy_ecs::system::ResMut<RoomRequest>| {
-                commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
+                // The capsule is what the sensor of the area sees.
+                let body = Kinematic {
+                    shape: Shape::Capsule {
+                        radius: 0.3,
+                        half_height: 0.5,
+                    },
+                    center: [0.0, 0.8, 0.0].into(),
+                    sensor: false,
+                };
+                commands.spawn((Player, Interpolated::at(Transform::IDENTITY), body));
                 // In the directory of the rooms of the game: the message is of its text table.
                 request.0 = Some(RoomTarget {
                     path: concat!(env!("CARGO_MANIFEST_DIR"), "/../assets/rooms/beacon.ron").into(),
@@ -215,7 +226,8 @@ mod tests {
             }
             // Far from the lamp: the light of the file.
             assert_eq!(intensity(&app), 10.0);
-            for _ in 0..12 {
+            // The sensor tells the events 4 steps after the move.
+            for _ in 0..16 {
                 app.advance(step);
             }
             assert_ne!(intensity(&app), 10.0);

@@ -322,6 +322,7 @@ mod tests {
         app.add_module(maki_platform::PlatformModule)
             .add_module(maki_assets::AssetsModule)
             .add_module(maki_scene::SceneModule)
+            .add_module(maki_physics::PhysicsModule)
             .add_module(maki_events::EventsModule)
             .add_module(crate::ControlsModule)
             .add_module(PlayerModule::default())
