@@ -124,10 +124,7 @@ impl Script for Beacon {
         // Two commands of the engine, through the same registry as the rows of an
         // event: the count, and a message that waits for a press.
         context.call(Builtin::AddVariable(TOUCHES.to_owned(), 1));
-        let touches = context.state().variable(TOUCHES);
-        context.call(Builtin::Message(format!(
-            "The lamp hums. Touched {touches} times."
-        )));
+        context.call(Builtin::Message("beacon.touched".into()));
     }
 
     fn enter_area(&mut self, _context: &mut ScriptContext) {
@@ -145,8 +142,8 @@ impl Script for Beacon {
 /// event.
 fn forget(context: &mut ScriptContext) {
     context.state().set_variable(TOUCHES, 0);
-    let text = format!("{} turns. The lamp forgets.", context.name());
-    context.call(Builtin::Message(text));
+    // A text shows variables only, not the name of the object: the text names the dial.
+    context.call(Builtin::Message("beacon.forget".into()));
 }
 
 pub fn add(app: &mut App) {
@@ -184,8 +181,9 @@ mod tests {
             move |mut commands: bevy_ecs::system::Commands,
                   mut request: bevy_ecs::system::ResMut<RoomRequest>| {
                 commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
+                // In the directory of the rooms of the game: the message is of its text table.
                 request.0 = Some(RoomTarget {
-                    path: "beacon.ron".into(),
+                    path: concat!(env!("CARGO_MANIFEST_DIR"), "/../assets/rooms/beacon.ron").into(),
                     spawn: None,
                     text: Some(room.to_owned()),
                 });

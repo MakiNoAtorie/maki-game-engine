@@ -160,6 +160,8 @@ fn value(
                 Some(unset) => row(ui, label, |ui| {
                     crate::event_panel::pick_or_new(ui, list, &mut name, &known, &unset)
                 }),
+                // A panel with no text tables at hand: the key is typed.
+                None if *list == "texts" && known.is_empty() => text(ui, label, &mut name),
                 None => pick(ui, label, &mut name, &known),
             };
             if changed {

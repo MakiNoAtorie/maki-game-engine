@@ -221,6 +221,22 @@ impl<'w> ScriptContext<'w> {
         }
     }
 
+    /// The text of a key in the language of the game, with the `{name}` of the game
+    /// variables. A key that no table has is the text.
+    pub fn text(&mut self, key: &str) -> String {
+        let variables = self.world.resource::<GameState>().variables.clone();
+        crate::text(self.world, key, |name| {
+            variables.get(name).copied().unwrap_or(0)
+        })
+    }
+
+    /// Changes the language of the game (`"ja"`): the texts of the next lookups.
+    pub fn set_language(&mut self, language: &str) {
+        self.world
+            .resource_mut::<crate::Texts>()
+            .set_language(language);
+    }
+
     /// The id of the object of this script.
     fn this(&self) -> Option<ObjectId> {
         self.world.get::<ObjectId>(self.entity).copied()

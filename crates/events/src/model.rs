@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(events[0].pages[1].commands.len(), 3);
         assert_eq!(
             events[0].pages[0].commands[0].get(),
-            Some(&Builtin::Message("Locked.".to_owned()))
+            Some(&Builtin::Message("Locked.".into()))
         );
         // An object with no area: an event that no player walks to.
         assert_eq!((events[1].object, events[1].area), (2, None));
@@ -594,7 +594,7 @@ mod tests {
         assert!(error.starts_with("3:"), "{error}");
 
         // A command that code makes is the command that the file gives.
-        let made = registry.command(Builtin::Message("Locked.".to_owned()));
+        let made = registry.command(Builtin::Message("Locked.".into()));
         assert_eq!(made.as_ref(), Some(&events[0].pages[0].commands[0]));
         assert!(registry.command(crate::Trigger::Touch).is_none());
 

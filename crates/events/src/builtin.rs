@@ -23,6 +23,7 @@ use crate::command::{Command, Step};
 use crate::interpreter::{ChoiceBox, Choices};
 use crate::model::{Compare, Condition, EventPages, all_hold};
 use crate::script::ScriptContext;
+use crate::text::TextKey;
 use crate::{CHOICE_DOWN, CHOICE_UP, GameState, INTERACT, MessageBox};
 
 /// Text arguments are names: of a flag or a variable. An object of the room file (a
@@ -43,11 +44,13 @@ pub enum Builtin {
     LightOn(ObjectId),
     LightOff(ObjectId),
     LightIntensity(ObjectId, f32),
-    /// Shows the text until the player presses interact.
-    Message(String),
-    /// A question: the text, and for each answer its text and the commands that run
-    /// if the player takes it. `Choice("Open it?", [("Yes", [..]), ("No", [])])`.
-    Choice(String, Vec<(String, Vec<Command>)>),
+    /// Shows the text of the key until the player presses interact. A key that no
+    /// text table has shows itself: a room file of before, with a text, still plays.
+    Message(TextKey),
+    /// A question: the key of its text, and for each answer the key of its text and
+    /// the commands that run if the player takes it.
+    /// `Choice("door.ask", [("yes", [..]), ("no", [])])`.
+    Choice(TextKey, Vec<(TextKey, Vec<Command>)>),
     /// To black, in this many seconds.
     FadeOut(f32),
     /// Back to the picture.
@@ -106,10 +109,11 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             intensity: *intensity,
             ..*light
         }),
-        Builtin::Message(text) => {
+        Builtin::Message(key) => {
             if step.start {
+                let text = step_text(step, world, key);
                 tracing::debug!(event = step.event, text, "message");
-                world.resource_mut::<MessageBox>().0 = Some(text.clone());
+                world.resource_mut::<MessageBox>().0 = Some(text);
                 return false;
             }
             if !world.resource::<FixedActionState>().just_pressed(INTERACT) {
@@ -119,10 +123,14 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
         }
         Builtin::Choice(question, answers) => {
             if step.start {
+                let question = step_text(step, world, question);
                 tracing::debug!(event = step.event, question, "question");
-                world.resource_mut::<MessageBox>().0 = Some(question.clone());
+                world.resource_mut::<MessageBox>().0 = Some(question);
+                let answers = answers
+                    .iter()
+                    .map(|answer| step_text(step, world, &answer.0));
                 world.resource_mut::<ChoiceBox>().0 = Some(Choices {
-                    answers: answers.iter().map(|answer| answer.0.clone()).collect(),
+                    answers: answers.collect(),
                     selected: 0,
                 });
                 // Not in this step: the press that started the event, or that
@@ -150,7 +158,7 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             choice.0 = None;
             world.resource_mut::<MessageBox>().0 = None;
             if let Some((answer, commands)) = answers.get(selected) {
-                tracing::debug!(event = step.event, answer, "answer");
+                tracing::debug!(event = step.event, answer = answer.0.as_str(), "answer");
                 step.open(commands.clone());
             }
         }
@@ -218,6 +226,15 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
     true
 }
 
+/// The text of a key now, with the `{name}` of the variables that the step sees: the
+/// arguments of a routine call hide the game variables of their names.
+fn step_text(step: &Step, world: &mut World, key: &TextKey) -> String {
+    let variables = step.state(world).game.into_owned().variables;
+    crate::text(world, &key.0, |name| {
+        variables.get(name).copied().unwrap_or(0)
+    })
+}
+
 /// Writes `value` into the field of the component of the first entity of the object
 /// that has the component. A name that the game does not have is a warning.
 fn set_field(
@@ -277,7 +294,8 @@ pub(crate) fn lists(command: &Builtin) -> Vec<(String, &[Command])> {
         }
         Builtin::Choice(_, answers) => {
             let answers = answers.iter();
-            let list = answers.map(|answer| (format!("Answer: {}", answer.0), answer.1.as_slice()));
+            let list =
+                answers.map(|answer| (format!("Answer: {}", answer.0.0), answer.1.as_slice()));
             list.collect()
         }
         _ => Vec::new(),
@@ -353,8 +371,9 @@ pub(crate) fn row_text(command: &Builtin) -> Option<String> {
         Builtin::LightOn(object) => format!("Light {object}: on"),
         Builtin::LightOff(object) => format!("Light {object}: off"),
         Builtin::LightIntensity(object, value) => format!("Light {object}: intensity {value}"),
-        Builtin::Message(text) => format!("Message: {text}"),
-        Builtin::Choice(question, _) => format!("Question: {question}"),
+        // The key: the text of a key needs the world, and a row has none here.
+        Builtin::Message(key) => format!("Message: {}", key.0),
+        Builtin::Choice(question, _) => format!("Question: {}", question.0),
         Builtin::FadeOut(seconds) => format!("Fade to black, {seconds} s"),
         Builtin::FadeIn(seconds) => format!("Fade to the picture, {seconds} s"),
         Builtin::Transfer(room, spawn) => format!("Go to {room}, at {spawn}"),
@@ -428,6 +447,18 @@ pub(crate) fn check(command: &Builtin, context: &CheckContext) -> Option<Finding
             .is_none()
             .then(|| Finding::error(format!("no module added the script function `{name}`"))),
         _ => None,
+    }
+}
+
+/// The text keys of a row: of a message, of a question and its answers.
+pub(crate) fn text_keys(command: &Builtin) -> Vec<&TextKey> {
+    match command {
+        Builtin::Message(key) => vec![key],
+        Builtin::Choice(question, answers) => {
+            let answers = answers.iter().map(|answer| &answer.0);
+            std::iter::once(question).chain(answers).collect()
+        }
+        _ => Vec::new(),
     }
 }
 
