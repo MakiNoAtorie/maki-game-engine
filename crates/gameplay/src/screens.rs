@@ -173,6 +173,10 @@ fn show_screens(world: &mut World, mut shown: Local<Shown>) {
             play(world);
         }
     }
+    // A tool stops the game (`Time::paused`, the edit of the editor): no screen opens.
+    if world.resource::<maki_core::Time>().paused {
+        return;
+    }
     let state = *world.resource::<PlayState>();
     let before = shown.state.replace(state);
     if before != Some(state) {
@@ -381,6 +385,21 @@ mod tests {
             assert!(!app.world().resource::<QuitRequested>().0);
             tap(&mut app, Key::Z);
             assert!(app.world().resource::<QuitRequested>().0);
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn no_screen_opens_while_a_tool_stops_the_game() {
+        let directory = directory("paused");
+        game(&directory, "Title").run(|mut app| {
+            // The edit of the editor: the game stands, its title menu does not show.
+            app.resource_mut::<maki_core::Time>().paused = true;
+            steps(&mut app, 3);
+            assert_eq!(rows(&app), NONE);
+            app.resource_mut::<maki_core::Time>().paused = false;
+            steps(&mut app, 2);
+            assert_eq!(rows(&app), [["> new", "quit"]]);
         });
         std::fs::remove_dir_all(&directory).unwrap();
     }

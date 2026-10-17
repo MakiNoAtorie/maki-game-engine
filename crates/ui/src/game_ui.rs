@@ -248,6 +248,8 @@ fn menu_box(ui: &mut egui::Ui, index: usize, menu: &ShownMenu, scale: f32) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             box_frame().show(ui, |ui| {
+                // An area takes the width of its first frame: a row would wrap after a word.
+                ui.set_min_width(240.0 * scale);
                 if let Some(title) = &menu.title {
                     ui.label(
                         egui::RichText::new(title)
