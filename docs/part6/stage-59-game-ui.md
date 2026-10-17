@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.15 ("UI of the game", "Menus", the slice items 1
 Goal: the UI of a game is a module of its own on egui, and the menus are data. A menu is a data asset `Menu`: its rows, and for each row the commands that it runs (a command, a routine, a script function). The module draws a stack of menus with focus, the message box, the choices, a list of the items, and a HUD; the player moves the focus with input actions. The title, pause, inventory, and game-over screens are menus of the project; a script can open a menu that it makes. The texts are keys of the text tables, and the game UI has a font of the project (Japanese).
 Gate: a test in code: a title menu at the start of a game with `[rules] start = "Title"`: "New game" goes to the start room in `Play`, "Continue" is there only with a save and loads it, "Quit" ends the program; in play the pause action opens the pause menu and its "Back" row closes it and plays again; a menu row `OpenMenu(inventory)` shows each item of the inventory with its name and count, and a pick of an item runs its commands; a HUD menu shows `{coins}` and takes no input; `GameOver` shows the game-over menu; a menu from a script opens and closes; up, down, interact, and back move and take the focus. The game plays as before: the trip run passes, `bench.py gate` shows the same pictures, the GPU time against `s58` is the same.
 
-State: written by the session from the plan and the code at commit `a933137`. Not seen by the owner.
+State: written by the session from the plan and the code at commit `a933137`. Approved by the owner (2026-10-17).
 
 ## Now (the code at stage 58)
 
@@ -32,17 +32,17 @@ State: written by the session from the plan and the code at commit `a933137`. No
 
 ## Tickets
 
-Proposed, not approved.
+Approved by the owner (2026-10-17). GitHub issues #69 to #73.
 
 | Ticket | Blocked by |
 |---|---|
-| A. The module of the game UI: the text box in it, the font and the look of the game (prefactor) | none |
-| B. Menus as data assets and the menu stack, with focus and input | A |
-| C. Title, pause, and game over; new game, continue, quit, language | B |
-| D. The list of the items and the HUD | B |
-| E. Menus in the editor | B |
+| #69 The module of the game UI: the text box in it, the font and the look of the game (prefactor) | none |
+| #70 Menus as data assets and the menu stack, with focus and input | #69 |
+| #71 Title, pause, and game over; new game, continue, quit, language | #70 |
+| #72 The list of the items and the HUD | #70 |
+| #73 Menus in the editor | #70 |
 
-C, D, and E can run at the same time after B: C writes `crates/gameplay` and the menus of `game/`; D writes the item and text rows of `menu.rs`, `items.rs`, and their drawing; E writes a new panel file in `crates/editor`.
+#71, #72, and #73 can run at the same time after #70: #71 writes `crates/gameplay` and the menus of `game/`; #72 writes the item and text rows of `menu.rs`, `items.rs`, and their drawing; #73 writes a new panel file in `crates/editor`.
 
 ## Done when
 
