@@ -240,8 +240,16 @@ fn menu_box(ui: &mut egui::Ui, index: usize, menu: &ShownMenu, scale: f32) {
                     } else {
                         ("   ", TEXT)
                     };
-                    let line = egui::RichText::new(format!("{mark}{}", row.text));
+                    let count = row
+                        .count
+                        .map_or(String::new(), |count| format!("  x{count}"));
+                    let line = egui::RichText::new(format!("{mark}{}{count}", row.text));
                     ui.label(line.font(game_font(20.0, scale)).color(color));
+                }
+                if let Some(description) = &menu.description {
+                    ui.add_space(8.0);
+                    let line = egui::RichText::new(description);
+                    ui.label(line.font(game_font(18.0, scale)).color(TEXT));
                 }
             });
         });
@@ -321,14 +329,33 @@ mod tests {
         let row = |text: &str, focus| maki_events::ShownRow {
             text: text.to_owned(),
             focus,
+            count: None,
         };
         let menu = ShownMenu {
             place: MenuPlace::TopRight,
             title: Some("Pause".to_owned()),
             rows: vec![row("Back", false), row("Items", true)],
+            description: None,
         };
         let texts = drawn(|ui| menu_box(ui, 0, &menu, 1.0));
         assert_eq!(texts, ["Pause", "   Back", "> Items"]);
+    }
+
+    #[test]
+    fn a_menu_shows_the_names_and_counts_of_items_and_the_description_of_the_focus() {
+        let item = |text: &str, focus, count| maki_events::ShownRow {
+            text: text.to_owned(),
+            focus,
+            count: Some(count),
+        };
+        let menu = ShownMenu {
+            place: MenuPlace::Center,
+            title: None,
+            rows: vec![item("Key", true, 2), item("Coin", false, 15)],
+            description: Some("Opens the door.".to_owned()),
+        };
+        let texts = drawn(|ui| menu_box(ui, 0, &menu, 1.0));
+        assert_eq!(texts, ["> Key  x2", "   Coin  x15", "Opens the door."]);
     }
 
     #[test]

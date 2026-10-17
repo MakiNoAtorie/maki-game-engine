@@ -26,7 +26,7 @@ pub use data::{
     DATA_FOLDER, DataAsset, DataAssets, DataFile, DataRef, DataType, DataTypes, add_data_type,
     data_text, read_data,
 };
-pub use file_ref::{FileId, FileRef, forget_id_tables};
+pub use file_ref::{FileId, FileRef, forget_id_tables, path_of_id};
 pub use mesh::{Doorway, Material, Mesh, Wall};
 pub use model::{Model, ModelLight, ModelLoads, check_model, load_gltf};
 pub use texture::{Texture, TextureRef, Textures, check_image};
