@@ -247,7 +247,7 @@ mod tests {
     use std::time::Duration;
 
     use maki_core::ConfigFile;
-    use maki_events::{MenuRow, ShownMenu, ShownRow, TextTable, read_menu, shown_menus};
+    use maki_events::{MenuRow, MessageBox, ShownMenu, ShownMenus, ShownRow, TextTable, read_menu};
     use maki_platform::{Key, RawInput};
 
     use super::*;
@@ -261,13 +261,10 @@ mod tests {
     const PAUSE: &str = r#"(rows: [
         Commands(text: "back", commands: [CloseMenu]),
         Commands(text: "to title", commands: [SetPlayState(Title)]),
+        Commands(text: "say", commands: [Message("x")]),
     ])"#;
     const OVER: &str =
         r#"(back: false, rows: [Commands(text: "over", commands: [SetPlayState(Title)])])"#;
-
-    /// The menus that the player sees, after each frame.
-    #[derive(Resource, Default)]
-    struct Probe(Vec<ShownMenu>);
 
     /// A directory with the room `a.ron` (an event that ends the game with the flag
     /// `end`) and the menus of the screens in `menus/`.
@@ -322,11 +319,6 @@ mod tests {
                     game_over: menu("over"),
                 },
             });
-        app.init_resource::<Probe>().add_systems(
-            Update,
-            (|world: &mut World| world.resource_mut::<Probe>().0 = shown_menus(world))
-                .ambiguous_with_all(),
-        );
         app
     }
 
@@ -348,7 +340,12 @@ mod tests {
     fn rows(app: &App) -> Vec<Vec<String>> {
         let line = |row: &ShownRow| format!("{}{}", if row.focus { "> " } else { "" }, row.text);
         let menu = |menu: &ShownMenu| menu.rows.iter().map(line).collect();
-        app.world().resource::<Probe>().0.iter().map(menu).collect()
+        app.world()
+            .resource::<ShownMenus>()
+            .0
+            .iter()
+            .map(menu)
+            .collect()
     }
 
     fn state(app: &App) -> PlayState {
@@ -388,10 +385,9 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    #[test]
-    fn continue_shows_with_a_save_and_loads_it() {
-        let directory = directory("continue");
-        let save = SaveData {
+    /// A save in the room `a.ron` with the flag `saved`.
+    fn save_of(directory: &Path) -> SaveData {
+        SaveData {
             room: directory.join("a.ron"),
             position: [1.0, 0.0, 1.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -399,8 +395,13 @@ mod tests {
             variables: Default::default(),
             objects: Default::default(),
             items: Default::default(),
-        };
-        crate::save::write(&directory.join("save.ron"), &save).unwrap();
+        }
+    }
+
+    #[test]
+    fn continue_shows_with_a_save_and_loads_it() {
+        let directory = directory("continue");
+        crate::save::write(&directory.join("save.ron"), &save_of(&directory)).unwrap();
         game(&directory, "Title").run(|mut app| {
             steps(&mut app, 3);
             assert_eq!(state(&app), PlayState::Title);
@@ -428,7 +429,7 @@ mod tests {
             // The pause action opens the pause menu; its "back" row plays again.
             tap(&mut app, Key::P);
             assert_eq!(state(&app), PlayState::Pause);
-            assert_eq!(rows(&app), [["> back", "to title"]]);
+            assert_eq!(rows(&app), [["> back", "to title", "say"]]);
             tap(&mut app, Key::Z);
             assert_eq!(state(&app), PlayState::Play);
             assert_eq!(rows(&app), NONE);
@@ -449,6 +450,47 @@ mod tests {
             tap(&mut app, Key::Z);
             assert_eq!(state(&app), PlayState::Title);
             assert_eq!(rows(&app), [["> new", "quit"]]);
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_message_of_the_pause_menu_closes_and_the_menu_has_the_input_again() {
+        let directory = directory("pause-message");
+        game(&directory, "Play").run(|mut app| {
+            steps(&mut app, 5);
+            tap(&mut app, Key::P);
+            tap(&mut app, Key::ArrowDown);
+            tap(&mut app, Key::ArrowDown);
+            tap(&mut app, Key::Z);
+            let message = |app: &App| app.world().resource::<MessageBox>().0.clone();
+            assert_eq!(message(&app).as_deref(), Some("x"));
+            tap(&mut app, Key::Z);
+            assert_eq!(message(&app), None);
+            assert_eq!(state(&app), PlayState::Pause);
+            tap(&mut app, Key::ArrowUp);
+            tap(&mut app, Key::ArrowUp);
+            tap(&mut app, Key::Z);
+            assert_eq!(state(&app), PlayState::Play);
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_load_from_the_game_over_plays() {
+        let directory = directory("load-over");
+        game(&directory, "Title").run(|mut app| {
+            steps(&mut app, 3);
+            tap(&mut app, Key::Z);
+            crate::save::write(&directory.join("save.ron"), &save_of(&directory)).unwrap();
+            app.resource_mut::<GameState>().set_flag("end", true);
+            steps(&mut app, 3);
+            assert_eq!(state(&app), PlayState::End);
+            app.resource_mut::<PlayRequest>().0 = Some(PlayCommand::LoadSave);
+            steps(&mut app, 3);
+            assert!(flag(&app, "saved"));
+            assert_eq!(state(&app), PlayState::Play);
+            assert_eq!(rows(&app), NONE);
         });
         std::fs::remove_dir_all(&directory).unwrap();
     }

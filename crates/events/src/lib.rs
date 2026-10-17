@@ -47,8 +47,8 @@ pub use interpreter::{
 };
 pub use items::{Inventory, ItemCommand, ItemKind, item_id};
 pub use menu::{
-    Menu, MenuCommand, MenuFiles, MenuPlace, MenuRow, Menus, OpenMenu, ShownMenu, ShownRow,
-    menu_text, read_menu, shown_menus,
+    Menu, MenuCommand, MenuFiles, MenuPlace, MenuRow, Menus, OpenMenu, ShownMenu, ShownMenus,
+    ShownRow, menu_text, read_menu,
 };
 pub use model::{
     Area, Compare, Condition, EventDef, EventPages, Facts, Page, SavedGame, Trigger, Wire,

@@ -2,7 +2,7 @@
 //! a question with its answers), and the open menus.
 //!
 //! The module draws what resources of `maki_events` hold (`MessageBox`, `ChoiceBox`,
-//! `Menus`):
+//! `ShownMenus`), and writes none of them:
 //! the events and the gameplay know nothing of egui (rule 1 of `CLAUDE.md`).
 //!
 //! The text of the game has a font family of its own, [`GAME_FONT`]: the font file of
@@ -12,14 +12,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Res, ResMut};
-use maki_assets::AssetChanged;
+use bevy_ecs::system::{Local, Res, ResMut};
+use maki_assets::{AssetChanged, AssetWatch, Check};
 use maki_core::{App, Module, Settings, Startup, Update};
 use maki_events::{
     CHOICE_DOWN, CHOICE_UP, ChoiceBox, Choices, INTERACT, MenuPlace, Menus, MessageBox, ShownMenu,
-    shown_menus,
+    ShownMenus,
 };
 use maki_platform::{Action, Bindings};
 use serde::{Deserialize, Serialize};
@@ -38,8 +39,9 @@ pub const GAME_FONT: &str = "game";
 #[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GameUiSettings {
-    /// A TTF or OTF file, from the working directory: the first font of the text of
-    /// the game. None: the default fonts.
+    /// A TTF or OTF file, from the working directory as the other paths of the config
+    /// (`[rooms] start`): the first font of the text of the game. None: the default
+    /// fonts. The asset watch reads it again when it changes.
     pub font: Option<PathBuf>,
     /// The size of the text of the game, as a part of the default size.
     pub scale: f32,
@@ -73,7 +75,7 @@ impl Module for GameUiModule {
         app.add_settings::<GameUiSettings>();
         let scale = app.world().resource::<GameUiSettings>().scale;
         add_overlay(app, MENUS, false, move |ui, world| {
-            for (index, menu) in shown_menus(world).iter().enumerate() {
+            for (index, menu) in world.resource::<ShownMenus>().0.iter().enumerate() {
                 menu_box(ui, index, menu, scale);
             }
         });
@@ -97,7 +99,7 @@ impl Module for GameUiModule {
         });
         app.add_message::<AssetChanged>()
             .add_systems(Startup, install_fonts)
-            .add_systems(Update, (show_message, show_menus, font_changed));
+            .add_systems(Update, (show_message, show_menus, font_changed, watch_font));
     }
 }
 
@@ -150,6 +152,26 @@ fn font_changed(
     {
         install_fonts(ui, settings);
     }
+}
+
+/// Runs in `Update`: tells the watch the font file, when the watch is on and when the
+/// settings change.
+fn watch_font(
+    settings: Res<GameUiSettings>,
+    watch: Option<ResMut<AssetWatch>>,
+    mut told: Local<bool>,
+) {
+    let Some(mut watch) = watch.filter(|watch| watch.on) else {
+        return;
+    };
+    if *told && !settings.is_changed() {
+        return;
+    }
+    *told = true;
+    // The check: the file reads. egui finds no error in the bytes before it draws.
+    let check: Check = |path| Ok(std::fs::read(path).map(drop)?);
+    let font = settings.font.iter().map(|path| (path.clone(), check));
+    watch.set("fonts", font.collect());
 }
 
 /// The text box of the game at the bottom of the picture: the text, the answers of a
@@ -386,5 +408,48 @@ mod tests {
         assert!(result.unwrap_err().contains("does not read"));
         let game = &fonts.families[&egui::FontFamily::Name(GAME_FONT.into())];
         assert_eq!(game, &defaults.families[&egui::FontFamily::Proportional]);
+    }
+
+    #[test]
+    fn the_watch_has_the_font_file_and_a_changed_file_installs_again() {
+        use maki_core::ConfigFile;
+
+        let path = std::env::temp_dir().join(format!("maki-font-watch-{}.ttf", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let config = format!(
+            "[assets]
+background = false
+watch = true
+[game_ui]
+font = '{}'",
+            path.display()
+        );
+        let mut app = maki_core::App::new(ConfigFile::from_text(&config)).unwrap();
+        app.add_module(maki_platform::PlatformModule)
+            .add_module(maki_assets::AssetsModule)
+            .add_module(maki_scene::SceneModule)
+            .add_module(maki_events::EventsModule)
+            .add_module(crate::UiModule)
+            .add_module(GameUiModule);
+        app.run(|mut app| {
+            app.advance(std::time::Duration::from_millis(20));
+            let watch = app.world().resource::<AssetWatch>();
+            assert!(watch.files().any(|file| file == path));
+            // The file did not read at the start: the family of the game has no font file.
+            let has_font = |app: &maki_core::App| {
+                let ctx = app.world().resource::<UiContext>().ctx.clone();
+                let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+                output.textures_delta.clear();
+                ctx.fonts(|fonts| fonts.definitions().font_data.contains_key(GAME_FONT))
+            };
+            assert!(!has_font(&app));
+            let defaults = egui::FontDefinitions::default();
+            let first = &defaults.families[&egui::FontFamily::Proportional][0];
+            std::fs::write(&path, &*defaults.font_data[first].font).unwrap();
+            app.write_message(AssetChanged(path.clone()));
+            app.advance(std::time::Duration::from_millis(20));
+            assert!(has_font(&app));
+        });
+        std::fs::remove_file(path).unwrap();
     }
 }

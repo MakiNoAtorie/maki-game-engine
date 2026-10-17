@@ -246,7 +246,7 @@ impl<'w> ScriptContext<'w> {
             .open(menu, Some(entity));
     }
 
-    /// Closes the top menu.
+    /// Closes the top menu with focus; with no menu with focus, the top menu (a HUD).
     pub fn close_menu(&mut self) {
         self.world.resource_mut::<crate::Menus>().close();
     }

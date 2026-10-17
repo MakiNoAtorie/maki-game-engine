@@ -3,10 +3,7 @@
 use maki_assets::FileId;
 
 use super::*;
-use crate::{Menus, ShownMenu, ShownRow};
-
-#[derive(bevy_ecs::resource::Resource, Default)]
-struct Probe(Vec<ShownMenu>);
+use crate::{Menus, ShownMenus, ShownRow};
 
 const COIN: FileId = FileId(0xc01);
 const KEY: FileId = FileId(0xe01);
@@ -37,13 +34,7 @@ fn item_game(test: &str) -> App {
     let routine = r#"(commands: [SetFlag("used", true)])"#;
     std::fs::write(directory.join("r.routine.ron"), routine).unwrap();
     std::fs::write(directory.join("a.ron"), room("")).unwrap();
-    let mut app = game(&directory);
-    app.init_resource::<Probe>().add_systems(
-        maki_core::Update,
-        (|world: &mut World| world.resource_mut::<Probe>().0 = shown_menus(world))
-            .ambiguous_with_all(),
-    );
-    app
+    game(&directory)
 }
 
 fn open(app: &mut App, text: &str) {
@@ -62,7 +53,7 @@ fn give(app: &mut App) {
 
 /// The lines of the top menu: a mark at the focus, the count of an item line.
 fn lines(app: &App) -> Vec<String> {
-    let shown = &app.world().resource::<Probe>().0;
+    let shown = &app.world().resource::<ShownMenus>().0;
     let line = |row: &ShownRow| {
         let count = row
             .count
@@ -86,11 +77,11 @@ fn the_items_row_lists_each_item_with_a_count_by_path_and_the_description_of_the
         steps(&mut app, 3);
         // By path: coin, key. The gem has 0. The focus skips the text line.
         assert_eq!(lines(&app), ["Coins: 0", "> Coin x15", "Key x2"]);
-        let shown = &app.world().resource::<Probe>().0;
+        let shown = &app.world().resource::<ShownMenus>().0;
         assert_eq!(shown[0].description.as_deref(), Some("Round."));
         tap(&mut app, Key::ArrowDown);
         assert_eq!(lines(&app), ["Coins: 0", "Coin x15", "> Key x2"]);
-        let shown = &app.world().resource::<Probe>().0;
+        let shown = &app.world().resource::<ShownMenus>().0;
         assert_eq!(shown[0].description.as_deref(), Some("Opens the door."));
     });
 }

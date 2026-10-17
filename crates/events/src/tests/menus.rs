@@ -3,12 +3,11 @@
 use maki_core::PlayState;
 
 use super::*;
-use crate::{Menu, MenuCommand, MenuRow, Menus, ShownMenu, ShownRow};
+use crate::{Menu, MenuCommand, MenuRow, Menus, ShownMenus, ShownRow};
 
-/// What a test sees of the world in each frame, and an event that it starts.
+/// An event that a test starts.
 #[derive(bevy_ecs::resource::Resource, Default)]
 struct Probe {
-    shown: Vec<ShownMenu>,
     start: Option<ObjectId>,
 }
 
@@ -25,13 +24,33 @@ const MAIN: &str = r#"(title: "Main", rows: [
 const FIXED: &str = r#"(back: false, rows: [Commands(text: "Stay")])"#;
 const HUD: &str = r#"(focus: false, place: TopLeft, rows: [Commands(text: "Coins")])"#;
 
+/// A first row with no focus, and two rows that show only with the flag `x`.
+const HEAD: &str = r#"(rows: [
+    Text("Head"),
+    Commands(text: "A", commands: [SetFlag("a", true)]),
+    Commands(text: "B"),
+    Commands(text: "C", conditions: [Flag("x")]),
+    Commands(text: "D", conditions: [Flag("x")]),
+    Commands(text: "E", commands: [SetFlag("e", true)]),
+])"#;
+
+/// A menu with focus and no place of focus.
+const ONLY_TEXT: &str = r#"(rows: [Text("Only")])"#;
+
 /// A game whose event "opener" runs these commands at the start. The menu files
 /// are `data/menus/<name>.menu.ron`.
 fn menu_game(test: &str, commands: &str) -> App {
     let directory = directory(test);
     let menus = directory.join("data/menus");
     std::fs::create_dir_all(&menus).unwrap();
-    for (name, text) in [("main", MAIN), ("fixed", FIXED), ("hud", HUD)] {
+    let files = [
+        ("main", MAIN),
+        ("fixed", FIXED),
+        ("hud", HUD),
+        ("head", HEAD),
+        ("only", ONLY_TEXT),
+    ];
+    for (name, text) in files {
         std::fs::write(menus.join(format!("{name}.menu.ron")), text).unwrap();
     }
     let routine = r#"(commands: [SetFlag("routine", true)])"#;
@@ -56,7 +75,6 @@ fn menu_game(test: &str, commands: &str) -> App {
             if let Some(id) = world.resource_mut::<Probe>().start.take() {
                 assert!(start_event(world, id, 0));
             }
-            world.resource_mut::<Probe>().shown = shown_menus(world);
         })
         .ambiguous_with_all(),
     );
@@ -83,7 +101,7 @@ fn menus(app: &App) -> &Menus {
 
 /// The rows of the top menu that show, with a mark at the focus.
 fn rows(app: &App) -> Vec<String> {
-    let shown = &app.world().resource::<Probe>().shown;
+    let shown = &app.world().resource::<ShownMenus>().0;
     let rows = &shown.last().unwrap().rows;
     let line = |row: &ShownRow| format!("{}{}", if row.focus { "> " } else { "" }, row.text);
     rows.iter().map(line).collect()
@@ -231,7 +249,7 @@ fn a_script_opens_a_menu_that_it_makes_and_closes_it() {
     });
     app.run(|mut app| {
         steps(&mut app, 3);
-        let shown = &app.world().resource::<Probe>().shown;
+        let shown = &app.world().resource::<ShownMenus>().0;
         assert_eq!(shown[0].title.as_deref(), Some("Made"));
         // Its row closes it.
         tap(&mut app, Key::Z);
@@ -264,5 +282,56 @@ fn a_menu_takes_its_input_in_a_pause() {
         app.resource_mut::<GameState>().set_flag("first", false);
         steps(&mut app, 2);
         assert!(!flag(&app, "first"));
+    });
+}
+
+#[test]
+fn the_focus_is_on_the_first_place_at_open_and_goes_to_the_nearest_place() {
+    // The message over the menu has the input: the menu takes none before the mark shows.
+    let commands = r#"OpenMenu("data/menus/head.menu.ron"), Message("Over")"#;
+    let app = menu_game("menu-focus", commands);
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        assert_eq!(rows(&app), ["Head", "> A", "B", "E"]);
+        tap(&mut app, Key::Z);
+        app.resource_mut::<GameState>().set_flag("x", true);
+        tap(&mut app, Key::ArrowDown);
+        tap(&mut app, Key::ArrowDown);
+        tap(&mut app, Key::ArrowDown);
+        assert_eq!(rows(&app), ["Head", "A", "B", "C", "> D", "E"]);
+        // The row of the focus stops to hold: E is nearer than B.
+        app.resource_mut::<GameState>().set_flag("x", false);
+        steps(&mut app, 2);
+        assert_eq!(rows(&app), ["Head", "A", "B", "> E"]);
+        tap(&mut app, Key::Z);
+        steps(&mut app, 1);
+        assert!(flag(&app, "e") && !flag(&app, "a"));
+    });
+}
+
+#[test]
+fn a_menu_with_no_place_of_focus_has_no_mark_and_a_pick_does_nothing() {
+    let app = menu_game("menu-no-focus", r#"OpenMenu("data/menus/only.menu.ron")"#);
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        assert_eq!(rows(&app), ["Only"]);
+        tap(&mut app, Key::Z);
+        steps(&mut app, 1);
+        assert_eq!(running(&app), 0);
+        assert_eq!(menus(&app).0.len(), 1);
+    });
+}
+
+#[test]
+fn close_menu_closes_the_top_menu_with_focus_and_a_hud_when_no_menu_has_focus() {
+    let commands = r#"OpenMenu("data/menus/main.menu.ron"), OpenMenu("data/menus/hud.menu.ron"),
+        CloseMenu"#;
+    let app = menu_game("menu-close", commands);
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        assert_eq!(menus(&app).0.len(), 1);
+        assert!(!menus(&app).0[0].menu.focus);
+        app.resource_mut::<Menus>().close();
+        assert!(menus(&app).0.is_empty());
     });
 }

@@ -19,8 +19,9 @@
 //! The input actions go to the top menu with focus: up and down move the focus, over
 //! the rows whose conditions do not hold; interact picks the row, and its commands
 //! run as an event that the player started; back closes the menu if `back` is on.
-//! While a message shows, the message has the input. The UI of the game draws the
-//! menus from [`shown_menus`]; it runs no command.
+//! The focus is on a place of focus: the first one at the open, the nearest one when
+//! its row stops to hold. While a message shows, the message has the input. The UI of
+//! the game draws the menus from [`ShownMenus`]; it runs no command.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -223,9 +224,13 @@ impl Menus {
         });
     }
 
-    /// Closes the top menu, with focus or not.
+    /// Closes the top menu with focus, as the back action. With no menu with focus,
+    /// the top menu (a HUD).
     pub fn close(&mut self) {
-        self.0.pop();
+        match self.top_with_focus() {
+            Some(top) => drop(self.0.remove(top)),
+            None => drop(self.0.pop()),
+        }
     }
 
     /// Closes all menus with focus. The menus with no focus (a HUD) stay.
@@ -249,7 +254,7 @@ impl Menus {
 pub enum MenuCommand {
     /// Opens a menu file on the top of the open menus.
     OpenMenu(#[field(label = "menu")] DataRef<Menu>),
-    /// Closes the top menu.
+    /// Closes the top menu with focus. With no menu with focus, the top menu (a HUD).
     CloseMenu,
     /// Closes all menus with focus. A menu with no focus (a HUD) stays.
     CloseMenus,
@@ -289,7 +294,7 @@ fn check(command: &MenuCommand, context: &CheckContext) -> Option<Finding> {
 fn row_text(command: &MenuCommand) -> Option<String> {
     Some(match command {
         MenuCommand::OpenMenu(file) => format!("Open the menu {}", file.file.display()),
-        MenuCommand::CloseMenu => "Close the top menu".to_owned(),
+        MenuCommand::CloseMenu => "Close the top menu with focus".to_owned(),
         MenuCommand::CloseMenus => "Close the menus".to_owned(),
     })
 }
@@ -297,7 +302,7 @@ fn row_text(command: &MenuCommand) -> Option<String> {
 fn help(name: &str) -> Option<&'static str> {
     Some(match name {
         "OpenMenu" => "Opens a menu file on the top of the open menus.",
-        "CloseMenu" => "Closes the top menu.",
+        "CloseMenu" => "Closes the top menu with focus. With no menu with focus, the top HUD.",
         "CloseMenus" => "Closes all menus with focus. A HUD stays.",
         _ => return None,
     })
@@ -365,6 +370,15 @@ fn focus_slots(world: &World, open: &OpenMenu) -> Vec<(usize, usize)> {
     slots
 }
 
+/// The index in `slots` of the place of the focus: `(row, item)` if it is a place,
+/// else the nearest place (the first one of two at the same distance). 0 for no place.
+fn nearest(slots: &[(usize, usize)], (row, item): (usize, usize)) -> usize {
+    let distance =
+        |(_, slot): &(usize, &(usize, usize))| (slot.0.abs_diff(row), slot.1.abs_diff(item));
+    let nearest = slots.iter().enumerate().min_by_key(distance);
+    nearest.map_or(0, |(at, _)| at)
+}
+
 /// The input of one step to the top menu with focus.
 #[derive(Debug, Clone, Copy, Default)]
 struct MenuInput {
@@ -403,11 +417,7 @@ fn take_input(world: &mut World, input: MenuInput) {
     };
     let open = &menus.0[top];
     let slots = focus_slots(world, open);
-    // A place that is gone has no focus: the first place takes it.
-    let mut at = slots
-        .iter()
-        .position(|slot| *slot == (open.row, open.item))
-        .unwrap_or(0);
+    let mut at = nearest(&slots, (open.row, open.item));
     // The focus stops at the first and at the last place.
     if input.down {
         at = (at + 1).min(slots.len().saturating_sub(1));
@@ -520,34 +530,53 @@ pub struct ShownRow {
     pub count: Option<i32>,
 }
 
-/// The open menus as the player sees them, the bottom one first. With the
-/// `{name}` of the game variables in the texts.
-pub fn shown_menus(world: &mut World) -> Vec<ShownMenu> {
+/// The open menus as the player sees them, the bottom one first, with the texts in
+/// the language of the game and the `{name}` of the game variables in them. A
+/// resource: a system of this module makes it in `Update`; the UI of the game only
+/// reads it.
+#[derive(Resource, Debug, Clone, PartialEq, Default)]
+pub struct ShownMenus(pub Vec<ShownMenu>);
+
+/// A text of the text tables with the `{name}` of the game variables.
+fn shown_text(world: &mut World, key: &str) -> String {
+    let text = crate::texts(world).get(key);
+    let variables = &world.resource::<GameState>().variables;
+    crate::fill(&text, |name| variables.get(name).copied().unwrap_or(0))
+}
+
+/// Runs in `Update`, after the input of a pause: makes [`ShownMenus`] again. Each
+/// frame while a menu is open: the conditions of the rows read many resources.
+fn show_menus(world: &mut World) {
+    if world.resource::<Menus>().0.is_empty() {
+        if !world.resource::<ShownMenus>().0.is_empty() {
+            world.resource_mut::<ShownMenus>().0.clear();
+        }
+        return;
+    }
     let menus = world.resource::<Menus>().clone();
     let top = menus.top_with_focus();
-    let variables = world.resource::<GameState>().variables.clone();
-    let variable = |name: &str| variables.get(name).copied().unwrap_or(0);
     let directory = room_directory(world).to_owned();
     let mut shown = Vec::new();
     for (index, open) in menus.0.iter().enumerate() {
         let holds = rows_that_hold(world, open);
         let title = open.menu.title.as_ref();
-        let title = title.map(|key| crate::text(world, &key.0, variable));
-        let has_focus = Some(index) == top;
+        let title = title.map(|key| shown_text(world, &key.0));
+        let slots = focus_slots(world, open);
+        let focus = slots.get(nearest(&slots, (open.row, open.item)));
+        let focus = focus.filter(|_| Some(index) == top).copied();
         let mut rows = Vec::new();
         let mut description = None;
         for (row_index, row) in open.menu.rows.iter().enumerate() {
-            let at_row = has_focus && row_index == open.row;
             match row {
                 MenuRow::Commands { text, .. } if holds[row_index] => {
                     rows.push(ShownRow {
-                        text: crate::text(world, &text.0, variable),
-                        focus: at_row,
+                        text: shown_text(world, &text.0),
+                        focus: focus == Some((row_index, 0)),
                         count: None,
                     });
                 }
                 MenuRow::Text(text) => rows.push(ShownRow {
-                    text: crate::text(world, &text.0, variable),
+                    text: shown_text(world, &text.0),
                     focus: false,
                     count: None,
                 }),
@@ -557,13 +586,13 @@ pub fn shown_menus(world: &mut World) -> Vec<ShownMenu> {
                             .resource_mut::<DataAssets>()
                             .get::<ItemKind>(&listed.file, &directory);
                         let Ok(kind) = kind else { continue };
-                        let focus = at_row && item == open.item;
-                        if focus {
-                            description = Some(crate::text(world, &kind.description.0, variable));
+                        let at_focus = focus == Some((row_index, item));
+                        if at_focus {
+                            description = Some(shown_text(world, &kind.description.0));
                         }
                         rows.push(ShownRow {
-                            text: crate::text(world, &kind.name.0, variable),
-                            focus,
+                            text: shown_text(world, &kind.name.0),
+                            focus: at_focus,
                             count: Some(listed.count),
                         });
                     }
@@ -578,7 +607,9 @@ pub fn shown_menus(world: &mut World) -> Vec<ShownMenu> {
             description,
         });
     }
-    shown
+    world
+        .resource_mut::<ShownMenus>()
+        .set_if_neq(ShownMenus(shown));
 }
 
 /// Runs in `Update`: a menu file that changed is read again at its next open.
@@ -618,10 +649,13 @@ pub(crate) fn add(app: &mut App, registry: &CommandRegistry) {
     });
     app.init_resource::<Menus>()
         .init_resource::<MenuFiles>()
+        .init_resource::<ShownMenus>()
         // Any order in the frame: in a pause no other system of the events runs.
         .add_systems(
             Update,
-            menu_input_in_pause.run_if(paused).ambiguous_with_all(),
+            (menu_input_in_pause.run_if(paused), show_menus)
+                .chain()
+                .ambiguous_with_all(),
         )
         .add_systems(Update, (forget_changed, watch_menus).chain())
         .add_systems(ResetPlay, |mut menus: ResMut<Menus>| {
