@@ -32,9 +32,8 @@ impl Module for PhysicsModule {
             (sync::add_mover_shapes, sync::sync_world, sync::step)
                 .chain()
                 .in_set(PhysicsSet::Step)
-                // The movers and the doors set their poses and boxes first.
-                .after(maki_scene::move_movers)
-                .after(maki_scene::block_doors),
+                // The movers set their poses first.
+                .after(maki_scene::move_movers),
         );
     }
 }

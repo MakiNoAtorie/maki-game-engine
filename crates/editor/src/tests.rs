@@ -78,6 +78,7 @@ output = false",
     app.add_module(PlatformModule)
         .add_module(maki_assets::AssetsModule)
         .add_module(SceneModule)
+        .add_module(maki_physics::PhysicsModule)
         .add_module(EventsModule)
         .add_module(maki_audio::AudioModule)
         .add_module(ControlsModule)

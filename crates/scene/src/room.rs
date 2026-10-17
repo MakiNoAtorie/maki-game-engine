@@ -1771,11 +1771,6 @@ impl Spawner<'_, '_, '_> {
             .find(|degrees| facing(*degrees).dot(inward) > 0.0)
             .expect("one of the two ways goes into the room");
         let (closed, open) = (pose(closed_degrees), pose(open_degrees));
-        // A little thicker than the leaf, so a fast player cannot step over it.
-        let blocker = Collider::new(
-            hinge - inward * 0.1,
-            hinge + along * doorway.width + Vec3::Y * doorway.height + inward * 0.1,
-        );
         let mut mover = Mover::new(closed, open, door.seconds);
         if door.open {
             mover.state = MoverState::AtB;
@@ -1786,7 +1781,7 @@ impl Spawner<'_, '_, '_> {
             MeshInstance(handle),
             Interpolated::at(if door.open { open } else { closed }),
             mover,
-            Door { blocker },
+            Door,
         ));
         if let Some(name) = name {
             entity.insert(Name(name.clone()));
@@ -1979,10 +1974,9 @@ mod tests {
     fn a_live_form_that_gets_its_own_value_back_writes_nothing() {
         use bevy_ecs::change_detection::DetectChanges;
         let mut world = World::new();
-        let blocker = Collider::new(Vec3::ZERO, Vec3::ONE);
         let lamp = world.spawn(Light::default()).id();
         let mover = Mover::new(Transform::IDENTITY, Transform::IDENTITY, 1.0);
-        let door = world.spawn((mover, Door { blocker })).id();
+        let door = world.spawn((mover, Door)).id();
         world.clear_trackers();
         for live in [LightSource::LIVE, DoorLeaf::LIVE] {
             for entity in [lamp, door] {
