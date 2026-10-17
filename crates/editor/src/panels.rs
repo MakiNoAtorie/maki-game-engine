@@ -90,10 +90,12 @@ pub(crate) fn build(app: &mut App) {
     add_menu(app, "Add", Some(Box::new(add)));
     // The text of the name field of "New routine".
     let mut routine_name = String::new();
+    let mut menu_name = String::new();
     let mut new_data = crate::data_panel::NewData::default();
     let assets = move |ui: &mut Ui, world: &mut World| {
         with_editor(world, |world, editor| {
             crate::routine_panel::routine_menu(ui, editor, &mut routine_name);
+            crate::menu_panel::menu_menu(ui, editor, &mut menu_name);
             crate::data_panel::data_menu(ui, world, editor, &mut new_data);
         });
     };
@@ -135,7 +137,10 @@ pub(crate) fn build(app: &mut App) {
     let events = panel(EVENT, "Events", icon::EVENTS, ToolPlace::Bottom);
     add_tool_panel(app, events, |ui, world| {
         with_editor(world, |world, editor| {
-            if !editor.playing() && crate::routine_panel::routine_panel(ui, world, editor) {
+            if !editor.playing()
+                && (crate::routine_panel::routine_panel(ui, world, editor)
+                    || crate::menu_panel::menu_panel(ui, world, editor))
+            {
                 return;
             }
             let index = match editor.selected_event() {

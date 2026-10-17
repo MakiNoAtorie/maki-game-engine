@@ -428,7 +428,7 @@ fn first_key(texts: &FallbackTexts) -> TextKey {
 
 /// The key of a text: a key of the tables of the fallback language, each with its
 /// text in the list, or a new one ("New..."). Below the pick: the text of the key.
-fn pick_key(ui: &mut Ui, salt: &str, key: &mut TextKey, lists: &Lists) -> bool {
+pub(crate) fn pick_key(ui: &mut Ui, salt: &str, key: &mut TextKey, lists: &Lists) -> bool {
     let texts = &lists.texts.texts;
     let keys: Vec<String> = texts.iter().map(|(key, _)| key.clone()).collect();
     let text_of = |key: &str| {
@@ -730,7 +730,7 @@ fn new_command(
 }
 
 /// The condition rows of a page or of an `If`.
-fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bool {
+pub(crate) fn conditions(ui: &mut Ui, conditions: &mut Vec<Condition>, lists: &Lists) -> bool {
     let mut changed = false;
     let mut removed = None;
     for (index, condition) in conditions.iter_mut().enumerate() {
@@ -786,7 +786,7 @@ fn condition_row<T: Fields + DeserializeOwned>(
 
 /// Calls `draw` with what the picks of the field rows offer: the flags and the
 /// variables (`pick = "flags"`, `"variables"`) and the objects.
-fn with_picks<R>(lists: &Lists, draw: impl FnOnce(crate::fields::Lists) -> R) -> R {
+pub(crate) fn with_picks<R>(lists: &Lists, draw: impl FnOnce(crate::fields::Lists) -> R) -> R {
     let names = |list: &str| match list {
         "flags" => lists.flags.clone(),
         "variables" => lists.variables.clone(),
