@@ -134,8 +134,9 @@ fn add_key(tables: &mut [Table], key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes `data/text/<code>.text.ron` with the language and no text: its path.
-fn add_language(directory: &Path, tables: &[Table], code: &str) -> Result<PathBuf, String> {
+/// Writes `data/text/<code>.text.ron` with the language and no text, and adds it to
+/// `tables`: its path. Not by the folder time: two writes can have the same time.
+fn add_language(directory: &Path, tables: &mut Vec<Table>, code: &str) -> Result<PathBuf, String> {
     let code = code.trim();
     let letters = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
     if code.is_empty() || !code.chars().all(letters) {
@@ -150,6 +151,15 @@ fn add_language(directory: &Path, tables: &[Table], code: &str) -> Result<PathBu
     std::fs::create_dir_all(path.parent().unwrap_or(directory))
         .and_then(|()| std::fs::write(&path, data_text(&table)))
         .map_err(|error| format!("{} not written: {error}", path.display()))?;
+    let time = time_of(&path);
+    let new = Table {
+        path: path.clone(),
+        time,
+        data: Some(table),
+    };
+    // In the order of the paths, as a read of the folder gives them.
+    let at = tables.partition_point(|other| other.path < path);
+    tables.insert(at, new);
     Ok(path)
 }
 
@@ -234,7 +244,7 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
             .hint_text("code");
         ui.add(field);
         if ui.button("New language").clicked() {
-            match add_language(&directory, &state.tables, &state.new_language) {
+            match add_language(&directory, &mut state.tables, &state.new_language) {
                 Ok(path) => {
                     editor.status = format!("{} written.", path.display());
                     state.new_language.clear();
@@ -398,15 +408,14 @@ mod tests {
         assert!(add_key(&mut state.tables, "a").is_err());
         assert!(add_key(&mut state.tables, " ").is_err());
 
-        let path = add_language(&directory, &state.tables, "fr").unwrap();
+        let path = add_language(&directory, &mut state.tables, "fr").unwrap();
         assert_eq!(path, directory.join("data/text/fr.text.ron"));
         assert_eq!(read(&directory, "fr"), table("fr", &[]));
-        assert!(add_language(&directory, &state.tables, "fr").is_err());
-        assert!(add_language(&directory, &state.tables, "en").is_err());
-        assert!(add_language(&directory, &state.tables, "../x").is_err());
+        assert!(add_language(&directory, &mut state.tables, "fr").is_err());
+        assert!(add_language(&directory, &mut state.tables, "en").is_err());
+        assert!(add_language(&directory, &mut state.tables, "../x").is_err());
 
-        // The new file shows at the next draw, and the key goes to it too.
-        state.refresh(&directory, &mut None);
+        // The new table is in the panel at once, with no wait for the folder time.
         assert_eq!(grid(&state.tables, "").languages, ["en", "fr", "ja"]);
         std::fs::remove_dir_all(directory).unwrap();
     }
