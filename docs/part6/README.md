@@ -321,7 +321,7 @@ Decided for it:
 | 55 | Object ids (`docs/adr/0001-object-ids.md`), and files with an identity (item 12) | Planned |
 | 56 | The gaps of the events (2.8, 2.15): object state, routines, flow, numbers, autorun again, any object as a target | Planned |
 | 57 | Data assets (2.15) (`stage-57-data-assets.md`) | Done (`stage-57.md`) |
-| 58 | Text in tables (item 11) | Planned |
+| 58 | Text in tables (item 11) (`stage-58-text-tables.md`) | Done (`stage-58.md`) |
 | 59 | The UI of the game (item 7): the module, menus as data assets | Planned |
 | 60 | Physics on Rapier (item 15): `area` on sensors, the walking controller on the character controller | Planned |
 | 61 | Movement on the grid, the path search, the line of sight (item 8) | Planned |

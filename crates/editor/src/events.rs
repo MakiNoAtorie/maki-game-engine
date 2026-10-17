@@ -542,15 +542,15 @@ mod tests {
 
         // A question: one list for each answer, with the answer as the label of its
         // row. A new command goes into the list of the selected label row.
-        let answer = |text: &str| (text.to_owned(), Vec::new());
-        let question = Builtin::Choice("Open it?".to_owned(), vec![answer("Yes"), answer("No")]);
+        let answer = |text: &str| (text.into(), Vec::new());
+        let question = Builtin::Choice("Open it?".into(), vec![answer("Yes"), answer("No")]);
         commands.push(registry.command(question).unwrap());
         let all = rows(commands, &registry, &[]);
         let no = all.iter().find(|row| row.2 == "Answer: No").unwrap();
         assert_eq!(no.0.kind, RowKind::Branch(1));
         let (list, index) = no.0.insert_place(commands, &registry);
         assert_eq!((list.clone(), index), (vec![(2, 1)], 0));
-        let message = registry.command(Builtin::Message("Then not.".to_owned()));
+        let message = registry.command(Builtin::Message("Then not.".into()));
         edit_list(commands, &list, &registry, |list| {
             list.insert(index, message.unwrap())
         })

@@ -285,6 +285,8 @@ pub struct CommandRegistry {
     /// A copy of `maki_scene::ComponentTypes`, for the check of `SetField`
     /// (`crate::check`).
     pub(crate) component_types: Arc<RwLock<maki_scene::ComponentTypes>>,
+    /// The keys of the text tables, for the check of a text key (`crate::check`).
+    pub(crate) texts: Arc<std::sync::Mutex<crate::check::TextCheck>>,
     sets: Arc<RwLock<Vec<Set>>>,
     functions: Arc<RwLock<BTreeMap<&'static str, ScriptFunction>>>,
     /// The outputs of each component type, by its name: what a wire joins.

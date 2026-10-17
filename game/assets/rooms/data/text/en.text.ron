@@ -1,0 +1,33 @@
+(
+    language: "en",
+    texts: [
+        (
+            key: "room_a.door_locked",
+            text: "The door is locked. Something hums behind it.",
+        ),
+        (
+            key: "room_a.door_opens",
+            text: "The lock is dead. The door gives way.",
+        ),
+        (
+            key: "room_b.switch_off",
+            text: "Click. The lamp dies. Far away, a lock lets go.",
+        ),
+        (
+            key: "room_b.switch_stuck",
+            text: "The switch does not move.",
+        ),
+        (
+            key: "room_b.ball_rings",
+            text: "The ball rings. Something under the floor answers.",
+        ),
+        (
+            key: "beacon.touched",
+            text: "The lamp hums. Touched {beacon_touches} times.",
+        ),
+        (
+            key: "beacon.forget",
+            text: "dial turns. The lamp forgets.",
+        ),
+    ],
+)

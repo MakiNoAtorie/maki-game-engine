@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 #[fields(default)]
 pub struct ScriptName {
-    /// The lines: one message for each part between `|`.
+    /// The lines: one message for each part between `|`. Each part, the question,
+    /// and each answer is a key of a text table (a key that no table has shows itself).
     pub lines: String,
     /// A question after the lines. Empty: none.
     pub question: String,
@@ -37,14 +38,14 @@ impl Script for ScriptName {
         // One list: each message waits for its press, then the next one shows.
         let lines = self.lines.split('|').filter(|line| !line.is_empty());
         let mut commands: Vec<_> = lines
-            .filter_map(|line| context.command(Builtin::Message(line.to_owned())))
+            .filter_map(|line| context.command(Builtin::Message(line.into())))
             .collect();
         if !self.question.is_empty() {
             let answers = self.answers.split('|').enumerate().map(|(index, text)| {
                 let set = Builtin::SetVariable(self.answer.clone(), index as i32 + 1);
-                (text.to_owned(), context.command(set).into_iter().collect())
+                (text.into(), context.command(set).into_iter().collect())
             });
-            let question = Builtin::Choice(self.question.clone(), answers.collect());
+            let question = Builtin::Choice(self.question.as_str().into(), answers.collect());
             commands.extend(context.command(question));
         }
         context.run(commands);

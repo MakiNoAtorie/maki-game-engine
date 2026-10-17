@@ -20,11 +20,13 @@ use super::*;
 mod data;
 mod flow;
 mod items;
+mod messages;
 mod numbers;
 mod objects;
 mod repeat;
 mod review;
 mod state;
+mod text;
 
 /// 50 Hz: one fixed step of 20 ms for each frame.
 const STEP: Duration = Duration::from_millis(20);
@@ -748,7 +750,7 @@ impl Script for Counter {
         Self::count(context, "interact");
         // A command of the registry, as a row calls it: the message waits for a
         // press, and the player has no control until then.
-        context.call(Builtin::Message("hello".to_owned()));
+        context.call(Builtin::Message("hello".into()));
     }
 
     fn enter_area(&mut self, context: &mut ScriptContext) {
@@ -1151,7 +1153,7 @@ struct NewName(Option<String>);
 fn a_called_function_shows_a_message_and_the_next_row_runs_after_it() {
     fn greet(context: &mut ScriptContext) {
         context.call(Builtin::SetVariable("order".to_owned(), 1));
-        context.call(Builtin::Message("hello".to_owned()));
+        context.call(Builtin::Message("hello".into()));
     }
     let events = r#"(name: "caller", pages: [(trigger: Autorun, commands: [
         CallScript("greet"), AddVariable("order", 10)])])"#;

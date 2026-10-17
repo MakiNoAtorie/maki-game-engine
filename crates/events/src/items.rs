@@ -17,13 +17,15 @@ use serde::{Deserialize, Serialize};
 use crate::CommandRegistry;
 use crate::check::Finding;
 use crate::command::Step;
+use crate::text::TextKey;
 
 /// A kind of item: a key, a coin.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct ItemKind {
-    pub name: String,
-    pub description: String,
+    /// The keys of the texts in the text tables.
+    pub name: TextKey,
+    pub description: TextKey,
     #[field(file = "picture")]
     pub icon: FileRef,
 }

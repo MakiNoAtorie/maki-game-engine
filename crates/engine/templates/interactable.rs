@@ -3,15 +3,15 @@
 
 use bevy_ecs::component::Component;
 use maki_engine::core::{App, Fields};
-use maki_engine::events::{Builtin, Script, ScriptContext, add_script};
+use maki_engine::events::{Builtin, Script, ScriptContext, TextKey, add_script};
 use serde::{Deserialize, Serialize};
 
 #[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
 #[serde(default, deny_unknown_fields)]
 #[fields(default)]
 pub struct ScriptName {
-    /// What the message box shows.
-    pub message: String,
+    /// The key of the text that the message box shows (a text table has it).
+    pub message: TextKey,
     /// True: only the first press shows it. The flag `flag` keeps that it was shown,
     /// also in the save file.
     #[field(label = "one time only")]
@@ -23,7 +23,7 @@ pub struct ScriptName {
 impl Default for ScriptName {
     fn default() -> Self {
         Self {
-            message: "Nothing happens.".to_owned(),
+            message: "Nothing happens.".into(),
             once: false,
             flag: "script_name_done".to_owned(),
         }

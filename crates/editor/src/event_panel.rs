@@ -14,8 +14,8 @@ use bevy_ecs::world::World;
 use maki_core::fields::{Field, Kind, Value};
 use maki_core::{App, FieldTypes, Fields};
 use maki_events::{
-    Builtin, Command, CommandRegistry, CommandSet, Condition, EventPages, Page, Problem, Trigger,
-    Wire, active_page,
+    Builtin, Command, CommandRegistry, CommandSet, Condition, EventPages, FallbackTexts, Page,
+    Problem, TextEntry, TextKey, TextTable, Trigger, Wire, active_page,
 };
 use maki_scene::{ComponentTypes, ObjectId, RoomDef, ron_options};
 use maki_ui::egui::{self, Color32, Ui};
@@ -262,6 +262,10 @@ pub(crate) struct Lists {
     own_outputs: Vec<String>,
     /// The keys of delete, duplicate, copy, and paste, for the hover texts.
     row_keys: [String; 4],
+    /// The texts of the fallback language: what a key pick offers.
+    texts: FallbackTexts,
+    /// The directory of the room file: a new key goes into a table under it.
+    directory: std::path::PathBuf,
 }
 
 /// Draws the picture of a name of a list.
@@ -416,6 +420,65 @@ pub(crate) fn picker_with(
     }
 }
 
+/// The first key of the fallback language, else an empty key.
+fn first_key(texts: &FallbackTexts) -> TextKey {
+    let first = texts.texts.first().map(|(key, _)| key.as_str());
+    first.unwrap_or_default().into()
+}
+
+/// The key of a text: a key of the tables of the fallback language, each with its
+/// text in the list, or a new one ("New..."). Below the pick: the text of the key.
+fn pick_key(ui: &mut Ui, salt: &str, key: &mut TextKey, lists: &Lists) -> bool {
+    let texts = &lists.texts.texts;
+    let keys: Vec<String> = texts.iter().map(|(key, _)| key.clone()).collect();
+    let text_of = |key: &str| {
+        let found = texts.iter().find(|(known, _)| known == key);
+        found.map(|(_, text)| text.as_str())
+    };
+    let picture = |ui: &mut Ui, key: &str| {
+        ui.weak(text_of(key).unwrap_or_default());
+    };
+    let changed = picker_with(ui, salt, &mut key.0, &keys, &[], true, Some(&picture));
+    if changed && !keys.contains(&key.0) {
+        match add_key(&lists.directory, &lists.texts, &key.0) {
+            Ok(()) => return true,
+            Err(error) => tracing::error!("a new text key: {error}"),
+        }
+    }
+    match text_of(&key.0) {
+        Some(text) => ui.label(text),
+        None => {
+            let language = &lists.texts.language;
+            ui.colored_label(
+                HINT,
+                format!("`{language}` has no text of it: the key shows"),
+            )
+        }
+    };
+    changed
+}
+
+/// Adds a key with an empty text to the first table of the fallback language, and
+/// writes the file. A language with no table gets `data/text/<language>.text.ron`.
+fn add_key(directory: &std::path::Path, texts: &FallbackTexts, key: &str) -> Result<(), String> {
+    let path = match &texts.table {
+        Some(table) => directory.join(table),
+        None => maki_events::table_path(directory, &texts.language),
+    };
+    let mut table = match path.exists() {
+        true => maki_assets::read_data::<TextTable>(&path)?,
+        false => TextTable::new(&texts.language),
+    };
+    table.texts.push(TextEntry {
+        key: key.to_owned(),
+        text: String::new(),
+    });
+    let folder = path.parent().unwrap_or(directory);
+    let write = std::fs::create_dir_all(folder)
+        .and_then(|()| std::fs::write(&path, maki_assets::data_text(&table)));
+    write.map_err(|error| format!("{}: {error}", path.display()))
+}
+
 /// A name of a list that the room or the game gives: a light, a door, a room file.
 fn pick(ui: &mut Ui, salt: &str, value: &mut String, known: &[String]) -> bool {
     picker(ui, salt, value, known, &[], false)
@@ -481,11 +544,9 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
                 pick(ui, "light", name, &lists.lights)
             }) | number(ui, "intensity", value, 0.1, 0.0..=10000.0)
         }
-        Builtin::Message(message) => {
-            let field = egui::TextEdit::multiline(message)
-                .desired_rows(2)
-                .desired_width(f32::INFINITY);
-            ui.add(field).changed()
+        Builtin::Message(key) => {
+            ui.label("text key");
+            pick_key(ui, "message", key, lists)
         }
         Builtin::Transfer(room, spawn) => {
             let files: Vec<String> = lists.rooms.iter().map(|room| room.0.clone()).collect();
@@ -568,11 +629,8 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
             picked | pick(ui, "output", output, outputs)
         }),
         Builtin::Choice(question, answers) => {
-            ui.label("question");
-            let field = egui::TextEdit::multiline(question)
-                .desired_rows(2)
-                .desired_width(f32::INFINITY);
-            let mut changed = ui.add(field).changed();
+            ui.label("question key");
+            let mut changed = pick_key(ui, "question", question, lists);
             // The commands of an answer are rows of the list, under its label.
             ui.label("answers");
             let mut removed = None;
@@ -585,8 +643,7 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
                     {
                         removed = Some(index);
                     }
-                    let field = egui::TextEdit::singleline(answer).desired_width(f32::INFINITY);
-                    changed |= ui.add(field).changed();
+                    changed |= pick_key(ui, &format!("answer {index}"), answer, lists);
                 });
             }
             if let Some(index) = removed {
@@ -594,7 +651,7 @@ fn arguments(ui: &mut Ui, command: &mut Builtin, lists: &Lists) -> bool {
                 changed = true;
             }
             if ui.button("Add an answer").clicked() {
-                answers.push(("Answer".to_owned(), Vec::new()));
+                answers.push(("Answer".into(), Vec::new()));
                 changed = true;
             }
             changed
@@ -626,15 +683,15 @@ fn new_command(
             Builtin::If(vec![flag], Vec::new(), Vec::new())
         }
         "Choice" => {
-            let answer = |text: &str| (text.to_owned(), Vec::new());
-            Builtin::Choice("Question?".to_owned(), vec![answer("Yes"), answer("No")])
+            let answer = |text: &str| (text.into(), Vec::new());
+            Builtin::Choice("Question?".into(), vec![answer("Yes"), answer("No")])
         }
         "OpenDoor" => Builtin::OpenDoor(first_object(&lists.movers)),
         "CloseDoor" => Builtin::CloseDoor(first_object(&lists.movers)),
         "LightOn" => Builtin::LightOn(first_object(&lists.lights)),
         "LightOff" => Builtin::LightOff(first_object(&lists.lights)),
         "LightIntensity" => Builtin::LightIntensity(first_object(&lists.lights), 1.0),
-        "Message" => Builtin::Message(String::new()),
+        "Message" => Builtin::Message(first_key(&lists.texts)),
         "FadeOut" => Builtin::FadeOut(0.4),
         "FadeIn" => Builtin::FadeIn(0.4),
         "Transfer" => Builtin::Transfer(file, object_ref(&first(&spawns, ""), &spawn_ids)),
@@ -733,6 +790,13 @@ fn with_picks<R>(lists: &Lists, draw: impl FnOnce(crate::fields::Lists) -> R) ->
     let names = |list: &str| match list {
         "flags" => lists.flags.clone(),
         "variables" => lists.variables.clone(),
+        // The keys of a `TextKey` field of a command of a module.
+        "texts" => lists
+            .texts
+            .texts
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect(),
         _ => Vec::new(),
     };
     let open = |list: &str| match list {
@@ -759,6 +823,12 @@ pub(crate) fn lists_and_problems(
     let mut problems: Vec<Problem> = problems(&editor.document, &others, &registry);
     problems.retain(|problem| Some(problem.object) == index);
     let room = &editor.document.room;
+    let directory = editor
+        .document
+        .path
+        .parent()
+        .unwrap_or(std::path::Path::new(""));
+    let directory = directory.to_owned();
     let ids = object_names(&room.objects);
     let own = (file_name(&editor.document), room.spawn_names(), ids.clone());
     let other_rooms = others.iter().map(|other| {
@@ -810,6 +880,8 @@ pub(crate) fn lists_and_problems(
             },
         ),
         row_keys: Default::default(),
+        texts: registry.fallback_texts(&directory),
+        directory,
     };
     (lists, problems)
 }
@@ -1486,6 +1558,67 @@ mod tests {
         texts.collect()
     }
 
+    /// The key pick of a message offers the keys of the fallback language with their
+    /// texts; a new key goes into the first table of the language, then a new table.
+    #[test]
+    fn the_key_pick_lists_the_keys_with_their_texts_and_a_new_key_goes_into_a_table() {
+        let directory = std::env::temp_dir().join(format!("maki-key-pick-{}", std::process::id()));
+        let table = |file: &str, language: &str, texts: &[(&str, &str)]| {
+            let table = TextTable {
+                language: language.to_owned(),
+                texts: texts
+                    .iter()
+                    .map(|(key, text)| TextEntry {
+                        key: (*key).to_owned(),
+                        text: (*text).to_owned(),
+                    })
+                    .collect(),
+            };
+            let path = directory.join("data/text").join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, maki_assets::data_text(&table)).unwrap();
+        };
+        table("en.text.ron", "en", &[("door.locked", "Locked.")]);
+        table("ja.text.ron", "ja", &[("door.locked", "Shimatte iru.")]);
+        let mut app = maki_core::App::new(ConfigFile::default()).unwrap();
+        app.add_module(maki_platform::PlatformModule)
+            .add_module(maki_scene::SceneModule)
+            .add_module(maki_events::EventsModule);
+        let registry = app.world().resource::<CommandRegistry>().clone();
+        let lists = |registry: &CommandRegistry| Lists {
+            texts: registry.fallback_texts(&directory),
+            directory: directory.clone(),
+            ..Lists::default()
+        };
+        let mut message = Builtin::Message("door.locked".into());
+        let texts = shown_texts(|ui| {
+            assert!(!arguments(ui, &mut message, &lists(&registry)));
+        });
+        assert!(texts.contains(&"door.locked".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"Locked.".to_owned()), "{texts:?}");
+        // A text of before in place of a key: no table has it.
+        let mut old = Builtin::Message("The lamp hums.".into());
+        let texts = shown_texts(|ui| {
+            arguments(ui, &mut old, &lists(&registry));
+        });
+        let hint = "`en` has no text of it: the key shows".to_owned();
+        assert!(texts.contains(&hint), "{texts:?}");
+
+        // "New..." takes a typed key: it goes into `en.text.ron` with no text.
+        add_key(&directory, &lists(&registry).texts, "door.open").unwrap();
+        let texts = lists(&registry).texts.texts;
+        let keys: Vec<&str> = texts.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys, ["door.locked", "door.open"]);
+        assert_eq!(texts[1].1, "");
+        // A language with no table gets one.
+        std::fs::remove_dir_all(directory.join("data")).unwrap();
+        add_key(&directory, &lists(&registry).texts, "first").unwrap();
+        let path = directory.join("data/text/en.text.ron");
+        let table: TextTable = maki_assets::read_data(&path).unwrap();
+        assert_eq!((table.language.as_str(), table.texts.len()), ("en", 1));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     /// Each form of a condition is drawn from its field table: the kind, the picked
     /// name, the compare, the number. With no input nothing changes.
     #[test]
@@ -1658,6 +1791,8 @@ mod tests {
             outputs: Vec::new(),
             own_outputs: Vec::new(),
             row_keys: Default::default(),
+            texts: FallbackTexts::default(),
+            directory: std::path::PathBuf::new(),
         };
         let mut cache = None;
         cached_live_lists(

@@ -1,25 +1,28 @@
 //! Checks of the events of a room: a name that the room does not have, a `Transfer`
-//! to a place that does not exist, two events with one name.
+//! to a place that does not exist, two events with one name, a text key that the
+//! fallback language does not have. The room loader also checks the text tables.
 //!
 //! The room loader runs them for each room file (`maki_scene::RoomValidators`), and
 //! a tool runs them on events that are not in a file yet: [`CommandRegistry::check_events`]
 //! is the same code for the two. A module adds the check of its own commands with
 //! [`CommandRegistry::add_check`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
 use bevy_ecs::system::Res;
+use maki_assets::read_data;
 use maki_core::fields::Value;
 use maki_scene::{ComponentTypes, ObjectId, RoomCheck, RoomDef, RoomProblem, RoomValidator};
 
-use crate::builtin::Builtin;
+use crate::builtin::{self, Builtin};
 use crate::command::{Command, CommandRegistry, Stop};
 use crate::flow::Flow;
 use crate::model::{Condition, EventDef, Wire};
 use crate::state::condition_problem;
+use crate::text::{TextSettings, TextTable};
 
 /// What the check of a command knows of the room that the command is in.
 pub struct CheckContext<'a> {
@@ -178,6 +181,8 @@ impl CommandRegistry {
     /// file with no ids), and for each command the check of its module.
     pub fn check_events(&self, events: &[EventDef], context: &CheckContext) -> Vec<Problem> {
         let mut problems = Vec::new();
+        let mut texts = self.texts.lock().expect("no holder panics");
+        texts.read(context.directory);
         for (index, event) in events.iter().enumerate() {
             let twin = events[..index]
                 .iter()
@@ -237,6 +242,9 @@ impl CommandRegistry {
                     let state = conditions
                         .filter_map(|condition| condition_problem(condition, event.id, context));
                     let findings = self.check(command, context).into_iter();
+                    let keys = command.get().map(builtin::text_keys).unwrap_or_default();
+                    let keys = keys.into_iter().filter_map(|key| texts.key_problem(&key.0));
+                    let findings = findings.chain(keys.map(Finding::warning));
                     for finding in findings.chain(state.map(Finding::error)) {
                         problems.push(Problem {
                             event: index,
@@ -279,6 +287,14 @@ impl CommandRegistry {
                 registry: &registry,
             };
             let problems = registry.check_events(&events, &context);
+            // The errors of the text tables: no row has them.
+            let texts = registry.texts.lock().expect("no holder panics");
+            let tables = texts.problems.iter().map(|text| RoomProblem {
+                warning: false,
+                text: text.clone(),
+            });
+            let tables: Vec<RoomProblem> = tables.collect();
+            drop(texts);
             let with_line = |problem: Problem| {
                 let stop = match &problem.command {
                     Some((_, command)) => Stop::Command(command.order),
@@ -291,7 +307,10 @@ impl CommandRegistry {
                     text: format!("{line}: event `{event}`: {}", problem.text),
                 }
             };
-            problems.into_iter().map(with_line).collect()
+            tables
+                .into_iter()
+                .chain(problems.into_iter().map(with_line))
+                .collect()
         })
     }
 }
@@ -316,5 +335,132 @@ impl Neighbors {
             files.insert(path.to_owned(), (written, room));
         }
         Some(files[path].1.spawn(spawn).is_some())
+    }
+}
+
+/// The texts of the fallback language under a directory of room files: what the key
+/// pick of a tool offers.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FallbackTexts {
+    pub language: String,
+    /// Each key with its text, in the order of the files.
+    pub texts: Vec<(String, String)>,
+    /// The first table of the language, from the directory. `None`: no table yet.
+    pub table: Option<PathBuf>,
+}
+
+impl CommandRegistry {
+    /// The texts of the fallback language under `directory/data`. The tables are read
+    /// again only after a change of a table file.
+    pub fn fallback_texts(&self, directory: &Path) -> FallbackTexts {
+        let mut texts = self.texts.lock().expect("no holder panics");
+        texts.read(directory);
+        FallbackTexts {
+            language: texts.fallback.clone(),
+            texts: texts.texts.clone(),
+            table: texts.table.clone(),
+        }
+    }
+}
+
+/// What the check knows of the text tables of a directory of room files. The editor
+/// checks the rooms in each frame: the tables are read again only when a table file
+/// is new, gone, or written.
+pub(crate) struct TextCheck {
+    /// The language whose keys each row must have (`[text] fallback`).
+    pub(crate) fallback: String,
+    directory: PathBuf,
+    /// Each table file, from the directory, and when it was written.
+    files: Vec<(PathBuf, Option<SystemTime>)>,
+    /// The keys of the tables of the fallback language.
+    keys: HashSet<String>,
+    /// The same keys with their texts, in the order of the files.
+    texts: Vec<(String, String)>,
+    /// The first table of the fallback language, from the directory.
+    table: Option<PathBuf>,
+    /// A table with no language, a key in two tables of one language.
+    problems: Vec<String>,
+}
+
+impl Default for TextCheck {
+    fn default() -> Self {
+        Self {
+            fallback: TextSettings::default().fallback,
+            directory: PathBuf::new(),
+            files: Vec::new(),
+            keys: HashSet::new(),
+            texts: Vec::new(),
+            table: None,
+            problems: Vec::new(),
+        }
+    }
+}
+
+impl TextCheck {
+    /// Reads the tables under `directory/data` if they are not the ones of before.
+    fn read(&mut self, directory: &Path) {
+        let files: Vec<(PathBuf, Option<SystemTime>)> = crate::text::table_files(directory)
+            .into_iter()
+            .map(|path| {
+                let metadata = std::fs::metadata(directory.join(&path));
+                (path, metadata.and_then(|data| data.modified()).ok())
+            })
+            .collect();
+        if self.directory == directory && self.files == files {
+            return;
+        }
+        self.keys.clear();
+        self.texts.clear();
+        self.table = None;
+        self.problems.clear();
+        // The first table of each key of each language.
+        let mut first: HashMap<(String, String), PathBuf> = HashMap::new();
+        for (path, _) in &files {
+            // A table that does not read: the texts log it, and the keys show.
+            let Ok(table) = read_data::<TextTable>(&directory.join(path)) else {
+                continue;
+            };
+            let file = path.display();
+            if table.language == self.fallback && self.table.is_none() {
+                self.table = Some(path.clone());
+            }
+            if table.language.is_empty() {
+                self.problems
+                    .push(format!("the text table `{file}` has no language"));
+                continue;
+            }
+            for entry in &table.texts {
+                let place = (table.language.clone(), entry.key.clone());
+                if let Some(other) = first.get(&place) {
+                    self.problems.push(format!(
+                        "the key `{}` of the language `{}` is in `{}` and in `{file}`",
+                        entry.key,
+                        table.language,
+                        other.display()
+                    ));
+                    continue;
+                }
+                first.insert(place, path.clone());
+                if table.language == self.fallback {
+                    // An empty text is a text not yet written: the key shows.
+                    if !entry.text.is_empty() {
+                        self.keys.insert(entry.key.clone());
+                    }
+                    self.texts.push((entry.key.clone(), entry.text.clone()));
+                }
+            }
+        }
+        self.directory = directory.to_owned();
+        self.files = files;
+    }
+
+    /// `Some`: the fallback language has no text of the key.
+    fn key_problem(&self, key: &str) -> Option<String> {
+        (!self.keys.contains(key)).then(|| {
+            format!(
+                "the language `{}` has no text of the key `{key}`: the key shows",
+                self.fallback
+            )
+        })
     }
 }

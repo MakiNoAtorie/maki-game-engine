@@ -25,6 +25,7 @@ mod objects;
 mod routine;
 mod script;
 mod state;
+mod text;
 
 use std::collections::BTreeMap;
 
@@ -36,7 +37,7 @@ use maki_platform::{Action, Key, add_bindings};
 use maki_scene::{RoomValidators, load_requested_room, move_movers};
 
 pub use builtin::Builtin;
-pub use check::{CheckContext, Finding, Problem};
+pub use check::{CheckContext, FallbackTexts, Finding, Problem};
 pub use command::{Command, CommandRegistry, CommandSet, LabeledLists, ScriptFunction, Step};
 pub use flow::{Flow, Loop};
 pub use interpreter::{
@@ -59,6 +60,10 @@ pub use script::{
 pub use state::{
     NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,
     room_key,
+};
+pub use text::{
+    TEXT_FOLDER, TextEntry, TextKey, TextSettings, TextTable, Texts, fill, table_files, table_path,
+    text, texts,
 };
 
 /// Starts the event that the player faces, closes a message, and takes the marked
@@ -141,6 +146,10 @@ impl Module for EventsModule {
         state::add(app, &registry);
         // Item kinds and the inventory.
         items::add(app, &registry);
+        // The text tables and the texts of the game.
+        text::add(app);
+        let fallback = &app.world().resource::<TextSettings>().fallback;
+        registry.texts.lock().expect("no holder panics").fallback = fallback.clone();
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)
