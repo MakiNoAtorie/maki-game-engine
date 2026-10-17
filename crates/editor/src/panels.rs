@@ -164,6 +164,7 @@ pub(crate) fn build(app: &mut App) {
             }
         });
     });
+    crate::text_panel::add(app);
     let status = panel("editor status", "Status", "", ToolPlace::Status);
     add_tool_panel(app, status, |ui, world| {
         with_editor(world, |world, editor| status_bar(ui, world, editor));

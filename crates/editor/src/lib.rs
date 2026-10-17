@@ -42,6 +42,7 @@ mod pictures;
 mod ron_text;
 mod routine_panel;
 pub mod sources;
+mod text_panel;
 mod view;
 pub mod widgets;
 
