@@ -16,7 +16,7 @@ use glam::Vec3;
 use maki_assets::{Handle, Mesh};
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
-pub use collision::{Collider, move_circle, room_colliders};
+pub use collision::{Collider, room_colliders};
 pub use hidden::Hidden;
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
@@ -81,10 +81,7 @@ impl Module for SceneModule {
                     fade.set_if_neq(ScreenFade(0.0));
                 },
             )
-            .add_systems(
-                FixedUpdate,
-                (mover::move_movers, mover::block_doors).chain(),
-            )
+            .add_systems(FixedUpdate, mover::move_movers)
             .add_systems(
                 Update,
                 (

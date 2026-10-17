@@ -25,13 +25,15 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::{Mut, World};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use maki_core::{App, Fields, Interpolated, Time, Transform};
+use maki_physics::{Hit, Physics, QueryFilter, Shape};
 use maki_platform::{Action, FixedActionState};
 use maki_scene::{Name, ObjectId, add_object_component};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::area::{PlayerInside, in_reach};
 use crate::command::{Command, CommandSet, ScriptFunction};
 use crate::interpreter::{RunningEvent, Start, faces};
 use crate::model::{Area, Trigger};
@@ -307,6 +309,34 @@ impl<'w> ScriptContext<'w> {
                 .push(running);
         }
     }
+
+    /// The first collider that a ray hits within `length` meters, not a hidden object,
+    /// a sensor, or this object. No `Physics` in the world (no module): no hit.
+    pub fn ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<Hit> {
+        let physics = self.world.get_resource::<Physics>()?;
+        physics.ray(from, direction, length, self.query_filter())
+    }
+
+    /// The entities with a collider in a shape at `center`, not hidden, not sensors,
+    /// not this object.
+    pub fn overlap(&self, shape: Shape, center: Vec3) -> Vec<Entity> {
+        let Some(physics) = self.world.get_resource::<Physics>() else {
+            return Vec::new();
+        };
+        physics.overlap(shape, center, Quat::IDENTITY, self.query_filter())
+    }
+
+    /// The id of an entity that a query found, if it is an object of the room.
+    pub fn object_id(&self, entity: Entity) -> Option<ObjectId> {
+        self.world.get::<ObjectId>(entity).copied()
+    }
+
+    fn query_filter(&self) -> QueryFilter {
+        QueryFilter {
+            exclude: Some(self.entity),
+            ..QueryFilter::default()
+        }
+    }
 }
 
 /// The area of an object, for the hooks `interact`, `enter_area`, and `leave_area`:
@@ -407,18 +437,19 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
                     size: [area.width, area.depth],
                 }
             });
-        let inside =
-            area.is_some_and(|area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0));
+        let inside = area.is_some() && world.entity(entity).contains::<PlayerInside>();
         // A hook before could have despawned the entity.
         let Some(mut value) = world.get_mut::<T>(entity) else {
             continue;
         };
         let mut script = std::mem::take(&mut *value);
+        let reach = in_reach(world, player.map(|(at, _)| at)).contains(&entity);
         let mut context = ScriptContext::new(world, entity);
         match before {
             None => script.start(&mut context),
             Some(before) => {
-                let blocked = context.world.resource::<EventRunner>().blocks_player();
+                let runner = context.world.resource::<EventRunner>();
+                let blocked = runner.blocks_player() || runner.starting_room();
                 if inside && !before && !blocked {
                     script.enter_area(&mut context);
                 }
@@ -430,7 +461,7 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
         let runner = context.world.resource::<EventRunner>();
         let faced = area
             .zip(player)
-            .is_some_and(|(area, player)| faces(player, area));
+            .is_some_and(|(area, player)| reach && faces(player, area));
         // Not in the first step, as the events.
         if before.is_some() && faced && runner.interact_free && !runner.blocks_player() {
             // One press starts one thing.

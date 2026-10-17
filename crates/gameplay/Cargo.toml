@@ -8,6 +8,7 @@ maki-core.workspace = true
 maki-platform.workspace = true
 maki-assets.workspace = true
 maki-scene.workspace = true
+maki-physics.workspace = true
 maki-events.workspace = true
 anyhow.workspace = true
 bevy_ecs.workspace = true
@@ -15,3 +16,4 @@ glam.workspace = true
 ron.workspace = true
 serde.workspace = true
 tracing.workspace = true
+

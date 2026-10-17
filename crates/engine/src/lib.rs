@@ -44,6 +44,7 @@ pub use maki_core as core;
 pub use maki_devtools as devtools;
 pub use maki_events as events;
 pub use maki_gameplay as gameplay;
+pub use maki_physics as physics;
 pub use maki_platform as platform;
 pub use maki_render as render;
 pub use maki_scene as scene;
@@ -166,6 +167,7 @@ fn add_modules(
     app.add_module(maki_platform::PlatformModule)
         .add_module(maki_assets::AssetsModule)
         .add_module(maki_scene::SceneModule)
+        .add_module(maki_physics::PhysicsModule)
         .add_module(maki_events::EventsModule)
         .add_module(maki_audio::AudioModule)
         .add_module(maki_gameplay::ControlsModule)

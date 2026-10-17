@@ -21,10 +21,11 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Use current stable crate versions and verify APIs against their docs.
 
 ## Workspace
-`crates/macros`, `crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/events`, `crates/audio`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, `crates/engine` (with `crates/engine/dylib`), `programs/editor`, and `game/` (the project of this repository).
+`crates/macros`, `crates/core`, `crates/platform`, `crates/assets`, `crates/scene`, `crates/physics`, `crates/events`, `crates/audio`, `crates/gameplay`, `crates/gpu`, `crates/render`, `crates/ui`, `crates/devtools`, `crates/editor`, `crates/engine` (with `crates/engine/dylib`), `programs/editor`, and `game/` (the project of this repository).
 - `macros`: the derive macros of the engine (`Fields`). `core` shows them under its own name; no other crate names `macros`.
 - `core`: config, app and schedules, time, transform, and the fields that describe themselves (`maki_core::fields`): a type with `#[derive(Fields)]` has the table of its fields and its value as a tree (`serde_json::Value`), and the inspector is drawn from the table. A new type with fields for a tool gets the derive, never panel code by hand.
 - `scene`: the components that describe the world, the room data format, load and unload of rooms.
+- `physics`: collision and bodies on Rapier: the world of the physics built from the entities of `scene`, its fixed step, the character controller, sensors, ray and shape queries. No type of Rapier or nalgebra in its public API.
 - `events`: flags and variables, event definitions, the event interpreter, the registry of event commands.
 - `audio`: the sound output (`kira`), sound assets, music, the sounds at a place in the room, the audio event commands. No type of `kira` in its public API.
 - `gameplay`: generic gameplay modules (camera follow, walking controller, start room, debug controls), each with its own settings.
@@ -37,7 +38,7 @@ Picture quality and GPU time must not regress: compare `tools/bench.py` runs bef
 - Two builds. Static: `cargo build`, `cargo test`, `cargo clippy` (the engine crates, the game, its script crate). Dynamic, for the editor: `--profile dynamic -p maki-editor-app -p maki-game-dll`, always the two packages in one call (`editor.bat`; `maki_engine::BUILD`).
 
 ## Architecture rules (do not break)
-1. Dependencies flow downward only: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu -> render -> ui -> devtools -> editor -> engine -> game. A crate depends only on crates to its left. `scene`, `events`, `audio`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
+1. Dependencies flow downward only: core -> platform -> assets -> scene -> physics -> events -> audio -> gameplay -> gpu -> render -> ui -> devtools -> editor -> engine -> game. A crate depends only on crates to its left. `scene`, `physics`, `events`, `audio`, and `gameplay` must not depend on `gpu`, `render`, or `ui`.
 2. No `ash` or Vulkan type in any public API outside the `gpu` crate.
 3. The renderer reads only data copied into it during the Extract stage, never game state directly.
 4. Gameplay code reads input actions, never raw keys.

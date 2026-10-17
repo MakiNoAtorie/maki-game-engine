@@ -19,8 +19,8 @@ edition = "2024"
 
 # All versions live here; crates use `name.workspace = true`.
 [workspace.dependencies]
-# Dependency rule: core -> platform -> assets -> scene -> events -> audio -> gameplay -> gpu
-# -> render -> ui -> devtools -> editor -> engine -> game.
+# Dependency rule: core -> platform -> assets -> scene -> physics -> events -> audio -> gameplay
+# -> gpu -> render -> ui -> devtools -> editor -> engine -> game.
 # A crate may depend only on crates to its left.
 # The derive macros of `maki-core`. Not in the rule above: it is code of the build.
 maki-macros = { path = "crates/macros" }
@@ -28,6 +28,7 @@ maki-core = { path = "crates/core" }
 maki-platform = { path = "crates/platform" }
 maki-assets = { path = "crates/assets" }
 maki-scene = { path = "crates/scene" }
+maki-physics = { path = "crates/physics" }
 maki-events = { path = "crates/events" }
 maki-audio = { path = "crates/audio" }
 maki-gameplay = { path = "crates/gameplay" }
@@ -46,6 +47,9 @@ gpu-allocator = { version = "0.28.0", default-features = false, features = ["std
 # Same version as winit: the gpu crate makes its surface from winit's handles.
 raw-window-handle = { version = "0.6.2", features = ["std"] }
 slotmap = "1.1.1"
+# Collision and bodies. Only the physics crate uses it. No `parallel`: one thread, so
+# the steps are the same in each run.
+rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "f32", "std"] }
 # Loads the script DLL of a project into the editor. `ash` has it already: the same
 # version.
 libloading = "0.8.9"
@@ -109,6 +113,8 @@ opt-level = 2
 [profile.dynamic.package.maki-assets]
 opt-level = 2
 [profile.dynamic.package.maki-scene]
+opt-level = 2
+[profile.dynamic.package.maki-physics]
 opt-level = 2
 [profile.dynamic.package.maki-events]
 opt-level = 2

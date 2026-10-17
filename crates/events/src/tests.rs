@@ -60,11 +60,21 @@ fn game(directory: &std::path::Path) -> App {
     let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
     app.add_module(PlatformModule)
         .add_module(SceneModule)
+        .add_module(maki_physics::PhysicsModule)
         .add_module(EventsModule)
         .add_systems(
             Startup,
             move |mut commands: Commands, mut request: ResMut<RoomRequest>| {
-                commands.spawn((Player, Interpolated::at(Transform::IDENTITY)));
+                // The capsule is what the sensors of the areas see (the walk adds it in a game).
+                let body = maki_physics::Kinematic {
+                    shape: maki_physics::Shape::Capsule {
+                        radius: 0.3,
+                        half_height: 0.5,
+                    },
+                    center: glam::Vec3::Y * 0.8,
+                    sensor: false,
+                };
+                commands.spawn((Player, Interpolated::at(Transform::IDENTITY), body));
                 request.0 = Some(RoomTarget {
                     path: path.clone(),
                     spawn: Some(ObjectId(3)),
@@ -823,13 +833,14 @@ fn each_hook_of_a_script_runs_at_its_time() {
         assert!(!app.world().resource::<EventRunner>().blocks_player());
 
         // Into the area, and out.
+        // The hooks see the sensor in the step after a jump of the player.
         place_player(&mut app, [0.0, 0.0, 1.4]);
-        steps(&mut app, 1);
+        steps(&mut app, SENSOR_LAG);
         assert_eq!((variable(&app, "enter"), variable(&app, "leave")), (1, 0));
         steps(&mut app, 2);
         assert_eq!(variable(&app, "enter"), 1);
         place_player(&mut app, [0.0, 0.0, -2.0]);
-        steps(&mut app, 1);
+        steps(&mut app, SENSOR_LAG);
         assert_eq!((variable(&app, "enter"), variable(&app, "leave")), (1, 1));
         // The player looks away from the area: no interact.
         interact(&mut app);
@@ -841,6 +852,11 @@ fn each_hook_of_a_script_runs_at_its_time() {
 /// Where the player goes at the start of the next step.
 #[derive(bevy_ecs::resource::Resource, Default)]
 struct PlaceAt(Option<[f32; 3]>);
+
+/// Steps from a jump of the player until the commands of a wire of an area have run: the
+/// physics sees the new pose in the step of the jump, the events in the next step, and
+/// the wire runs its commands in the step after.
+const SENSOR_LAG: u32 = 3;
 
 fn place_player(app: &mut App, at: [f32; 3]) {
     app.resource_mut::<PlaceAt>().0 = Some(at);
@@ -1266,9 +1282,9 @@ fn the_area_sends_its_outputs_to_the_wires_of_its_object() {
         assert_eq!(door.state, MoverState::AtB);
         // Into the area and out.
         place_player(&mut app, [0.0, 0.0, 1.4]);
-        steps(&mut app, 2);
+        steps(&mut app, SENSOR_LAG);
         place_player(&mut app, [0.0, 0.0, -2.0]);
-        steps(&mut app, 2);
+        steps(&mut app, SENSOR_LAG);
         assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 1));
     });
 }
@@ -1391,11 +1407,13 @@ fn a_signal_and_entered_start_wires_only_in_the_state_play() {
         // Out of the area, a signal `used`, and into the area: `entered`.
         let signal_and_enter = |app: &mut App| {
             place_player(app, [0.0, 0.0, -2.0]);
-            steps(app, 2);
+            steps(app, SENSOR_LAG);
             let used = (button, TriggerArea::USED.to_owned());
             app.resource_mut::<Signals>().0.push(used);
+            // The wire of `used` blocks the player while it runs: `entered` then waits.
+            steps(app, 2);
             place_player(app, [0.0, 0.0, 1.4]);
-            steps(app, 3);
+            steps(app, SENSOR_LAG);
         };
         for state in [maki_core::PlayState::Cutscene, maki_core::PlayState::Title] {
             *app.resource_mut::<maki_core::PlayState>() = state;
@@ -1496,4 +1514,89 @@ fn a_command_enum_with_fields_gives_a_tool_its_table_and_reads_a_changed_tree() 
     // A command of an enum with no table: none.
     let wait = registry.parse_command("Wait(1.0)").unwrap();
     assert!(registry.fields(&wait).is_none());
+}
+
+#[test]
+fn a_hidden_area_gives_no_output_and_gives_it_again_when_shown() {
+    let wires = r#"(output: "entered", commands: [AddVariable("entered", 1)]),
+        (output: "left", commands: [AddVariable("left", 1)])"#;
+    let switch = r#"objects: [(name: "switch", components: {"event": (pages: [
+        (conditions: [Flag("hide")], trigger: Autorun, commands: [Hide(12)]),
+        (conditions: [Flag("show")], trigger: Autorun, commands: [Show(12)])])}),"#;
+    let room = button_room(wires).replacen("objects: [", switch, 1);
+    let app = counter_game("hidden-area", &room);
+    app.run(|mut app| {
+        steps(&mut app, 4);
+        place_player(&mut app, [0.0, 0.0, 1.4]);
+        steps(&mut app, SENSOR_LAG);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 0));
+        // Hidden with the player in it: no output, not even `left`.
+        app.resource_mut::<GameState>().set_flag("hide", true);
+        steps(&mut app, SENSOR_LAG);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 0));
+        // The player walks out and in while it is hidden: nothing.
+        place_player(&mut app, [0.0, 0.0, -2.0]);
+        steps(&mut app, SENSOR_LAG);
+        place_player(&mut app, [0.0, 0.0, 1.4]);
+        steps(&mut app, SENSOR_LAG);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 0));
+        // Shown with the player in it: it enters the area.
+        app.resource_mut::<GameState>().set_flag("show", true);
+        // `Show` runs in the step after its page starts.
+        steps(&mut app, SENSOR_LAG + 1);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (2, 0));
+    });
+}
+
+/// A room with an object at (0, 0, 1.4) of this pose (after the position) and these
+/// components, with wires that count `entered` and `left`.
+fn area_room(pose: &str, components: &str) -> String {
+    let object = format!(
+        r#"objects: [(id: 12, name: "button", pose: (position: (0, 0, 1.4){pose}), components: {{{components}, "event": (wires: [
+        (output: "entered", commands: [AddVariable("entered", 1)]),
+        (output: "left", commands: [AddVariable("left", 1)])])}}),"#
+    );
+    room("").replacen("objects: [", &object, 1)
+}
+
+#[test]
+fn an_area_on_a_mover_has_its_own_sensor() {
+    let mover = r#""mover": (mesh: Cube(0.5), b: (position: (0, 0, 1.4)), seconds: 1.0), "area": (width: 1.0, depth: 1.0)"#;
+    let app = counter_game("mover-area", &area_room("", mover));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        // The mover keeps its body that blocks.
+        let physics = app.world().resource::<maki_physics::Physics>();
+        let filter = maki_physics::QueryFilter::default();
+        let hit = physics.ray(glam::Vec3::new(0.0, 0.1, 0.5), glam::Vec3::Z, 3.0, filter);
+        assert!(
+            hit.is_some_and(|hit| (hit.distance - 0.65).abs() < 0.01),
+            "{hit:?}"
+        );
+        place_player(&mut app, [0.0, 0.0, 1.4]);
+        steps(&mut app, SENSOR_LAG);
+        place_player(&mut app, [0.0, 0.0, -2.0]);
+        steps(&mut app, SENSOR_LAG);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 1));
+    });
+}
+
+#[test]
+fn the_sensor_of_an_area_does_not_turn_with_its_object() {
+    // 2 m along X and 0.4 m along Z, on an object turned by 90 degrees.
+    let area = r#""area": (width: 2.0, depth: 0.4)"#;
+    let app = counter_game("turned-area", &area_room(", rotation: (0, 90, 0)", area));
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        // In the rectangle along the axes, out of the turned one: it enters.
+        place_player(&mut app, [0.8, 0.0, 1.4]);
+        steps(&mut app, SENSOR_LAG);
+        assert_eq!(variable(&app, "entered"), 1);
+        place_player(&mut app, [0.0, 0.0, -2.0]);
+        steps(&mut app, SENSOR_LAG);
+        // Out of the rectangle along the axes, in the turned one: it does not enter.
+        place_player(&mut app, [0.0, 0.0, 2.2]);
+        steps(&mut app, SENSOR_LAG);
+        assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 1));
+    });
 }

@@ -21,13 +21,11 @@ use maki_platform::FixedActionState;
 use maki_scene::{ComponentText, CurrentRoom, Hidden, Name, ObjectId, Player, RoomItem};
 
 use crate::INTERACT;
+use crate::area::{PlayerInside, in_reach};
 use crate::command::{Command, CommandRegistry, Jump, Scope, Step};
 use crate::model::{EventDef, EventPages, Facts, Trigger, active_page};
 use crate::script::{ScriptRunners, TriggerArea};
 
-/// An interact event starts if its area is not farther from the player than this, in
-/// meters, and the player faces it.
-const INTERACT_REACH: f32 = 0.9;
 /// "Faces": the cosine of the angle between the view direction of the player and the
 /// direction to the event is above this (about 70 degrees to each side).
 const INTERACT_FACING: f32 = 0.3;
@@ -215,9 +213,10 @@ pub(crate) struct EventMemory {
 /// in the new room.
 #[derive(Resource, Debug, Default)]
 pub struct EventRunner {
-    /// True until the first step in a new room: a player that starts in an area did
-    /// not walk into it.
-    new_room: bool,
+    /// Steps left that count as the start of a new room: a player that starts in an
+    /// area did not walk into it. Two: the sensors of a new room are made in its first
+    /// step after the events, so the events see them from the second step.
+    new_room: u8,
     pub(crate) running: Vec<RunningEvent>,
     /// True in a step with a press of interact that started no event: a script can
     /// take it (`script` module).
@@ -258,6 +257,11 @@ impl EventRunner {
         self.menu || self.running.iter().any(blocks)
     }
 
+    /// True in the first steps of a new room: a player in an area did not walk into it.
+    pub(crate) fn starting_room(&self) -> bool {
+        self.new_room > 0
+    }
+
     /// The events that run, for a debug panel.
     pub fn running(&self) -> &[RunningEvent] {
         &self.running
@@ -284,7 +288,7 @@ impl EventRunner {
     pub fn room_changed(&mut self) {
         self.running
             .retain(|event| event.start != Start::Page(Trigger::Parallel));
-        self.new_room = true;
+        self.new_room = 2;
     }
 
     /// One fixed step: runs the running events, then starts those whose trigger
@@ -329,22 +333,25 @@ impl EventRunner {
             Option<&RoomItem>,
             Option<&EventMemory>,
             Has<Hidden>,
+            Has<PlayerInside>,
         )>();
         let mut events: Vec<_> = events.iter(world).collect();
         events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
 
+        // The areas that the player reaches: a query of the physics.
+        let reach = in_reach(world, player.map(|(at, _)| at));
         let mut memories = Vec::new();
-        for (entity, pages, name, area, pose, _, memory, hidden) in events {
+        for (entity, pages, name, area, pose, _, memory, hidden, in_sensor) in events {
             // The area of a hidden object gives no output.
             let area = area.filter(|_| !hidden);
             let name = name.map_or("", |name| name.0.as_str());
             let at = pose.map_or(Vec3::ZERO, |pose| pose.current.translation);
             let area = area.map(|area| EventDef::area_at(area, at.to_array()));
             let before = memory.map_or((false, None), |memory| (memory.inside, memory.autorun));
-            let inside =
-                |area: crate::Area| player.is_some_and(|(at, _)| area.distance(at.x, at.z) == 0.0);
-            let inside = area.is_some_and(inside);
-            let entered = inside && !before.0 && !self.new_room;
+            let inside = area.is_some() && in_sensor;
+            let new_room = self.new_room > 0;
+            let entered = inside && !before.0 && !new_room;
+            let faces = |area| reach.contains(&entity) && player.is_some_and(|p| faces(p, area));
 
             let facts = Facts::new(world, world.get::<ObjectId>(entity).copied());
             let page_index = active_page(&pages.pages, &facts);
@@ -368,13 +375,7 @@ impl EventRunner {
                             && (autorun != page_index || (page.repeat && !runs(Trigger::Autorun)))
                     }
                     Trigger::Touch => !blocked && entered,
-                    Trigger::Interact => {
-                        interact
-                            && !blocked
-                            && player
-                                .zip(area)
-                                .is_some_and(|(player, area)| faces(player, area))
-                    }
+                    Trigger::Interact => interact && !blocked && area.is_some_and(faces),
                 }
             });
             if let (true, Some(page)) = (start, page) {
@@ -396,12 +397,7 @@ impl EventRunner {
             let mut outputs: Vec<String> = Vec::new();
             if area.is_some() {
                 // Not in the first step of a room, as the hook `interact` of a script.
-                let used = interact
-                    && !blocked
-                    && !self.new_room
-                    && player
-                        .zip(area)
-                        .is_some_and(|(player, area)| faces(player, area));
+                let used = interact && !blocked && !new_room && area.is_some_and(faces);
                 let used = used
                     && pages
                         .wires
@@ -450,7 +446,6 @@ impl EventRunner {
         for (entity, memory) in memories {
             world.entity_mut(entity).insert(memory);
         }
-        self.new_room = false;
         self.interact_free = interact;
     }
 }
@@ -496,14 +491,13 @@ pub(crate) fn run_menu_events(world: &mut World) {
     });
 }
 
-/// True if the player is at the area and looks toward it.
+/// True if the player looks toward the area. The caller checks the reach.
 pub(crate) fn faces((position, facing): (Vec3, Vec3), area: crate::Area) -> bool {
     let [x, z] = area.nearest(position.x, position.z);
     let to_event = Vec3::new(x - position.x, 0.0, z - position.z);
     let distance = to_event.length();
     // In the area: each direction faces it.
-    distance <= INTERACT_REACH
-        && (distance < 1e-3 || to_event.dot(facing) / distance > INTERACT_FACING)
+    distance < 1e-3 || to_event.dot(facing) / distance > INTERACT_FACING
 }
 
 /// Runs in `Update` after the room loader: a new room.
@@ -580,4 +574,7 @@ pub fn run_events(world: &mut World, players: &mut QueryState<&Interpolated, Wit
         let run = world.resource::<ScriptRunners>().0[index];
         run(world, player);
     }
+    let mut runner = world.resource_mut::<EventRunner>();
+    let runner = runner.bypass_change_detection();
+    runner.new_room = runner.new_room.saturating_sub(1);
 }

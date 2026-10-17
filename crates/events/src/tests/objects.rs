@@ -1,5 +1,6 @@
 //! Show, hide, and move of an object by its id.
 
+use glam::Vec3;
 use maki_scene::{Collider, Hidden};
 
 use super::*;
@@ -125,6 +126,36 @@ fn a_move_ends_at_its_place_and_the_row_waits_for_it() {
         steps(&mut app, 6);
         assert!(flag(&app, "back"));
         assert_eq!(places(&app), [at(4.0, -1.0); 3]);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A script function: casts a ray along X at the crate (the hidden box is not seen) and two overlaps.
+fn look(context: &mut ScriptContext) {
+    let hit = context
+        .ray(Vec3::new(0.0, 0.5, 2.0), Vec3::X, 10.0)
+        .unwrap();
+    let near = (hit.distance - 1.5).abs() < 1e-3 && hit.normal.x < -0.99;
+    let crate_ = context.object_id(hit.entity) == Some(ObjectId(11));
+    let ball = maki_physics::Shape::Sphere { radius: 0.2 };
+    let found = context.overlap(ball, Vec3::new(2.0, 0.5, 2.0));
+    let hidden = context.overlap(ball, Vec3::new(-2.0, 0.5, 2.0));
+    let seen = crate_ && near && found.len() == 1 && hidden.is_empty();
+    context.state().set_flag("seen", seen);
+}
+
+#[test]
+fn a_script_casts_a_ray_and_an_overlap() {
+    let directory = directory("queries");
+    let events =
+        r#"(name: "look", pages: [(trigger: Autorun, commands: [Wait(0.3), CallScript("look")])])"#;
+    std::fs::write(directory.join("a.ron"), room_with_crate(events)).unwrap();
+    // `game` has the physics.
+    let mut app = game(&directory);
+    add_script_function(&mut app, "look", look);
+    app.run(|mut app| {
+        steps(&mut app, 40);
+        assert!(flag(&app, "seen"));
     });
     std::fs::remove_dir_all(directory).unwrap();
 }
