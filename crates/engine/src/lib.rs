@@ -184,6 +184,9 @@ fn add_modules(
         .add_module(maki_gameplay::SaveModule {
             file: project.save.clone(),
             active: !editor,
+        })
+        .add_module(maki_gameplay::ScreensModule {
+            screens: project.screens.clone(),
         });
     project_modules(app);
     app.add_module(maki_render::RenderModule)
@@ -192,7 +195,8 @@ fn add_modules(
         .add_module(maki_ui::StatsPanelModule)
         .add_module(maki_ui::RenderPanelModule)
         .add_module(maki_devtools::GameplayPanelModule)
-        .add_module(maki_ui::EventsUiModule);
+        .add_module(maki_ui::EventsUiModule)
+        .add_module(maki_ui::GameUiModule);
 }
 
 /// Runs the game of a project. `project`: the project folder (the folder of the

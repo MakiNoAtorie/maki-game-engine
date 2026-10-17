@@ -128,6 +128,11 @@ impl FileRef {
 /// look by id under its folder, then kept: the game does not move files.
 static TABLES: Mutex<Option<HashMap<PathBuf, HashMap<FileId, PathBuf>>>> = Mutex::new(None);
 
+/// The file with this id under `folder`, from the kept table of id files.
+pub fn path_of_id(folder: &Path, id: FileId) -> Option<PathBuf> {
+    find_by_id(folder, id)
+}
+
 fn find_by_id(folder: &Path, id: FileId) -> Option<PathBuf> {
     let mut tables = TABLES.lock().unwrap_or_else(PoisonError::into_inner);
     let tables = tables.get_or_insert_with(HashMap::new);

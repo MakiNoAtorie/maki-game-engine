@@ -237,6 +237,20 @@ impl<'w> ScriptContext<'w> {
             .set_language(language);
     }
 
+    /// Opens a menu on the top of the open menus. The commands of its rows run with
+    /// the object of this script.
+    pub fn open_menu(&mut self, menu: crate::Menu) {
+        let entity = self.entity;
+        self.world
+            .resource_mut::<crate::Menus>()
+            .open(menu, Some(entity));
+    }
+
+    /// Closes the top menu with focus; with no menu with focus, the top menu (a HUD).
+    pub fn close_menu(&mut self) {
+        self.world.resource_mut::<crate::Menus>().close();
+    }
+
     /// The id of the object of this script.
     fn this(&self) -> Option<ObjectId> {
         self.world.get::<ObjectId>(self.entity).copied()

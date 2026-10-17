@@ -1,0 +1,13 @@
+(
+    language: "en",
+    texts: [
+        (
+            key: "items.title",
+            text: "Items",
+        ),
+        (
+            key: "items.back",
+            text: "Back",
+        ),
+    ],
+)

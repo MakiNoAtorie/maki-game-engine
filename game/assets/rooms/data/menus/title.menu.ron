@@ -1,0 +1,9 @@
+(
+    title: "menu.title",
+    back: false,
+    rows: [
+        Commands(text: "menu.new_game", commands: [NewGame]),
+        Commands(text: "menu.continue", conditions: [SaveExists], commands: [LoadSave]),
+        Commands(text: "menu.quit", commands: [QuitGame]),
+    ],
+)

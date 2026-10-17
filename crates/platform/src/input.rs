@@ -312,10 +312,18 @@ impl std::ops::Deref for FixedActionState {
     }
 }
 
+impl FixedActionState {
+    /// Drops the changes that no fixed step has seen: a press in a pause of the game
+    /// is not a press of the first step after it.
+    pub fn forget_changes(&mut self) {
+        self.0.just_pressed.clear();
+        self.0.just_released.clear();
+    }
+}
+
 /// Runs in `FixedLast`: the step that just ended has seen the changes.
 pub(crate) fn clear_fixed_changes(mut fixed: ResMut<FixedActionState>) {
-    fixed.0.just_pressed.clear();
-    fixed.0.just_released.clear();
+    fixed.forget_changes();
 }
 
 /// Tells that some other consumer has the keyboard or the mouse: the UI, when the pointer

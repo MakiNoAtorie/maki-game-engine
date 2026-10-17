@@ -62,6 +62,8 @@ pub enum Start {
     /// An output of the object: its wires. A wire blocks the player as an event that
     /// the player started.
     Wire,
+    /// A pick of a row of a menu (`crate::menu`).
+    Menu,
 }
 
 /// An event whose commands run.
@@ -224,6 +226,9 @@ pub struct EventRunner {
     /// the events run. `Some`: the number of commands that can still start; at 0
     /// each event waits before its next command.
     steps: Option<u32>,
+    /// A menu with focus is open (`crate::Menus`), as the last step saw it. A copy:
+    /// the runner reads no other resource in `blocks_player`.
+    menu: bool,
 }
 
 /// The outputs that a row or a script sent. Their wires start in the step of the
@@ -246,10 +251,11 @@ impl Signals {
 
 impl EventRunner {
     /// True while an event runs that the player started or that runs by itself one
-    /// time (all triggers but `Parallel`): the player has no control.
+    /// time (all triggers but `Parallel`), or while a menu with focus is open: the
+    /// player has no control.
     pub fn blocks_player(&self) -> bool {
         let blocks = |event: &RunningEvent| event.start != Start::Page(Trigger::Parallel);
-        self.running.iter().any(blocks)
+        self.menu || self.running.iter().any(blocks)
     }
 
     /// The events that run, for a debug panel.
@@ -284,6 +290,12 @@ impl EventRunner {
     /// One fixed step: runs the running events, then starts those whose trigger
     /// fires. `player`: position and view direction.
     pub(crate) fn step(&mut self, world: &mut World, player: Option<(Vec3, Vec3)>) {
+        let has_focus = |world: &World| {
+            world
+                .get_resource::<crate::Menus>()
+                .is_some_and(crate::Menus::has_focus)
+        };
+        self.menu = has_focus(world);
         // An interact press that goes to a running event (it closes a message)
         // starts no other event in the same step.
         let mut blocked = self.blocks_player();
@@ -302,6 +314,8 @@ impl EventRunner {
                 index += 1;
             }
         }
+        // A row could open or close a menu.
+        self.menu = has_focus(world);
         blocked |= self.blocks_player();
 
         let mut signals = std::mem::take(&mut world.resource_mut::<Signals>().0);
@@ -463,6 +477,25 @@ pub fn start_event(world: &mut World, id: ObjectId, page: usize) -> bool {
     true
 }
 
+/// Runs the events of the picks of menus, and no other event: in a pause, when no
+/// fixed step runs.
+pub(crate) fn run_menu_events(world: &mut World) {
+    use bevy_ecs::change_detection::DetectChangesMut;
+
+    world.resource_scope(|world, mut runner: Mut<EventRunner>| {
+        let runner = runner.bypass_change_detection();
+        let mut index = 0;
+        while index < runner.running.len() {
+            let event = &mut runner.running[index];
+            if event.start == Start::Menu && event.step(world, &mut runner.steps) {
+                runner.running.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    });
+}
+
 /// True if the player is at the area and looks toward it.
 pub(crate) fn faces((position, facing): (Vec3, Vec3), area: crate::Area) -> bool {
     let [x, z] = area.nearest(position.x, position.z);
@@ -536,6 +569,7 @@ pub fn run_events(world: &mut World, players: &mut QueryState<&Interpolated, Wit
         let pose = pose.current;
         (pose.translation, pose.rotation * Vec3::Z)
     });
+    crate::menu::menu_input(world);
     // The runner is out of the world while its commands have the world.
     world.resource_scope(|world, mut runner: Mut<EventRunner>| {
         // Change detection of the runner has no reader.

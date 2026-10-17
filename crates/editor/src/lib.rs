@@ -35,6 +35,7 @@ mod events;
 pub mod fields;
 mod gizmo;
 mod ids;
+mod menu_panel;
 mod ops;
 mod overlay;
 mod panels;
@@ -324,6 +325,8 @@ pub struct Editor {
     unpacked: Option<(PathBuf, maki_scene::PoseDef)>,
     /// The routine file that the event panel shows in place of an event.
     pub routine: Option<routine_panel::RoutineEdit>,
+    /// The menu file that the event panel shows in place of an event.
+    pub menu: Option<menu_panel::MenuEdit>,
     /// The data file that the inspector shows in place of the selection.
     pub data: Option<data_panel::DataEdit>,
 }
@@ -1397,6 +1400,7 @@ impl Module for EditorModule {
             prefab_name: String::new(),
             unpacked: None,
             routine: None,
+            menu: None,
             data: None,
         })
         .add_systems(Startup, camera::spawn)

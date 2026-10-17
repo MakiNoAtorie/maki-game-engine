@@ -28,6 +28,9 @@ pub struct ItemKind {
     pub description: TextKey,
     #[field(file = "picture")]
     pub icon: FileRef,
+    /// A routine file that a pick of the item in a menu runs. No path: nothing runs.
+    #[field(file = "routine")]
+    pub use_routine: FileRef,
 }
 
 impl DataAsset for ItemKind {
