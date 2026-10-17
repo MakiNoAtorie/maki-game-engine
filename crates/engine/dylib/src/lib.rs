@@ -12,6 +12,7 @@ extern crate maki_editor as _;
 extern crate maki_events as _;
 extern crate maki_gameplay as _;
 extern crate maki_gpu as _;
+extern crate maki_physics as _;
 extern crate maki_platform as _;
 extern crate maki_render as _;
 extern crate maki_scene as _;

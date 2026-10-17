@@ -18,7 +18,7 @@ use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transfo
 
 pub use collision::{Collider, move_circle, room_colliders};
 pub use hidden::Hidden;
-pub use mover::{Door, Mover, MoverState, move_movers};
+pub use mover::{Door, Mover, MoverState, block_doors, move_movers};
 pub use object::{
     ComponentText, ComponentType, ComponentTypes, Live, ObjectDef, ObjectId, add_component_reader,
     add_component_type, add_live_component_type, add_object_component,

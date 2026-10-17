@@ -120,7 +120,7 @@ pub struct Door {
 /// Gives each door its collider, and takes it away while the door is open.
 // ponytail: an open door blocks nothing: the player walks through the door leaf. Add
 // a second box for the open leaf when that shows.
-pub(crate) fn block_doors(
+pub fn block_doors(
     mut commands: Commands,
     doors: Query<(Entity, &Door, Ref<Mover>, Has<Collider>)>,
 ) {
