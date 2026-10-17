@@ -218,6 +218,9 @@ pub(crate) fn condition_problem(
         Condition::Switch(object, _)
         | Condition::NotSwitch(object, _)
         | Condition::Number(object, ..) => *object,
+        Condition::Item(item, ..) => {
+            return crate::items::item_problem(&item.file, context.directory);
+        }
         _ => return None,
     };
     let Some(object) = resolve(object, this) else {

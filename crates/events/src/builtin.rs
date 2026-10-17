@@ -327,6 +327,13 @@ fn condition_text(condition: &Condition) -> String {
             format!("{}.{name} {} {value}", object(id), compare_sign(*compare))
         }
         Condition::Variables(a, compare, b) => format!("{a} {} {b}", compare_sign(*compare)),
+        Condition::Item(item, compare, value) => {
+            format!(
+                "item {} {} {value}",
+                item.file.display(),
+                compare_sign(*compare)
+            )
+        }
         Condition::Any(conditions) => format!("({})", conditions_text(conditions, " or ")),
     }
 }

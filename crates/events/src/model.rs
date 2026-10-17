@@ -12,9 +12,11 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::path::Path;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::world::World;
+use maki_assets::DataRef;
 use maki_core::Fields;
 use maki_scene::{ObjectId, PoseDef};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
@@ -22,6 +24,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::GameState;
 use crate::command::Command;
+use crate::items::{Inventory, ItemKind};
 use crate::script::TriggerArea;
 use crate::state::{ObjectStates, RoomStates, StateValues};
 
@@ -186,6 +189,13 @@ pub enum Condition {
         #[field(label = "is")] Compare,
         #[field(label = "value")] i32,
     ),
+    /// The count of an item in the inventory, compared with a number.
+    #[field(label = "item count")]
+    Item(
+        #[field(label = "item")] DataRef<ItemKind>,
+        #[field(label = "is")] Compare,
+        #[field(label = "value")] i32,
+    ),
     /// One of the conditions holds ("or"). With no condition: it does not hold.
     #[field(label = "any of")]
     Any(Vec<Condition>),
@@ -237,6 +247,7 @@ impl Condition {
                 let number = state.object(*object).map_or(0, |o| o.number(name));
                 compare.holds(number, *value)
             }
+            Condition::Item(item, compare, value) => compare.holds(state.item(item), *value),
             Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
         }
     }
@@ -249,20 +260,26 @@ impl Condition {
             Condition::Variable(name, ..) => vec![(true, name)],
             Condition::Variables(a, _, b) => vec![(true, a), (true, b)],
             Condition::Any(conditions) => conditions.iter().flat_map(Condition::names).collect(),
-            // The state of an object: no flag, no variable.
-            Condition::Switch(..) | Condition::NotSwitch(..) | Condition::Number(..) => Vec::new(),
+            // The state of an object and the inventory: no flag, no variable.
+            Condition::Switch(..)
+            | Condition::NotSwitch(..)
+            | Condition::Number(..)
+            | Condition::Item(..) => Vec::new(),
         }
     }
 }
 
 /// What a condition reads: the flags and variables as a command sees them (with the
-/// arguments of a routine), the state of the objects of the current room, and the
-/// object of the event, which object 0 names.
+/// arguments of a routine), the state of the objects of the current room, the object
+/// of the event, which object 0 names, and the inventory.
 pub struct Facts<'a> {
     pub game: Cow<'a, GameState>,
     /// `None`: no object has state in this room yet.
     pub objects: Option<&'a RoomStates>,
     pub this: Option<ObjectId>,
+    pub inventory: Option<&'a Inventory>,
+    /// The directory of the room file: an item file starts there.
+    pub directory: &'a Path,
 }
 
 impl<'a> Facts<'a> {
@@ -274,6 +291,8 @@ impl<'a> Facts<'a> {
             game: Cow::Borrowed(world.resource::<GameState>()),
             objects: room.and_then(|room| states?.0.get(&room)),
             this,
+            inventory: world.get_resource::<Inventory>(),
+            directory: crate::items::room_directory(world),
         }
     }
 
@@ -283,7 +302,15 @@ impl<'a> Facts<'a> {
             game: Cow::Borrowed(game),
             objects: None,
             this: None,
+            inventory: None,
+            directory: Path::new(""),
         }
+    }
+
+    /// The count of an item in the inventory.
+    pub fn item(&self, item: &DataRef<ItemKind>) -> i32 {
+        let count = |inventory: &Inventory| inventory.count_of(&item.file, self.directory);
+        self.inventory.map_or(0, count)
     }
 
     /// The state of an object of the room. Object 0: the object of the event.

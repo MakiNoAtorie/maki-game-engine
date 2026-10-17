@@ -18,6 +18,7 @@ mod check;
 mod command;
 mod flow;
 mod interpreter;
+mod items;
 mod model;
 mod numbers;
 mod objects;
@@ -42,6 +43,7 @@ pub use interpreter::{
     ChoiceBox, Choices, EventRunner, MessageBox, RunningEvent, Signals, Start, load_room_events,
     run_events, start_event,
 };
+pub use items::{Inventory, ItemCommand, ItemKind, item_id};
 pub use model::{
     Area, Compare, Condition, EventDef, EventPages, Facts, Page, Trigger, Wire, active_page,
     all_hold, short_events,
@@ -137,6 +139,8 @@ impl Module for EventsModule {
         objects::add(app, &registry);
         // The switches and numbers of an object.
         state::add(app, &registry);
+        // Item kinds and the inventory.
+        items::add(app, &registry);
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)

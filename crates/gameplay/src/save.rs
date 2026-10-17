@@ -1,5 +1,5 @@
 //! Save and load: one file with the room, the pose of the player, the flags and
-//! variables, and the state of the objects. The event command `SavePoint` writes it; the start of the game and a
+//! variables, the state of the objects, and the inventory. The event command `SavePoint` writes it; the start of the game and a
 //! debug key read it.
 //!
 //! The rest of a room is not in the file: the room file gives it, and an `Autorun`
@@ -16,7 +16,7 @@ use bevy_ecs::world::World;
 use glam::Quat;
 use maki_core::{App, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Update};
 use maki_events::{
-    CommandRegistry, EventRunner, GameState, ObjectStates, RunningEvent, run_events,
+    CommandRegistry, EventRunner, GameState, Inventory, ObjectStates, RunningEvent, run_events,
 };
 use maki_platform::{Action, ActionState, Key, add_bindings};
 use maki_scene::{
@@ -74,6 +74,9 @@ pub struct SaveData {
     /// The switches and numbers of the objects of each room. An old save has none.
     #[serde(default)]
     pub objects: ObjectStates,
+    /// The count of each item, by the id of the item file. An old save has none.
+    #[serde(default)]
+    pub items: Inventory,
 }
 
 /// The event commands of this module.
@@ -157,7 +160,7 @@ fn save_when_the_event_ends(
     file: Res<SaveFile>,
     runner: Res<EventRunner>,
     room: Res<CurrentRoom>,
-    (state, objects): (Res<GameState>, Res<ObjectStates>),
+    (state, objects, items): (Res<GameState>, Res<ObjectStates>, Res<Inventory>),
     controller: Option<Res<Controller>>,
     poses: Query<&Interpolated>,
 ) {
@@ -186,6 +189,7 @@ fn save_when_the_event_ends(
         flags: state.flags.clone(),
         variables: state.variables.clone(),
         objects: objects.clone(),
+        items: items.clone(),
     };
     match write(file, &save) {
         Ok(()) => tracing::info!(file = %file.display(), room = %save.room.display(), "game saved"),
@@ -245,6 +249,7 @@ pub fn apply(world: &mut World, save: &SaveData) -> Result<()> {
         variables: save.variables.clone(),
     };
     *world.resource_mut::<ObjectStates>() = save.objects.clone();
+    *world.resource_mut::<Inventory>() = save.items.clone();
     // No spawn point: the player stays where this puts it.
     world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
         path: save.room.clone(),
@@ -509,6 +514,47 @@ mod tests {
         game(&directory).run(|mut app| {
             state(&mut app);
             assert!(open(&app, &directory));
+        });
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn the_inventory_goes_into_the_save_and_an_old_save_has_none() {
+        let directory = std::env::temp_dir().join(format!("items-save-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("data")).unwrap();
+        let key = directory.join("data/key.item.ron");
+        std::fs::write(&key, "()").unwrap();
+        let id = maki_assets::FileId(0x1234);
+        id.write(&key).unwrap();
+        let room = room(&[
+            START,
+            r#"(name: "give", components: {"event": (pages: [(conditions: [NotFlag("given")],
+                trigger: Autorun, commands: [SetFlag("given", true), GiveItem("data/key.item.ron", 2), SavePoint])])})"#,
+        ]);
+        std::fs::write(directory.join("a.ron"), room).unwrap();
+        let keys = |app: &App| app.world().resource::<Inventory>().count(id);
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert_eq!(keys(&app), 2);
+        });
+        // The next start loads the save: the flag stops a second give.
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert_eq!(keys(&app), 2);
+        });
+
+        // A save file of before the inventory: no item, and the flag stays.
+        let save = read(&directory.join("save.ron")).unwrap().unwrap();
+        let mut old = ron_options()
+            .to_string_pretty(&save, ron::ser::PrettyConfig::default())
+            .unwrap();
+        old.truncate(old.find("items:").unwrap());
+        old.push(')');
+        std::fs::write(directory.join("save.ron"), old).unwrap();
+        game(&directory).run(|mut app| {
+            state(&mut app);
+            assert!(app.world().resource::<GameState>().flag("given"));
+            assert_eq!(keys(&app), 0);
         });
         std::fs::remove_dir_all(&directory).unwrap();
     }
