@@ -147,7 +147,7 @@ fn body_and_pose(app: &App, entity: Entity) -> (Transform, Transform) {
     let at = physics.world.bodies[body].position();
     let body = Transform {
         translation: vec3(at.translation),
-        rotation: Quat::from_array(at.rotation.to_array()),
+        rotation: quat(at.rotation),
         scale: Vec3::ONE,
     };
     (
@@ -374,6 +374,31 @@ fn a_dynamic_box_falls_and_rests_on_the_floor_and_a_room_load_and_reset_play_sta
     let box_ = named(&app, "box");
     let again = place(&app, box_);
     assert!(again.y > 2.9 && again.y < 3.0, "{again}");
+}
+
+#[test]
+fn reset_play_starts_again_a_dynamic_body_with_only_a_transform() {
+    let mut app = room_app();
+    change(&mut app, |world| {
+        let collider = ObjectCollider {
+            shape: ColliderShape::Sphere { radius: 0.5 },
+            ..ObjectCollider::default()
+        };
+        let body = Body::Dynamic {
+            mass: 10.0,
+            damping: 0.0,
+        };
+        let at = Transform::from_translation(Vec3::new(0.0, 3.0, 1.0));
+        world.spawn((Name("ball".to_owned()), at, collider, body));
+    });
+    let ball = named(&app, "ball");
+    let at = |app: &App| app.world().get::<Transform>(ball).unwrap().translation;
+    for _ in 0..50 {
+        step(&mut app);
+    }
+    assert!(at(&app).y < 1.0, "{}", at(&app));
+    change(&mut app, |world| world.run_schedule(ResetPlay));
+    assert!(at(&app).y > 2.9, "{}", at(&app));
 }
 
 #[test]

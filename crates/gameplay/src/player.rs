@@ -597,11 +597,16 @@ pub fn walk(
         if end.y < STILL {
             end.y = 0.0;
         }
-        pose.current.translation = end;
+        let mut next = pose.current;
+        next.translation = end;
         if walker.direction != Vec3::ZERO {
             // The walker faces the way it walks: +Z of the model is its front.
             let facing = walker.direction.x.atan2(walker.direction.z);
-            pose.current.rotation = Quat::from_rotation_y(facing);
+            next.rotation = Quat::from_rotation_y(facing);
+        }
+        // Only a different pose is written: a walker at a wall is not marked as changed.
+        if next != pose.current {
+            pose.current = next;
         }
     }
 }

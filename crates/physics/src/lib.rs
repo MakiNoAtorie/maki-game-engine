@@ -1,6 +1,7 @@
 //! Collision and bodies, on the library Rapier. The world of the physics is a copy of
 //! the entities of `scene`: each `Collider` box is a fixed collider, each entity
-//! with [`Kinematic`] (a door leaf, a mover) is a body that follows its pose, and each
+//! with [`Kinematic`] (a door leaf, a mover) is a body that follows its pose, each
+//! [`Sensor`] (the area of an object) is a sensor collider at its position, and each
 //! object with the components `collider` and `body` ([`ObjectCollider`], [`Body`]) is
 //! a body of its kind. It steps in `FixedUpdate`, in [`PhysicsSet::Step`].
 //!
@@ -167,6 +168,17 @@ pub struct Kinematic {
     pub sensor: bool,
 }
 
+/// An area that tells what is in it ([`Physics::in_sensor`]): a sensor collider at the
+/// position of its entity, with its sides along the axes (it does not turn with the
+/// entity). A collider of its own: an entity with a [`Kinematic`] (a door, a mover) can
+/// have it too.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct Sensor {
+    pub shape: Shape,
+    /// The center of the shape, from the position of the entity.
+    pub center: Vec3,
+}
+
 /// What a query takes into account.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct QueryFilter {
@@ -198,13 +210,16 @@ pub struct CharacterSettings {
     pub gap: f32,
 }
 
+/// The gap that a character keeps to the colliders by default, in meters.
+const GAP: f32 = 0.01;
+
 /// Goes up no step, and up a slope to 45 degrees.
 impl Default for CharacterSettings {
     fn default() -> Self {
         Self {
             step_height: 0.0,
             max_slope_degrees: 45.0,
-            gap: 0.01,
+            gap: GAP,
         }
     }
 }
@@ -243,11 +258,22 @@ pub struct Physics {
     floor: rp::ColliderHandle,
 }
 
+/// Half the size of the floor along X and Z, in meters: wider than a room, so a body
+/// that falls out of a doorway lands on it too.
+const FLOOR_HALF: f32 = 500.0;
+
+/// The smallest mass of a dynamic body, in kilograms: Rapier needs a mass above zero.
+const MIN_MASS: f32 = 0.01;
+
+/// A move of a kinematic body farther than this in one step, in meters, is a jump (the
+/// walk at 3.6 m/s makes 0.07 m in a step of 20 ms).
+const JUMP: f32 = 0.5;
+
 impl Default for Physics {
     fn default() -> Self {
         let mut world = rp::PhysicsWorld::default();
-        // Wider than a room: a body that falls out of a doorway lands on it too.
-        let floor = rp::ColliderBuilder::cuboid(500.0, 1.0, 500.0).translation(Vector::NEG_Y);
+        let floor =
+            rp::ColliderBuilder::cuboid(FLOOR_HALF, 1.0, FLOOR_HALF).translation(Vector::NEG_Y);
         let floor = world.insert_collider(floor, None);
         Self {
             world,
@@ -267,6 +293,8 @@ struct Link {
     moving: Option<(rp::RigidBodyHandle, rp::ColliderHandle)>,
     /// Of its [`ObjectCollider`] and [`Body`].
     solid: Option<Solid>,
+    /// Of its [`Sensor`]: a collider with no body.
+    sensor: Option<rp::ColliderHandle>,
 }
 
 /// The body of an [`ObjectCollider`].
@@ -395,6 +423,37 @@ impl Physics {
         }
     }
 
+    /// True if a collider of `other` overlaps the [`Sensor`] of `sensor`, at the poses
+    /// after the last step: a test of the two shapes, not the sensor events (Rapier
+    /// tells those one step later).
+    pub fn in_sensor(&self, sensor: Entity, other: Entity) -> bool {
+        let sensor = self.links.get(&sensor).and_then(|link| link.sensor);
+        let (Some(sensor), Some(other)) = (sensor, self.links.get(&other)) else {
+            return false;
+        };
+        let sensor = &self.world.colliders[sensor];
+        let on = |collider: &rp::Collider| {
+            let body = collider.parent().map(|body| &self.world.bodies[body]);
+            collider.is_enabled() && body.is_none_or(rp::RigidBody::is_enabled)
+        };
+        let handles = [
+            other.fixed,
+            other.moving.map(|(_, collider)| collider),
+            other.solid.map(|solid| solid.collider),
+        ];
+        on(sensor)
+            && handles.into_iter().flatten().any(|handle| {
+                let collider = &self.world.colliders[handle];
+                let test = rapier3d::parry::query::intersection_test(
+                    sensor.position(),
+                    sensor.shape(),
+                    collider.position(),
+                    collider.shape(),
+                );
+                on(collider) && test.is_ok_and(|test| test.intersecting)
+            })
+    }
+
     /// The sensors that an entity entered or left in the last step, in the order of
     /// Rapier.
     pub fn sensor_events(&self) -> &[SensorEvent] {
@@ -438,6 +497,10 @@ fn vector(v: Vec3) -> Vector {
 
 fn vec3(v: Vector) -> Vec3 {
     Vec3::from_array(v.to_array())
+}
+
+fn quat(rotation: Rotation) -> Quat {
+    Quat::from_array(rotation.to_array())
 }
 
 fn pose(position: Vec3, rotation: Quat) -> Pose {

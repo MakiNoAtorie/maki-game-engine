@@ -264,22 +264,8 @@ fn a_hidden_object_does_not_block_and_blocks_again_when_shown() {
 
 #[test]
 fn the_walk_pushes_a_dynamic_box_with_the_push_force() {
-    use maki_physics::{Body, ColliderShape, ObjectCollider};
-
-    // A box of 1 m and 10 kg; its face at -Z is at z = 0.
     let push = |push_force: f32| {
-        let mut app = room_app_with(Vec3::new(0.0, 0.0, -1.5), |world| {
-            let collider = ObjectCollider {
-                shape: ColliderShape::Box { half: [0.5; 3] },
-                ..ObjectCollider::default()
-            };
-            let body = Body::Dynamic {
-                mass: 10.0,
-                damping: 0.0,
-            };
-            let at = Interpolated::at(Transform::from_translation(Vec3::new(0.0, 0.5, 0.5)));
-            world.spawn((Name("box".to_owned()), at, collider, body));
-        });
+        let mut app = room_app_with(Vec3::new(0.0, 0.0, -1.5), spawn_box);
         let walker = named(&app, "walker");
         change(&mut app, move |world| {
             world.get_mut::<Walker>(walker).unwrap().push_force = push_force;
@@ -294,6 +280,62 @@ fn the_walk_pushes_a_dynamic_box_with_the_push_force() {
     let (walker, still) = push(0.0);
     let at_box = (walker.z + 0.3).abs() < 0.02;
     assert!(at_box && (still.z - 0.5).abs() < 0.01, "{walker} {still}");
+}
+
+/// A box of 1 m and 10 kg on the floor, its face at -Z at z = 0.
+fn spawn_box(world: &mut World) {
+    use maki_physics::{Body, ColliderShape, ObjectCollider};
+
+    let collider = ObjectCollider {
+        shape: ColliderShape::Box { half: [0.5; 3] },
+        ..ObjectCollider::default()
+    };
+    let body = Body::Dynamic {
+        mass: 10.0,
+        damping: 0.0,
+    };
+    let at = Interpolated::at(Transform::from_translation(Vec3::new(0.0, 0.5, 0.5)));
+    world.spawn((Name("box".to_owned()), at, collider, body));
+}
+
+#[test]
+fn a_jump_of_a_walker_does_not_throw_a_dynamic_box() {
+    // At the face of the box, then a jump through it (a transfer, a spawn point).
+    let mut app = room_app_with(Vec3::new(0.0, 0.0, -0.31), spawn_box);
+    let (walker, box_) = (named(&app, "walker"), named(&app, "box"));
+    steps(&mut app, 20);
+    let rest = place(&app, box_);
+    change(&mut app, move |world| {
+        let at = Transform::from_translation(Vec3::new(0.0, 0.0, 2.0));
+        world.get_mut::<Interpolated>(walker).unwrap().snap(at);
+    });
+    steps(&mut app, 10);
+    let after = place(&app, box_);
+    assert!(after.distance(rest) < 0.01, "{rest} {after}");
+}
+
+#[test]
+fn a_walker_that_cannot_move_writes_no_pose() {
+    #[derive(Resource, Default)]
+    struct Writes(u32);
+
+    let mut app = room_app(Vec3::new(3.5, 0.0, 0.0));
+    app.init_resource::<Writes>().add_systems(
+        FixedUpdate,
+        (|mut writes: ResMut<Writes>, poses: Query<(), (Changed<Interpolated>, With<Walker>)>| {
+            writes.0 += poses.iter().count() as u32;
+        })
+        .after(walk),
+    );
+    let walker = named(&app, "walker");
+    // Into the wall at +X: after some steps it stands at the wall.
+    change(&mut app, move |world| {
+        world.get_mut::<Walker>(walker).unwrap().direction = Vec3::X;
+    });
+    steps(&mut app, 20);
+    app.resource_mut::<Writes>().0 = 0;
+    steps(&mut app, 10);
+    assert_eq!(app.world().resource::<Writes>().0, 0);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
 use std::sync::Mutex;
 
-use bevy_ecs::change_detection::DetectChanges;
+use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut};
 use bevy_ecs::entity::{Entities, Entity};
 use bevy_ecs::query::{Has, Without};
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
@@ -14,8 +14,8 @@ use maki_scene::{Collider, Hidden, MeshInstance, Mover};
 use rapier3d::prelude as rp;
 
 use crate::{
-    Body, ColliderShape, Kinematic, Link, ObjectCollider, Physics, SensorEvent, Shape, Solid, pose,
-    shared_shape, vec3, vector,
+    Body, ColliderShape, JUMP, Kinematic, Link, MIN_MASS, ObjectCollider, Physics, Sensor,
+    SensorEvent, Shape, Solid, pose, quat, shared_shape, vec3, vector,
 };
 
 /// An entity with a [`Kinematic`], the poses that it can follow, and whether it is hidden.
@@ -38,6 +38,45 @@ type Solids = (
     Option<&'static MeshInstance>,
     Has<Hidden>,
 );
+
+/// An entity with a [`Sensor`], the poses that it can follow, and whether it is hidden.
+type Sensors = (
+    Entity,
+    Ref<'static, Sensor>,
+    Option<&'static Interpolated>,
+    Option<&'static Transform>,
+    Has<Hidden>,
+);
+
+/// The pose that a body follows: `Interpolated::current` if the entity has it, else its
+/// `Transform`.
+fn pose_of(interpolated: Option<&Interpolated>, transform: Option<&Transform>) -> Transform {
+    interpolated
+        .map(|pose| pose.current)
+        .or(transform.copied())
+        .unwrap_or(Transform::IDENTITY)
+}
+
+/// True if the pose of `interpolated` jumped in this step: `Interpolated::snap` makes
+/// the two poses the same.
+fn snapped(interpolated: Option<&Interpolated>) -> bool {
+    interpolated.is_some_and(|pose| pose.previous == pose.current)
+}
+
+/// Moves a kinematic body to `at` in this step. A jump ([`snapped`], or farther than
+/// [`JUMP`]) puts it there with no speed, so it does not throw a dynamic body that it
+/// touches on the way.
+fn follow(body: &mut rp::RigidBody, at: Transform, snapped: bool) {
+    let to = pose(at.translation, at.rotation);
+    if *body.position() == to {
+        return;
+    }
+    if snapped || vec3(body.position().translation).distance(at.translation) > JUMP {
+        body.set_position(to, true);
+    } else {
+        body.set_next_kinematic_position(to);
+    }
+}
 
 /// A mover with no shape yet.
 type Unshaped = (Without<Kinematic>, Without<ObjectCollider>);
@@ -112,6 +151,7 @@ pub(crate) fn sync_world(
     boxes: Query<(Entity, Ref<Collider>, Has<Hidden>), Without<ObjectCollider>>,
     moving: Query<Followed>,
     solids: Query<Solids>,
+    sensors: Query<Sensors>,
 ) {
     let Physics { world, links, .. } = &mut *physics;
 
@@ -148,15 +188,22 @@ pub(crate) fn sync_world(
                 link.solid = None;
             }
         }
+        if let Some(handle) = link.sensor
+            && !sensors.contains(entity)
+        {
+            if alive {
+                world.colliders[handle].set_enabled(false);
+            } else {
+                world.remove_collider(handle);
+                link.sensor = None;
+            }
+        }
         *link != Link::default()
     });
 
     for (entity, collider, body, interpolated, transform, mesh, hidden) in &solids {
         let link = links.entry(entity).or_default();
-        let at = interpolated
-            .map(|pose| pose.current)
-            .or(transform.copied())
-            .unwrap_or(Transform::IDENTITY);
+        let at = pose_of(interpolated, transform);
         let changed = collider.is_changed() || body.as_ref().is_some_and(|body| body.is_changed());
         if let Some(solid) = link.solid
             && changed
@@ -190,8 +237,7 @@ pub(crate) fn sync_world(
                 .user_data(user_data)
                 .enabled(!hidden);
             if let Body::Dynamic { mass, .. } = kind {
-                // Rapier needs a mass above zero.
-                new = new.mass(mass.max(0.01));
+                new = new.mass(mass.max(MIN_MASS));
             }
             let (body, collider) = world.insert(body, new);
             link.solid = Some(Solid {
@@ -206,10 +252,9 @@ pub(crate) fn sync_world(
         let rigid = &mut world.bodies[solid.body];
         rigid.set_enabled(!hidden);
         let now = rigid.position();
-        let moved = vec3(now.translation) != at.translation
-            || glam::Quat::from_array(now.rotation.to_array()) != at.rotation;
+        let moved = vec3(now.translation) != at.translation || quat(now.rotation) != at.rotation;
         match kind {
-            Body::Kinematic => rigid.set_next_kinematic_position(pose(at.translation, at.rotation)),
+            Body::Kinematic => follow(rigid, at, snapped(interpolated)),
             // A pose other than that of the last step: a command, a script, or `ResetPlay` moved it.
             _ if moved => {
                 rigid.set_position(pose(at.translation, at.rotation), true);
@@ -245,16 +290,12 @@ pub(crate) fn sync_world(
 
     for (entity, kinematic, interpolated, transform, hidden) in &moving {
         let link = links.entry(entity).or_default();
-        let at = interpolated
-            .map(|pose| pose.current)
-            .or(transform.copied())
-            .unwrap_or(Transform::IDENTITY);
-        let at = pose(at.translation, at.rotation);
+        let at = pose_of(interpolated, transform);
         match link.moving {
             None => {
                 let user_data = entity.to_bits().into();
                 let body = rp::RigidBodyBuilder::kinematic_position_based()
-                    .pose(at)
+                    .pose(pose(at.translation, at.rotation))
                     .user_data(user_data);
                 let mut collider = rp::ColliderBuilder::new(shared_shape(kinematic.shape))
                     .translation(vector(kinematic.center))
@@ -271,12 +312,38 @@ pub(crate) fn sync_world(
             }
             Some((body, handle)) => {
                 world.bodies[body].set_enabled(true);
-                world.bodies[body].set_next_kinematic_position(at);
+                follow(&mut world.bodies[body], at, snapped(interpolated));
                 let collider = &mut world.colliders[handle];
                 if kinematic.is_changed() {
                     collider.set_shape(shared_shape(kinematic.shape));
                     collider.set_translation_wrt_parent(vector(kinematic.center));
                     collider.set_sensor(kinematic.sensor);
+                }
+                collider.set_enabled(!hidden);
+            }
+        }
+    }
+
+    for (entity, sensor, interpolated, transform, hidden) in &sensors {
+        let link = links.entry(entity).or_default();
+        // The position only: the sides stay along the axes.
+        let at = vector(pose_of(interpolated, transform).translation + sensor.center);
+        match link.sensor {
+            None => {
+                let new = rp::ColliderBuilder::new(shared_shape(sensor.shape))
+                    .translation(at)
+                    .sensor(true)
+                    .user_data(entity.to_bits().into())
+                    .enabled(!hidden);
+                link.sensor = Some(world.insert_collider(new, None));
+            }
+            Some(handle) => {
+                let collider = &mut world.colliders[handle];
+                if sensor.is_changed() {
+                    collider.set_shape(shared_shape(sensor.shape));
+                }
+                if collider.translation() != at {
+                    collider.set_translation(at);
                 }
                 collider.set_enabled(!hidden);
             }
@@ -332,26 +399,43 @@ pub(crate) fn write_poses(
             continue;
         };
         let at = body.position();
-        let place = |pose: &mut Transform| {
-            pose.translation = vec3(at.translation);
-            pose.rotation = glam::Quat::from_array(at.rotation.to_array());
+        let placed = |pose: Transform| Transform {
+            translation: vec3(at.translation),
+            rotation: quat(at.rotation),
+            ..pose
         };
+        // Only a different pose is written: a body at rest is not marked as changed.
         match (interpolated, transform) {
-            (Some(mut interpolated), _) => place(&mut interpolated.current),
-            (None, Some(mut transform)) => place(&mut transform),
+            (Some(mut interpolated), _) => {
+                let current = placed(interpolated.current);
+                interpolated.set_if_neq(Interpolated {
+                    current,
+                    ..*interpolated
+                });
+            }
+            (None, Some(mut transform)) => {
+                transform.set_if_neq(placed(*transform));
+            }
             (None, None) => {}
         }
     }
 }
 
 /// Runs in `ResetPlay`: each dynamic body goes back to the pose that it had when it was
-/// made (its place in the room file). The next step moves the body there.
-pub(crate) fn restart_bodies(physics: Res<Physics>, mut poses: Query<&mut Interpolated>) {
+/// made (its place in the room file), in its `Interpolated` or, with none, its
+/// `Transform`. The next step moves the body there.
+pub(crate) fn restart_bodies(
+    physics: Res<Physics>,
+    mut poses: Query<(Option<&mut Interpolated>, Option<&mut Transform>)>,
+) {
     for (entity, link) in &physics.links {
-        if let Some(solid) = link.solid.filter(|solid| solid.dynamic)
-            && let Ok(mut pose) = poses.get_mut(*entity)
-        {
-            pose.snap(solid.start);
+        let Some(solid) = link.solid.filter(|solid| solid.dynamic) else {
+            continue;
+        };
+        match poses.get_mut(*entity) {
+            Ok((Some(mut pose), _)) => pose.snap(solid.start),
+            Ok((None, Some(mut transform))) => *transform = solid.start,
+            _ => {}
         }
     }
 }

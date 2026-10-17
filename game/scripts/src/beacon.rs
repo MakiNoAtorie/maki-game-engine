@@ -226,8 +226,7 @@ mod tests {
             }
             // Far from the lamp: the light of the file.
             assert_eq!(intensity(&app), 10.0);
-            // The sensor tells the events 4 steps after the move.
-            for _ in 0..16 {
+            for _ in 0..12 {
                 app.advance(step);
             }
             assert_ne!(intensity(&app), 10.0);

@@ -443,7 +443,7 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
             continue;
         };
         let mut script = std::mem::take(&mut *value);
-        let reach = in_reach(world, player).contains(&entity);
+        let reach = in_reach(world, player.map(|(at, _)| at)).contains(&entity);
         let mut context = ScriptContext::new(world, entity);
         match before {
             None => script.start(&mut context),

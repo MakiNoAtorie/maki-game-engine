@@ -214,7 +214,8 @@ pub(crate) struct EventMemory {
 #[derive(Resource, Debug, Default)]
 pub struct EventRunner {
     /// Steps left that count as the start of a new room: a player that starts in an
-    /// area did not walk into it. Two: the sensors tell it one step late.
+    /// area did not walk into it. Two: the sensors of a new room are made in its first
+    /// step after the events, so the events see them from the second step.
     new_room: u8,
     pub(crate) running: Vec<RunningEvent>,
     /// True in a step with a press of interact that started no event: a script can
@@ -338,7 +339,7 @@ impl EventRunner {
         events.sort_by_key(|event| event.5.map_or(usize::MAX, |item| item.0));
 
         // The areas that the player reaches: a query of the physics.
-        let reach = in_reach(world, player);
+        let reach = in_reach(world, player.map(|(at, _)| at));
         let mut memories = Vec::new();
         for (entity, pages, name, area, pose, _, memory, hidden, in_sensor) in events {
             // The area of a hidden object gives no output.
