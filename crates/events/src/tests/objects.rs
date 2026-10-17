@@ -150,8 +150,8 @@ fn a_script_casts_a_ray_and_an_overlap() {
     let events =
         r#"(name: "look", pages: [(trigger: Autorun, commands: [Wait(0.3), CallScript("look")])])"#;
     std::fs::write(directory.join("a.ron"), room_with_crate(events)).unwrap();
+    // `game` has the physics.
     let mut app = game(&directory);
-    app.add_module(maki_physics::PhysicsModule);
     add_script_function(&mut app, "look", look);
     app.run(|mut app| {
         steps(&mut app, 40);
