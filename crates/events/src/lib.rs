@@ -25,6 +25,7 @@ mod objects;
 mod routine;
 mod script;
 mod state;
+mod text;
 
 use std::collections::BTreeMap;
 
@@ -60,6 +61,7 @@ pub use state::{
     NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,
     room_key,
 };
+pub use text::{TextEntry, TextKey, TextSettings, TextTable, Texts, fill, text, texts};
 
 /// Starts the event that the player faces, closes a message, and takes the marked
 /// answer of a question.
@@ -141,6 +143,8 @@ impl Module for EventsModule {
         state::add(app, &registry);
         // Item kinds and the inventory.
         items::add(app, &registry);
+        // The text tables and the texts of the game.
+        text::add(app);
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)

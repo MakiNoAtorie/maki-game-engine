@@ -25,6 +25,7 @@ mod objects;
 mod repeat;
 mod review;
 mod state;
+mod text;
 
 /// 50 Hz: one fixed step of 20 ms for each frame.
 const STEP: Duration = Duration::from_millis(20);
