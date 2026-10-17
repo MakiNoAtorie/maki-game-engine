@@ -111,7 +111,34 @@ SCENARIOS = {
     "textured_1080p": ((1920, 1080), "textured", {}),
     # The same with the player in motion (the walk script; no door in this room).
     "textured_walk_720p": ((1280, 720), "textured", {"camera.follow_time": 0.0}, ["--bench-script", "walk"]),
+    # 50 cubes with dynamic bodies (`bodies_room` below) fall, hit, and come to rest in
+    # about 2 s: the cost of moving objects (TLAS updates). Use `--frames 300 --warmup 0`.
+    "bodies_720p": ((1280, 720), "bodies", {}),
 }
+
+
+def bodies_room(count=50):
+    """A room of 8 x 8 x 3 m with `count` cubes of 0.4 m on a grid in two layers, each a
+    dynamic body. The layers are offset: the cubes of the upper one hit those below."""
+    cubes = []
+    for index in range(count):
+        layer, cell = divmod(index, 25)
+        x, z = cell % 5 * 0.9 - 1.8 + layer * 0.3, cell // 5 * 0.9 - 1.8 + layer * 0.3
+        y = 1.0 + layer * 1.2
+        cubes.append(
+            f'(pose: (position: ({x:.2f}, {y:.2f}, {z:.2f}), rotation: (0.0, {index * 7 % 90}.0, 0.0)), components: {{"prop": (mesh: Cube(0.4)), '
+            '"collider": (), "body": Dynamic(mass: 5.0, damping: 0.0)})'
+        )
+    cubes = ",\n        ".join(cubes)
+    return f"""(
+    width: 8.0, depth: 8.0, height: 3.0,
+    objects: [
+        {cubes},
+        (pose: (position: (0.0, 2.6, 0.0)), components: {{"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)}}),
+        (id: 1, name: "start", pose: (position: (-0.5, 0.0, 3.2)), components: {{"spawn": ()}}),
+    ],
+)
+"""
 
 
 # The room file of a scenario with a generated scene: room A of the game (its size, its
@@ -230,6 +257,10 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         room_path = work / "room.ron"
         room_path.write_text(TEXTURED_ROOM)
         params += ";textured"
+    elif scene == "bodies":
+        room_path = work / "room.ron"
+        room_path.write_text(bodies_room())
+        params += ";bodies=50"
     elif scene:
         scene_text = ";".join(f"{key}={value}" for key, value in scene.items())
         # The generator is seeded: a file with these arguments in its name has this content.

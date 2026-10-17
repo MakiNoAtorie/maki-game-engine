@@ -1814,6 +1814,7 @@ dependencies = [
  "maki-core",
  "maki-scene",
  "rapier3d",
+ "serde",
 ]
 
 [[package]]

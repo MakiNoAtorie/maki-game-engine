@@ -263,6 +263,40 @@ fn a_hidden_object_does_not_block_and_blocks_again_when_shown() {
 }
 
 #[test]
+fn the_walk_pushes_a_dynamic_box_with_the_push_force() {
+    use maki_physics::{Body, ColliderShape, ObjectCollider};
+
+    // A box of 1 m and 10 kg; its face at -Z is at z = 0.
+    let push = |push_force: f32| {
+        let mut app = room_app_with(Vec3::new(0.0, 0.0, -1.5), |world| {
+            let collider = ObjectCollider {
+                shape: ColliderShape::Box { half: [0.5; 3] },
+                ..ObjectCollider::default()
+            };
+            let body = Body::Dynamic {
+                mass: 10.0,
+                damping: 0.0,
+            };
+            let at = Interpolated::at(Transform::from_translation(Vec3::new(0.0, 0.5, 0.5)));
+            world.spawn((Name("box".to_owned()), at, collider, body));
+        });
+        let walker = named(&app, "walker");
+        change(&mut app, move |world| {
+            world.get_mut::<Walker>(walker).unwrap().push_force = push_force;
+        });
+        let end = walk_for(&mut app, "walker", Vec3::Z, 80);
+        (end, place(&app, named(&app, "box")))
+    };
+    let (walker, pushed) = push(PlayerDef::default().push_force);
+    assert!(pushed.z > 1.5 && pushed.x.abs() < 0.05, "{pushed}");
+    assert!(walker.z > 0.0, "{walker}");
+    // With no force, the walker stops at the box.
+    let (walker, still) = push(0.0);
+    let at_box = (walker.z + 0.3).abs() < 0.02;
+    assert!(at_box && (still.z - 0.5).abs() < 0.01, "{walker} {still}");
+}
+
+#[test]
 fn the_step_height_and_the_max_slope_of_a_player_are_checked() {
     let check = |def: PlayerDef| def.check(&CAPSULE);
     assert!(check(PlayerDef::default()).is_ok());

@@ -3,7 +3,7 @@ use std::time::Duration;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use glam::{Quat, Vec3};
-use maki_core::{App, ConfigFile, Interpolated, Transform};
+use maki_core::{App, ConfigFile, Interpolated, ResetPlay, Transform};
 use maki_scene::{Collider, Hidden, Mover, Name, RoomRequest, RoomTarget, SceneModule, room_text};
 
 use super::*;
@@ -36,20 +36,30 @@ fn change(app: &mut App, change: impl FnOnce(&mut World) + Send + Sync + 'static
 
 /// The room loaded, and some fixed steps of 20 ms.
 fn room_app() -> App {
+    room_app_of(&OBJECTS)
+}
+
+/// A room of 8 x 8 x 3 m with these objects, loaded, and some fixed steps of 20 ms.
+fn room_app_of(objects: &[&str]) -> App {
     let mut app = App::new(ConfigFile::from_text("[time]\nfixed_hz = 50.0")).unwrap();
     app.add_module(SceneModule)
         .add_module(PhysicsModule)
         .init_resource::<Changes>()
         .add_systems(FixedUpdate, apply_changes.before(maki_scene::move_movers));
+    load(&mut app, objects);
+    app
+}
+
+/// Loads a room of 8 x 8 x 3 m with these objects, and makes some fixed steps.
+fn load(app: &mut App, objects: &[&str]) {
     app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
         path: "physics-test.ron".into(),
         spawn: None,
-        text: Some(room_text(8.0, 8.0, 3.0, &OBJECTS)),
+        text: Some(room_text(8.0, 8.0, 3.0, objects)),
     });
     for _ in 0..3 {
-        step(&mut app);
+        step(app);
     }
-    app
 }
 
 fn step(app: &mut App) {
@@ -99,8 +109,12 @@ fn a_room_gives_a_fixed_collider_at_each_box_and_a_ray_hits_the_wall() {
         assert!(close(vec3(aabb.mins), collider.min), "{entity}");
         assert!(close(vec3(aabb.maxs), collider.max), "{entity}");
     }
+    // And the floor.
     let fixed = physics.world.colliders.iter();
-    assert_eq!(fixed.filter(|(_, c)| c.parent().is_none()).count(), 7);
+    assert_eq!(fixed.filter(|(_, c)| c.parent().is_none()).count(), 8);
+    // No query sees the floor.
+    let down = physics.ray(Vec3::Y, Vec3::NEG_Y, 5.0, QueryFilter::default());
+    assert_eq!(down, None);
 
     // From the middle of the room to the wall at +X, 4 m away.
     let filter = QueryFilter::default();
@@ -315,4 +329,114 @@ fn an_overlap_finds_the_crate_and_a_sensor_tells_who_enters_and_leaves() {
     };
     let hit = physics(&app).ray(from, Vec3::Z, 0.5, with_sensors);
     assert_eq!(hit.map(|hit| hit.entity), Some(sensor));
+}
+
+/// A cube of 1 m with a dynamic body, 3 m over the floor.
+const BOX: &str = r#"(name: "box", pose: (position: (0, 3, 1)), components: {"prop": (mesh: Cube(1.0)), "collider": (), "body": Dynamic(mass: 10.0, damping: 0.0)})"#;
+
+fn place(app: &App, entity: Entity) -> Vec3 {
+    let pose = app.world().get::<Interpolated>(entity).unwrap();
+    pose.current.translation
+}
+
+#[test]
+fn a_dynamic_box_falls_and_rests_on_the_floor_and_a_room_load_and_reset_play_start_it_again() {
+    let objects = [OBJECTS[0], BOX];
+    let mut app = room_app_of(&objects);
+    let box_ = named(&app, "box");
+    // The collider of the object takes the place of the box of the prop.
+    assert_eq!(physics(&app).links[&box_].fixed, None);
+    assert!(physics(&app).links[&box_].solid.is_some());
+    let start = place(&app, box_);
+    assert!(start.y < 3.0 && start.y > 2.9, "{start}");
+    for _ in 0..100 {
+        step(&mut app);
+    }
+    // At rest on the floor: the center 0.5 m up. The renderer reads the `Transform`.
+    let rest = place(&app, box_);
+    assert!(rest.distance(Vec3::new(0.0, 0.5, 1.0)) < 0.02, "{rest}");
+    let shown = app.world().get::<Transform>(box_).unwrap().translation;
+    assert!(shown.distance(rest) < 0.02, "{shown}");
+    // A ray from above hits the top of the box.
+    let from = Vec3::new(0.0, 2.0, 1.0);
+    let hit = physics(&app).ray(from, Vec3::NEG_Y, 3.0, QueryFilter::default());
+    assert!(hit.is_some_and(|hit| hit.entity == box_ && (hit.point.y - 1.0).abs() < 0.02));
+
+    // `ResetPlay`: back at its place in the file.
+    change(&mut app, |world| world.run_schedule(ResetPlay));
+    let again = place(&app, box_);
+    assert!(again.y > 2.9, "{again}");
+    for _ in 0..100 {
+        step(&mut app);
+    }
+    // A room load: a new box at its place in the file.
+    load(&mut app, &objects);
+    let box_ = named(&app, "box");
+    let again = place(&app, box_);
+    assert!(again.y > 2.9 && again.y < 3.0, "{again}");
+}
+
+#[test]
+fn a_kinematic_body_moves_by_its_pose_and_pushes_a_dynamic_box() {
+    let mut app = room_app();
+    let cube = ObjectCollider {
+        shape: ColliderShape::Box { half: [0.5; 3] },
+        ..ObjectCollider::default()
+    };
+    change(&mut app, move |world| {
+        let at = |x: f32| Interpolated::at(Transform::from_translation(Vec3::new(x, 0.5, 0.0)));
+        world.spawn((Name("pusher".to_owned()), at(-2.0), cube, Body::Kinematic));
+        let dynamic = Body::Dynamic {
+            mass: 10.0,
+            damping: 0.0,
+        };
+        world.spawn((Name("box".to_owned()), at(0.0), cube, dynamic));
+    });
+    let (pusher, box_) = (named(&app, "pusher"), named(&app, "box"));
+    let box_start = place(&app, box_);
+    // 1 m/s along +X for 1.6 s: the pusher touches the box at -1 m.
+    for _ in 0..80 {
+        change(&mut app, move |world| {
+            let mut pose = world.get_mut::<Interpolated>(pusher).unwrap();
+            pose.current.translation.x += 0.02;
+        });
+    }
+    let solid = physics(&app).links[&pusher].solid.unwrap();
+    let body_at = vec3(
+        physics(&app).world.bodies[solid.body]
+            .position()
+            .translation,
+    );
+    assert!(close(body_at, place(&app, pusher)), "{body_at}");
+    let pushed = place(&app, box_);
+    assert!(pushed.x > box_start.x + 0.4, "{pushed}");
+    // The pusher is not pushed back.
+    assert!(close(place(&app, pusher), Vec3::new(-0.4, 0.5, 0.0)));
+}
+
+#[test]
+fn the_collider_and_the_body_have_tables_of_fields_for_the_inspector() {
+    use maki_core::fields::Kind;
+
+    let app = room_app();
+    let tables = app.world().resource::<maki_core::FieldTypes>();
+    let Kind::Group(fields) = &tables.get("collider").unwrap().kind else {
+        panic!("a struct");
+    };
+    let names: Vec<_> = fields.iter().map(|field| field.name).collect();
+    assert_eq!(names, ["shape", "friction", "sensor"]);
+    let Kind::Choice(variants) = &tables.get("body").unwrap().kind else {
+        panic!("an enum");
+    };
+    let names: Vec<_> = variants.iter().map(|variant| variant.name).collect();
+    assert_eq!(names, ["Fixed", "Dynamic", "Kinematic"]);
+    // A text of a room file to its tree, and back.
+    let types = app.world().resource::<maki_scene::ComponentTypes>();
+    let collider = types.get("collider").unwrap();
+    let text = maki_scene::ComponentText::parse("(shape: Sphere(radius: 0.25), friction: 0.8)");
+    let text = text.unwrap();
+    let tree = (collider.tree)(&text).unwrap();
+    assert_eq!(tree["friction"].as_f64().map(|f| f as f32), Some(0.8));
+    let back = (collider.text)(&text, &tree).unwrap();
+    assert_eq!(back.read::<ObjectCollider>().unwrap(), text.read().unwrap());
 }

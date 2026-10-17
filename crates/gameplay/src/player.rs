@@ -51,6 +51,9 @@ pub struct Walker {
     pub step_height: f32,
     /// The steepest slope that the walker goes up, in degrees.
     pub max_slope: f32,
+    /// The force with which the walker pushes a dynamic body that it walks into, in
+    /// newtons.
+    pub push_force: f32,
     /// Where to walk: a direction on the floor of length 1, or zero to stand.
     pub direction: Vec3,
     /// Meters per second.
@@ -94,6 +97,9 @@ pub struct PlayerDef {
     /// The steepest slope that the player goes up, in degrees.
     #[field(label = "max slope", range = 0.0..=90.0, step = 1.0)]
     pub max_slope: f32,
+    /// The force with which the player pushes a dynamic body, in newtons.
+    #[field(label = "push force", range = 0.0..=2000.0, step = 1.0)]
+    pub push_force: f32,
 }
 
 impl PlayerDef {
@@ -108,6 +114,9 @@ impl PlayerDef {
         }
         if !(self.step_height.is_finite() && self.step_height >= 0.0) {
             return Err("step_height must be zero or a positive number".to_owned());
+        }
+        if !(self.push_force.is_finite() && self.push_force >= 0.0) {
+            return Err("push_force must be zero or a positive number".to_owned());
         }
         if !(0.0..=90.0).contains(&self.max_slope) {
             return Err("max_slope must be from 0 to 90 degrees".to_owned());
@@ -133,6 +142,7 @@ impl PlayerDef {
             height,
             step_height: self.step_height,
             max_slope: self.max_slope,
+            push_force: self.push_force,
             direction: Vec3::ZERO,
             speed: 0.0,
         }
@@ -147,6 +157,7 @@ impl Default for PlayerDef {
             radius: 0.3,
             step_height: 0.25,
             max_slope: 45.0,
+            push_force: 200.0,
         }
     }
 }
@@ -535,9 +546,12 @@ const STILL: f32 = 1e-4;
 /// A standing walker makes no move: Rapier then pushes the capsule out of what it
 /// overlaps, also into a wall. So a door leaf that turns into a walker does not push
 /// it: the leaf goes through, and the walker can walk out of it.
+///
+/// A dynamic body that the walk touches gets the push force of the walker for the step,
+/// along the walk.
 pub fn walk(
     time: Res<Time>,
-    physics: Res<Physics>,
+    mut physics: ResMut<Physics>,
     mut walkers: Query<(Entity, &mut Interpolated, &Walker)>,
 ) {
     let seconds = time.fixed_delta.as_secs_f32();
@@ -556,7 +570,7 @@ pub fn walk(
             exclude: Some(entity),
             ..QueryFilter::default()
         };
-        // The place after a move from `from` by `wanted`, and whether it stands on a collider.
+        // The place after a move from `from` by `wanted`, the ground flag, and the touches.
         let moved = |from: Vec3, wanted: Vec3| {
             let center = from + body.center;
             let moved = physics.move_character(body.shape, center, wanted, &settings, filter);
@@ -565,16 +579,20 @@ pub fn walk(
             } else {
                 moved.step
             };
-            (from + step, moved.grounded)
+            (from + step, moved.grounded, moved.touched)
         };
-        let (mut end, grounded) = if walker.direction == Vec3::ZERO {
-            (at, false)
+        let (mut end, grounded, touched) = if walker.direction == Vec3::ZERO {
+            (at, false, Vec::new())
         } else {
             moved(at, walker.direction * walker.speed * seconds)
         };
         let fall = end.y.clamp(0.0, FALL_SPEED * seconds);
         if fall > 0.0 && !grounded {
             end = moved(end, Vec3::NEG_Y * fall).0;
+        }
+        let push = walker.direction * walker.push_force * seconds;
+        for entity in touched {
+            physics.push(entity, push);
         }
         if end.y < STILL {
             end.y = 0.0;

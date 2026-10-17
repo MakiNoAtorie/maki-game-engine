@@ -13,7 +13,10 @@ use maki_core::{Interpolated, Time, Transform};
 use maki_scene::{Collider, Hidden, MeshInstance, Mover};
 use rapier3d::prelude as rp;
 
-use crate::{Kinematic, Link, Physics, SensorEvent, Shape, pose, shared_shape, vector};
+use crate::{
+    Body, ColliderShape, Kinematic, Link, ObjectCollider, Physics, SensorEvent, Shape, Solid, pose,
+    shared_shape, vec3, vector,
+};
 
 /// An entity with a [`Kinematic`], the poses that it can follow, and whether it is hidden.
 type Followed = (
@@ -24,21 +27,41 @@ type Followed = (
     Has<Hidden>,
 );
 
+/// An entity with an [`ObjectCollider`], its body, its poses, its mesh, and whether it
+/// is hidden.
+type Solids = (
+    Entity,
+    Ref<'static, ObjectCollider>,
+    Option<Ref<'static, Body>>,
+    Option<&'static Interpolated>,
+    Option<&'static Transform>,
+    Option<&'static MeshInstance>,
+    Has<Hidden>,
+);
+
+/// A mover with no shape yet.
+type Unshaped = (Without<Kinematic>, Without<ObjectCollider>);
+
+/// The box around a mesh: its smallest and its largest corner.
+fn bounds(mesh: &Mesh) -> (glam::Vec3, glam::Vec3) {
+    mesh.positions().iter().fold(
+        (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)),
+        |(min, max), position| (min.min(*position), max.max(*position)),
+    )
+}
+
 /// Gives each mover (a door leaf too) a [`Kinematic`] box: the box of its mesh, at the
-/// scale of its pose `a`.
+/// scale of its pose `a`. A mover with an [`ObjectCollider`] has that one.
 pub(crate) fn add_mover_shapes(
     mut commands: Commands,
     meshes: Res<Assets<Mesh>>,
-    movers: Query<(Entity, &MeshInstance, &Mover), Without<Kinematic>>,
+    movers: Query<(Entity, &MeshInstance, &Mover), Unshaped>,
 ) {
     for (entity, mesh, mover) in &movers {
         let Some(mesh) = meshes.get(mesh.0) else {
             continue;
         };
-        let (min, max) = mesh.positions().iter().fold(
-            (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)),
-            |(min, max), position| (min.min(*position), max.max(*position)),
-        );
+        let (min, max) = bounds(mesh);
         let scale = mover.a.scale;
         commands.entity(entity).insert(Kinematic {
             shape: Shape::Box {
@@ -50,15 +73,45 @@ pub(crate) fn add_mover_shapes(
     }
 }
 
+/// The shape and its center in the space of the pose. `None`: [`ColliderShape::FromMesh`]
+/// of an entity with no mesh, or with a mesh that is not loaded.
+fn solid_shape(
+    shape: ColliderShape,
+    mesh: Option<&MeshInstance>,
+    meshes: &Assets<Mesh>,
+    scale: glam::Vec3,
+) -> Option<(Shape, glam::Vec3)> {
+    let shape = match shape {
+        ColliderShape::FromMesh => {
+            let (min, max) = bounds(meshes.get(mesh?.0)?);
+            let half = (max - min) * 0.5 * scale;
+            return Some((Shape::Box { half }, (min + max) * 0.5 * scale));
+        }
+        ColliderShape::Box { half } => Shape::Box { half: half.into() },
+        ColliderShape::Sphere { radius } => Shape::Sphere { radius },
+        ColliderShape::Capsule {
+            radius,
+            half_height,
+        } => Shape::Capsule {
+            radius,
+            half_height,
+        },
+    };
+    Some((shape, glam::Vec3::ZERO))
+}
+
 /// Makes the world of the physics like the entities: a new box or body for a new
 /// entity, a changed one where its component changed, and a removed one where its
 /// entity is gone. A `Hidden` entity, and an entity whose `Collider` or `Kinematic`
-/// went away, keep their handles with the colliders off.
+/// went away, keep their handles with the colliders off. An entity with an
+/// [`ObjectCollider`] has no box: the object collider takes its place.
 pub(crate) fn sync_world(
     mut physics: ResMut<Physics>,
     entities: &Entities,
-    boxes: Query<(Entity, Ref<Collider>, Has<Hidden>)>,
+    meshes: Res<Assets<Mesh>>,
+    boxes: Query<(Entity, Ref<Collider>, Has<Hidden>), Without<ObjectCollider>>,
     moving: Query<Followed>,
+    solids: Query<Solids>,
 ) {
     let Physics { world, links, .. } = &mut *physics;
 
@@ -85,8 +138,87 @@ pub(crate) fn sync_world(
                 link.moving = None;
             }
         }
+        if let Some(solid) = link.solid
+            && !solids.contains(entity)
+        {
+            if alive {
+                world.bodies[solid.body].set_enabled(false);
+            } else {
+                world.remove_body_with_colliders(solid.body, true);
+                link.solid = None;
+            }
+        }
         *link != Link::default()
     });
+
+    for (entity, collider, body, interpolated, transform, mesh, hidden) in &solids {
+        let link = links.entry(entity).or_default();
+        let at = interpolated
+            .map(|pose| pose.current)
+            .or(transform.copied())
+            .unwrap_or(Transform::IDENTITY);
+        let changed = collider.is_changed() || body.as_ref().is_some_and(|body| body.is_changed());
+        if let Some(solid) = link.solid
+            && changed
+        {
+            // A new shape or kind: a new body, at the pose of now.
+            world.remove_body_with_colliders(solid.body, true);
+            link.solid = None;
+        }
+        let kind = body.map_or(Body::Fixed, |body| *body);
+        let Some(solid) = link.solid else {
+            let scale = at.scale;
+            let Some((shape, center)) = solid_shape(collider.shape, mesh, &meshes, scale) else {
+                continue;
+            };
+            let builder = match kind {
+                Body::Fixed => rp::RigidBodyBuilder::fixed(),
+                Body::Kinematic => rp::RigidBodyBuilder::kinematic_position_based(),
+                Body::Dynamic { damping, .. } => rp::RigidBodyBuilder::dynamic()
+                    .linear_damping(damping)
+                    .angular_damping(damping),
+            };
+            let user_data = entity.to_bits().into();
+            let body = builder
+                .pose(pose(at.translation, at.rotation))
+                .user_data(user_data)
+                .enabled(!hidden);
+            let mut new = rp::ColliderBuilder::new(shared_shape(shape))
+                .translation(vector(center))
+                .friction(collider.friction)
+                .sensor(collider.sensor)
+                .user_data(user_data)
+                .enabled(!hidden);
+            if let Body::Dynamic { mass, .. } = kind {
+                // Rapier needs a mass above zero.
+                new = new.mass(mass.max(0.01));
+            }
+            let (body, collider) = world.insert(body, new);
+            link.solid = Some(Solid {
+                body,
+                collider,
+                dynamic: matches!(kind, Body::Dynamic { .. }),
+                start: at,
+            });
+            continue;
+        };
+        world.colliders[solid.collider].set_enabled(!hidden);
+        let rigid = &mut world.bodies[solid.body];
+        rigid.set_enabled(!hidden);
+        let now = rigid.position();
+        let moved = vec3(now.translation) != at.translation
+            || glam::Quat::from_array(now.rotation.to_array()) != at.rotation;
+        match kind {
+            Body::Kinematic => rigid.set_next_kinematic_position(pose(at.translation, at.rotation)),
+            // A pose other than that of the last step: a command, a script, or `ResetPlay` moved it.
+            _ if moved => {
+                rigid.set_position(pose(at.translation, at.rotation), true);
+                rigid.set_linvel(rp::Vector::ZERO, true);
+                rigid.set_angvel(rp::Vector::ZERO, true);
+            }
+            _ => {}
+        }
+    }
 
     for (entity, collider, hidden) in &boxes {
         let link = links.entry(entity).or_default();
@@ -165,6 +297,10 @@ pub(crate) fn step(mut physics: ResMut<Physics>, time: Res<Time>) {
             rp::CollisionEvent::Started(a, b, _) => (a, b, true),
             rp::CollisionEvent::Stopped(a, b, _) => (a, b, false),
         };
+        // The floor has no entity: a sensor on it tells nothing.
+        if a == physics.floor || b == physics.floor {
+            continue;
+        }
         // A removed collider has no entity any more: its room is gone.
         let (Some(a), Some(b)) = (colliders.get(a), colliders.get(b)) else {
             continue;
@@ -175,6 +311,48 @@ pub(crate) fn step(mut physics: ResMut<Physics>, time: Res<Time>) {
             other: crate::owner(other),
             entered,
         });
+    }
+}
+
+/// Gives the pose of each dynamic body that moved to its entity: to `Interpolated::current`
+/// if the entity has it, else to its `Transform`. The scale stays.
+pub(crate) fn write_poses(
+    physics: Res<Physics>,
+    mut poses: Query<(Option<&mut Interpolated>, Option<&mut Transform>)>,
+) {
+    for (entity, link) in &physics.links {
+        let Some(solid) = link.solid.filter(|solid| solid.dynamic) else {
+            continue;
+        };
+        let body = &physics.world.bodies[solid.body];
+        if body.is_sleeping() || !body.is_enabled() {
+            continue;
+        }
+        let Ok((interpolated, transform)) = poses.get_mut(*entity) else {
+            continue;
+        };
+        let at = body.position();
+        let place = |pose: &mut Transform| {
+            pose.translation = vec3(at.translation);
+            pose.rotation = glam::Quat::from_array(at.rotation.to_array());
+        };
+        match (interpolated, transform) {
+            (Some(mut interpolated), _) => place(&mut interpolated.current),
+            (None, Some(mut transform)) => place(&mut transform),
+            (None, None) => {}
+        }
+    }
+}
+
+/// Runs in `ResetPlay`: each dynamic body goes back to the pose that it had when it was
+/// made (its place in the room file). The next step moves the body there.
+pub(crate) fn restart_bodies(physics: Res<Physics>, mut poses: Query<&mut Interpolated>) {
+    for (entity, link) in &physics.links {
+        if let Some(solid) = link.solid.filter(|solid| solid.dynamic)
+            && let Ok(mut pose) = poses.get_mut(*entity)
+        {
+            pose.snap(solid.start);
+        }
     }
 }
 
