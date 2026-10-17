@@ -122,6 +122,17 @@ impl<'w> ScriptContext<'w> {
         self.world.resource_mut::<GameState>()
     }
 
+    /// The items of the player: the store of the item commands too.
+    pub fn items(&mut self) -> Mut<'_, crate::Inventory> {
+        self.world.resource_mut::<crate::Inventory>()
+    }
+
+    /// The id of an item file (from the directory of the room file), the key of the
+    /// inventory. `None`: the file has no id.
+    pub fn item(&self, file: &str) -> Option<maki_assets::FileId> {
+        crate::item_id(&file.into(), crate::items::room_directory(self.world))
+    }
+
     /// The name of the object. Empty: it has none.
     pub fn name(&self) -> &str {
         self.world

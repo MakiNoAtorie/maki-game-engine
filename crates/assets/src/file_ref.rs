@@ -16,7 +16,8 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The identity of a file: a random 64-bit number, written as 16 hexadecimal digits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// `Ord`: a sorted map by id (the inventory) writes the same save each time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileId(pub u64);
 
 impl FileId {
