@@ -17,5 +17,3 @@ ron.workspace = true
 serde.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-maki-physics.workspace = true

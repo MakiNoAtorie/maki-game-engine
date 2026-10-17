@@ -294,7 +294,14 @@ fn run(
             known = files;
             send(Report::Files);
         }
-        std::thread::sleep(SCAN);
+        // In slices: the end of the app waits for this thread (see `ConverterReports`).
+        let slice = SCAN / 10;
+        for _ in 0..10 {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(slice);
+        }
     }
 }
 
@@ -304,11 +311,16 @@ fn run(
 pub(crate) struct ConverterReports {
     reports: Mutex<Receiver<Report>>,
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for ConverterReports {
+    // Waits for the thread: else it writes into the folder of the next app or a test.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -356,10 +368,11 @@ pub(crate) fn start(app: &mut App, directory: &Path, blender: &str) {
     let (sender, receiver) = std::sync::mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let (directory, stops) = (directory.to_owned(), stop.clone());
-    std::thread::spawn(move || run(directory, converters, tools, sender, stops));
+    let thread = std::thread::spawn(move || run(directory, converters, tools, sender, stops));
     app.insert_resource(ConverterReports {
         reports: Mutex::new(receiver),
         stop,
+        thread: Some(thread),
     });
 }
 
