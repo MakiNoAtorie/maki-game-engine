@@ -14,6 +14,11 @@ import sys
 COMMENT = re.compile(r"^\s*//(?![/!])")
 
 
+def run(*args):
+    """Stdout of a command. Git writes UTF-8; the default code page on Windows (cp1252) fails on it."""
+    return subprocess.run(args, capture_output=True, encoding="utf-8", check=True).stdout.strip()
+
+
 def blocks(diff):
     """(file, line) of each run of two or more added `//` lines in a unified diff with -U0."""
     found, file, line, run = [], None, 0, 0
@@ -41,13 +46,18 @@ def selftest():
     ])
     if blocks(diff) != [("a.rs", 3)]:
         raise SystemExit(f"FAIL comment_lint selftest: {blocks(diff)}")
+    # Japanese text in a comment and in a string, as UTF-8 bytes on stdout like git writes them.
+    jp = "+++ b/c.rs\n@@ -0,0 +1,2 @@\n+// 鍵がかかっている\n+const S: &str = \"鍵がかかっている\";"
+    out = run(sys.executable, "-c", f"import sys; sys.stdout.buffer.write({jp.encode()!r})")
+    if out != jp or blocks(out) != []:
+        raise SystemExit(f"FAIL comment_lint selftest (UTF-8): {out!r}")
 
 
 def main():
     if sys.argv[1:] == ["selftest"]:
         selftest()
         return
-    git = lambda *args: subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
+    git = lambda *args: run("git", *args)
     base = git("merge-base", "origin/main", "HEAD")
     found = blocks(git("diff", "-U0", base, "--", "*.rs"))
     for file, line in found:
