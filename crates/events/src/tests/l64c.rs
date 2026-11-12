@@ -125,3 +125,14 @@ fn the_check_finds_an_unknown_object_and_one_with_no_timeline() {
     assert_eq!(error.lines().count(), 2, "{error}");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn play_on_an_object_with_no_timeline_warns_and_ends_at_once() {
+    // Object 0 (the event's object, no timeline) passes the room check: only the run finds it.
+    let events = r#"(name: "none", pages: [(trigger: Autorun, commands: [PlayTimeline(0, true), SetFlag("after", true)])])"#;
+    timeline_game("none", 0.4, false, events).run(|mut app| {
+        steps(&mut app, 3);
+        assert!(flag(&app, "after"));
+        assert!(!playing(&app));
+    });
+}

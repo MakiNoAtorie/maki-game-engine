@@ -21,10 +21,14 @@ pub struct ScriptName {
     #[field(label = "one time only")]
     pub once: bool,
     pub flag: String,
-    /// True while the cutscene plays.
+    /// True from the enter until the timeline stops after it played.
     #[serde(skip)]
     #[field(skip)]
-    playing: bool,
+    started: bool,
+    /// True once the timeline plays: the event starts it some steps after the enter.
+    #[serde(skip)]
+    #[field(skip)]
+    seen_playing: bool,
 }
 
 impl Default for ScriptName {
@@ -33,14 +37,15 @@ impl Default for ScriptName {
             timeline: ObjectId::default(),
             once: true,
             flag: "script_name_seen".to_owned(),
-            playing: false,
+            started: false,
+            seen_playing: false,
         }
     }
 }
 
 impl Script for ScriptName {
     fn enter_area(&mut self, context: &mut ScriptContext) {
-        if self.playing || (self.once && context.state().flag(&self.flag)) {
+        if self.started || (self.once && context.state().flag(&self.flag)) {
             return;
         }
         context.call(Builtin::SetFlag(self.flag.clone(), true));
@@ -51,21 +56,32 @@ impl Script for ScriptName {
             context.command(GameCommand::SetPlayState(PlayState::Play)),
         ];
         context.run(rows.into_iter().flatten().collect());
-        self.playing = true;
+        self.started = true;
     }
 
     fn step(&mut self, context: &mut ScriptContext) {
-        if !self.playing {
+        if !self.started {
             return;
         }
-        let timeline = match self.timeline == ObjectId::default() {
-            true => context.get_mut::<Timeline>(),
-            false => context.object_mut::<Timeline>(self.timeline),
+        let timeline = if self.timeline == ObjectId::default() {
+            context.get_mut::<Timeline>()
+        } else {
+            context.object_mut::<Timeline>(self.timeline)
         };
-        self.playing = timeline.is_some_and(|timeline| timeline.playing);
-        // The skip: the end values of each track, then the wait above ends.
-        if self.playing && context.pressed(BACK) {
-            context.call(TimelineCommand::StopTimeline(self.timeline, true));
+        let Some(playing) = timeline.map(|timeline| timeline.playing) else {
+            // No timeline: the event row warns and ends at once.
+            self.started = false;
+            return;
+        };
+        if playing {
+            self.seen_playing = true;
+            // The skip: the end values of each track, then the wait above ends.
+            if context.pressed(BACK) {
+                context.call(TimelineCommand::StopTimeline(self.timeline, true));
+            }
+        } else if self.seen_playing {
+            self.started = false;
+            self.seen_playing = false;
         }
     }
 }

@@ -14,7 +14,7 @@ use maki_assets::clip::{Channel, Key, KeyMode, KeyValue, Track};
 use maki_core::{App, ConfigFile, FixedUpdate, Interpolated, PoseJumps};
 
 use crate::{
-    AnimationModule, ComponentText, Light, ObjectId, RoomCheck, RoomRequest, RoomTarget,
+    AnimationModule, Animator, ComponentText, Light, ObjectId, RoomCheck, RoomRequest, RoomTarget,
     RoomValidators, SceneModule, Timeline, TimelinePlayback, TimelineTrack, animate, move_movers,
     parse_room, room_text,
 };
@@ -93,6 +93,11 @@ fn game(test: &str, timeline: &Timeline) -> App {
         lamp(3, 1.0, None),
         lamp(4, 2.0, None),
     ];
+    game_of(test, &objects)
+}
+
+/// A game at 50 Hz in a room of `objects`.
+fn game_of(test: &str, objects: &[String]) -> App {
     let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
     let path = path(test);
     std::fs::write(&path, room_text(6.0, 6.0, 3.0, &objects)).unwrap();
@@ -216,6 +221,81 @@ fn the_end_sets_playing_false() {
         assert!(playing[..10].iter().all(|playing| *playing), "{playing:?}");
         assert!(playing[10..].iter().all(|playing| !*playing), "{playing:?}");
         assert_eq!(rows(&app).last().unwrap().0, 3.0);
+    });
+}
+
+#[test]
+fn a_looping_timeline_starts_again_at_its_end() {
+    let mut looping = timeline(vec![brighten()]);
+    looping.looping = true;
+    game("loop", &looping).run(|mut app| {
+        steps(&mut app, 30);
+        let rows = rows(&app);
+        assert!(rows.iter().all(|row| row.3), "plays on");
+        // 0.2 s: 10 steps a loop.
+        assert!((rows[5].0 - 2.0).abs() < 1e-5, "{rows:?}");
+        assert_eq!(rows[10].0, 1.0);
+        assert!((rows[15].0 - 2.0).abs() < 1e-5, "{rows:?}");
+    });
+}
+
+#[test]
+fn playing_true_in_the_file_plays_from_the_room_load() {
+    for playing in [false, true] {
+        let mut file = timeline(vec![rise(3)]);
+        file.playing = playing;
+        game(&format!("load{playing}"), &file).run(|mut app| {
+            steps(&mut app, 3);
+            assert_eq!(rows(&app)[0].3, playing);
+            steps(&mut app, 10);
+            let wanted = if playing { 3.0 } else { 2.0 };
+            assert_eq!(rows(&app).last().unwrap().1.y, wanted, "playing: {playing}");
+        });
+    }
+}
+
+#[test]
+fn a_text_key_on_animator_clip_cuts_the_clip_of_a_character() {
+    // Clip `a` holds the figure at its rest; clip `b` lifts it 5 m.
+    let directory = path("text").parent().unwrap().to_owned();
+    std::fs::create_dir_all(directory.join("data")).unwrap();
+    for (name, y) in [("a", 0.0), ("b", 5.0)] {
+        let clip = maki_assets::clip::Clip {
+            mode: KeyMode::Step,
+            fps: None,
+            length: 1.0,
+            tracks: vec![Track {
+                channel: Channel::Position,
+                target: None,
+                mode: None,
+                keys: vec![key(0.0, KeyValue::Vector([0.0, y, 0.0]))],
+            }],
+        };
+        let file = directory.join(format!("data/{name}.clip.ron"));
+        std::fs::write(file, maki_assets::data_text(&clip)).unwrap();
+    }
+    let text = |time, name: &str| key(time, KeyValue::Text(format!("data/{name}.clip.ron")));
+    let cut = timeline(vec![TimelineTrack {
+        object: ObjectId(3),
+        track: Track {
+            channel: Channel::Field {
+                component: "animator".to_owned(),
+                field: "clip".to_owned(),
+            },
+            target: None,
+            mode: Some(KeyMode::Step),
+            keys: vec![text(0.0, "a"), text(0.1, "b")],
+        },
+    }]);
+    let figure = r#"(id: 3, pose: (position: (1.0, 0.0, 0.0)), components: {"light": (radius: 0.1, color: (1.0, 1.0, 1.0), intensity: 1.0), "animator": (clip: "data/a.clip.ron")})"#;
+    let objects = [lamp(1, 0.0, Some(&cut)), figure.to_owned()];
+    game_of("text", &objects).run(|mut app| {
+        steps(&mut app, 3);
+        assert_eq!(rows(&app).last().unwrap().1.y, 0.0);
+        steps(&mut app, 10);
+        let animator = app.world().get::<Animator>(entity_of(&app, 3)).unwrap();
+        assert_eq!(animator.clip.file.path, PathBuf::from("data/b.clip.ron"));
+        assert_eq!(rows(&app).last().unwrap().1.y, 5.0);
     });
 }
 

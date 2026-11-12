@@ -30,6 +30,7 @@ use maki_core::{App, Fields, Interpolated, ResetPlay, Transform};
 use serde::{Deserialize, Serialize};
 
 use crate::animation::{Target, write_tracks};
+use crate::room::is_default;
 use crate::{ObjectId, RoomProblem, RoomValidators, add_object_component};
 
 /// Tracks of keys on objects of the room.
@@ -72,6 +73,9 @@ pub struct TimelineTrack {
 }
 
 impl Timeline {
+    /// The name of the component in a room file.
+    pub const NAME: &'static str = "timeline";
+
     /// The length in seconds: `length`, or with 0 the time of the last key.
     pub fn duration(&self) -> f32 {
         if self.length > 0.0 {
@@ -101,7 +105,7 @@ pub struct TimelinePlayback {
 
 /// Registers the component `timeline`, its reset, and its room check.
 pub(crate) fn add(app: &mut App) {
-    add_object_component::<Timeline>(app, "timeline");
+    add_object_component::<Timeline>(app, Timeline::NAME);
     app.add_systems(ResetPlay, reset_timelines)
         .init_resource::<RoomValidators>();
     app.resource_mut::<RoomValidators>()
@@ -109,7 +113,7 @@ pub(crate) fn add(app: &mut App) {
         .push(Box::new(|check| {
             let mut problems = Vec::new();
             for (index, object) in check.room.objects.iter().enumerate() {
-                let Some(Ok(timeline)) = object.component::<Timeline>("timeline") else {
+                let Some(Ok(timeline)) = object.component::<Timeline>(Timeline::NAME) else {
                     continue;
                 };
                 let name = object.name.as_deref().unwrap_or("");
@@ -299,8 +303,4 @@ fn reset_timelines(
         }
         *playback = TimelinePlayback::default();
     }
-}
-
-fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-    *value == T::default()
 }

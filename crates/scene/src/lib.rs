@@ -22,7 +22,7 @@ use glam::Vec3;
 use maki_assets::{Handle, Mesh};
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
-pub use animation::{AnimationModule, Animator, Playback, animate};
+pub use animation::{AnimationModule, Animator, Playback, animate, pose_on_rest, set_channel};
 pub use collision::{Collider, room_colliders};
 pub use hidden::Hidden;
 pub use light_animation::{LightAnimDef, LightAnimation, animate_lights, kelvin_rgb};

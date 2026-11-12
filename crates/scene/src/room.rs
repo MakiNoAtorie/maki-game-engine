@@ -218,7 +218,7 @@ impl RoomDef {
 // (`skip_serializing_if`): a file that a tool saves is as short as one that a person
 // wrote.
 
-fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
 
@@ -1743,7 +1743,7 @@ impl Spawner<'_, '_, '_> {
         ));
         // Only an animated light: a new component changes the order of the lights.
         if light.animation.is_animated() {
-            let seed = self.id.map_or(item.0 as u32, |id| id.0);
+            let seed = crate::light_animation::flicker_seed(self.id, Some(item));
             let animation = LightAnimation::new(light.light(), light.animation, seed);
             entity.insert((animation.effective(0.0), animation));
         }

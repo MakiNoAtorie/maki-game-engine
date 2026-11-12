@@ -34,7 +34,7 @@ pub(crate) fn add(_app: &mut App, registry: &CommandRegistry) {
         let Some((_, found)) = context.room.find(object) else {
             return Some(Finding::error(format!("the room has no object `{object}`")));
         };
-        let Some(text) = found.components.get("timeline") else {
+        let Some(text) = found.components.get(Timeline::NAME) else {
             return Some(Finding::error(format!("`{object}` has no timeline")));
         };
         let looping = text
@@ -46,6 +46,7 @@ pub(crate) fn add(_app: &mut App, registry: &CommandRegistry) {
 }
 
 /// The entity of an object (0: of the event) that has a timeline.
+// Not `object_entity`: that one needs `Interpolated`; this one needs `Timeline`.
 fn timeline_entity(world: &mut World, step: &Step, object: ObjectId) -> Option<Entity> {
     if object == ObjectId::default() {
         return step
@@ -113,7 +114,7 @@ fn help(name: &str) -> Option<&'static str> {
 fn new_command(name: &str, room: &RoomDef) -> Option<TimelineCommand> {
     let mut with_id = room.objects.iter().filter(|object| object.id.is_some());
     let first = with_id.clone().next();
-    let object = with_id.find(|object| object.components.contains_key("timeline"));
+    let object = with_id.find(|object| object.components.contains_key(Timeline::NAME));
     let id = object
         .or(first)
         .and_then(|object| object.id)

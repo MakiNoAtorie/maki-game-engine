@@ -23,7 +23,7 @@ use glam::Vec3;
 use maki_core::{App, FixedUpdate, Time};
 use serde::{Deserialize, Serialize};
 
-use crate::{Light, LightDef, ObjectId};
+use crate::{Light, LightDef, ObjectId, RoomItem};
 
 /// Registers the components and systems of this module.
 pub(crate) fn add(app: &mut App) {
@@ -151,6 +151,13 @@ impl LightAnimation {
     }
 }
 
+/// The seed of the flicker of a light: its object id, else its item index in the room.
+pub(crate) fn flicker_seed(id: Option<ObjectId>, item: Option<RoomItem>) -> u32 {
+    id.map(|id| id.0)
+        .or(item.map(|item| item.0 as u32))
+        .unwrap_or(0)
+}
+
 /// A number in [0, 1) from `seed` and `step` (SplitMix64): the same in each run.
 fn unit_hash(seed: u32, step: u64) -> f32 {
     let mut z = ((seed as u64) << 32 ^ step).wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -225,7 +232,10 @@ pub(crate) fn write_light(world: &mut World, entity: Entity, def: &LightDef) -> 
             animation.effective(dt)
         }
         None if def.animation.is_animated() => {
-            let seed = world.get::<ObjectId>(entity).map_or(0, |id| id.0);
+            let seed = flicker_seed(
+                world.get::<ObjectId>(entity).copied(),
+                world.get::<RoomItem>(entity).copied(),
+            );
             let animation = LightAnimation::new(base, def.animation, seed);
             let effective = animation.effective(dt);
             world.entity_mut(entity).insert(animation);
