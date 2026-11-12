@@ -5,6 +5,7 @@
 //! returns `None` until the asset is ready. Code that obeys this rule does not change
 //! when a loader becomes asynchronous or reads a different file format.
 
+pub mod clip;
 mod data;
 mod file_ref;
 mod mesh;
