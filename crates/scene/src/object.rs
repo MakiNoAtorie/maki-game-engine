@@ -288,6 +288,51 @@ impl ComponentTypes {
     }
 }
 
+/// What [`write_field`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldWrite {
+    Written,
+    /// The field already had the value: nothing was written, so no change is seen.
+    Unchanged,
+}
+
+/// Why [`write_field`] did not write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldError {
+    /// The component has no value in the game (no type, or no live form).
+    NotLive,
+    /// The entity does not have the component.
+    NoComponent,
+    NoField,
+    /// The type does not read the value (a value of a wrong kind).
+    Rejected(String),
+}
+
+/// Writes `value` into the top-level `field` of the component `component` of `entity`,
+/// through [`Live`], only if it differs (a write is a change). No log, no allocation
+/// for the text of an error on the `Unchanged` path: a track may call it each step.
+pub fn write_field(
+    world: &mut World,
+    entity: Entity,
+    component: &str,
+    field: &str,
+    value: &Value,
+) -> Result<FieldWrite, FieldError> {
+    let live = world
+        .resource::<ComponentTypes>()
+        .get(component)
+        .and_then(|found| found.live)
+        .ok_or(FieldError::NotLive)?;
+    let mut tree = (live.get)(world, entity).ok_or(FieldError::NoComponent)?;
+    let slot = tree.get_mut(field).ok_or(FieldError::NoField)?;
+    if slot == value {
+        return Ok(FieldWrite::Unchanged);
+    }
+    *slot = value.clone();
+    (live.set)(world, entity, tree).map_err(FieldError::Rejected)?;
+    Ok(FieldWrite::Written)
+}
+
 /// Registers a type of component under the name that the room files give it: its
 /// table of fields (`maki_core::FieldTypes`, under the same name), and the way from
 /// its text to its tree and back.
@@ -392,10 +437,77 @@ fn register<T: Fields + Serialize + DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
+    use bevy_ecs::change_detection::DetectChanges;
     use maki_core::ConfigFile;
 
     use super::*;
     use crate::room::{LightDef, MeshDef, Prop, parse_room};
+
+    #[derive(Component, Debug, Clone, PartialEq, Default, Serialize, Deserialize, Fields)]
+    struct Probe {
+        amount: f32,
+    }
+
+    #[test]
+    fn write_field_writes_a_new_value_only_and_names_each_error() {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        add_object_component::<Probe>(&mut app, "probe");
+        add_component_type::<Prop>(&mut app, "prop");
+        let mut world = World::new();
+        world.insert_resource(app.world().resource::<ComponentTypes>().clone());
+        let entity = world.spawn(Probe { amount: 1.0 }).id();
+        let bare = world.spawn_empty().id();
+        let write = |world: &mut World, entity, component, field, value: Value| {
+            write_field(world, entity, component, field, &value)
+        };
+
+        assert_eq!(
+            write(&mut world, entity, "probe", "amount", 1.0.into()),
+            Ok(FieldWrite::Unchanged)
+        );
+        world.clear_trackers();
+        assert!(
+            !world
+                .entity(entity)
+                .get_ref::<Probe>()
+                .unwrap()
+                .is_changed()
+        );
+        assert_eq!(
+            write(&mut world, entity, "probe", "amount", 2.0.into()),
+            Ok(FieldWrite::Written)
+        );
+        assert_eq!(world.get::<Probe>(entity).unwrap().amount, 2.0);
+        assert!(
+            world
+                .entity(entity)
+                .get_ref::<Probe>()
+                .unwrap()
+                .is_changed()
+        );
+
+        let error = |world: &mut World, component, entity, field, value: Value| {
+            write(world, entity, component, field, value).unwrap_err()
+        };
+        assert_eq!(
+            error(&mut world, "nope", entity, "amount", 1.into()),
+            FieldError::NotLive
+        );
+        assert_eq!(
+            error(&mut world, "prop", entity, "mesh", 1.into()),
+            FieldError::NotLive
+        );
+        assert_eq!(
+            error(&mut world, "probe", bare, "amount", 1.into()),
+            FieldError::NoComponent
+        );
+        assert_eq!(
+            error(&mut world, "probe", entity, "speed", 1.into()),
+            FieldError::NoField
+        );
+        let wrong = error(&mut world, "probe", entity, "amount", "text".into());
+        assert!(matches!(wrong, FieldError::Rejected(_)), "{wrong:?}");
+    }
 
     const ROOM: &str = r#"(width: 4.0, depth: 4.0, height: 3.0, objects: [
         (id: 1, name: "ball", pose: (position: (1.0, 0.5, 0.0)), components: {
