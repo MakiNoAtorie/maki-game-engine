@@ -1,0 +1,4 @@
+# Config for the run by hand in the skin room: cargo run -p maki-game -- game/skin.toml
+[rooms]
+start = "game/assets/rooms/room_skin.ron"
+start_spawn = 4

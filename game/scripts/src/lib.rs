@@ -68,6 +68,7 @@ output = false",
         for path in [
             "../assets/rooms/room_chase.ron",
             "../assets/rooms/room_anim.ron",
+            "../assets/rooms/room_skin.ron",
         ] {
             let path = PathBuf::from(path);
             let validators = app.world().resource::<scene::RoomValidators>();

@@ -1,0 +1,54 @@
+// Room skin: test room of the skinned figure (stage 63). One figure waves (a
+// linear clip of the model file), a second hops (a step clip), and the area at
+// the left back corner cuts the first figure to the hop clip.
+// Lengths are meters, angles degrees.
+(
+    width: 8.0,
+    depth: 8.0,
+    height: 3.0,
+    next_id: 6,
+    objects: [
+        (
+            id: 1,
+            name: "waver",
+            pose: (position: (-1.0, 0.0, 0.0)),
+            components: {
+                "animator": (clip: "models/figure.glb#wave"),
+                "prop": (mesh: File("models/figure.glb")),
+            },
+        ),
+        (
+            id: 2,
+            name: "hopper",
+            pose: (position: (1.5, 0.0, -0.5)),
+            components: {
+                "animator": (clip: "models/figure.glb#hop"),
+                "prop": (mesh: File("models/figure.glb")),
+            },
+        ),
+        (
+            id: 3,
+            name: "lamp",
+            pose: (position: (0.0, 2.6, 1.0)),
+            components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)},
+        ),
+        (id: 4, name: "start", pose: (position: (-2.0, 0.0, 2.5)), components: {"spawn": ()}),
+        // Walk in: the waving figure cuts to the hop clip, at its first key.
+        (
+            id: 5,
+            name: "cut",
+            pose: (position: (-2.5, 0.0, -2.0)),
+            components: {
+                "area": (width: 1.4, depth: 1.4),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Touch,
+                            commands: [SetField(1, "animator", "clip", "models/figure.glb#hop")],
+                        ),
+                    ],
+                ),
+            },
+        ),
+    ],
+)

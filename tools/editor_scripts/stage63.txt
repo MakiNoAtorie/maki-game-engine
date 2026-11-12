@@ -1,0 +1,41 @@
+# The run by hand of stage 63, with no input of the desktop: an input script of the
+# editor (crates/devtools/src/input_script.rs). The room is room_skin: the player
+# starts at (-2, 0, 2.5); the figure at (-1, 0, 0) waves its right arm (a linear clip
+# of 1 s); the figure at (1.5, 0, -0.5) hops (a step clip: arms up at 1 s, down at
+# 2 s); the area at (-2.5, 0, -2) cuts the first figure to the hop clip.
+# A config for it: [rooms] start = "game/assets/rooms/room_skin.ron", start_spawn = 4,
+# [window] focus = false, [audio] output = false, [save] enabled = false.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage63.txt --input-shots DIR
+wait 60
+shot room
+tap F5
+wait 60
+shot play
+
+# Two shots some frames apart in the wave: the arm moved, with no ghost.
+wait 10
+shot wave_a
+wait 8
+shot wave_b
+
+# The hop: one shot in a held pose, then the next after the step: sharp edges.
+wait 30
+shot hop_a
+wait 30
+shot hop_b
+
+# Into the area: the first figure cuts to the hop clip.
+press W
+wait 170
+release W
+press A
+wait 20
+release A
+wait 30
+shot cut
+wait 60
+shot cut_hop
+
+tap F5
+wait 30
+quit
