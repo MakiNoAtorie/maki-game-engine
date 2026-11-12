@@ -14,7 +14,7 @@
             pose: (position: (-1.0, 0.0, 0.0)),
             components: {
                 "animator": (clip: "models/figure.glb#wave"),
-                "prop": (mesh: File("models/figure.glb")),
+                "prop": (mesh: File((path: "models/figure.glb", id: "5a1f0e63c2b8d974"))),
             },
         ),
         (
@@ -23,7 +23,7 @@
             pose: (position: (1.5, 0.0, -0.5)),
             components: {
                 "animator": (clip: "models/figure.glb#hop"),
-                "prop": (mesh: File("models/figure.glb")),
+                "prop": (mesh: File((path: "models/figure.glb", id: "5a1f0e63c2b8d974"))),
             },
         ),
         (

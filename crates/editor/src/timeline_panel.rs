@@ -20,6 +20,7 @@ use maki_core::fields::{Value, read};
 use maki_core::{App, Fields, Transform};
 use maki_scene::{
     ComponentTypes, CurrentRoom, ObjectId, PoseDef, RoomDef, Timeline, TimelineTrack, patch_room,
+    pose_on_rest, set_channel,
 };
 use maki_ui::egui::{self, Pos2, Rect, Sense, Ui, pos2, vec2};
 use maki_ui::theme::icon;
@@ -31,7 +32,6 @@ use crate::{Document, Editor, Item};
 
 /// The id of the panel: the layout "Animate" shows it.
 pub(crate) const TIMELINE: &str = "timeline";
-const COMPONENT: &str = "timeline";
 /// The width of the column of the track names, in points.
 const NAMES: f32 = 180.0;
 const RULER: f32 = 18.0;
@@ -186,7 +186,7 @@ fn timeline_of(
     index: usize,
     types: &ComponentTypes,
 ) -> Option<Result<Timeline, String>> {
-    let tree = document.component_tree(index, COMPONENT, types)?;
+    let tree = document.component_tree(index, Timeline::NAME, types)?;
     Some(tree.and_then(|tree| read(tree).map_err(|error| error.to_string())))
 }
 
@@ -208,7 +208,7 @@ fn timeline_ui(
 ) -> bool {
     let has_timeline = |index: usize| {
         let object = document.room.objects.get(index);
-        object.is_some_and(|object| object.components.contains_key(COMPONENT))
+        object.is_some_and(|object| object.components.contains_key(Timeline::NAME))
     };
     let timelines: Vec<(ObjectId, String)> = object_names(&document.room.objects)
         .into_iter()
@@ -276,7 +276,7 @@ fn timeline_ui(
         return false;
     }
     document
-        .set_component_tree(own, COMPONENT, &timeline.tree(), types)
+        .set_component_tree(own, Timeline::NAME, &timeline.tree(), types)
         .is_ok()
 }
 
@@ -646,6 +646,19 @@ fn sampled_room(
         let Some(sample) = of.track.sample(t, timeline.mode) else {
             continue;
         };
+        // Only a light: `patch_room` changes no other component.
+        if let (Channel::Field { component, field }, Sample::Value(value)) =
+            (&of.track.channel, &sample)
+        {
+            if component == "light"
+                && let Some(Ok(mut tree)) = shown.component_tree(index, component, types)
+            {
+                tree[field.as_str()] = value.clone();
+                // A value that the light does not take: the view keeps the old one.
+                let _ = shown.set_component_tree(index, component, &tree, types);
+            }
+            continue;
+        }
         let at = match poses.iter().position(|(object, _)| *object == index) {
             Some(at) => at,
             None => {
@@ -653,33 +666,15 @@ fn sampled_room(
                 poses.len() - 1
             }
         };
-        let key = &mut poses[at].1;
-        match (&of.track.channel, sample) {
-            (Channel::Position, Sample::Vector(vector)) => key.translation = vector,
-            (Channel::Scale, Sample::Vector(vector)) => key.scale = vector,
-            (Channel::Rotation, Sample::Rotation(rotation)) => key.rotation = rotation,
-            // Only a light: `patch_room` changes no other component.
-            (Channel::Field { component, field }, Sample::Value(value)) if component == "light" => {
-                if let Some(Ok(mut tree)) = shown.component_tree(index, component, types) {
-                    tree[field.as_str()] = value;
-                    // A value that the light does not take: the view keeps the old one.
-                    let _ = shown.set_component_tree(index, component, &tree, types);
-                }
-            }
-            _ => {}
-        }
+        // The key math of the game: the preview cannot drift from it.
+        set_channel(&mut poses[at].1, &of.track.channel, sample);
     }
     for (index, key) in poses {
         if key == Transform::IDENTITY {
             continue;
         }
         let rest = document.room.objects[index].pose.transform();
-        let pose = Transform {
-            translation: rest.translation + rest.rotation * (rest.scale * key.translation),
-            rotation: (rest.rotation * key.rotation).normalize(),
-            scale: rest.scale * key.scale,
-        };
-        shown.room.objects[index].pose = PoseDef::of(&pose);
+        shown.room.objects[index].pose = PoseDef::of(&pose_on_rest(&rest, &key));
     }
     shown.room
 }

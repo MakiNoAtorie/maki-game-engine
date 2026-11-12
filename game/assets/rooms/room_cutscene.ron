@@ -28,7 +28,7 @@
             id: 3,
             name: "candle",
             pose: (position: (1.0, 0.75, -1.8)),
-            components: {"prefab": (file: "prefabs/candle.prefab")},
+            components: {"prefab": (file: (path: "prefabs/candle.prefab", id: "8cebc67f2cf74078"))},
         ),
         (
             id: 4,
@@ -42,7 +42,7 @@
             pose: (position: (2.5, 0.0, -2.0)),
             components: {
                 "animator": (clip: "models/figure.glb#hop"),
-                "prop": (mesh: File("models/figure.glb")),
+                "prop": (mesh: File((path: "models/figure.glb", id: "5a1f0e63c2b8d974"))),
             },
         ),
         // The view of the cutscene: +Z of the object looks at the figure.
@@ -57,13 +57,13 @@
             id: 9,
             name: "tube",
             pose: (position: (-2.5, 2.8, 2.0)),
-            components: {"prefab": (file: "prefabs/fluorescent.prefab")},
+            components: {"prefab": (file: (path: "prefabs/fluorescent.prefab", id: "26c4cfbc61191c3f"))},
         ),
         (
             id: 10,
             name: "warning",
             pose: (position: (3.8, 2.0, 0.0)),
-            components: {"prefab": (file: "prefabs/warning_lamp.prefab")},
+            components: {"prefab": (file: (path: "prefabs/warning_lamp.prefab", id: "2de7fea9c8ccd848"))},
         ),
         // The area and its timeline: the camera takes the view at 0 s and moves to
         // the left; the figure walks for 3 s, then waves; the hall light fades out

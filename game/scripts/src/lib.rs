@@ -75,10 +75,17 @@ output = false",
             let path = PathBuf::from(path);
             let validators = app.world().resource::<scene::RoomValidators>();
             scene::read_room(&path, validators).unwrap();
-            let document = maki_editor::Document::read(&path, registry).unwrap();
-            if std::env::var_os("MAKI_WRITE_ROOMS").is_some() {
+            let mut document = maki_editor::Document::read(&path, registry).unwrap();
+            // The editor gives ids on open: a reference with a path only would mark the room changed.
+            let corrected = maki_editor::correct_paths(&mut document);
+            let writing = std::env::var_os("MAKI_WRITE_ROOMS").is_some();
+            if writing {
                 std::fs::write(&path, document.text()).unwrap();
             }
+            assert!(
+                writing || corrected == 0,
+                "{path:?}: a file reference with no id"
+            );
             let file = std::fs::read_to_string(&path)
                 .unwrap()
                 .replace("\r\n", "\n");
@@ -102,12 +109,19 @@ output = false",
             let path = PathBuf::from(path);
             let validators = app.world().resource::<scene::RoomValidators>();
             scene::read_room(&path, validators).unwrap();
-            let document = maki_editor::Document::read(&path, registry).unwrap();
+            let mut document = maki_editor::Document::read(&path, registry).unwrap();
+            // The editor gives ids on open: a reference with a path only would mark the room changed.
+            let corrected = maki_editor::correct_paths(&mut document);
             let text = document.text();
             // The formatter of the room files: the text of the editor in the file.
-            if std::env::var_os("MAKI_WRITE_ROOMS").is_some() {
+            let writing = std::env::var_os("MAKI_WRITE_ROOMS").is_some();
+            if writing {
                 std::fs::write(&path, &text).unwrap();
             }
+            assert!(
+                writing || corrected == 0,
+                "{path:?}: a file reference with no id"
+            );
             // Git on Windows can give the file CRLF line ends.
             let file = std::fs::read_to_string(&path)
                 .unwrap()

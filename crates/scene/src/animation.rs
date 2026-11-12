@@ -273,11 +273,11 @@ pub(crate) fn write_tracks(
     if !posed {
         return;
     }
-    write_pose(world, entity, product(&rest, &key), stepped);
+    write_pose(world, entity, pose_on_rest(&rest, &key), stepped);
 }
 
 /// Sets the part of `key` of a transform channel. False: not a transform sample.
-fn set_channel(key: &mut Transform, channel: &Channel, sample: Sample) -> bool {
+pub fn set_channel(key: &mut Transform, channel: &Channel, sample: Sample) -> bool {
     match (channel, sample) {
         (Channel::Position, Sample::Vector(v)) => key.translation = v,
         (Channel::Scale, Sample::Vector(v)) => key.scale = v,
@@ -296,7 +296,7 @@ fn write_joints(world: &mut World, entity: Entity, keys: &BTreeMap<usize, (Trans
     let (mut previous, mut current) = (skin.previous.clone(), skin.current.clone());
     let mut jumped = false;
     for (&joint, (key, snap)) in keys {
-        let pose = product(&skin.skeleton.joints[joint].rest, key);
+        let pose = pose_on_rest(&skin.skeleton.joints[joint].rest, key);
         if *snap {
             jumped |= previous[joint] != pose || current[joint] != pose;
             previous[joint] = pose;
@@ -315,7 +315,7 @@ fn write_joints(world: &mut World, entity: Entity, keys: &BTreeMap<usize, (Trans
 }
 
 /// `rest x key`: the key in the space of the rest pose.
-fn product(rest: &Transform, key: &Transform) -> Transform {
+pub fn pose_on_rest(rest: &Transform, key: &Transform) -> Transform {
     Transform {
         translation: rest.translation + rest.rotation * (rest.scale * key.translation),
         rotation: (rest.rotation * key.rotation).normalize(),

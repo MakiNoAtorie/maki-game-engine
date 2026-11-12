@@ -138,6 +138,15 @@ fn spawn_camera(mut commands: Commands, settings: Res<CameraSettings>) {
     commands.spawn((camera, FollowCamera, ActiveCamera));
 }
 
+/// The state of [`follow_player`] between frames.
+#[derive(Default)]
+pub struct FollowState {
+    /// The look-at point, not read back from the `Camera`.
+    target: Option<Vec3>,
+    /// A clash of two active camera objects was logged.
+    clash_logged: bool,
+}
+
 /// Runs in `Update`. A system that moves the camera away from this place for a frame
 /// (a shake) runs `.after(follow_player)`.
 pub fn follow_player(
@@ -146,12 +155,11 @@ pub fn follow_player(
     room: Res<CurrentRoom>,
     players: Query<&Transform, With<Player>>,
     mut cameras: Query<&mut Camera, With<FollowCamera>>,
-    // .0: the look-at point, not read back from the `Camera`; .1: a clash was logged.
-    mut target: Local<(Option<Vec3>, bool)>,
+    mut state: Local<FollowState>,
     objects: Query<(&ObjectId, &CameraDef, &Interpolated)>,
 ) {
     // In this system, so a shake that runs `.after(follow_player)` adds to either view.
-    if let Some(view) = object_view(&time, &objects, &mut target.1) {
+    if let Some(view) = object_view(&time, &objects, &mut state.clash_logged) {
         for mut camera in &mut cameras {
             camera.set_if_neq(view);
         }
@@ -168,7 +176,7 @@ pub fn follow_player(
     } else {
         1.0
     };
-    let target = target.0.get_or_insert(settings.target.into());
+    let target = state.target.get_or_insert(settings.target.into());
     *target = target.lerp(goal, part);
     if target.distance(goal) < ARRIVE_DISTANCE {
         *target = goal;
