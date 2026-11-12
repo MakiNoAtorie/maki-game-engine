@@ -532,6 +532,14 @@ fn along_axis(v: Vec3) -> Option<IVec2> {
     }
 }
 
+/// A stick tilted less than this does not start a grid move.
+const GRID_TILT: f32 = 0.5;
+
+/// The grid move that a move direction asks for: its dominant axis, none for a small tilt.
+pub(crate) fn grid_input(direction: Vec3) -> Option<IVec2> {
+    along_axis(direction).filter(|_| direction.length() >= GRID_TILT)
+}
+
 /// A move of the grid walk: the center it goes to, the center it came from, and the
 /// seconds it has taken.
 #[derive(Clone, Copy)]
@@ -641,6 +649,10 @@ pub fn steer_player(
     if settings.mode == WalkMode::Free && !goals.0.is_empty() {
         goals.0.clear();
     }
+    // A half-tilted stick walks at half speed; the grid walk ignores the tilt.
+    let tilt = direction.length();
+    let stick = direction;
+    let direction = direction.normalize_or_zero();
     for (entity, mut walker, def, mut pose) in &mut players {
         let speed = if actions.pressed(RUN) {
             def.run_speed
@@ -656,7 +668,7 @@ pub fn steer_player(
                 &mut steered,
                 &mut current,
                 speed,
-                along_axis(direction),
+                grid_input(stick),
                 &mut goal,
                 (&grid, &physics, seconds),
             );
@@ -667,7 +679,7 @@ pub fn steer_player(
             goals.0.extend(goal.map(|goal| (entity, goal)));
             continue;
         }
-        (walker.direction, walker.speed) = (direction, speed);
+        (walker.direction, walker.speed) = (direction, speed * tilt.min(1.0));
     }
 }
 
