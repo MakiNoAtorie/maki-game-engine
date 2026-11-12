@@ -339,21 +339,22 @@ impl<'w> ScriptContext<'w> {
     /// A call with the place of the last walk does nothing (after NoPath it searches
     /// again: a door can be open now).
     pub fn walk_to(&mut self, target: Vec3) {
-        let goal = self.world.get::<WalkGoal>(self.entity);
-        if let Some(WalkGoal::Asked(place) | WalkGoal::Walking(place) | WalkGoal::Arrived(place)) =
-            goal
-            && *place == target
+        let Some(mut goal) = self.world.get_mut::<WalkGoal>(self.entity) else {
+            return;
+        };
+        if let WalkGoal::Asked(place) | WalkGoal::Walking(place) | WalkGoal::Arrived(place) = *goal
+            && place == target
         {
             return;
         }
-        self.world
-            .entity_mut(self.entity)
-            .insert(WalkGoal::Asked(target));
+        *goal = WalkGoal::Asked(target);
     }
 
     /// Stops the walk of [`Self::walk_to`]: the object stands.
     pub fn stop(&mut self) {
-        self.world.entity_mut(self.entity).remove::<WalkGoal>();
+        if let Some(mut goal) = self.world.get_mut::<WalkGoal>(self.entity) {
+            goal.set_if_neq(WalkGoal::Idle);
+        }
     }
 
     /// True when the walk of [`Self::walk_to`] got to its place, until the next walk or
@@ -362,6 +363,15 @@ impl<'w> ScriptContext<'w> {
         matches!(
             self.world.get::<WalkGoal>(self.entity),
             Some(WalkGoal::Arrived(_))
+        )
+    }
+
+    /// True when the walk of [`Self::walk_to`] found no path to its place, until the
+    /// next walk or stop.
+    pub fn no_path(&self) -> bool {
+        matches!(
+            self.world.get::<WalkGoal>(self.entity),
+            Some(WalkGoal::NoPath)
         )
     }
 
@@ -381,8 +391,12 @@ impl<'w> ScriptContext<'w> {
 /// Where a walker of the room goes, and how far it got: what a script
 /// ([`ScriptContext::walk_to`]) or the command `WalkTo` asks. `maki-gameplay`
 /// (`WalkersModule`) searches the path and walks it: this crate is below the walk.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+/// Each walker has one from its start: a change of its value, not an insert, asks a walk.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub enum WalkGoal {
+    /// No walk: the walker stands.
+    #[default]
+    Idle,
     /// A path search to this place in the next step of the walkers.
     Asked(Vec3),
     /// On the path to this place.
@@ -391,6 +405,23 @@ pub enum WalkGoal {
     Arrived(Vec3),
     /// No path to the place: the walker stands.
     NoPath,
+}
+
+/// The entity of an object with a pose. An object can have more entities (a light):
+/// the walker (with a [`WalkGoal`]) comes first, else the first one found.
+pub fn object_entity(world: &World, object: ObjectId) -> Option<Entity> {
+    // `WalkGoal` is read by entity: a query that names it is `None` while no walker exists.
+    let mut query = world.try_query_filtered::<(Entity, &ObjectId), With<Interpolated>>()?;
+    let mut found = None;
+    for (entity, id) in query.iter(world) {
+        if *id == object {
+            if world.get::<WalkGoal>(entity).is_some() {
+                return Some(entity);
+            }
+            found = found.or(Some(entity));
+        }
+    }
+    found
 }
 
 /// The height of the eyes above the pose of an object, in meters. `maki-events` is

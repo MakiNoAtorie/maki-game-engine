@@ -173,3 +173,80 @@ mode = \"Grid\"",
     steps(&mut app, 300);
     assert!(at(&app).distance(START) < 1e-4, "{:?}", at(&app));
 }
+
+/// Counts the fixed steps in which the pose of the player changed.
+#[derive(Resource, Default)]
+struct PoseChanges(usize);
+
+fn count_pose_changes(
+    mut count: bevy_ecs::system::ResMut<PoseChanges>,
+    changed: Query<(), (With<Player>, bevy_ecs::query::Changed<Interpolated>)>,
+) {
+    count.0 += changed.iter().count();
+}
+
+#[test]
+fn a_player_at_rest_on_the_grid_is_not_changed() {
+    let mut app = app("[walk]\nmode = \"Grid\"");
+    app.init_resource::<PoseChanges>()
+        .add_systems(FixedUpdate, count_pose_changes.after(crate::walk));
+    hold(&mut app, MOVE_RIGHT, 1);
+    app.resource_mut::<PoseChanges>().0 = 0;
+    steps(&mut app, 20);
+    assert_eq!(app.world().resource::<PoseChanges>().0, 0);
+}
+
+/// A place where the next fixed step puts the player.
+#[derive(Resource, Default)]
+struct PutAt(Option<Vec3>);
+
+fn put(
+    mut put: bevy_ecs::system::ResMut<PutAt>,
+    mut players: Query<&mut Interpolated, With<Player>>,
+) {
+    if let Some(at) = put.0.take() {
+        for mut pose in &mut players {
+            pose.current.translation = at;
+            pose.previous.translation = at;
+        }
+    }
+}
+
+#[test]
+fn a_press_off_a_center_walks_to_the_center_of_its_own_cell_first() {
+    let mut app = app("[walk]\nmode = \"Grid\"");
+    app.insert_resource(PutAt(Some(START + Vec3::new(0.3, 0.0, 0.2))))
+        .add_systems(FixedUpdate, put.before(maki_events::run_events));
+    steps(&mut app, 1);
+    hold(&mut app, MOVE_RIGHT, 1);
+    assert!(at(&app).distance(START) < 1e-4, "{:?}", at(&app));
+    // The walk to the center turned the player: a turn, then a move on the row only.
+    app.resource_mut::<ScriptedActions>().0.insert(MOVE_RIGHT);
+    for _ in 0..30 {
+        steps(&mut app, 1);
+        assert!((at(&app).z - START.z).abs() < 1e-4, "{:?}", at(&app));
+    }
+    app.resource_mut::<ScriptedActions>().0.clear();
+    steps(&mut app, 100);
+    assert!(at(&app).distance(center(3.0, 2.0)) < 1e-4, "{:?}", at(&app));
+}
+
+#[test]
+fn a_move_under_way_is_dropped_on_reset_play() {
+    let mut app = app("[walk]\nmode = \"Grid\"");
+    app.resource_mut::<ScriptedActions>().0.insert(MOVE_RIGHT);
+    steps(&mut app, 2);
+    assert!(
+        !app.world()
+            .resource::<crate::player::GridMoves>()
+            .0
+            .is_empty()
+    );
+    app.reset_play();
+    assert!(
+        app.world()
+            .resource::<crate::player::GridMoves>()
+            .0
+            .is_empty()
+    );
+}

@@ -57,8 +57,8 @@ impl Script for ScriptName {
                 // The wait ended: walk to the other end.
                 context.walk_to(Vec3::from(self.ends[self.target]));
             }
-        } else if context.arrived() {
-            // At the end: wait, then go to the other end.
+        } else if context.arrived() || context.no_path() {
+            // At the end, or no path to it: wait, then go to the other end.
             self.target = 1 - self.target;
             self.waits = self.wait.max(0.001);
         }

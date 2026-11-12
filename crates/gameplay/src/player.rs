@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use maki_assets::FileRef;
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
@@ -219,9 +220,11 @@ impl Module for PlayerModule {
             .init_resource::<Textures>()
             .init_resource::<MoveCapture>()
             .init_resource::<Controller>()
+            .init_resource::<GridMoves>()
             .add_systems(Startup, spawn_player)
             // Exclusive systems: only the order to the loader and the placement counts.
             .add_systems(ResetPlay, control_home.ambiguous_with_all())
+            .add_systems(ResetPlay, clear_grid_moves.ambiguous_with_all())
             .add_systems(
                 Update,
                 control_home_if_lost
@@ -538,25 +541,35 @@ pub struct GridMove {
     seconds: f32,
 }
 
+/// The grid moves of the players under way: play state, empty again on `ResetPlay`.
+#[derive(Resource, Default)]
+pub struct GridMoves(pub(crate) HashMap<Entity, GridMove>);
+
+/// Runs in `ResetPlay`: no move of the grid walk goes on into a new play.
+fn clear_grid_moves(mut moves: ResMut<GridMoves>) {
+    moves.0.clear();
+}
+
 /// A move that takes this many times its free time turns back to its cell: a body
 /// that blocks the cell must not hold the player in a move forever.
 const MOVE_PATIENCE: f32 = 3.0;
 
 /// The grid walk of one player for one fixed step: finish the move to the goal cell,
-/// else turn to a new direction, else start the move to the next cell if it is free.
+/// else go to the center of its own cell, else turn to a new direction, else start the
+/// move to the next cell if it is free.
 fn grid_step(
     walker: &mut Walker,
-    pose: &mut Interpolated,
+    pose: &mut Transform,
     speed: f32,
     input: Option<IVec2>,
     goal: &mut Option<GridMove>,
     (grid, physics, seconds): (&WalkGrid, &Physics, f32),
 ) {
-    let at = pose.current.translation;
+    let at = pose.translation;
     if let Some(GridMove { to, .. }) = *goal
         && (to - at).with_y(0.0).length() <= ARRIVED
     {
-        pose.current.translation = Vec3::new(to.x, at.y, to.z);
+        pose.translation = Vec3::new(to.x, at.y, to.z);
         *goal = None;
     }
     if let Some(step) = goal.as_mut() {
@@ -572,12 +585,23 @@ fn grid_step(
     if goal.is_none()
         && let Some(want) = input
     {
-        let facing = along_axis(pose.current.rotation * Vec3::Z);
-        if facing != Some(want) {
+        let at = pose.translation;
+        let cell = grid.cell_of(at);
+        let off_center = cell
+            .map(|cell| grid.center(cell))
+            .filter(|here| (*here - at).with_y(0.0).length() > ARRIVED);
+        if let Some(here) = off_center {
+            // Off a center (a spawn, a free walk): the moves go center to center on an axis.
+            *goal = Some(GridMove {
+                to: here,
+                back: here,
+                seconds: 0.0,
+            });
+        } else if along_axis(pose.rotation * Vec3::Z) != Some(want) {
             // A press of another direction turns first.
             let facing = Vec3::new(want.x as f32, 0.0, want.y as f32);
-            pose.current.rotation = Quat::from_rotation_y(facing.x.atan2(facing.z));
-        } else if let Some(cell) = grid.cell_of(at)
+            pose.rotation = Quat::from_rotation_y(facing.x.atan2(facing.z));
+        } else if let Some(cell) = cell
             && grid.is_free(physics, cell + want)
         {
             *goal = Some(GridMove {
@@ -587,9 +611,7 @@ fn grid_step(
             });
         }
     }
-    let left = goal.map_or(Vec3::ZERO, |step| {
-        (step.to - pose.current.translation).with_y(0.0)
-    });
+    let left = goal.map_or(Vec3::ZERO, |step| (step.to - pose.translation).with_y(0.0));
     walker.direction = left.normalize_or_zero();
     // Not faster than the rest of the way: no overshoot of the center.
     walker.speed = speed.min(left.length() / seconds);
@@ -609,15 +631,15 @@ pub fn steer_player(
     time: Res<Time>,
     cameras: Query<&Camera, With<ActiveCamera>>,
     mut players: Query<(Entity, &mut Walker, &PlayerDef, &mut Interpolated), With<Player>>,
-    mut goals: Local<HashMap<Entity, GridMove>>,
+    mut goals: ResMut<GridMoves>,
 ) {
     let direction = if capture.0 || !controller.active {
         Vec3::ZERO
     } else {
         move_direction(&actions, cameras.iter().next())
     };
-    if settings.mode == WalkMode::Free {
-        goals.clear();
+    if settings.mode == WalkMode::Free && !goals.0.is_empty() {
+        goals.0.clear();
     }
     for (entity, mut walker, def, mut pose) in &mut players {
         let speed = if actions.pressed(RUN) {
@@ -626,17 +648,23 @@ pub fn steer_player(
             def.walk_speed
         };
         if settings.mode == WalkMode::Grid {
-            let mut goal = goals.remove(&entity);
+            let mut goal = goals.0.remove(&entity);
             let seconds = time.fixed_delta.as_secs_f32();
+            // Copies: only a different value is written, so a player at rest is not changed.
+            let (mut steered, mut current) = (*walker, pose.current);
             grid_step(
-                &mut walker,
-                &mut pose,
+                &mut steered,
+                &mut current,
                 speed,
                 along_axis(direction),
                 &mut goal,
                 (&grid, &physics, seconds),
             );
-            goals.extend(goal.map(|goal| (entity, goal)));
+            walker.set_if_neq(steered);
+            if pose.current != current {
+                pose.current = current;
+            }
+            goals.0.extend(goal.map(|goal| (entity, goal)));
             continue;
         }
         (walker.direction, walker.speed) = (direction, speed);

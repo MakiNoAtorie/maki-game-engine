@@ -109,6 +109,66 @@ fn the_chaser_follows_searches_gives_up_and_goes_back() {
     });
 }
 
+/// The script state of the walker, as its `Debug` text: the states are private.
+fn state_text<T: bevy_ecs::component::Component + std::fmt::Debug>(app: &App) -> String {
+    let world = app.world();
+    let mut query = world.try_query::<&T>().unwrap();
+    format!("{:?}", query.iter(world).next().unwrap())
+}
+
+/// From now on each walk has no path: an empty grid has no cell.
+fn no_paths(app: &mut App) {
+    *app.resource_mut::<gameplay::WalkGrid>() = gameplay::WalkGrid::default();
+}
+
+#[test]
+fn the_chaser_searches_at_the_last_place_where_it_saw_the_player() {
+    app(chaser::add, "(distance: 5.0, give_up: 3.0)").run(|mut app| {
+        steps(&mut app, 400);
+        // Seen, then seen less than a cell from the end of its path: no new path.
+        player_at(&mut app, Vec3::new(2.5, 0.0, 2.0));
+        steps(&mut app, 5);
+        let last = Vec3::new(2.5, 0.0, 1.3);
+        player_at(&mut app, last);
+        steps(&mut app, 5);
+        player_at(&mut app, Vec3::new(-3.0, 0.0, 1.0));
+        steps(&mut app, 100);
+        assert!(near(place(&app), last), "{}", place(&app));
+    });
+}
+
+#[test]
+fn the_chaser_that_gives_up_with_no_path_rests_where_it_stands() {
+    app(chaser::add, "(distance: 5.0, give_up: 0.5)").run(|mut app| {
+        steps(&mut app, 400);
+        no_paths(&mut app);
+        player_at(&mut app, Vec3::new(2.5, 0.0, 2.0));
+        steps(&mut app, 5);
+        player_at(&mut app, Vec3::new(-3.0, 0.0, 1.0));
+        steps(&mut app, 100);
+        let text = state_text::<chaser::ScriptName>(&app);
+        assert!(text.contains("state: Rest"), "{text}");
+    });
+}
+
+#[test]
+fn the_patrol_with_no_path_waits_and_goes_on_to_the_next_point() {
+    // The far point is out of the room: no path to it.
+    app(patrol::add, "(to: (-20.0, 0.0, 0.0), wait: 0.1)").run(|mut app| {
+        let mut targets = std::collections::BTreeSet::new();
+        for _ in 0..100 {
+            steps(&mut app, 1);
+            let text = state_text::<patrol::ScriptName>(&app);
+            targets.extend(
+                ["target: 0", "target: 1"]
+                    .into_iter()
+                    .filter(|t| text.contains(t)),
+            );
+        }
+        assert_eq!(targets.len(), 2, "{targets:?}");
+    });
+}
+
 #[test]
 fn the_patrol_walks_its_points_around_the_wall() {
     app(patrol::add, "(to: (-5.0, 0.0, 0.0), wait: 0.1)").run(|mut app| {

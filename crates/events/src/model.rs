@@ -16,11 +16,12 @@ use std::path::Path;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_assets::DataRef;
 use maki_core::Fields;
-use maki_scene::{ObjectId, PoseDef};
+use maki_scene::{ObjectId, Player, PoseDef};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -200,11 +201,11 @@ pub enum Condition {
     ),
     /// The target is closer than the distance (meters) and in line of sight of the
     /// object, from the eyes (`EYE_HEIGHT`) and all around: the facing does not count.
-    /// Object 0: the object of the event.
+    /// Object 0: the object of the event. Target 0: the player.
     #[field(label = "sees")]
     Sees(
         #[field(label = "object")] ObjectId,
-        #[field(label = "target")] ObjectId,
+        #[field(label = "target (0: the player)")] ObjectId,
         #[field(label = "distance")] f32,
     ),
     /// One of the conditions holds ("or"). With no condition: it does not hold.
@@ -341,18 +342,21 @@ impl<'a> Facts<'a> {
     }
 
     /// True when the object `target` is in sight of `object`, within `distance`. Object
-    /// 0 is the object of the event. With no world, or an object not found: false.
+    /// 0 is the object of the event; target 0 is the player. With no world, or an
+    /// object not found: false.
     pub fn sees(&self, object: ObjectId, target: ObjectId, distance: f32) -> bool {
         let Some(world) = self.world else {
             return false;
         };
-        let entity = |id: ObjectId| {
-            let id = crate::state::resolve(id, self.this)?;
-            let mut query = world.try_query::<(Entity, &ObjectId)>()?;
-            let found = query.iter(world).find(|(_, other)| **other == id);
-            found.map(|(entity, _)| entity)
+        let viewer = crate::state::resolve(object, self.this)
+            .and_then(|id| crate::script::object_entity(world, id));
+        let target = if target == ObjectId::default() {
+            let players = world.try_query_filtered::<Entity, With<Player>>();
+            players.and_then(|mut query| query.iter(world).next())
+        } else {
+            crate::script::object_entity(world, target)
         };
-        match (entity(object), entity(target)) {
+        match (viewer, target) {
             (Some(a), Some(b)) => crate::script::can_see(world, a, b, distance, 360.0),
             _ => false,
         }

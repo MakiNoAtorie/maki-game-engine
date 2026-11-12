@@ -125,6 +125,9 @@ fn walk_to_goes_around_the_wall_and_waits_until_it_is_there() {
         // On the way, with the row after it waiting.
         assert!(!flag(&app, "there"));
         assert!(matches!(goal(&app), Some(WalkGoal::Walking(_))));
+        // The walk changes values only: no insert or remove of a component on the walker.
+        let archetype = |app: &App| app.world().entity(self::npc(app)).archetype().id();
+        let walking = archetype(&app);
         let mut farthest_z = f32::MIN;
         for _ in 0..600 {
             if flag(&app, "there") {
@@ -137,6 +140,7 @@ fn walk_to_goes_around_the_wall_and_waits_until_it_is_there() {
         assert!(near(place(&app), PLACE), "{}", place(&app));
         assert!(farthest_z > 3.0, "around the end of the wall in row 7");
         assert_eq!(goal(&app), Some(WalkGoal::Arrived(PLACE)));
+        assert_eq!(archetype(&app), walking);
     });
 }
 
@@ -267,7 +271,7 @@ fn a_script_stops_the_walk() {
         let stopped = place(&app);
         steps(&mut app, 20);
         assert_eq!(place(&app), stopped);
-        assert_eq!(goal(&app), None);
+        assert_eq!(goal(&app), Some(WalkGoal::Idle));
         assert!(!flag(&app, "arrived"));
     });
 }

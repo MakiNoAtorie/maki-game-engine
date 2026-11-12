@@ -160,3 +160,36 @@ fn a_line_of_sight_is_blocked_by_a_wall_not_by_a_sensor_nor_by_the_two_ends() {
     assert_eq!(blocked("los-sensor", &sensor()), (true, true, true, false));
     assert_eq!(blocked("los-none", ""), (true, true, true, true));
 }
+
+#[test]
+fn the_condition_sees_with_target_0_looks_for_the_player() {
+    // The player of the test app stands at the origin, 4.2 m from the watcher.
+    let page = r#"(conditions: [Flag("go"), Sees(0, 0, 5.0)], trigger: Autorun, commands: [AddVariable("seen", 1)])"#;
+    let far = r#"(conditions: [Flag("go"), Sees(0, 0, 4.0)], trigger: Autorun, commands: [AddVariable("seen", 1)])"#;
+    let run = |test: &str, wall: &str, page: &str| {
+        let directory = directory(test);
+        let room = sight_room([3.0, 0.0, 0.0], 0, wall, page);
+        std::fs::write(directory.join("a.ron"), room).unwrap();
+        let seen = game(&directory).run(|mut app| {
+            steps(&mut app, 40);
+            variable(&app, "seen")
+        });
+        std::fs::remove_dir_all(directory).unwrap();
+        seen
+    };
+    assert_eq!(run("player-open", "", page), 1);
+    assert_eq!(run("player-wall", &wall(), page), 0);
+    assert_eq!(run("player-far", "", far), 0);
+}
+
+#[test]
+fn an_object_with_more_entities_is_found_by_its_walker() {
+    let mut world = bevy_ecs::world::World::new();
+    let pose = Interpolated::at(Transform::IDENTITY);
+    world.spawn((ObjectId(7), pose));
+    let walker = world.spawn((ObjectId(7), pose, crate::WalkGoal::Idle)).id();
+    world.spawn((ObjectId(8), pose));
+    assert_eq!(crate::object_entity(&world, ObjectId(7)), Some(walker));
+    assert!(crate::object_entity(&world, ObjectId(8)).is_some());
+    assert_eq!(crate::object_entity(&world, ObjectId(9)), None);
+}

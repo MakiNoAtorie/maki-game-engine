@@ -10,13 +10,13 @@
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::query::{Changed, Has, With};
+use bevy_ecs::query::{Changed, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Query, Res};
 use bevy_ecs::world::{Mut, World};
 use glam::Vec3;
 use maki_core::{App, Fields, FixedUpdate, Interpolated, Module, Time};
-use maki_events::{CommandRegistry, Finding, Step, WalkGoal, run_events};
+use maki_events::{CommandRegistry, Finding, Step, WalkGoal, object_entity, run_events};
 use maki_physics::Physics;
 use maki_scene::{Collider, CurrentRoom, ObjectId, RoomDef, add_object_component};
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,9 @@ use crate::player::{PlayerDef, Walker, fit_walker_bodies, steer_player};
 
 /// The component `walker` of an object: the object walks by a path search. The step
 /// and the slope are those of the player prefab.
+// The walk state comes with the walker: an insert in play changes the order of the lights.
 #[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[require(WalkGoal, PathFollow)]
 #[serde(default, deny_unknown_fields)]
 #[fields(default)]
 pub struct WalkerDef {
@@ -51,8 +53,8 @@ impl Default for WalkerDef {
     }
 }
 
-/// The path that a walker follows: not in the room file.
-#[derive(Component, Debug, Clone, PartialEq)]
+/// The path that a walker follows: not in the room file. Empty: no path.
+#[derive(Component, Debug, Clone, PartialEq, Default)]
 pub struct PathFollow {
     /// The points of the path: cell centers, the last one the place.
     pub points: Vec<Vec3>,
@@ -152,10 +154,8 @@ fn add_walkers(
 /// Runs in `FixedUpdate` before the walk: serves the [`WalkGoal`] of each walker. An
 /// asked goal gets a path (or `NoPath` and a warning); a walker on a path goes to its
 /// next point, and at the last one it has `Arrived`. A walker with no progress for
-/// [`STALL_SECONDS`] asks a new path. With no goal (a script stopped it), it stands.
-#[allow(clippy::type_complexity)]
+/// [`STALL_SECONDS`] asks a new path. `Idle` (a script stopped it): it stands.
 pub fn steer_walkers(
-    mut commands: Commands,
     time: Res<Time>,
     room: Res<CurrentRoom>,
     grid: Res<WalkGrid>,
@@ -165,22 +165,15 @@ pub fn steer_walkers(
             Entity,
             &mut Walker,
             &Interpolated,
-            Option<&mut WalkGoal>,
-            Option<&mut PathFollow>,
+            &mut WalkGoal,
+            &mut PathFollow,
         ),
         With<WalkerDef>,
     >,
 ) {
     let seconds = time.fixed_delta.as_secs_f32();
-    for (entity, mut walker, pose, goal, follow) in &mut walkers {
+    for (entity, mut walker, pose, mut goal, mut follow) in &mut walkers {
         let at = pose.current.translation;
-        let Some(mut goal) = goal else {
-            stand(&mut walker);
-            if follow.is_some() {
-                commands.entity(entity).remove::<PathFollow>();
-            }
-            continue;
-        };
         let target = match *goal {
             WalkGoal::Walking(target) => target,
             WalkGoal::Asked(target) => {
@@ -192,30 +185,26 @@ pub fn steer_walkers(
                 match grid.find_path(&physics, at, target) {
                     Some(points) => {
                         *goal = WalkGoal::Walking(target);
-                        let follow = PathFollow {
+                        *follow = PathFollow {
                             points,
                             next: 0,
                             last: at,
                             stalled: 0.0,
                         };
-                        commands.entity(entity).insert(follow);
                     }
                     None => {
                         tracing::warn!(?entity, %target, "WalkTo: no path to the place");
                         *goal = WalkGoal::NoPath;
-                        commands.entity(entity).remove::<PathFollow>();
+                        clear(&mut follow);
                     }
                 }
                 continue;
             }
-            WalkGoal::Arrived(_) | WalkGoal::NoPath => {
+            WalkGoal::Idle | WalkGoal::Arrived(_) | WalkGoal::NoPath => {
                 stand(&mut walker);
+                clear(&mut follow);
                 continue;
             }
-        };
-        // The path comes at the end of the step that searched it.
-        let Some(mut follow) = follow else {
-            continue;
         };
 
         let moved = flat(at - follow.last).length();
@@ -247,9 +236,16 @@ pub fn steer_walkers(
             None => {
                 *goal = WalkGoal::Arrived(target);
                 stand(&mut walker);
-                commands.entity(entity).remove::<PathFollow>();
+                clear(&mut follow);
             }
         }
+    }
+}
+
+/// The walker has no path. Only a change is written.
+fn clear(follow: &mut Mut<PathFollow>) {
+    if !follow.points.is_empty() {
+        **follow = PathFollow::default();
     }
 }
 
@@ -326,7 +322,9 @@ fn run(command: &WalkCommand, step: &mut Step, world: &mut World) -> bool {
             tracing::warn!(event = step.event, ?target, "WalkTo: no such object");
             return true;
         };
-        world.entity_mut(entity).insert(WalkGoal::Asked(place));
+        if let Some(mut goal) = world.get_mut::<WalkGoal>(entity) {
+            *goal = WalkGoal::Asked(place);
+        }
         return false;
     }
     !matches!(
@@ -335,19 +333,14 @@ fn run(command: &WalkCommand, step: &mut Step, world: &mut World) -> bool {
     )
 }
 
-/// The entity of an object (0: of the event): with `walker`, the one that walks; else
-/// one with a pose.
-fn entity_of(world: &mut World, step: &Step, object: &ObjectId, walker: bool) -> Option<Entity> {
-    let this = *object == ObjectId::default();
-    let mut objects =
-        world.query_filtered::<(Entity, Option<&ObjectId>, Has<WalkerDef>), With<Interpolated>>();
-    // An object can have more entities (a light): the walker is one of them.
-    objects.iter(world).find_map(|(entity, id, is_walker)| {
-        let same = if this {
-            Some(entity) == step.entity
-        } else {
-            id == Some(object)
-        };
-        (same && (is_walker || !walker)).then_some(entity)
-    })
+/// The entity of an object (0: of the event) with a pose: with `walker`, only the one
+/// that walks.
+fn entity_of(world: &World, step: &Step, object: &ObjectId, walker: bool) -> Option<Entity> {
+    let entity = if *object == ObjectId::default() {
+        step.entity
+            .filter(|entity| world.get::<Interpolated>(*entity).is_some())
+    } else {
+        object_entity(world, *object)
+    }?;
+    (!walker || world.get::<WalkerDef>(entity).is_some()).then_some(entity)
 }

@@ -63,7 +63,7 @@ pub use routine::{
 };
 pub use script::{
     EYE_HEIGHT, Script, ScriptContext, TriggerArea, WalkGoal, add_outputs, add_script,
-    add_script_function,
+    add_script_function, object_entity,
 };
 pub use state::{
     NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,

@@ -46,10 +46,14 @@ pub struct ScriptName {
     #[serde(skip)]
     #[field(skip)]
     start: Vec3,
-    /// The last place where it saw the player, and the end of the last walk to it.
+    /// The last place where it saw the player.
     #[serde(skip)]
     #[field(skip)]
     seen_at: Vec3,
+    /// The end of the last path that it asked.
+    #[serde(skip)]
+    #[field(skip)]
+    path_end: Vec3,
     /// Seconds since it saw the player.
     #[serde(skip)]
     #[field(skip)]
@@ -65,6 +69,7 @@ impl Default for ScriptName {
             state: State::Rest,
             start: Vec3::ZERO,
             seen_at: Vec3::ZERO,
+            path_end: Vec3::ZERO,
             lost: 0.0,
         }
     }
@@ -104,10 +109,11 @@ impl ScriptName {
 
         if let Some(at) = seen {
             self.lost = 0.0;
-            // A new path only when the player left the cell of the last end.
-            if self.state != State::Follow || at.distance(self.seen_at) > cell {
+            self.seen_at = at;
+            // A new path only when the player is more than a cell from the last end.
+            if self.state != State::Follow || at.distance(self.path_end) > cell {
                 context.walk_to(at);
-                self.seen_at = at;
+                self.path_end = at;
             }
             self.state = State::Follow;
             return;
@@ -126,7 +132,8 @@ impl ScriptName {
                 }
             }
             State::GiveUp => {
-                if context.arrived() {
+                // With no path back it rests where it stands.
+                if context.arrived() || context.no_path() {
                     self.state = State::Rest;
                 }
             }

@@ -165,6 +165,10 @@ pub struct EditorSettings {
     /// The program file of Blender, for the `.blend` and `.obj` files of the asset
     /// folder (`sources` module). Empty: the editor looks at the usual places.
     pub blender: String,
+    /// The key `grid_step` of a config from before stage 61: read and dropped, so an
+    /// old config still loads with `deny_unknown_fields`.
+    #[serde(rename = "grid_step", skip_serializing)]
+    old_grid_step: serde::de::IgnoredAny,
 }
 
 impl Default for EditorSettings {
@@ -175,6 +179,7 @@ impl Default for EditorSettings {
             angle_step: 15.0,
             code_editor: "code -g \"{file}:{line}\"".to_owned(),
             blender: String::new(),
+            old_grid_step: serde::de::IgnoredAny,
         }
     }
 }
