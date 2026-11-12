@@ -7,6 +7,7 @@
 
 mod beacon;
 mod bench;
+mod chaser;
 mod shake;
 
 use maki_engine::core::App;
@@ -14,6 +15,7 @@ use maki_engine::core::App;
 /// The entry function of the project: adds the modules of this crate.
 pub fn add_modules(app: &mut App) {
     beacon::add(app);
+    chaser::add(app);
     app.add_module(shake::ShakeModule);
     bench::add_scripts(app);
 }
@@ -55,6 +57,22 @@ output = false",
             });
         add_modules(&mut app);
         app
+    }
+
+    /// The chase room (not a benchmark room): the loader finds nothing wrong, and the
+    /// editor writes it as it is.
+    #[test]
+    fn the_chase_room_loads_and_is_in_the_form_of_the_editor() {
+        let app = game_app();
+        let registry = app.world().resource::<events::CommandRegistry>();
+        let path = PathBuf::from("../assets/rooms/room_chase.ron");
+        let validators = app.world().resource::<scene::RoomValidators>();
+        scene::read_room(&path, validators).unwrap();
+        let document = maki_editor::Document::read(&path, registry).unwrap();
+        let file = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(file, document.text());
     }
 
     /// The editor writes the room files of the game with all that they hold: the

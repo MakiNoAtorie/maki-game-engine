@@ -15,6 +15,7 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("Trigger area", include_str!("../templates/trigger_area.rs")),
     ("Movement", include_str!("../templates/movement.rs")),
     ("Patrol", include_str!("../templates/patrol.rs")),
+    ("Chaser", include_str!("../templates/chaser.rs")),
     ("Talker", include_str!("../templates/talker.rs")),
     (
         "State machine",
