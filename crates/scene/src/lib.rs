@@ -3,6 +3,7 @@
 //!
 //! This crate must not depend on `gpu`, `render`, or `ui`.
 
+mod animation;
 mod collision;
 mod hidden;
 mod mover;
@@ -16,6 +17,7 @@ use glam::Vec3;
 use maki_assets::{Handle, Mesh};
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
+pub use animation::{AnimationModule, Animator, Playback, animate};
 pub use collision::{Collider, room_colliders};
 pub use hidden::Hidden;
 pub use mover::{Door, Mover, MoverState, move_movers};
