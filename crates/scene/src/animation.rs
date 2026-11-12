@@ -120,6 +120,8 @@ pub fn animate(world: &mut World, animators: &mut QueryState<(Entity, &Animator)
             *slot = playback;
         }
     }
+    // After the animators: a timeline track on the same channel wins.
+    crate::timeline::play(world, dt);
 }
 
 /// One fixed step of one animator.

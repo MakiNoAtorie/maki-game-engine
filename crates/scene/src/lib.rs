@@ -43,6 +43,7 @@ pub use room::{
     pose_out, read_room, ron_options, room_text,
 };
 pub use skin::{SkinPalette, SkinPose, make_palettes};
+pub use timeline::{Timeline, TimelinePlayback, TimelineTrack, play_timeline, stop_timeline};
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
 pub struct SceneModule;
