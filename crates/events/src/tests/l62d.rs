@@ -19,6 +19,7 @@ fn track(channel: Channel, keys: &[(f32, KeyValue)]) -> Track {
     Track {
         channel,
         mode: None,
+        target: None,
         keys: keys
             .map(|(time, value)| maki_assets::clip::Key { time, value })
             .collect(),

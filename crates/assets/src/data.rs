@@ -47,6 +47,16 @@ pub trait DataAsset:
     Fields + Serialize + DeserializeOwned + Default + Send + Sync + 'static
 {
     const NAME: &'static str;
+
+    /// The values in a file of another format, by name: `file#name` names one (a clip
+    /// of a glTF file). The default: the type has no such file.
+    fn read_parts(path: &Path) -> Result<Vec<(String, Self)>, String> {
+        Err(format!(
+            "{} has no parts of the type `{}`",
+            path.display(),
+            Self::NAME
+        ))
+    }
 }
 
 /// What a tool needs of a data asset type, with no Rust type.
@@ -192,6 +202,11 @@ fn check_file<T: DataAsset>(path: &Path) -> anyhow::Result<()> {
     read_data::<T>(path).map(drop).map_err(anyhow::Error::msg)
 }
 
+/// The check of the watch of a file of parts: its parts read.
+fn check_parts<T: DataAsset>(path: &Path) -> anyhow::Result<()> {
+    T::read_parts(path).map(drop).map_err(anyhow::Error::msg)
+}
+
 /// A reference to a data file of the type `T`: a [`FileRef`] that a tool picks from
 /// the files of the type. In RON as a `FileRef`.
 pub struct DataRef<T> {
@@ -258,43 +273,75 @@ struct Loaded {
     check: Check,
 }
 
-/// The data files that were read, by path. A file that changed on the disk is read
-/// again at its next use.
+/// The data files that were read, by path and part (`None`: the whole file). A file
+/// that changed on the disk is read again at its next use.
 #[derive(Resource, Default)]
-pub struct DataAssets(HashMap<PathBuf, Loaded>);
+pub struct DataAssets(HashMap<(PathBuf, Option<String>), Loaded>);
 
 impl DataAssets {
-    /// The value of a data file under `directory` (the directory of the room file):
-    /// from the store, else read now. `Err`: why there is no value; nothing is kept.
+    /// The value of a data file under `directory` (the directory of the room file), or
+    /// of a part of a file (`models/figure.glb#wave`, [`DataAsset::read_parts`]): from
+    /// the store, else read now. `Err`: why there is no value; nothing is kept.
     pub fn get<T: DataAsset>(
         &mut self,
         file: &FileRef,
         directory: &Path,
     ) -> Result<Arc<T>, String> {
-        let path = file.resolve(directory);
-        if let Some(loaded) = self.0.get(&path) {
-            // A path has one type: the end of its name.
-            return Arc::clone(&loaded.value).downcast::<T>().map_err(|_| {
-                format!(
-                    "{} is not a data asset of the type `{}`",
-                    path.display(),
-                    T::NAME
-                )
-            });
-        }
-        let value = Arc::new(read_data::<T>(&path)?);
-        let check: Check = check_file::<T>;
-        let loaded = Loaded {
-            value: value.clone(),
-            check,
+        let (file, part) = match file.path.to_str().and_then(|path| path.rsplit_once('#')) {
+            Some((path, part)) => {
+                let file = FileRef {
+                    path: path.into(),
+                    id: file.id,
+                };
+                (file, Some(part.to_owned()))
+            }
+            None => (file.clone(), None),
         };
-        self.0.insert(path, loaded);
-        Ok(value)
+        let key = (file.resolve(directory), part);
+        if let Some(value) = self.loaded(&key) {
+            return value;
+        }
+        let path = key.0.clone();
+        if key.1.is_none() {
+            let loaded = Loaded {
+                value: Arc::new(read_data::<T>(&path)?),
+                check: check_file::<T>,
+            };
+            self.0.insert(key.clone(), loaded);
+        } else {
+            // All parts of the file are kept: a file is read one time for all its parts.
+            for (name, value) in T::read_parts(&path)? {
+                let loaded = Loaded {
+                    value: Arc::new(value),
+                    check: check_parts::<T>,
+                };
+                self.0.insert((path.clone(), Some(name)), loaded);
+            }
+        }
+        self.loaded(&key).unwrap_or_else(|| {
+            let part = key.1.unwrap_or_default();
+            Err(format!("no part `{part}` in {}", path.display()))
+        })
     }
 
-    /// Forgets a file: its next use reads it again.
+    fn loaded<T: DataAsset>(
+        &self,
+        key: &(PathBuf, Option<String>),
+    ) -> Option<Result<Arc<T>, String>> {
+        let loaded = self.0.get(key)?;
+        // A path has one type: the end of its name.
+        Some(Arc::clone(&loaded.value).downcast::<T>().map_err(|_| {
+            format!(
+                "{} is not a data asset of the type `{}`",
+                key.0.display(),
+                T::NAME
+            )
+        }))
+    }
+
+    /// Forgets a file and all its parts: their next use reads the file again.
     pub fn forget(&mut self, path: &Path) {
-        self.0.remove(path);
+        self.0.retain(|(file, _), _| file != path);
     }
 }
 
@@ -304,7 +351,7 @@ pub(crate) fn forget_changed_data(
     mut data: ResMut<DataAssets>,
 ) {
     for AssetChanged(path) in changed.read() {
-        if data.0.contains_key(path) {
+        if data.0.keys().any(|(file, _)| file == path) {
             data.forget(path);
         }
     }
@@ -320,11 +367,15 @@ pub(crate) fn watch_data(
     if !watch.on || !data.is_changed() {
         return;
     }
-    let mut paths: Vec<PathBuf> = data.0.keys().cloned().collect();
-    paths.sort();
+    // One watch for a file of many parts; in the order of the paths.
+    let files: BTreeMap<PathBuf, Check> = data
+        .0
+        .iter()
+        .map(|((path, _), loaded)| (path.clone(), loaded.check))
+        .collect();
+    let paths: Vec<PathBuf> = files.keys().cloned().collect();
     if *told != paths {
-        let files = paths.iter().map(|path| (path.clone(), data.0[path].check));
-        watch.set("data", files.collect());
+        watch.set("data", files.into_iter().collect());
         *told = paths;
     }
 }
