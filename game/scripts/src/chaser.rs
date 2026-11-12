@@ -32,8 +32,8 @@ pub struct Chaser {
     /// How far it sees, in meters.
     #[field(range = 0.0..=100.0, step = 0.5)]
     pub distance: f32,
-    /// The full angle of its view, in degrees. The walk does not turn the object: 360
-    /// sees all around.
+    /// The full angle of its view, in degrees, around the way it faces (it faces the
+    /// way it walks). 360 sees all around.
     #[field(range = 1.0..=360.0, step = 1.0)]
     pub angle: f32,
     /// Seconds without the player in view before it goes back.
@@ -60,7 +60,7 @@ impl Default for Chaser {
     fn default() -> Self {
         Self {
             distance: 8.0,
-            angle: 360.0,
+            angle: 120.0,
             give_up: 4.0,
             state: State::Rest,
             start: Vec3::ZERO,
