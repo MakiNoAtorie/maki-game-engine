@@ -283,7 +283,10 @@ fn read_gltf_clips(path: &Path) -> anyhow::Result<(NamedClips, Vec<String>)> {
 /// A glTF channel as a track on its joint. `STEP` is a step track, `LINEAR` a linear
 /// one, `CUBICSPLINE` a linear one on its values (with a warning). The values are
 /// relative to the rest of the joint (rest^-1 x value), as the animator writes
-/// `rest x key`. `Err`: the warning of a channel that gives no track.
+/// `rest x key`. The local rest of the node is enough also for a root joint, whose
+/// `Skeleton` rest folds in its non-joint ancestors: a translation, a turn, and a
+/// uniform scale cancel out of rest^-1 x value. `Err`: the warning of a channel that
+/// gives no track.
 fn gltf_track(
     channel: &gltf::animation::Channel,
     buffers: &[gltf::buffer::Data],
@@ -625,10 +628,22 @@ mod tests {
         Quat::from_rotation_z(90f32.to_radians())
     }
 
-    /// Writes `dir/models/figure.gltf` and its `.bin`: the joints `root`, `arm` (at
-    /// (0, 1, 0), turned by [`arm_rest`]) and an unnamed node 2 (at (1, 0, 0), scale 2),
-    /// with `animations`. Returns the path of the `.gltf` file.
-    fn write_gltf(dir: &Path, animations: &[(&str, &[GltfChannel])]) -> std::path::PathBuf {
+    /// The nodes of the figure: the joints `root`, `arm` (at (0, 1, 0), turned by
+    /// [`arm_rest`]) and an unnamed node 2 (at (1, 0, 0), scale 2).
+    fn figure() -> String {
+        format!(
+            r#"[{{"name":"root","children":[1,2]}},{{"name":"arm","translation":[0,1,0],"rotation":{:?}}},{{"translation":[1,0,0],"scale":[2,2,2]}}]"#,
+            arm_rest().to_array()
+        )
+    }
+
+    /// Writes `dir/models/figure.gltf` and its `.bin` with `nodes` (JSON; node 0 is the
+    /// scene root) and `animations`. Returns the path of the `.gltf` file.
+    fn write_gltf(
+        dir: &Path,
+        nodes: &str,
+        animations: &[(&str, &[GltfChannel])],
+    ) -> std::path::PathBuf {
         let mut bin: Vec<u8> = Vec::new();
         let mut views = Vec::new();
         let mut accessors = Vec::new();
@@ -677,12 +692,11 @@ mod tests {
         }
         let json = format!(
             r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
-"nodes":[{{"name":"root","children":[1,2]}},{{"name":"arm","translation":[0,1,0],"rotation":{:?}}},{{"translation":[1,0,0],"scale":[2,2,2]}}],
+"nodes":{nodes},
 "animations":[{}],
 "buffers":[{{"uri":"figure.bin","byteLength":{}}}],
 "bufferViews":[{}],
 "accessors":[{}]}}"#,
-            arm_rest().to_array(),
             json_animations.join(","),
             bin.len(),
             views.join(","),
@@ -765,7 +779,11 @@ mod tests {
             9.0, 9.0, 9.0, 0.0, 3.0, 0.0, 9.0, 9.0, 9.0,
         ];
         let swing: &[GltfChannel] = &[(1, "translation", "CUBICSPLINE", &[0.0, 1.0], &cubic)];
-        let path = write_gltf(&dir, &[("hop", hop), ("wave", wave), ("swing", swing)]);
+        let path = write_gltf(
+            &dir,
+            &figure(),
+            &[("hop", hop), ("wave", wave), ("swing", swing)],
+        );
         let (clips, warnings) = read_gltf_clips(&path).unwrap();
         let names: Vec<&str> = clips.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["hop", "wave", "swing"]);
@@ -810,6 +828,7 @@ mod tests {
         let grow = |end: f32| [2.0, 2.0, 2.0, end, end, end];
         let path = write_gltf(
             &dir,
+            &figure(),
             &[("grow", &[(2, "scale", "LINEAR", &[0.0, 1.0], &grow(4.0))])],
         );
         let get = |app: &mut maki_core::App, name: &str| {
@@ -825,6 +844,7 @@ mod tests {
 
         write_gltf(
             &dir,
+            &figure(),
             &[("grow", &[(2, "scale", "LINEAR", &[0.0, 1.0], &grow(6.0))])],
         );
         // The store keeps what it read until the watch tells of the change.
@@ -839,6 +859,79 @@ mod tests {
             &get(&mut app, "grow").unwrap().tracks[0],
             &[[1.0; 3], [3.0; 3]],
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_joint_under_an_armature_is_relative_to_the_rest_of_the_skeleton() {
+        use maki_core::Transform;
+
+        let dir = temp_dir("armature");
+        let armature = Transform {
+            translation: Vec3::new(0.0, 0.0, 5.0),
+            rotation: Quat::from_rotation_y(90f32.to_radians()),
+            scale: Vec3::splat(2.0),
+        };
+        let hip = Transform {
+            translation: Vec3::Y,
+            rotation: arm_rest(),
+            scale: Vec3::ONE,
+        };
+        let nodes = format!(
+            r#"[{{"name":"armature","translation":{:?},"rotation":{:?},"scale":[2,2,2],"children":[1]}},{{"name":"hip","translation":[0,1,0],"rotation":{:?}}}]"#,
+            armature.translation.to_array(),
+            armature.rotation.to_array(),
+            arm_rest().to_array()
+        );
+        let animated = Transform {
+            translation: Vec3::new(1.0, 1.0, 0.0),
+            rotation: arm_rest() * Quat::from_rotation_x(90f32.to_radians()),
+            scale: Vec3::splat(3.0),
+        };
+        let rotations: Vec<f32> = [arm_rest(), animated.rotation]
+            .iter()
+            .flat_map(|q| q.to_array())
+            .collect();
+        let channels: &[GltfChannel] = &[
+            (
+                1,
+                "translation",
+                "STEP",
+                &[0.0, 1.0],
+                &[0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+            ),
+            (1, "rotation", "STEP", &[0.0, 1.0], &rotations),
+            (
+                1,
+                "scale",
+                "STEP",
+                &[0.0, 1.0],
+                &[1.0, 1.0, 1.0, 3.0, 3.0, 3.0],
+            ),
+        ];
+        let path = write_gltf(&dir, &nodes, &[("move", channels)]);
+        let (clips, _) = read_gltf_clips(&path).unwrap();
+        let last = |track: &Track| match track.keys[1].value {
+            KeyValue::Vector(v) => v,
+            ref other => panic!("not a vector: {other:?}"),
+        };
+        let tracks = &clips[0].1.tracks;
+        let key = Transform {
+            translation: last(&tracks[0]).into(),
+            rotation: rotation(last(&tracks[1])),
+            scale: last(&tracks[2]).into(),
+        };
+        // The rest of a root joint folds in its armature, as `Skeleton` has it.
+        let (scale, rotation, translation) =
+            (armature.matrix() * hip.matrix()).to_scale_rotation_translation();
+        // `rest x key` as the animator writes it gives the animated node under the armature.
+        let posed = Transform {
+            translation: translation + rotation * (scale * key.translation),
+            rotation: rotation * key.rotation,
+            scale: scale * key.scale,
+        };
+        let expected = armature.matrix() * animated.matrix();
+        assert!(posed.matrix().abs_diff_eq(expected, 1e-4), "{posed:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
