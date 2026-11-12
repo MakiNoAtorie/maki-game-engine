@@ -1,0 +1,20 @@
+// Light preset: a fluorescent tube. A cold color (5000 K) and a slight, slow flicker.
+(
+    next_id: 2,
+    objects: [
+        (
+            id: 1,
+            name: "fluorescent",
+            components: {
+                "light": (
+                    radius: 0.3,
+                    color: (1.0, 1.0, 1.0),
+                    intensity: 10.0,
+                    temperature: 5000.0,
+                    flicker: 0.08,
+                    flicker_rate: 4.0,
+                ),
+            },
+        ),
+    ],
+)

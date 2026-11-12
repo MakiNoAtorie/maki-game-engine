@@ -51,6 +51,7 @@ output = false",
             .add_module(events::EventsModule)
             .add_module(audio::AudioModule)
             .add_module(gameplay::CameraModule)
+            .add_module(gameplay::GameModule)
             .add_module(gameplay::SaveModule {
                 file: PathBuf::from("save.ron"),
                 active: false,
@@ -69,6 +70,7 @@ output = false",
             "../assets/rooms/room_chase.ron",
             "../assets/rooms/room_anim.ron",
             "../assets/rooms/room_skin.ron",
+            "../assets/rooms/room_cutscene.ron",
         ] {
             let path = PathBuf::from(path);
             let validators = app.world().resource::<scene::RoomValidators>();

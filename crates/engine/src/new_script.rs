@@ -26,6 +26,10 @@ pub const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../templates/flickering_light.rs"),
     ),
     (
+        "Cutscene trigger",
+        include_str!("../templates/cutscene_trigger.rs"),
+    ),
+    (
         "Event command",
         include_str!("../templates/event_command.rs"),
     ),

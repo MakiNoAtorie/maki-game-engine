@@ -1,0 +1,51 @@
+# The run by hand of stage 64, with no input of the desktop: an input script of the
+# editor (crates/devtools/src/input_script.rs). The room is room_cutscene: the player
+# starts at (-2.5, 0, 2.5); the area at (-0.5, 0, 2.5) plays the timeline of 6 s: the
+# camera object takes the view and moves, the figure walks for 3 s and waves, the hall
+# light fades from 3 s to 5 s; the candle flickers, the warning lamp pulses.
+# A config for it: [rooms] start = "game/assets/rooms/room_cutscene.ron", start_spawn = 7,
+# [window] focus = false, [audio] output = false, [save] enabled = false.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage64.txt --input-shots DIR
+wait 90
+shot room
+tap F5
+wait 60
+shot play
+
+# Right into the area: the cutscene starts.
+press D
+wait 70
+release D
+wait 60
+shot cut_walk
+wait 140
+shot cut_wave
+wait 60
+shot cut_fade
+
+# After 6 s: the follow camera again; a move works.
+wait 160
+shot after
+press A
+wait 40
+release A
+wait 10
+shot moved
+tap F5
+wait 60
+
+# The panel: the timeline of the area; the play head at 4 s shows the hall light
+# half faded; a key on the track of the hall light at the play head.
+click 49 355
+wait 5
+click 383 786
+wait 10
+click 1187 835
+wait 30
+shot scrub
+click 305 934
+wait 5
+click 261 813
+wait 10
+shot key
+quit

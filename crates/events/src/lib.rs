@@ -74,6 +74,7 @@ pub use text::{
     TEXT_FOLDER, TextCommand, TextEntry, TextKey, TextSettings, TextTable, Texts, fill,
     table_files, table_path, text, texts,
 };
+pub use timeline::TimelineCommand;
 
 /// Starts the event that the player faces, closes a message, and takes the marked
 /// answer of a question.
