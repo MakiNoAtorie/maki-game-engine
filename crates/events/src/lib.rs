@@ -28,6 +28,7 @@ mod routine;
 mod script;
 mod state;
 mod text;
+mod timeline;
 
 use std::collections::BTreeMap;
 
@@ -168,6 +169,8 @@ impl Module for EventsModule {
         state::add(app, &registry);
         // Item kinds and the inventory.
         items::add(app, &registry);
+        // Play and stop of a timeline.
+        timeline::add(app, &registry);
         // The menus and their stack.
         menu::add(app, &registry);
         // The text tables and the texts of the game.
