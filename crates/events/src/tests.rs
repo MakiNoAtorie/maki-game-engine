@@ -20,6 +20,7 @@ use super::*;
 mod data;
 mod flow;
 mod items;
+mod l61d;
 mod menu_items;
 mod menus;
 mod messages;

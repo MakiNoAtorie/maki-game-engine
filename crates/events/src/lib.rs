@@ -62,7 +62,7 @@ pub use routine::{
     Arguments, ROUTINE_EXTENSION, RoutineCommand, RoutineDef, Routines, read_routine, routine_text,
 };
 pub use script::{
-    Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
+    EYE_HEIGHT, Script, ScriptContext, TriggerArea, add_outputs, add_script, add_script_function,
 };
 pub use state::{
     NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,

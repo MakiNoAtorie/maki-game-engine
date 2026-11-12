@@ -326,6 +326,14 @@ impl<'w> ScriptContext<'w> {
         physics.overlap(shape, center, Quat::IDENTITY, self.query_filter())
     }
 
+    /// True when `target` is closer than `distance` meters, inside the cone of `angle`
+    /// degrees (the full angle, around the facing of this object: the +Z axis of its
+    /// rotation, as the player faces), and in line of sight from the eyes
+    /// ([`EYE_HEIGHT`] above the pose). See [`can_see`].
+    pub fn sees(&self, target: Entity, distance: f32, angle: f32) -> bool {
+        can_see(self.world, self.entity, target, distance, angle)
+    }
+
     /// The id of an entity that a query found, if it is an object of the room.
     pub fn object_id(&self, entity: Entity) -> Option<ObjectId> {
         self.world.get::<ObjectId>(entity).copied()
@@ -337,6 +345,43 @@ impl<'w> ScriptContext<'w> {
             ..QueryFilter::default()
         }
     }
+}
+
+/// The height of the eyes above the pose of an object, in meters. `maki-events` is
+/// below `maki-gameplay`, so it cannot read the `Walker` height.
+pub const EYE_HEIGHT: f32 = 1.5;
+
+/// True when `target` is closer than `distance` (on the floor plane), inside the cone of
+/// `angle` degrees around the facing of `viewer` (360 or more: all around), and no
+/// collider blocks the line between the eyes of both. Sensors and both entities are
+/// not blockers. No `Physics`, or a pose missing: false.
+pub fn can_see(world: &World, viewer: Entity, target: Entity, distance: f32, angle: f32) -> bool {
+    let Some(physics) = world.get_resource::<Physics>() else {
+        return false;
+    };
+    let pose = |entity| world.get::<Interpolated>(entity).map(|pose| pose.current);
+    let (Some(from), Some(to)) = (pose(viewer), pose(target)) else {
+        return false;
+    };
+    let eyes = from.translation + Vec3::Y * EYE_HEIGHT;
+    let aim = to.translation + Vec3::Y * EYE_HEIGHT;
+    let flat = Vec3::new(aim.x - eyes.x, 0.0, aim.z - eyes.z);
+    let length = flat.length();
+    if length >= distance {
+        return false;
+    }
+    if angle < 360.0 && length > 1e-3 {
+        let forward = from.rotation * Vec3::Z;
+        let forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        if flat.dot(forward) / length < (angle.to_radians() / 2.0).cos() {
+            return false;
+        }
+    }
+    let filter = QueryFilter {
+        exclude: Some(viewer),
+        ..QueryFilter::default()
+    };
+    physics.line_of_sight(eyes, aim, filter, Some(target))
 }
 
 /// The area of an object, for the hooks `interact`, `enter_area`, and `leave_area`:

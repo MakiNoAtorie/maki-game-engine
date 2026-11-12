@@ -15,6 +15,7 @@ use std::fmt;
 use std::path::Path;
 
 use bevy_ecs::component::Component;
+use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use maki_assets::DataRef;
@@ -197,6 +198,15 @@ pub enum Condition {
         #[field(label = "is")] Compare,
         #[field(label = "value")] i32,
     ),
+    /// The target is closer than the distance (meters) and in line of sight of the
+    /// object, from the eyes (`EYE_HEIGHT`) and all around: the facing does not count.
+    /// Object 0: the object of the event.
+    #[field(label = "sees")]
+    Sees(
+        #[field(label = "object")] ObjectId,
+        #[field(label = "target")] ObjectId,
+        #[field(label = "distance")] f32,
+    ),
     /// One of the conditions holds ("or"). With no condition: it does not hold.
     #[field(label = "any of")]
     Any(Vec<Condition>),
@@ -252,6 +262,7 @@ impl Condition {
                 compare.holds(number, *value)
             }
             Condition::Item(item, compare, value) => compare.holds(state.item(item), *value),
+            Condition::Sees(object, target, distance) => state.sees(*object, *target, *distance),
             Condition::Any(conditions) => conditions.iter().any(|condition| condition.holds(state)),
             Condition::SaveExists => state.save,
         }
@@ -270,6 +281,7 @@ impl Condition {
             | Condition::NotSwitch(..)
             | Condition::Number(..)
             | Condition::Item(..)
+            | Condition::Sees(..)
             | Condition::SaveExists => Vec::new(),
         }
     }
@@ -293,6 +305,8 @@ pub struct Facts<'a> {
     pub directory: &'a Path,
     /// True: the save file of the game exists ([`SavedGame`]).
     pub save: bool,
+    /// `Some`: the world, for the conditions that ask the physics (`Sees`).
+    pub world: Option<&'a World>,
 }
 
 impl<'a> Facts<'a> {
@@ -309,6 +323,7 @@ impl<'a> Facts<'a> {
             save: world
                 .get_resource::<SavedGame>()
                 .is_some_and(|saved| saved.0),
+            world: Some(world),
         }
     }
 
@@ -321,6 +336,25 @@ impl<'a> Facts<'a> {
             inventory: None,
             directory: Path::new(""),
             save: false,
+            world: None,
+        }
+    }
+
+    /// True when the object `target` is in sight of `object`, within `distance`. Object
+    /// 0 is the object of the event. With no world, or an object not found: false.
+    pub fn sees(&self, object: ObjectId, target: ObjectId, distance: f32) -> bool {
+        let Some(world) = self.world else {
+            return false;
+        };
+        let entity = |id: ObjectId| {
+            let id = crate::state::resolve(id, self.this)?;
+            let mut query = world.try_query::<(Entity, &ObjectId)>()?;
+            let found = query.iter(world).find(|(_, other)| **other == id);
+            found.map(|(entity, _)| entity)
+        };
+        match (entity(object), entity(target)) {
+            (Some(a), Some(b)) => crate::script::can_see(world, a, b, distance, 360.0),
+            _ => false,
         }
     }
 
