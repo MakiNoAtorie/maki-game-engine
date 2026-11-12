@@ -118,6 +118,17 @@ fn a_gate_that_opens_frees_its_cell_for_a_path() {
 }
 
 #[test]
+fn a_path_to_a_blocked_cell_ends_at_its_nearest_free_neighbour() {
+    let app = room_app(8.0, 8.0, &WALLED, "");
+    let (grid, physics) = grid_of(&app);
+    let path = grid
+        .find_path(physics, grid.center(cell(0, 0)), Vec3::new(-2.5, 0.0, 2.5))
+        .expect("to the crate");
+    // Of the free neighbours of the crate (1, 6), (0, 5) is nearest to (0, 0).
+    assert_eq!(path.last(), Some(&grid.center(cell(0, 5))));
+}
+
+#[test]
 fn a_path_in_the_same_cell_is_the_place() {
     let app = room_app(8.0, 8.0, &[], "");
     let (grid, physics) = grid_of(&app);

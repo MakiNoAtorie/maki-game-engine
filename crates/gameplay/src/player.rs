@@ -529,23 +529,45 @@ fn along_axis(v: Vec3) -> Option<IVec2> {
     }
 }
 
+/// A move of the grid walk: the center it goes to, the center it came from, and the
+/// seconds it has taken.
+#[derive(Clone, Copy)]
+pub struct GridMove {
+    to: Vec3,
+    back: Vec3,
+    seconds: f32,
+}
+
+/// A move that takes this many times its free time turns back to its cell: a body
+/// that blocks the cell must not hold the player in a move forever.
+const MOVE_PATIENCE: f32 = 3.0;
+
 /// The grid walk of one player for one fixed step: finish the move to the goal cell,
 /// else turn to a new direction, else start the move to the next cell if it is free.
-// ponytail: no time-out for a move that a body blocks for good; add one when needed.
 fn grid_step(
     walker: &mut Walker,
     pose: &mut Interpolated,
     speed: f32,
     input: Option<IVec2>,
-    goal: &mut Option<Vec3>,
+    goal: &mut Option<GridMove>,
     (grid, physics, seconds): (&WalkGrid, &Physics, f32),
 ) {
     let at = pose.current.translation;
-    if let Some(to) = *goal
+    if let Some(GridMove { to, .. }) = *goal
         && (to - at).with_y(0.0).length() <= ARRIVED
     {
         pose.current.translation = Vec3::new(to.x, at.y, to.z);
         *goal = None;
+    }
+    if let Some(step) = goal.as_mut() {
+        step.seconds += seconds;
+        if step.seconds > MOVE_PATIENCE * grid.cell() / speed.max(0.1) {
+            *step = GridMove {
+                to: step.back,
+                back: step.to,
+                seconds: 0.0,
+            };
+        }
     }
     if goal.is_none()
         && let Some(want) = input
@@ -558,10 +580,16 @@ fn grid_step(
         } else if let Some(cell) = grid.cell_of(at)
             && grid.is_free(physics, cell + want)
         {
-            *goal = Some(grid.center(cell + want));
+            *goal = Some(GridMove {
+                to: grid.center(cell + want),
+                back: grid.center(cell),
+                seconds: 0.0,
+            });
         }
     }
-    let left = goal.map_or(Vec3::ZERO, |to| (to - pose.current.translation).with_y(0.0));
+    let left = goal.map_or(Vec3::ZERO, |step| {
+        (step.to - pose.current.translation).with_y(0.0)
+    });
     walker.direction = left.normalize_or_zero();
     // Not faster than the rest of the way: no overshoot of the center.
     walker.speed = speed.min(left.length() / seconds);
@@ -581,7 +609,7 @@ pub fn steer_player(
     time: Res<Time>,
     cameras: Query<&Camera, With<ActiveCamera>>,
     mut players: Query<(Entity, &mut Walker, &PlayerDef, &mut Interpolated), With<Player>>,
-    mut goals: Local<HashMap<Entity, Vec3>>,
+    mut goals: Local<HashMap<Entity, GridMove>>,
 ) {
     let direction = if capture.0 || !controller.active {
         Vec3::ZERO

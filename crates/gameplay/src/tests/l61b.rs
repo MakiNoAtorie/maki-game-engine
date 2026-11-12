@@ -157,18 +157,14 @@ fn walk_to_an_object_goes_to_its_place() {
 
 #[test]
 fn walk_to_a_place_with_no_path_warns_and_goes_on() {
-    // A place in the wall, and a place in the cell of the closed gate.
-    for target in ["(0.5, 0.0, 0.0)", "(0.5, 0.0, -3.5)"] {
-        let npc = walker(&format!(
-            r#"WalkTo(5, Place({target})), SetFlag("on", true)"#
-        ));
-        room_app(&[WALL, GATE, &npc]).run(|mut app| {
-            let count = steps_until(&mut app, "on", 20);
-            assert!(count < 10, "{count} steps");
-            assert_eq!(goal(&app), Some(WalkGoal::NoPath));
-            assert!(near(place(&app), START));
-        });
-    }
+    // A place out of the room. A place in a blocked cell ends beside it (l61a).
+    let npc = walker(r#"WalkTo(5, Place((9.0, 0.0, 0.0))), SetFlag("on", true)"#);
+    room_app(&[WALL, GATE, &npc]).run(|mut app| {
+        let count = steps_until(&mut app, "on", 20);
+        assert!(count < 10, "{count} steps");
+        assert_eq!(goal(&app), Some(WalkGoal::NoPath));
+        assert!(near(place(&app), START));
+    });
 }
 
 /// Watch point 3: a gate that closes in the way of the walker does not hold it: it

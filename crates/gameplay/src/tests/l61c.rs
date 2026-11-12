@@ -3,14 +3,15 @@
 use std::time::Duration;
 
 use bevy_ecs::query::With;
+use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Local, Query};
+use bevy_ecs::system::{Local, Query, Res};
 use glam::{Quat, Vec3};
-use maki_core::{App, ConfigFile, FixedUpdate, Interpolated};
+use maki_core::{App, ConfigFile, FixedUpdate, Interpolated, Update};
 use maki_events::EventsModule;
 use maki_physics::PhysicsModule;
 use maki_platform::{Action, PlatformModule, ScriptedActions};
-use maki_scene::{Player, RoomRequest, RoomTarget, SceneModule, room_text};
+use maki_scene::{Mover, MoverState, Player, RoomRequest, RoomTarget, SceneModule, room_text};
 
 use crate::control::Controller;
 use crate::controls::{MOVE_BACK, MOVE_RIGHT};
@@ -34,6 +35,10 @@ fn place(mut done: Local<bool>, mut players: Query<&mut Interpolated, With<Playe
 }
 
 fn app(config: &str) -> App {
+    app_in(config, &[WALL])
+}
+
+fn app_in(config: &str, objects: &[&str]) -> App {
     let mut app = App::new(ConfigFile::from_text(&format!(
         "[time]\nfixed_hz = 50.0\n{config}"
     )))
@@ -46,6 +51,8 @@ fn app(config: &str) -> App {
         .add_module(GridModule)
         .add_module(ControlsModule)
         .add_module(PlayerModule::default())
+        .init_resource::<DropGate>()
+        .add_systems(Update, drop_gate)
         .add_systems(FixedUpdate, place.before(maki_events::run_events));
     // `run` does the startup (the player is made), then the room loads.
     app.run(|mut app| {
@@ -53,7 +60,7 @@ fn app(config: &str) -> App {
         app.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
             path: "l61c.ron".into(),
             spawn: None,
-            text: Some(room_text(8.0, 8.0, 3.0, &[WALL])),
+            text: Some(room_text(8.0, 8.0, 3.0, objects)),
         });
         steps(&mut app, 5);
         app
@@ -134,4 +141,35 @@ fn the_free_walk_does_not_snap_to_cells() {
     let x = at(&app).x;
     // 25 steps at 1.6 m/s: 0.8 m, not a whole cell.
     assert!((x - (START.x + 0.8)).abs() < 0.1, "{x}");
+}
+
+/// True: the movers of the room go to B.
+#[derive(Resource, Default)]
+struct DropGate(bool);
+
+fn drop_gate(drop: Res<DropGate>, mut movers: Query<&mut Mover>) {
+    for mut mover in &mut movers {
+        if drop.0 && mover.state == MoverState::AtA {
+            mover.go_to_b();
+        }
+    }
+}
+
+/// A gate above cell (3, 2) that drops into it.
+const GATE: &str = r#"(name: "gate", pose: (position: (-0.5, 3.5, -1.5)), components: {"mover": (mesh: Cube(1.0), b: (position: (-0.5, 0.5, -1.5)), seconds: 0.05)})"#;
+
+#[test]
+fn a_move_that_a_body_blocks_turns_back() {
+    let mut app = app_in(
+        "[walk]
+mode = \"Grid\"",
+        &[GATE],
+    );
+    app.resource_mut::<ScriptedActions>().0.insert(MOVE_RIGHT);
+    steps(&mut app, 2);
+    app.resource_mut::<ScriptedActions>().0.clear();
+    app.resource_mut::<DropGate>().0 = true;
+    // The move times out after 3 x 1 m / 1.6 m/s (about 94 steps) and goes back.
+    steps(&mut app, 300);
+    assert!(at(&app).distance(START) < 1e-4, "{:?}", at(&app));
 }

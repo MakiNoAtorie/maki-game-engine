@@ -177,19 +177,32 @@ impl WalkGrid {
     }
 
     /// The path from `from` to `to`: the centers of the cells after the cell of
-    /// `from`, the last point `to` itself. `None` if a point is outside the room, the
-    /// cell of `to` is not free, or no path goes there. The cell of `from` may be
-    /// blocked: a walker that stands at a wall still finds its way out.
+    /// `from`, the last point `to` itself. When the cell of `to` is not free (a
+    /// prop, a character), the path ends at the center of its free neighbour that is
+    /// nearest to `from`. `None` if a point is outside the room or no path goes there.
+    /// The cell of `from` may be blocked: a walker that stands at a wall still finds
+    /// its way out.
     pub fn find_path(&self, physics: &Physics, from: Vec3, to: Vec3) -> Option<Vec<Vec3>> {
-        let (start, goal) = (self.cell_of(from)?, self.cell_of(to)?);
+        let (start, mut goal) = (self.cell_of(from)?, self.cell_of(to)?);
         // Each cell read once: a test of the kinematic colliders is a query.
         let mut known: Vec<Option<bool>> = vec![None; self.blocked.len()];
-        let cells = find_cells(self.size, start, goal, self.diagonal, |cell| {
+        let mut free = |cell: IVec2| {
             *known[self.index(cell)].get_or_insert_with(|| self.is_free(physics, cell))
-        })?;
+        };
+        let mut end = to;
+        if start != goal && !free(goal) {
+            // `min_by_key` keeps the first of equals: the order of STEPS breaks ties.
+            goal = STEPS
+                .iter()
+                .map(|&(step, _)| goal + step)
+                .filter(|&cell| self.inside(cell) && (cell == start || free(cell)))
+                .min_by_key(|&cell| (cell - start).length_squared())?;
+            end = self.center(goal);
+        }
+        let cells = find_cells(self.size, start, goal, self.diagonal, free)?;
         let mut points: Vec<Vec3> = cells[1..].iter().map(|&cell| self.center(cell)).collect();
         points.pop();
-        points.push(to);
+        points.push(end);
         Some(points)
     }
 
@@ -208,6 +221,19 @@ impl WalkGrid {
         physics.overlap(shape, center, Quat::IDENTITY, QueryFilter::default())
     }
 }
+
+/// The steps to the neighbours of a cell and their costs, in the order of a search:
+/// the 4 straight ones first.
+const STEPS: [(IVec2, u32); 8] = [
+    (IVec2::new(1, 0), STRAIGHT),
+    (IVec2::new(-1, 0), STRAIGHT),
+    (IVec2::new(0, 1), STRAIGHT),
+    (IVec2::new(0, -1), STRAIGHT),
+    (IVec2::new(1, 1), DIAGONAL),
+    (IVec2::new(1, -1), DIAGONAL),
+    (IVec2::new(-1, 1), DIAGONAL),
+    (IVec2::new(-1, -1), DIAGONAL),
+];
 
 /// A* on a grid of `size` cells, from `start` to `goal`. `free` tells if a cell can be
 /// walked; it is not asked for `start`. With `diagonal`, a step goes to the 8
@@ -244,16 +270,6 @@ pub fn find_cells(
     cost[index(start)] = 0;
     open.push(Reverse((left(start), left(start), index(start))));
 
-    const STEPS: [(IVec2, u32); 8] = [
-        (IVec2::new(1, 0), STRAIGHT),
-        (IVec2::new(-1, 0), STRAIGHT),
-        (IVec2::new(0, 1), STRAIGHT),
-        (IVec2::new(0, -1), STRAIGHT),
-        (IVec2::new(1, 1), DIAGONAL),
-        (IVec2::new(1, -1), DIAGONAL),
-        (IVec2::new(-1, 1), DIAGONAL),
-        (IVec2::new(-1, -1), DIAGONAL),
-    ];
     let steps = if diagonal { &STEPS[..] } else { &STEPS[..4] };
 
     while let Some(Reverse((_, _, at))) = open.pop() {
