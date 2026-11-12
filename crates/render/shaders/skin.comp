@@ -1,0 +1,103 @@
+#version 460
+// Pass "skin": bends the triangle corners of a skinned instance by the matrices of its
+// joints. One thread for each corner. See src/skins.rs.
+//
+// The steps are those of `maki_assets::skin::skin_vertex`, the CPU reference: the
+// matrices of the joints of a corner, blended by their weights, move its bind position
+// and turn its bind normal.
+
+#include "bindless.glsl"
+
+layout(local_size_x = 64) in;
+
+// The input of one corner. 64 bytes. Must agree with `corner_bytes` in src/skins.rs.
+struct Corner {
+    vec4 position; // xyz: in the bind pose, in the space of the model
+    vec4 normal;   // xyz: in the bind pose
+    uvec4 joints;
+    vec4 weights;  // a sum of 1, or all 0 for a mesh with no skin
+};
+
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer Corners {
+    Corner corners[];
+} corner_inputs[];
+
+// For each joint: its pose in the space of the model times its inverse bind matrix.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer Palette {
+    mat4 joints[];
+} palettes[];
+
+// Three floats for each corner: the vertex format of the BLAS.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) buffer Positions {
+    float values[];
+} positions[];
+
+// A packed normal for each corner: `NormalBuffer` of scene.glsl.
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) writeonly buffer Normals {
+    uint corners[];
+} normals[];
+
+// Must agree with `SkinPass::execute` in src/skins.rs. Indices in the bindless buffers.
+layout(push_constant) uniform Push {
+    uint inputs;
+    uint palette;
+    uint current;  // the positions of this pose: the input of the BLAS
+    uint previous; // the positions of the pose before, for the motion vectors
+    uint normals;
+    uint corners;
+    uint joints;
+    // 1: the current positions are those of the pose before. 0: the first pose, which
+    // is also its own pose before.
+    uint keep_previous;
+} push;
+
+// The reverse of unpack_normal() in scene.glsl. Must agree with `pack_normal` in src/meshes.rs.
+uint pack_normal(vec3 normal) {
+    float sum = abs(normal.x) + abs(normal.y) + abs(normal.z);
+    // A normal of length 0 has no direction: any valid value will do.
+    vec3 n = sum > 0.0 ? normal / sum : vec3(0.0, 0.0, 1.0);
+    vec2 square = n.xy;
+    if (n.z < 0.0) {
+        // The lower half of the octahedron goes to the corners of the square.
+        vec2 signs = vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+        square = (1.0 - abs(n.yx)) * signs;
+    }
+    ivec2 bits = ivec2(round(square * 32767.0));
+    return (uint(bits.x) & 0xFFFFu) | (uint(bits.y) << 16u);
+}
+
+void main() {
+    uint corner = gl_GlobalInvocationID.x;
+    if (corner >= push.corners) {
+        return;
+    }
+    Corner input_corner = corner_inputs[nonuniformEXT(push.inputs)].corners[corner];
+    mat4 blend = mat4(0.0);
+    float total = 0.0;
+    for (uint i = 0u; i < 4u; i++) {
+        float weight = input_corner.weights[i];
+        if (weight > 0.0) {
+            // `Mesh::new` checked the joint indices; the clamp keeps a bad palette in the buffer.
+            uint joint = min(input_corner.joints[i], push.joints - 1u);
+            blend += palettes[nonuniformEXT(push.palette)].joints[joint] * weight;
+            total += weight;
+        }
+    }
+    if (total == 0.0) {
+        blend = mat4(1.0);
+    }
+    vec3 position = (blend * vec4(input_corner.position.xyz, 1.0)).xyz;
+    // No inverse transpose: a joint has no non-uniform scale (a warning at load).
+    vec3 normal = mat3(blend) * input_corner.normal.xyz;
+
+    uint at = corner * 3u;
+    for (uint i = 0u; i < 3u; i++) {
+        // Each thread reads and writes its own corner only: no other thread writes there.
+        float before = push.keep_previous != 0u
+            ? positions[nonuniformEXT(push.current)].values[at + i]
+            : position[i];
+        positions[nonuniformEXT(push.previous)].values[at + i] = before;
+        positions[nonuniformEXT(push.current)].values[at + i] = position[i];
+    }
+    normals[nonuniformEXT(push.normals)].corners[corner] = pack_normal(normal);
+}

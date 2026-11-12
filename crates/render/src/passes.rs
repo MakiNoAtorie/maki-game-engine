@@ -1,5 +1,5 @@
 //! The passes of the frame graph, in frame order:
-//! build_tlas -> trace -> the denoiser passes -> taa -> the bloom passes -> tonemap -> present.
+//! skin -> build_tlas -> trace -> the denoiser passes -> taa -> the bloom passes -> tonemap -> present.
 //! Other crates add passes between them: the ui crate puts `ui_overlay` before `present`.
 //!
 //! build_tlas and trace make the samples of the frame, and the denoiser passes (the
@@ -23,8 +23,9 @@ use crate::graph::{
 };
 use crate::light::{LightBuffers, light_bytes};
 use crate::meshes::TextureUse;
-use crate::motion::{MotionBuffers, Projection, instance_bytes, matrix_rows};
+use crate::motion::{MotionBuffers, NO_POSITIONS, Projection, instance_bytes, matrix_rows};
 use crate::noise::NoiseBuffer;
+use crate::skins::{GpuSkins, SkinPass};
 use crate::{
     Accumulation, DebugView, ExtractedCamera, ExtractedFrame, ExtractedInstances, ExtractedLights,
     GpuMeshes, MAX_LIGHTS, bloom, denoise, ray_basis, shader_spirv, taa,
@@ -73,11 +74,13 @@ pub(crate) fn build_graph(gpu: &mut Gpu, graph: &mut FrameGraph) {
     // pixels: see the `motion` module.
     let motion = graph.add_transient(internal("motion", Format::Rg16Float));
 
+    graph.add_pass(SkinPass::new(gpu));
     graph.add_pass(BuildTlas {
         tlas: gpu.create_tlas(MAX_INSTANCES).expect("TLAS"),
         full_logged: false,
         partial_logged: false,
         built: None,
+        built_frame: None,
     });
     let (mean_indirect, previous_mean_indirect) = denoise::indirect_history(graph);
     let trace = denoise::TraceImages {
@@ -182,6 +185,8 @@ struct BuildTlas {
     partial_logged: bool,
     /// The instances that the TLAS holds. `None` before the first build.
     built: Option<Vec<TlasInstance>>,
+    /// The frame of the last build.
+    built_frame: Option<u64>,
 }
 
 impl Pass for BuildTlas {
@@ -198,9 +203,11 @@ impl Pass for BuildTlas {
             return;
         }
         let meshes = ctx.world.resource::<GpuMeshes>();
+        let skins = ctx.world.resource::<GpuSkins>();
+        let frame = ctx.world.resource::<ExtractedFrame>().frame;
         let extracted = &ctx.world.resource::<ExtractedInstances>().0;
         let mut instances = Vec::with_capacity(extracted.len());
-        // The transform of the frame before for each TLAS instance, in the same order.
+        // For each TLAS instance, in order: its transform and its corner positions of the frame before.
         let mut previous = Vec::with_capacity(extracted.len());
         // For each TLAS instance of a group of more than one mesh: how many mesh
         // instances asked for it.
@@ -211,6 +218,22 @@ impl Pass for BuildTlas {
                 continue;
             };
             let transform = matrix_rows(instance.transform);
+            let previous_transform = matrix_rows(instance.previous_transform);
+            // A skinned instance has its own BLAS and its own block of the mesh table.
+            if let Some(skin) = skins.get(instance.id) {
+                instances.push(TlasInstance {
+                    blas: skin.blas,
+                    transform,
+                    custom_index: skin.first,
+                    two_sided: skin.two_sided,
+                });
+                let positions = ctx
+                    .gpu
+                    .buffer_index(skin.previous_positions(frame))
+                    .expect("the skin buffer is alive");
+                previous.push((previous_transform, positions));
+                continue;
+            }
             if mesh.group_len > 1 {
                 let count = group_counts
                     .entry((mesh.blas, transform.map(f32::to_bits)))
@@ -228,7 +251,7 @@ impl Pass for BuildTlas {
                 custom_index: mesh.group_first,
                 two_sided: mesh.two_sided,
             });
-            previous.push(matrix_rows(instance.previous_transform));
+            previous.push((previous_transform, NO_POSITIONS));
         }
         // ponytail: the BLAS of a model draws all its meshes. If the game draws only a
         // part of a model, or moves one of its meshes alone, the rest shows too. Give
@@ -257,14 +280,15 @@ impl Pass for BuildTlas {
                 .write_buffer(buffer, 0, &instance_bytes(&previous))
                 .expect("instance buffer write");
         }
-        // A new BLAS has a new handle, so a mesh change also makes the lists differ.
-        if self.built.as_ref() == Some(&instances) {
+        // A mesh change gives a new BLAS handle; a BLAS that the pass `skin` built again needs a TLAS build too.
+        if self.built.as_ref() == Some(&instances) && !skins.skinned_after(self.built_frame) {
             return;
         }
         ctx.gpu
             .build_tlas(self.tlas, &instances)
             .expect("build_tlas");
         self.built = Some(instances);
+        self.built_frame = Some(frame);
     }
 }
 

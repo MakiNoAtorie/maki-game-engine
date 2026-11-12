@@ -51,7 +51,7 @@ use crate::{RenderGpu, RenderWorld, setup_renderer};
 pub const MAX_MESHES: u32 = 1024;
 
 /// Bytes of one entry of the mesh table: `MeshEntry` in `scene.glsl`.
-const ENTRY_BYTES: usize = 64;
+pub(crate) const ENTRY_BYTES: usize = 64;
 /// `NormalBuffer` and `UvBuffer` in `scene.glsl` declare this alignment for their address.
 const BUFFER_ALIGNMENT: u64 = 4;
 /// Bytes of the texture coordinates of one triangle corner: two `f32`.
@@ -111,6 +111,18 @@ struct Group {
     cutout: bool,
     first: u32,
     len: u32,
+    /// The meshes in table order, and their table entries: a skinned instance copies them.
+    meshes: Vec<Handle<Mesh>>,
+    entries: Vec<u8>,
+}
+
+/// What a skinned instance copies from the group of its mesh (the `skins` module).
+pub(crate) struct GroupSource<'a> {
+    pub blas: BlasHandle,
+    pub two_sided: bool,
+    pub meshes: &'a [Handle<Mesh>],
+    /// The table entries of the meshes, `ENTRY_BYTES` each.
+    pub entries: &'a [u8],
 }
 
 /// All meshes that are on the GPU. A resource of the render world.
@@ -186,6 +198,33 @@ impl GpuMeshes {
 
     pub fn is_empty(&self) -> bool {
         self.meshes.is_empty()
+    }
+
+    /// The group of a mesh that is on the GPU.
+    pub(crate) fn group_source(&self, mesh: Handle<Mesh>) -> Option<GroupSource<'_>> {
+        let gpu_mesh = self.meshes.get(&mesh)?;
+        let group = self.groups.get(&gpu_mesh.blas)?;
+        Some(GroupSource {
+            blas: gpu_mesh.blas,
+            two_sided: gpu_mesh.two_sided,
+            meshes: &group.meshes,
+            entries: &group.entries,
+        })
+    }
+
+    /// Writes table entries into a free block of the table. Returns the index of the first.
+    pub(crate) fn add_entries(&mut self, gpu: &mut Gpu, entries: &[u8]) -> Result<u32> {
+        let len = entries.len() / ENTRY_BYTES;
+        let first = free_range(&self.used, len).context("the mesh table is full (MAX_MESHES)")?;
+        // No frame in flight reads these entries: no instance names a free index.
+        gpu.write_buffer(self.table, (first * ENTRY_BYTES) as u64, entries)?;
+        self.used[first..][..len].fill(true);
+        Ok(first as u32)
+    }
+
+    /// Frees a block of `add_entries`.
+    pub(crate) fn remove_entries(&mut self, first: u32, len: u32) {
+        self.used[first as usize..][..len as usize].fill(false);
     }
 
     /// Makes the GPU meshes and textures agree with the stores.
@@ -376,6 +415,8 @@ impl GpuMeshes {
                 cutout: geometries.iter().any(|geometry| !geometry.opaque),
                 first,
                 len,
+                meshes: group.iter().map(|(handle, _)| *handle).collect(),
+                entries,
             },
         );
         for (index, (handle, mesh)) in (first..).zip(group) {
@@ -521,7 +562,7 @@ fn setup_meshes(mut gpu: ResMut<RenderGpu>, mut render_world: ResMut<RenderWorld
 }
 
 /// Reads the mesh store of the game world. The passes see only [`GpuMeshes`].
-fn extract_meshes(
+pub(crate) fn extract_meshes(
     assets: Res<Assets<Mesh>>,
     models: Res<Assets<Model>>,
     textures: Res<Textures>,

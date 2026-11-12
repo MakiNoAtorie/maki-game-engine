@@ -37,6 +37,7 @@ mod motion;
 mod noise;
 mod passes;
 mod settings;
+mod skins;
 mod taa;
 mod textures;
 
@@ -62,6 +63,7 @@ pub use maki_gpu::{Access, Format};
 pub use meshes::{ExtractedInstance, ExtractedInstances, GpuMesh, GpuMeshes, MAX_MESHES};
 pub use passes::MAX_INSTANCES;
 pub use settings::{RenderSettings, ToneCurve};
+pub use skins::{ExtractedSkin, ExtractedSkins};
 
 /// The bytes of a shader that `build.rs` compiled. The argument is the file name in `shaders/`.
 macro_rules! shader_spirv {
@@ -295,6 +297,7 @@ impl Module for RenderModule {
         light::build(app);
         motion::build(app);
         noise::build(app);
+        skins::build(app);
     }
 }
 

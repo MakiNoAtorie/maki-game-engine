@@ -14,6 +14,8 @@
 // trace.glsl does these steps.
 
 #extension GL_EXT_buffer_reference : require
+// The address of a buffer reference as two 32-bit values (`previous_skin_point` in trace.glsl).
+#extension GL_EXT_buffer_reference_uvec2 : require
 #extension GL_EXT_ray_query : require
 
 // All instances of the scene (TLAS). Built again in each frame by the pass "build_tlas".
