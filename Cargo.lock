@@ -1779,6 +1779,7 @@ dependencies = [
  "maki-scene",
  "ron",
  "serde",
+ "serde_json",
  "tracing",
 ]
 
