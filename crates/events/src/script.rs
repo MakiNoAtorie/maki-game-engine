@@ -334,6 +334,37 @@ impl<'w> ScriptContext<'w> {
         can_see(self.world, self.entity, target, distance, angle)
     }
 
+    /// Walks this object (a `walker` of the room) to a place by a path search around
+    /// the colliders. The walk starts in this step; [`Self::arrived`] tells the end.
+    /// A call with the place of the last walk does nothing (after NoPath it searches
+    /// again: a door can be open now).
+    pub fn walk_to(&mut self, target: Vec3) {
+        let goal = self.world.get::<WalkGoal>(self.entity);
+        if let Some(WalkGoal::Asked(place) | WalkGoal::Walking(place) | WalkGoal::Arrived(place)) =
+            goal
+            && *place == target
+        {
+            return;
+        }
+        self.world
+            .entity_mut(self.entity)
+            .insert(WalkGoal::Asked(target));
+    }
+
+    /// Stops the walk of [`Self::walk_to`]: the object stands.
+    pub fn stop(&mut self) {
+        self.world.entity_mut(self.entity).remove::<WalkGoal>();
+    }
+
+    /// True when the walk of [`Self::walk_to`] got to its place, until the next walk or
+    /// stop.
+    pub fn arrived(&self) -> bool {
+        matches!(
+            self.world.get::<WalkGoal>(self.entity),
+            Some(WalkGoal::Arrived(_))
+        )
+    }
+
     /// The id of an entity that a query found, if it is an object of the room.
     pub fn object_id(&self, entity: Entity) -> Option<ObjectId> {
         self.world.get::<ObjectId>(entity).copied()
@@ -345,6 +376,21 @@ impl<'w> ScriptContext<'w> {
             ..QueryFilter::default()
         }
     }
+}
+
+/// Where a walker of the room goes, and how far it got: what a script
+/// ([`ScriptContext::walk_to`]) or the command `WalkTo` asks. `maki-gameplay`
+/// (`WalkersModule`) searches the path and walks it: this crate is below the walk.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub enum WalkGoal {
+    /// A path search to this place in the next step of the walkers.
+    Asked(Vec3),
+    /// On the path to this place.
+    Walking(Vec3),
+    /// At the place.
+    Arrived(Vec3),
+    /// No path to the place: the walker stands.
+    NoPath,
 }
 
 /// The height of the eyes above the pose of an object, in meters. `maki-events` is

@@ -512,7 +512,7 @@ pub fn steer_player(
 
 /// Runs in `FixedUpdate`: gives each walker the [`Kinematic`] of its capsule, and a new
 /// one when its size changes.
-fn fit_walker_bodies(
+pub(crate) fn fit_walker_bodies(
     mut commands: Commands,
     walkers: Query<(Entity, &Walker, Option<&Kinematic>), Changed<Walker>>,
 ) {
