@@ -235,11 +235,10 @@ fn degrees(rotation: Quat) -> [f32; 3] {
     [x, y, z].map(f32::to_degrees)
 }
 
-/// The name of a joint: its node name, else `joint<node index>`. The same rule as the
-/// skeleton of a model, so a track finds its joint.
+/// The name of a joint: its node name, else [`crate::skin::unnamed_joint`].
 fn joint_name(node: &gltf::Node) -> String {
     node.name()
-        .map_or_else(|| format!("joint{}", node.index()), str::to_owned)
+        .map_or_else(|| crate::skin::unnamed_joint(node.index()), str::to_owned)
 }
 
 /// The clips of the animations of a glTF file, by animation name (`animation<index>`

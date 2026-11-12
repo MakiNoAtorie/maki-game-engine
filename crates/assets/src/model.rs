@@ -475,7 +475,7 @@ fn read_skeleton(
         let (scale, rotation, translation) = rest.to_scale_rotation_translation();
         let name = names[old]
             .clone()
-            .unwrap_or_else(|| format!("joint{}", joint_nodes[old]));
+            .unwrap_or_else(|| crate::skin::unnamed_joint(joint_nodes[old]));
         if scale.max_element() - scale.min_element() > 1e-3 * scale.max_element() {
             tracing::warn!(
                 "{}: the joint `{name}` has a non-uniform scale: its normals bend wrong",

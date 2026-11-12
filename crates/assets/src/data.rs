@@ -268,6 +268,14 @@ impl<T: DataAsset> Fields for DataRef<T> {
     }
 }
 
+/// `file.glb#part` into the file and the part. Only a model file has parts: a `#` in
+/// another file name is a character of the name.
+fn split_part(path: &str) -> Option<(&str, &str)> {
+    let (file, part) = path.rsplit_once('#')?;
+    let lower = file.to_ascii_lowercase();
+    (lower.ends_with(".glb") || lower.ends_with(".gltf")).then_some((file, part))
+}
+
 struct Loaded {
     value: Arc<dyn Any + Send + Sync>,
     check: Check,
@@ -287,7 +295,7 @@ impl DataAssets {
         file: &FileRef,
         directory: &Path,
     ) -> Result<Arc<T>, String> {
-        let (file, part) = match file.path.to_str().and_then(|path| path.rsplit_once('#')) {
+        let (file, part) = match file.path.to_str().and_then(split_part) {
             Some((path, part)) => {
                 let file = FileRef {
                     path: path.into(),
@@ -444,6 +452,29 @@ mod tests {
         let back = (lamp.tree_of_text)(&(lamp.default_text)()).unwrap();
         assert_eq!(back, Lamp::default().tree());
         assert!((lamp.tree_of_text)("(power: \"x\")").is_err());
+    }
+
+    #[test]
+    fn a_hash_names_a_part_only_after_a_model_file() {
+        assert_eq!(
+            split_part("models/figure.glb#wave"),
+            Some(("models/figure.glb", "wave"))
+        );
+        assert_eq!(split_part("models/Figure.GLTF#a#b"), None);
+        assert_eq!(
+            split_part("models/Figure.GLTF#b"),
+            Some(("models/Figure.GLTF", "b"))
+        );
+        assert_eq!(split_part("data/hall#2.lamp.ron"), None);
+        assert_eq!(split_part("data/hall.lamp.ron"), None);
+        // A file with `#` in its name and no part reads as the whole file.
+        let dir = folder("hash");
+        std::fs::write(dir.join("data/hall#2.lamp.ron"), "(power: 2.0)").unwrap();
+        let mut data = DataAssets::default();
+        let lamp = data
+            .get::<Lamp>(&"data/hall#2.lamp.ron".into(), &dir)
+            .unwrap();
+        assert_eq!(lamp.power, 2.0);
     }
 
     #[test]

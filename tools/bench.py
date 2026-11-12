@@ -198,6 +198,7 @@ SKIN_JUMP_ROOM = JUMP_ROOM.replace(
             "animator": (clip: "jump.clip.ron", looping: false)}),""",
     """(pose: (position: (-1.0, 0.0, 0.5)), components: {"prop": (mesh: File("figure.glb")),
             "animator": (clip: "skin_jump.clip.ron", looping: false)}),""")
+assert SKIN_JUMP_ROOM != JUMP_ROOM, "the cube of jump_720p moved: update SKIN_JUMP_ROOM"
 # The place that the arm left, in pixels of the 1280 x 720 picture.
 SKIN_JUMP_CROP = "604,264,32,64"
 

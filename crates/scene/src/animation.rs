@@ -190,9 +190,11 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
             }
             continue;
         };
-        let joints = skeleton
-            .as_ref()
-            .map_or(&[][..], |skeleton| &skeleton.joints);
+        // No skeleton yet: the model has not loaded, which is not a missing joint.
+        let Some(skeleton) = &skeleton else {
+            continue;
+        };
+        let joints = &skeleton.joints;
         let Some(joint) = joints.iter().position(|joint| joint.name == *target) else {
             if !playback.warned.contains(&index) {
                 playback.warned.push(index);
@@ -205,6 +207,14 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
             .or_insert((Transform::IDENTITY, cut || clip.fps.is_some()));
         if set_channel(key, &track.channel, sample) {
             *snap |= step;
+        }
+    }
+    // A cut sends a joint with no track in the new clip to its rest, as an object channel.
+    if cut && let Some(skeleton) = &skeleton {
+        for joint in 0..skeleton.joints.len() {
+            joint_keys
+                .entry(joint)
+                .or_insert((Transform::IDENTITY, true));
         }
     }
     if !joint_keys.is_empty() {

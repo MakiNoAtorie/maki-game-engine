@@ -180,17 +180,14 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly 
 } camera_buffers[];
 
 // For each instance of the acceleration structure: its object-to-world matrix of the
-// frame before, as three rows, and for a skinned instance the index of its corner
-// positions of the frame before in `corner_positions` (NO_POSITIONS for a rigid one).
-// 64 bytes. Must agree with `instance_bytes` in src/motion.rs.
+// frame before, as three rows. Must agree with `instance_bytes` in src/motion.rs.
 struct InstanceData {
     vec4 rows[3];
-    uint previous_positions;
+    uint previous_positions; // corners of the frame before (skinned); NO_POSITIONS: rigid
 };
 const uint NO_POSITIONS = 0xFFFFFFFFu;
 
-// The corners of a skinned instance: three floats for each, all meshes of its group in
-// one buffer, in the order of their normals. See src/skins.rs.
+// Skinned corners, 3 floats each, in the order of the normals of the group (src/skins.rs).
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer CornerPositions {
     float values[];
 } corner_positions[];
@@ -362,14 +359,11 @@ vec2 previous_screen(vec3 world, vec2 size) {
     return (screen * 0.5 + 0.5) * size;
 }
 
-// A point of a skinned instance in the space of the instance one frame before: the
-// hit point at the same barycentrics of the triangle with its corners of then.
+// The hit point one frame before: same barycentrics, corners of then.
 vec3 previous_skin_point(rayQueryEXT query, uint positions) {
     uint first_mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
     uint mesh = first_mesh + rayQueryGetIntersectionGeometryIndexEXT(query, true);
-    // The corners of a mesh start where its normals start: the two buffers have one
-    // value for each corner, in the same order. The low 32 bits of the addresses
-    // suffice: a normal buffer is far below 4 GB.
+    // Corners follow the normals' order; the low 32 address bits suffice below 4 GB.
     uint normals_start = uvec2(mesh_tables[nonuniformEXT(push.mesh_table)].meshes[first_mesh].normals).x;
     uint normals_mesh = uvec2(mesh_tables[nonuniformEXT(push.mesh_table)].meshes[mesh].normals).x;
     uint corner = (normals_mesh - normals_start) / 4u
@@ -389,8 +383,7 @@ vec3 previous_skin_point(rayQueryEXT query, uint positions) {
 vec3 previous_world(rayQueryEXT query) {
     uint instance = rayQueryGetIntersectionInstanceIdEXT(query, true);
     InstanceData data = instance_buffers[nonuniformEXT(push.instances)].instances[instance];
-    // The point in the space of a rigid instance does not change when the instance
-    // moves. A skinned instance also bends.
+    // A rigid instance keeps its object-space point when it moves; a skinned one bends.
     vec3 object_point = data.previous_positions == NO_POSITIONS
         ? rayQueryGetIntersectionObjectRayOriginEXT(query, true)
             + rayQueryGetIntersectionTEXT(query, true)

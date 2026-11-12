@@ -93,6 +93,10 @@ fn turn(target: &str, mode: KeyMode) -> Clip {
 #[derive(Resource, Default)]
 struct Changes(Vec<bool>);
 
+/// A clip file that the animators take in the next frame.
+#[derive(Resource, Default)]
+struct NextClip(Option<maki_assets::FileRef>);
+
 /// A game at 50 Hz in a room with the figure as object 10 at (1, 0, 0), with an
 /// animator that plays `clip`.
 fn figure(test: &str, clip: Clip) -> App {
@@ -112,6 +116,17 @@ fn figure(test: &str, clip: Clip) -> App {
         .add_module(SceneModule)
         .add_module(AnimationModule)
         .init_resource::<Changes>()
+        .init_resource::<NextClip>()
+        .add_systems(
+            Update,
+            |mut next: ResMut<NextClip>, mut animators: Query<&mut Animator>| {
+                if let Some(file) = next.0.take() {
+                    animators
+                        .iter_mut()
+                        .for_each(|mut a| a.clip.file = file.clone());
+                }
+            },
+        )
         .add_systems(
             Update,
             (|palettes: Query<Ref<SkinPalette>>, mut changes: ResMut<Changes>| {
@@ -231,6 +246,41 @@ fn an_unknown_target_is_a_warning_once() {
         });
     });
     assert_eq!(warnings.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn a_track_of_a_model_that_is_not_there_is_no_warning() {
+    let app = figure("no_model", turn("arm", KeyMode::Linear));
+    let directory =
+        std::env::temp_dir().join(format!("maki-scene-l63d-no_model-{}", std::process::id()));
+    std::fs::remove_file(directory.join("models/figure.gltf")).unwrap();
+    let warnings = Arc::new(AtomicUsize::new(0));
+    tracing::subscriber::with_default(Warnings(warnings.clone()), || {
+        app.run(|mut app| steps(&mut app, 20));
+    });
+    assert_eq!(warnings.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_cut_gives_a_joint_with_no_track_its_rest() {
+    figure("cut", turn("arm", KeyMode::Linear)).run(|mut app| {
+        steps(&mut app, 8);
+        let pose = skin(&app);
+        let arm = joint(&pose, "arm");
+        assert_ne!(pose.current[arm], pose.skeleton.joints[arm].rest);
+        let directory =
+            std::env::temp_dir().join(format!("maki-scene-l63d-cut-{}", std::process::id()));
+        let text = maki_assets::data_text(&turn("root", KeyMode::Linear));
+        std::fs::write(directory.join("data/root.clip.ron"), text).unwrap();
+        app.resource_mut::<NextClip>().0 = Some("data/root.clip.ron".into());
+        let count = jumps(&app);
+        steps(&mut app, 2);
+        let pose = skin(&app);
+        assert_eq!(pose.current[arm], pose.skeleton.joints[arm].rest);
+        // A cut has no blend.
+        assert_eq!(pose.previous[arm], pose.current[arm]);
+        assert_eq!(jumps(&app) - count, 1);
+    });
 }
 
 #[test]

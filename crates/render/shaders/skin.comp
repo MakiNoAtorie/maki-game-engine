@@ -1,10 +1,5 @@
 #version 460
-// Pass "skin": bends the triangle corners of a skinned instance by the matrices of its
-// joints. One thread for each corner. See src/skins.rs.
-//
-// The steps are those of `maki_assets::skin::skin_vertex`, the CPU reference: the
-// matrices of the joints of a corner, blended by their weights, move its bind position
-// and turn its bind normal.
+// Pass "skin", one thread per corner: must match `maki_assets::skin::skin_vertex`.
 
 #include "bindless.glsl"
 
@@ -46,9 +41,7 @@ layout(push_constant) uniform Push {
     uint normals;
     uint corners;
     uint joints;
-    // 1: the current positions are those of the pose before. 0: the first pose, which
-    // is also its own pose before.
-    uint keep_previous;
+    uint keep_previous; // 1: `current` holds the pose before; 0: the first pose, its own pose before
 } push;
 
 // The reverse of unpack_normal() in scene.glsl. Must agree with `pack_normal` in src/meshes.rs.

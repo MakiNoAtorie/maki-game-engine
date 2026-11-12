@@ -26,7 +26,7 @@
 //! and writes it to the previous buffer before it writes the new one. In a frame with
 //! no new pose the instance buffer names the current positions: no motion of the skin.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, ensure};
@@ -236,6 +236,9 @@ pub(crate) struct GpuSkins {
     skins: HashMap<u64, GpuSkin>,
     /// Palettes whose meshes are not on the GPU yet: tried again in each frame.
     waiting: HashMap<u64, ExtractedSkin>,
+    /// Instances whose skin could not be made: they draw in the bind pose, with one
+    /// error, until they are despawned (also by a room change).
+    failed: HashSet<u64>,
 }
 
 impl GpuSkins {
@@ -260,15 +263,23 @@ impl GpuSkins {
         meshes: &mut GpuMeshes,
         extracted: ExtractedSkins,
     ) -> bool {
-        let Self { skins, waiting } = self;
+        let Self {
+            skins,
+            waiting,
+            failed,
+        } = self;
         for id in extracted.removed {
             waiting.remove(&id);
+            failed.remove(&id);
             if let Some(skin) = skins.remove(&id) {
                 skin.destroy(gpu, meshes);
             }
         }
         let mut posed = false;
         for skin in extracted.changed {
+            if failed.contains(&skin.id) {
+                continue;
+            }
             match skins.get_mut(&skin.id) {
                 Some(gpu_skin) if gpu_skin.fits(&skin, meshes) => {
                     gpu_skin.palette = skin.palette;
@@ -300,6 +311,7 @@ impl GpuSkins {
             // The instance draws in the bind pose.
             Err(error) => {
                 tracing::error!("cannot make the skin of instance {id}: {error:#}");
+                failed.insert(*id);
                 false
             }
         });

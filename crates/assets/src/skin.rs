@@ -13,6 +13,12 @@ pub struct Skeleton {
     pub inverse_binds: Vec<Mat4>,
 }
 
+/// The name of a joint whose glTF node has no name. One rule for the skeleton and the
+/// tracks of a clip, so a track finds its joint.
+pub(crate) fn unnamed_joint(node_index: usize) -> String {
+    format!("joint{node_index}")
+}
+
 /// A joint of a [`Skeleton`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Joint {
