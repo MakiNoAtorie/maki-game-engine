@@ -1762,3 +1762,10 @@ fn a_new_file_reference_gets_its_id_and_a_moved_path_is_a_step_to_undo() {
     assert_eq!(file(&app).path, Path::new("x.glb"));
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn the_snap_step_is_the_cell_of_the_room_over_the_divisions() {
+    let settings = EditorSettings::default();
+    assert_eq!(settings.grid_step(2.0), 0.5);
+    assert_eq!(settings.grid_step(1.0), 0.25);
+}

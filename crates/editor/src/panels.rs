@@ -365,10 +365,10 @@ fn tools(ui: &mut Ui, world: &mut World) {
                 maki_ui::key_label(world, crate::SNAP_SWITCH)
             ));
         ui.add(
-            drag(&mut settings.grid_step)
-                .speed(0.01)
-                .range(0.01..=10.0)
-                .suffix(" m"),
+            egui::DragValue::new(&mut settings.snap_divisions)
+                .speed(0.1)
+                .range(1..=64)
+                .suffix(" per cell"),
         );
         ui.add(
             drag(&mut settings.angle_step)

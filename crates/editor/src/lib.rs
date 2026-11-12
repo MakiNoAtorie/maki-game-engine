@@ -155,8 +155,8 @@ const CHORDS: [(Chord, Action, &str); 8] = [
 pub struct EditorSettings {
     /// True: a drag of a handle snaps. The modifier key turns it around for a drag.
     pub snap: bool,
-    /// A position snaps to steps of this, in meters.
-    pub grid_step: f32,
+    /// A position snaps to the cell of the open room divided by this.
+    pub snap_divisions: u32,
     /// A rotation snaps to steps of this, in degrees.
     pub angle_step: f32,
     /// The command that opens a file at a line in the code editor ("Open in
@@ -171,7 +171,7 @@ impl Default for EditorSettings {
     fn default() -> Self {
         Self {
             snap: true,
-            grid_step: 0.25,
+            snap_divisions: 4,
             angle_step: 15.0,
             code_editor: "code -g \"{file}:{line}\"".to_owned(),
             blender: String::new(),
@@ -183,11 +183,20 @@ impl Settings for EditorSettings {
     const TABLE: &'static str = "editor";
 
     fn check(&self) -> Result<(), String> {
-        let positive = |value: f32| value.is_finite() && value > 0.0;
-        if !(positive(self.grid_step) && positive(self.angle_step)) {
-            return Err("grid_step and angle_step must be positive numbers".to_owned());
+        if self.snap_divisions == 0 {
+            return Err("snap_divisions must be 1 or more".to_owned());
+        }
+        if !(self.angle_step.is_finite() && self.angle_step > 0.0) {
+            return Err("angle_step must be a positive number".to_owned());
         }
         Ok(())
+    }
+}
+
+impl EditorSettings {
+    /// The step of a position in a room with this cell, in meters.
+    pub fn grid_step(&self, cell: f32) -> f32 {
+        cell / self.snap_divisions.max(1) as f32
     }
 }
 
@@ -427,7 +436,10 @@ impl Editor {
             actions.pressed(SNAP_SWITCH),
         );
         let settings = world.resource::<EditorSettings>();
-        let steps = (settings.snap != switch).then_some((settings.grid_step, settings.angle_step));
+        let steps = (settings.snap != switch).then_some((
+            settings.grid_step(self.document.room.cell),
+            settings.angle_step,
+        ));
         let picture = *world.resource::<Picture>();
         let pointer = *world.resource::<Pointer>();
         let in_picture = |at: [f32; 2]| picture.from_window(at);
@@ -609,7 +621,9 @@ impl Editor {
                     .iter(world)
                     .next()
                     .map_or(Vec3::ZERO, |camera| camera.target);
-                let step = world.resource::<EditorSettings>().grid_step;
+                let step = world
+                    .resource::<EditorSettings>()
+                    .grid_step(self.document.room.cell);
                 let at = (target / step).round() * step;
                 match self.document.add(kind, at.with_y(0.0)) {
                     Ok(item) => {
