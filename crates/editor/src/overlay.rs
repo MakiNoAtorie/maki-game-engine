@@ -322,12 +322,12 @@ fn marks(
     }
 
     // The areas of the objects: of their events and their scripts.
-    for index in 0..room.objects.len() {
+    for (index, object) in room.objects.iter().enumerate() {
         let item = Item::Object(index);
         let Some(area) = editor.document.area(&item) else {
             continue;
         };
-        let name = room.objects[index].name.as_deref().unwrap_or("");
+        let name = object.name.as_deref().unwrap_or("");
         let corner = |x: f32, z: f32| {
             let [center_x, center_z] = area.center;
             Vec3::new(
