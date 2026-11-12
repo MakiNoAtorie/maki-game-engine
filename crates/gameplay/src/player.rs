@@ -490,8 +490,8 @@ fn place_player(
     for mut pose in &mut players {
         let mut at = pose.current;
         at.translation = position.into();
-        // No blend from the old place.
-        pose.snap(at);
+        // No blend from the old place. No jump count: a room load starts the picture again.
+        *pose = Interpolated::at(at);
     }
 }
 

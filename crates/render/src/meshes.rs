@@ -38,7 +38,7 @@ use bevy_ecs::system::{Local, Query, Res, ResMut};
 use bevy_ecs::world::World;
 use glam::{Mat4, Vec3};
 use maki_assets::{Assets, Handle, Material, Mesh, Model, Textures};
-use maki_core::{App, Extract, Render, Startup, Transform};
+use maki_core::{App, Extract, PoseJumps, Render, Startup, Transform};
 use maki_gpu::{BlasDesc, BlasGeometry, BlasHandle, BufferDesc, BufferHandle, Gpu};
 use maki_scene::{Hidden, MeshInstance};
 
@@ -507,7 +507,10 @@ pub(crate) fn build(app: &mut App) {
         .init_resource::<Assets<Model>>()
         .init_resource::<Textures>()
         .add_systems(Startup, setup_meshes.after(setup_renderer))
-        .add_systems(Extract, (extract_meshes, extract_instances))
+        .add_systems(
+            Extract,
+            (extract_meshes, extract_instances, extract_pose_jumps),
+        )
         .add_systems(Render, log_scene);
 }
 
@@ -580,6 +583,20 @@ fn extract_instances(
         current.insert(entity, transform);
     }
     *last = current;
+}
+
+/// A new count of `PoseJumps`: an object snapped to another pose. Its own pixels find
+/// their history by the motion; the pixels that it left are at rest, and only a jump
+/// frame of the TAA drops their history.
+fn extract_pose_jumps(
+    jumps: Res<PoseJumps>,
+    mut render_world: ResMut<RenderWorld>,
+    mut seen: Local<u64>,
+) {
+    if jumps.0 != *seen {
+        *seen = jumps.0;
+        render_world.jump_accumulation();
+    }
 }
 
 /// What the renderer has to draw, for the log.
@@ -759,6 +776,33 @@ mod tests {
         assert_eq!(extract(&mut world), (0, false));
         world.entity_mut(entity).remove::<maki_scene::Hidden>();
         assert_eq!(extract(&mut world), (1, true));
+    }
+
+    #[test]
+    fn a_pose_jump_asks_one_jump_frame() {
+        use bevy_ecs::schedule::Schedule;
+
+        let mut world = World::new();
+        world.insert_resource(RenderWorld::default());
+        world.init_resource::<PoseJumps>();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(extract_pose_jumps);
+        // True if the frame after the extract is a jump frame: the TAA push value.
+        let mut frame = |world: &mut World| {
+            schedule.run(world);
+            let mut render_world = world.resource_mut::<RenderWorld>();
+            let mut accumulation = render_world.0.resource_mut::<crate::Accumulation>();
+            accumulation.start_frame(u32::MAX, 1, 0);
+            accumulation.jump_frame()
+        };
+        assert!(!frame(&mut world));
+        world.resource_mut::<PoseJumps>().0 += 1;
+        assert!(frame(&mut world));
+        assert!(!frame(&mut world));
+        // Two jumps between two frames: one jump frame.
+        world.resource_mut::<PoseJumps>().0 += 2;
+        assert!(frame(&mut world));
+        assert!(!frame(&mut world));
     }
 
     #[test]

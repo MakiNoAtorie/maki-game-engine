@@ -21,7 +21,7 @@ pub use app::{
 pub use config::{ConfigFile, Settings, TimeSettings};
 // The trait and its derive have one name, as `Serialize` of serde.
 pub use fields::{FieldTypes, Fields, add_field_type};
-pub use interpolation::{Interpolated, interpolate_transforms};
+pub use interpolation::{Interpolated, PoseJumps, interpolate_transforms};
 pub use maki_macros::Fields;
 pub use play_state::PlayState;
 pub use time::Time;

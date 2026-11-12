@@ -285,8 +285,8 @@ pub fn apply(world: &mut World, save: &SaveData) -> Result<()> {
         at.translation = save.position.into();
         // A file that a person changed: a length of 1 again.
         at.rotation = Quat::from_array(save.rotation).normalize();
-        // No blend from the old place.
-        pose.snap(at);
+        // No blend from the old place. No jump count: the room loads again.
+        *pose = Interpolated::at(at);
     }
     Ok(())
 }
