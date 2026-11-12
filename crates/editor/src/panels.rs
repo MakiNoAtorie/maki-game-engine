@@ -39,8 +39,7 @@ pub(crate) const INSPECTOR: &str = "inspector";
 pub(crate) const EVENT: &str = "events";
 pub(crate) const CONFIRM: &str = "Question";
 
-/// The named layouts. With the panels of now, "Animate" is as "Build": a later
-/// panel (the timeline) makes the difference.
+/// The named layouts.
 pub(crate) const LAYOUTS: [Layout; 5] = [
     // To make a room: the outliner, the inspector, and the events.
     layout("Build", &[], false, 280.0),
@@ -48,7 +47,8 @@ pub(crate) const LAYOUTS: [Layout; 5] = [
     layout("Logic", &[], false, 440.0),
     // To set light and materials: the picture has the room of the event panel.
     layout("Look", &[EVENT], false, 280.0),
-    layout("Animate", &[], false, 280.0),
+    // To animate: the timeline in place of the event panel.
+    layout("Animate", &[EVENT], false, 280.0),
     // Each debug panel of the game, as tabs under the picture.
     layout("Debug", &[], true, 360.0),
 ];
@@ -169,6 +169,7 @@ pub(crate) fn build(app: &mut App) {
             }
         });
     });
+    crate::timeline_panel::add(app);
     crate::text_panel::add(app);
     let status = panel("editor status", "Status", "", ToolPlace::Status);
     add_tool_panel(app, status, |ui, world| {
