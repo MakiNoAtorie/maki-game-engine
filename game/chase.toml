@@ -1,0 +1,4 @@
+# Config for the run by hand in the chase room: cargo run -p maki-game -- game/chase.toml
+[rooms]
+start = "game/assets/rooms/room_chase.ron"
+start_spawn = 2

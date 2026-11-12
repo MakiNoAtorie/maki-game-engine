@@ -7,6 +7,8 @@ use maki_engine::core::{App, ConfigFile, Interpolated, Startup, Transform};
 use maki_engine::scene::{Player, RoomRequest, RoomTarget};
 use maki_engine::{events, gameplay, platform, scene};
 
+#[path = "../templates/chaser.rs"]
+mod chaser;
 #[path = "../templates/empty.rs"]
 mod empty;
 #[path = "../templates/engine_module.rs"]
@@ -66,7 +68,8 @@ fn runs(add: fn(&mut App)) {
 
 #[test]
 fn each_template_builds_registers_and_runs() {
-    let templates: [fn(&mut App); 10] = [
+    let templates: [fn(&mut App); 11] = [
+        chaser::add,
         empty::add,
         engine_module::add,
         event_command::add,
@@ -86,5 +89,5 @@ fn each_template_builds_registers_and_runs() {
 #[test]
 fn the_engine_lists_each_template_file() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
-    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 10);
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 11);
 }

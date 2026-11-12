@@ -1,0 +1,36 @@
+// Room chase: test room of the chaser. A wall stands in the middle; the chaser rests
+// at the right, sees the player over the open floor, follows around the wall, and
+// goes back to its start after it lost the player behind the wall.
+// The format is `RoomDef` in crates/scene/src/room.rs; the chaser is the script
+// `chaser` (game/scripts/src/chaser.rs). Lengths are meters, angles degrees.
+(
+    width: 10.0,
+    depth: 10.0,
+    height: 3.0,
+    next_id: 5,
+    objects: [
+        (
+            id: 1,
+            name: "lamp",
+            pose: (position: (0.0, 2.6, 0.0)),
+            components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)},
+        ),
+        (id: 2, name: "start", pose: (position: (-3.0, 0.0, 0.0)), components: {"spawn": ()}),
+        (
+            id: 3,
+            name: "wall",
+            pose: (position: (0.0, 1.5, 0.0), scale: (0.5, 3.0, 6.0)),
+            components: {"prop": (mesh: Cube(1.0))},
+        ),
+        (
+            id: 4,
+            name: "chaser",
+            pose: (position: (3.0, 0.5, 0.0), scale: (0.6, 1.0, 0.6)),
+            components: {
+                "chaser": (distance: 12.0, give_up: 3.0),
+                "prop": (mesh: Cube(1.0), look: (color: (0.9, 0.2, 0.2))),
+                "walker": (),
+            },
+        ),
+    ],
+)
