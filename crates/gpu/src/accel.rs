@@ -12,6 +12,12 @@
 //! build is recorded into the next frame that builds the TLAS, before that build
 //! ([`Gpu::build_tlas`]). The TLAS is built again when the caller has a new instance
 //! list, so it follows objects that move, appear, or go away.
+//!
+//! A dynamic BLAS ([`Gpu::create_dynamic_blas`]) reads its triangles from a buffer of
+//! the caller, which a compute shader can write (a skinned mesh). It keeps its storage
+//! and scratch buffer, and [`Gpu::rebuild_blas`] builds it again in full in a frame.
+//! No refit (`ALLOW_UPDATE`): a step clip moves a limb far in one frame, where a refit
+//! gives poor trees.
 
 use anyhow::{Context, Result, ensure};
 use ash::vk;
@@ -58,11 +64,70 @@ pub struct TlasInstance {
     pub two_sided: bool,
 }
 
+/// The triangles of one geometry of a dynamic BLAS: the next `corners` positions of
+/// its vertex buffer, three for each triangle.
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicGeometry {
+    pub corners: u32,
+    /// As [`BlasGeometry::opaque`].
+    pub opaque: bool,
+}
+
+/// The content of a dynamic BLAS. A hit names the geometry by its place in the list.
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicBlasDesc<'a> {
+    pub name: &'a str,
+    /// Positions of the caller, 3 floats for each corner, no index list. It must live
+    /// as long as the BLAS: the BLAS keeps its address.
+    pub vertices: BufferHandle,
+    /// In the order of the buffer.
+    pub geometries: &'a [DynamicGeometry],
+}
+
 pub(crate) struct Blas {
     pub raw: vk::AccelerationStructureKHR,
     storage: BufferHandle,
     /// A TLAS instance names its BLAS by this address.
     address: u64,
+    /// Some: a dynamic BLAS, which `rebuild_blas` builds again.
+    dynamic: Option<DynamicBuild>,
+}
+
+/// What each build of a dynamic BLAS needs. Kept for the life of the BLAS.
+struct DynamicBuild {
+    /// They hold addresses in `vertices`, and no pointer.
+    geometries: Vec<vk::AccelerationStructureGeometryKHR<'static>>,
+    ranges: Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
+    scratch: BufferHandle,
+    vertices: BufferHandle,
+    /// The address at creation: a new buffer under the same handle is an error.
+    vertex_address: u64,
+}
+
+/// Bytes of one corner position.
+const CORNER_BYTES: u64 = 12;
+
+/// The byte offset in the vertex buffer of each geometry. Checks that each geometry
+/// has whole triangles and that all fit in `buffer_size` bytes.
+fn corner_offsets(geometries: &[DynamicGeometry], buffer_size: u64) -> Result<Vec<u64>> {
+    ensure!(!geometries.is_empty(), "no geometry");
+    let mut offsets = Vec::with_capacity(geometries.len());
+    let mut offset = 0;
+    for geometry in geometries {
+        ensure!(
+            geometry.corners > 0 && geometry.corners.is_multiple_of(3),
+            "a geometry has {} corners, not whole triangles",
+            geometry.corners
+        );
+        offsets.push(offset);
+        offset += u64::from(geometry.corners) * CORNER_BYTES;
+    }
+    // The GPU does not check: a build past the end reads memory out of the buffer.
+    ensure!(
+        offset <= buffer_size,
+        "the geometries need {offset} bytes, the vertex buffer has {buffer_size}"
+    );
+    Ok(offsets)
 }
 
 /// A BLAS that is made and not built: what its build needs.
@@ -83,7 +148,7 @@ fn blas_build_info<'a>(
 ) -> vk::AccelerationStructureBuildGeometryInfoKHR<'a> {
     vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-        // Built one time and traced in every frame.
+        // Traced in every frame, built once or on a pose change: trace time counts more.
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .geometries(geometries)
@@ -233,7 +298,123 @@ impl Gpu {
             raw,
             storage,
             address,
+            dynamic: None,
         }))
+    }
+
+    /// Makes a BLAS over the positions in `desc.vertices`, with no content: call
+    /// [`Gpu::rebuild_blas`] before a TLAS names it, and again after each write of the
+    /// positions.
+    pub fn create_dynamic_blas(&mut self, desc: &DynamicBlasDesc) -> Result<BlasHandle> {
+        let buffer = self
+            .buffers
+            .get(desc.vertices)
+            .context("stale vertex buffer handle")?;
+        let vertex_address = buffer.address;
+        let offsets = corner_offsets(desc.geometries, buffer.size)
+            .with_context(|| format!("dynamic BLAS `{}`", desc.name))?;
+
+        let mut geometries: Vec<vk::AccelerationStructureGeometryKHR<'static>> =
+            Vec::with_capacity(desc.geometries.len());
+        let mut ranges = Vec::with_capacity(desc.geometries.len());
+        for (geometry, offset) in desc.geometries.iter().zip(offsets) {
+            // No index list: corners i, i+1, i+2 are a triangle.
+            let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: vertex_address + offset,
+                })
+                .vertex_stride(CORNER_BYTES)
+                .max_vertex(geometry.corners - 1)
+                .index_type(vk::IndexType::NONE_KHR);
+            geometries.push(
+                vk::AccelerationStructureGeometryKHR::default()
+                    .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                    .geometry(vk::AccelerationStructureGeometryDataKHR { triangles })
+                    .flags(if geometry.opaque {
+                        vk::GeometryFlagsKHR::OPAQUE
+                    } else {
+                        vk::GeometryFlagsKHR::empty()
+                    }),
+            );
+            ranges.push(
+                vk::AccelerationStructureBuildRangeInfoKHR::default()
+                    .primitive_count(geometry.corners / 3),
+            );
+        }
+        let counts: Vec<u32> = ranges.iter().map(|range| range.primitive_count).collect();
+        let (raw, storage, scratch) = {
+            let mut info = blas_build_info(&geometries);
+            self.create_accel(desc.name, &mut info, &counts)?
+        };
+        let address_info =
+            vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(raw);
+        let address = unsafe {
+            self.accel
+                .get_acceleration_structure_device_address(&address_info)
+        };
+        Ok(self.blases.insert(Blas {
+            raw,
+            storage,
+            address,
+            dynamic: Some(DynamicBuild {
+                geometries,
+                ranges,
+                scratch,
+                vertices: desc.vertices,
+                vertex_address,
+            }),
+        }))
+    }
+
+    /// Records a full build of a dynamic BLAS from the current content of its vertex
+    /// buffer. Call in a frame, after the compute shader that writes the positions and
+    /// before [`Gpu::build_tlas`]; the TLAS must be built again after it, also with an
+    /// equal instance list. The barriers before and after are part of the call.
+    pub fn rebuild_blas(&mut self, blas: BlasHandle) -> Result<()> {
+        ensure!(self.active.is_some(), "rebuild_blas outside of a frame");
+        let blas = self.blases.get(blas).context("stale BLAS handle")?;
+        let build = blas.dynamic.as_ref().context("the BLAS is not dynamic")?;
+        ensure!(
+            self.buffers
+                .get(build.vertices)
+                .is_some_and(|b| b.address == build.vertex_address),
+            "the vertex buffer of a dynamic BLAS is gone"
+        );
+        let info = blas_build_info(&build.geometries)
+            .dst_acceleration_structure(blas.raw)
+            .scratch_data(vk::DeviceOrHostAddressKHR {
+                device_address: self.scratch_address(build.scratch),
+            });
+
+        use vk::AccessFlags2 as A;
+        use vk::PipelineStageFlags2 as S;
+        let accel_access = A::ACCELERATION_STRUCTURE_READ_KHR | A::ACCELERATION_STRUCTURE_WRITE_KHR;
+        // Waits for the position write (read as SHADER_READ), older ray queries and builds.
+        let before = [vk::MemoryBarrier2::default()
+            .src_stage_mask(S::COMPUTE_SHADER | S::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .src_access_mask(A::SHADER_STORAGE_WRITE | accel_access)
+            .dst_stage_mask(S::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .dst_access_mask(A::SHADER_READ | accel_access)];
+        // TLAS build, ray queries, and the next position write wait for the build.
+        let after = [vk::MemoryBarrier2::default()
+            .src_stage_mask(S::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .src_access_mask(A::ACCELERATION_STRUCTURE_WRITE_KHR)
+            .dst_stage_mask(S::ACCELERATION_STRUCTURE_BUILD_KHR | S::COMPUTE_SHADER)
+            .dst_access_mask(A::ACCELERATION_STRUCTURE_READ_KHR)];
+        let device = &self.ctx.device;
+        let cmd = self.frames[self.slot].cmd;
+        unsafe {
+            device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().memory_barriers(&before),
+            );
+            self.accel
+                .cmd_build_acceleration_structures(cmd, &[info], &[&build.ranges]);
+            device
+                .cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().memory_barriers(&after));
+        }
+        Ok(())
     }
 
     /// A buffer with `data` as its content, for the input of a BLAS build.
@@ -301,6 +482,10 @@ impl Gpu {
             // The structure goes before the buffer that stores it.
             self.defer(Garbage::Accel(blas.raw));
             self.destroy_buffer(blas.storage);
+            // The vertex buffer is the caller's.
+            if let Some(build) = blas.dynamic {
+                self.destroy_buffer(build.scratch);
+            }
         }
     }
 
@@ -538,4 +723,31 @@ fn as_bytes<T: Copy>(values: &[T]) -> &[u8] {
     // SAFETY: the callers use `u32` and `[f32; 3]`, which have no padding bytes, and
     // each byte pattern is a valid `u8`.
     unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn geometry(corners: u32) -> DynamicGeometry {
+        DynamicGeometry {
+            corners,
+            opaque: true,
+        }
+    }
+
+    #[test]
+    fn corner_offsets_follow_the_geometries() {
+        let offsets = corner_offsets(&[geometry(3), geometry(6)], 9 * 12).unwrap();
+        assert_eq!(offsets, [0, 36]);
+    }
+
+    #[test]
+    fn corner_offsets_reject_bad_geometry() {
+        assert!(corner_offsets(&[], 100).is_err());
+        assert!(corner_offsets(&[geometry(0)], 100).is_err());
+        assert!(corner_offsets(&[geometry(4)], 100).is_err());
+        // One byte short of two triangles.
+        assert!(corner_offsets(&[geometry(6)], 6 * 12 - 1).is_err());
+    }
 }

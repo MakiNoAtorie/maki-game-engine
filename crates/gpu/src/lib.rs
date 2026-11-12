@@ -44,7 +44,7 @@ use device::DeviceContext;
 use resources::{Buffer, COLOR_RANGE, Garbage, Image, Sampler};
 use swapchain::Swapchain;
 
-pub use accel::{BlasDesc, BlasGeometry, TlasInstance};
+pub use accel::{BlasDesc, BlasGeometry, DynamicBlasDesc, DynamicGeometry, TlasInstance};
 pub use raster::GraphicsPipelineDesc;
 pub use resources::{
     Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format,
