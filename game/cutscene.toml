@@ -1,0 +1,4 @@
+# Config for the run by hand in the cutscene room: cargo run -p maki-game -- game/cutscene.toml
+[rooms]
+start = "game/assets/rooms/room_cutscene.ron"
+start_spawn = 7

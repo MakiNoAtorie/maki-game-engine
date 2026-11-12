@@ -1162,8 +1162,9 @@ fn the_shell_has_the_commands_and_the_panels_of_the_editor() {
         for panel in [panels::OUTLINER, panels::INSPECTOR] {
             assert_eq!(panels.tabs_with(panel), [panel]);
         }
-        // The panel of the texts is a tab beside the events.
-        assert_eq!(panels.tabs_with(panels::EVENT), [panels::EVENT, "texts"]);
+        // The timeline and the texts are tabs beside the events.
+        let bottom = [panels::EVENT, crate::timeline_panel::TIMELINE, "texts"];
+        assert_eq!(panels.tabs_with(panels::EVENT), bottom);
         let (layouts, current) = panels.layouts();
         assert_eq!(layouts, ["Build", "Logic", "Look", "Animate", "Debug"]);
         assert_eq!(current, "Build");

@@ -6,6 +6,7 @@
 mod animation;
 mod collision;
 mod hidden;
+mod light_animation;
 mod mover;
 mod object;
 mod prefab;
@@ -13,6 +14,7 @@ mod room;
 mod skin;
 #[cfg(test)]
 mod tests;
+mod timeline;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -20,9 +22,10 @@ use glam::Vec3;
 use maki_assets::{Handle, Mesh};
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
-pub use animation::{AnimationModule, Animator, Playback, animate};
+pub use animation::{AnimationModule, Animator, Playback, animate, pose_on_rest, set_channel};
 pub use collision::{Collider, room_colliders};
 pub use hidden::Hidden;
+pub use light_animation::{LightAnimDef, LightAnimation, animate_lights, kelvin_rgb};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
     ComponentText, ComponentType, ComponentTypes, FieldError, FieldWrite, Live, ObjectDef,
@@ -41,6 +44,7 @@ pub use room::{
     pose_out, read_room, ron_options, room_text,
 };
 pub use skin::{SkinPalette, SkinPose, make_palettes};
+pub use timeline::{Timeline, TimelinePlayback, TimelineTrack, play_timeline, stop_timeline};
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
 pub struct SceneModule;

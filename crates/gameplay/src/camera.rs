@@ -7,8 +7,13 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, Local, Query, Res};
 use glam::Vec3;
-use maki_core::{App, Module, Settings, Startup, Time, Transform, Update, interpolate_transforms};
-use maki_scene::{ActiveCamera, Camera, CurrentRoom, Player, RoomDef};
+use maki_core::{
+    App, Fields, Interpolated, Module, Settings, Startup, Time, Transform, Update,
+    interpolate_transforms,
+};
+use maki_scene::{
+    ActiveCamera, Camera, CurrentRoom, ObjectId, Player, RoomDef, add_object_component,
+};
 use serde::{Deserialize, Serialize};
 
 /// The target is moved onto the goal when it is nearer than this, in meters. Without
@@ -72,10 +77,35 @@ pub struct CameraModule;
 
 impl Module for CameraModule {
     fn build(&self, app: &mut App) {
+        add_object_component::<CameraDef>(app, "camera");
         app.add_settings::<CameraSettings>()
             .add_systems(Startup, spawn_camera)
             // After the interpolation: the camera follows the pose that the frame shows.
             .add_systems(Update, follow_player.after(interpolate_transforms));
+    }
+}
+
+/// The component `camera` of an object: while it is `active`, the view of the game is
+/// the pose of the object (a timeline moves it by a pose track and switches it by a
+/// switch track on `active`). It is the `FollowCamera` that takes the view; the camera
+/// of the editor is another entity, so editing never shows it.
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
+#[serde(default, deny_unknown_fields)]
+#[fields(default)]
+pub struct CameraDef {
+    /// Vertical field of view, in degrees.
+    #[field(range = 5.0..=120.0, step = 1.0)]
+    pub fov: f32,
+    /// The object is the view of the game. Of several, the lowest object id.
+    pub active: bool,
+}
+
+impl Default for CameraDef {
+    fn default() -> Self {
+        Self {
+            fov: CameraSettings::default().fov_degrees,
+            active: true,
+        }
     }
 }
 
@@ -108,6 +138,15 @@ fn spawn_camera(mut commands: Commands, settings: Res<CameraSettings>) {
     commands.spawn((camera, FollowCamera, ActiveCamera));
 }
 
+/// The state of [`follow_player`] between frames.
+#[derive(Default)]
+pub struct FollowState {
+    /// The look-at point, not read back from the `Camera`.
+    target: Option<Vec3>,
+    /// A clash of two active camera objects was logged.
+    clash_logged: bool,
+}
+
 /// Runs in `Update`. A system that moves the camera away from this place for a frame
 /// (a shake) runs `.after(follow_player)`.
 pub fn follow_player(
@@ -116,10 +155,16 @@ pub fn follow_player(
     room: Res<CurrentRoom>,
     players: Query<&Transform, With<Player>>,
     mut cameras: Query<&mut Camera, With<FollowCamera>>,
-    // Where the camera looks without what other systems add. Not read back from the
-    // `Camera`: an offset of one frame must not become a part of the path.
-    mut target: Local<Option<Vec3>>,
+    mut state: Local<FollowState>,
+    objects: Query<(&ObjectId, &CameraDef, &Interpolated)>,
 ) {
+    // In this system, so a shake that runs `.after(follow_player)` adds to either view.
+    if let Some(view) = object_view(&time, &objects, &mut state.clash_logged) {
+        for mut camera in &mut cameras {
+            camera.set_if_neq(view);
+        }
+        return;
+    }
     let Some(player) = players.iter().next() else {
         return;
     };
@@ -131,7 +176,7 @@ pub fn follow_player(
     } else {
         1.0
     };
-    let target = target.get_or_insert(settings.target.into());
+    let target = state.target.get_or_insert(settings.target.into());
     *target = target.lerp(goal, part);
     if target.distance(goal) < ARRIVE_DISTANCE {
         *target = goal;
@@ -140,6 +185,30 @@ pub fn follow_player(
         // Only a different value is a write: a camera at rest keeps the picture.
         camera.set_if_neq(camera_at(*target, &settings));
     }
+}
+
+/// The view of the active `camera` object, or none. Its front is +Z of the object, as
+/// the front of a walker, so a turn of the object turns the view.
+fn object_view(
+    time: &Time,
+    objects: &Query<(&ObjectId, &CameraDef, &Interpolated)>,
+    warned: &mut bool,
+) -> Option<Camera> {
+    let active = || objects.iter().filter(|(_, def, _)| def.active);
+    // The lowest id wins; the warning is once per time of the clash.
+    let clash = active().nth(1).is_some();
+    if clash && !*warned {
+        tracing::warn!("several active cameras: the object with the lowest id is the view");
+    }
+    *warned = clash;
+    let (_, def, pose) = active().min_by_key(|(id, ..)| **id)?;
+    // An object has the `Interpolated` pose only: the blend is the pose of this frame.
+    let pose = pose.previous.blend(&pose.current, time.alpha);
+    Some(Camera {
+        position: pose.translation,
+        target: pose.translation + pose.rotation * Vec3::Z,
+        fov_y_degrees: def.fov,
+    })
 }
 
 #[cfg(test)]

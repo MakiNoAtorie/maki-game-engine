@@ -9,6 +9,8 @@ use maki_engine::{events, gameplay, platform, scene};
 
 #[path = "../templates/chaser.rs"]
 mod chaser;
+#[path = "../templates/cutscene_trigger.rs"]
+mod cutscene_trigger;
 #[path = "../templates/empty.rs"]
 mod empty;
 #[path = "../templates/engine_module.rs"]
@@ -68,8 +70,9 @@ fn runs(add: fn(&mut App)) {
 
 #[test]
 fn each_template_builds_registers_and_runs() {
-    let templates: [fn(&mut App); 11] = [
+    let templates: [fn(&mut App); 12] = [
         chaser::add,
+        cutscene_trigger::add,
         empty::add,
         engine_module::add,
         event_command::add,
@@ -89,5 +92,5 @@ fn each_template_builds_registers_and_runs() {
 #[test]
 fn the_engine_lists_each_template_file() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
-    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 11);
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 12);
 }

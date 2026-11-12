@@ -1,0 +1,19 @@
+// Light preset: a warning lamp. Red, and a pulse of 1 s that drops to a tenth.
+(
+    next_id: 2,
+    objects: [
+        (
+            id: 1,
+            name: "warning lamp",
+            components: {
+                "light": (
+                    radius: 0.1,
+                    color: (1.0, 0.12, 0.05),
+                    intensity: 8.0,
+                    pulse: 0.9,
+                    pulse_seconds: 1.0,
+                ),
+            },
+        ),
+    ],
+)

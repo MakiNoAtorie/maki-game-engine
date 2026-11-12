@@ -35,6 +35,9 @@ skinjump The gate of a skinned pose jump: `reference skin_jump_720p`, `reference
          jump_720p`, then `skinjump`. The error at the place that the arm of the figure
          left, 4 frames after the jump, against the cube of `jump_720p` at 4 frames.
          `ok`: the arm is at most the cube.
+lightanim The noise of a pulsing lamp: `reference light_still_720p`, then `lightanim`.
+         `light_anim_720p` and `light_still_720p` against the still reference at frames
+         at the end of a pulse. A measure, no gate.
 same     Compares the pictures that two runs of one scenario dumped (exact labels):
          `ok`, or the number of pixels that differ, the largest difference, and the means.
 selftest Checks the statistics against known answers.
@@ -133,6 +136,11 @@ SCENARIOS = {
     # (`SKIN_JUMP_ROOM` below), at the place of the cube of `jump_720p`; camera and light
     # at rest. The gate of stage 63: `bench.py skinjump`.
     "skin_jump_720p": ((1280, 720), "skin_jump", {}),
+    # A red lamp pulses (`LIGHT_ANIM_ROOM` below: each fixed step changes the light, a soft
+    # reset of the denoiser); camera, cube, and first light at rest. `bench.py lightanim`.
+    "light_anim_720p": ((1280, 720), "light_anim", {}),
+    # The same room with the lamp still: the reference and the baseline of `light_anim_720p`.
+    "light_still_720p": ((1280, 720), "light_still", {}),
 }
 
 
@@ -201,6 +209,20 @@ SKIN_JUMP_ROOM = JUMP_ROOM.replace(
 assert SKIN_JUMP_ROOM != JUMP_ROOM, "the cube of jump_720p moved: update SKIN_JUMP_ROOM"
 # The place that the arm left, in pixels of the 1280 x 720 picture.
 SKIN_JUMP_CROP = "604,264,32,64"
+
+
+# The room of `light_still_720p`: the cube of `jump_720p` at rest, and a second, red lamp.
+# `light_anim_720p`: the lamp pulses, 1 s to a tenth and back (stage 64).
+LIGHT_STILL_ROOM = JUMP_ROOM.replace(""",
+            "animator": (clip: "jump.clip.ron", looping: false)}""", "}").replace(
+    '        (id: 1, name: "start"',
+    '        (pose: (position: (1.5, 1.5, -1.5)), components: {"light": (radius: 0.1, color: (1.0, 0.12, 0.05), intensity: 8.0)}),\n'
+    '        (id: 1, name: "start"')
+LIGHT_ANIM_ROOM = LIGHT_STILL_ROOM.replace("intensity: 8.0)", "intensity: 8.0, pulse: 0.9, pulse_seconds: 1.0)")
+assert LIGHT_ANIM_ROOM != LIGHT_STILL_ROOM != JUMP_ROOM, "the room of jump_720p changed: update LIGHT_STILL_ROOM"
+# The frames of `lightanim`: each at the end of a pulse (the lamp at about its full
+# intensity), so the error against the still reference is the noise, not the dip.
+LIGHT_ANIM_FRAMES = (120, 240)
 
 
 # The room file of a scenario with a generated scene: room A of the game (its size, its
@@ -333,6 +355,10 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         room_path.write_text(LIGHT_STEP_ROOM)
         (work / "step.clip.ron").write_text(LIGHT_STEP_CLIP)
         params += ";light_step"
+    elif scene in ("light_anim", "light_still"):
+        room_path = work / "room.ron"
+        room_path.write_text(LIGHT_ANIM_ROOM if scene == "light_anim" else LIGHT_STILL_ROOM)
+        params += f";{scene}"
     elif scene == "skin_jump":
         room_path = work / "room.ron"
         room_path.write_text(SKIN_JUMP_ROOM)
@@ -720,6 +746,23 @@ def command_skinjump(_args):
         raise SystemExit(1)
 
 
+def command_lightanim(_args):
+    """Stage 64: the noise of a pulsing lamp. `light_anim_720p` and `light_still_720p`,
+    each against the reference of the still room, at frames at the end of a pulse. A
+    measure only: no gate (no optimization of the denoiser in this stage)."""
+    rows = []
+    for frames in LIGHT_ANIM_FRAMES:
+        for scenario in ("light_still_720p", "light_anim_720p"):
+            label = f"lightanim{len(rows)}"
+            common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference="light_still_720p", crop=None, light_frames=None)
+            error = command_quality(argparse.Namespace(label=label, frames=frames, **common))
+            command_drop(argparse.Namespace(label=label))
+            rows.append([scenario, frames, f"{error:.6g}"])
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(["scenario", "frame", "relmse"])
+    writer.writerows(rows)
+
+
 def difference(scenario, label_a, label_b):
     """None for byte-equal pictures, else {name: value} of the difference."""
     a, b = ((WORK / scenario / f"{label}.dump").read_bytes() for label in (label_a, label_b))
@@ -861,6 +904,7 @@ if __name__ == "__main__":
     gate.set_defaults(function=command_gate)
     commands.add_parser("jump", help="the picture gate of a pose jump (stage 62); needs `reference jump_720p` and `reference light_step_720p`").set_defaults(function=command_jump)
     commands.add_parser("skinjump", help="the picture gate of a skinned pose jump (stage 63); needs `reference skin_jump_720p` and `reference jump_720p`").set_defaults(function=command_skinjump)
+    commands.add_parser("lightanim", help="the noise of a pulsing lamp (stage 64); needs `reference light_still_720p`").set_defaults(function=command_lightanim)
     commands.add_parser("selftest").set_defaults(function=command_selftest)
     arguments = parser.parse_args()
     arguments.function(arguments)

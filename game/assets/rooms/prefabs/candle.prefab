@@ -1,0 +1,21 @@
+// Light preset: a candle. A warm color (1900 K) and a quick flicker. An instance
+// changes some values (`"prefab": (file: "prefabs/candle.prefab")`).
+(
+    next_id: 2,
+    objects: [
+        (
+            id: 1,
+            name: "candle",
+            components: {
+                "light": (
+                    radius: 0.05,
+                    color: (1.0, 1.0, 1.0),
+                    intensity: 3.0,
+                    temperature: 1900.0,
+                    flicker: 0.35,
+                    flicker_rate: 12.0,
+                ),
+            },
+        ),
+    ],
+)

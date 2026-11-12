@@ -28,6 +28,7 @@ mod routine;
 mod script;
 mod state;
 mod text;
+mod timeline;
 
 use std::collections::BTreeMap;
 
@@ -73,6 +74,7 @@ pub use text::{
     TEXT_FOLDER, TextCommand, TextEntry, TextKey, TextSettings, TextTable, Texts, fill,
     table_files, table_path, text, texts,
 };
+pub use timeline::TimelineCommand;
 
 /// Starts the event that the player faces, closes a message, and takes the marked
 /// answer of a question.
@@ -168,6 +170,8 @@ impl Module for EventsModule {
         state::add(app, &registry);
         // Item kinds and the inventory.
         items::add(app, &registry);
+        // Play and stop of a timeline.
+        timeline::add(app, &registry);
         // The menus and their stack.
         menu::add(app, &registry);
         // The text tables and the texts of the game.

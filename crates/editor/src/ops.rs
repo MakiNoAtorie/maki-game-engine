@@ -235,6 +235,7 @@ impl Document {
                     direction: None,
                     cone: None,
                     sound: None,
+                    animation: Default::default(),
                 };
                 let item = Item::Object(room.objects.len());
                 room.objects.push(light.into_object());
