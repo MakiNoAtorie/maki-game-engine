@@ -866,8 +866,7 @@ impl Editor {
             for mut pose in players.iter_mut(world) {
                 let mut at = pose.current;
                 at.translation = target.with_y(0.0);
-                // No jump count: the room loads below.
-                *pose = Interpolated::at(at);
+                pose.snap(at);
             }
         }
         // From the text of the document, not from the file: the room as it is here.

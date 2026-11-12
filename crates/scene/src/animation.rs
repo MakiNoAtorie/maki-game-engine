@@ -123,11 +123,23 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
         playback.steps = 0.0;
         playback.warned.clear();
         playback.file = Some(animator.clip.file.clone());
-        playback.clip = load(world, &animator.clip);
+        let loaded = load(world, &animator.clip);
+        playback.clip = loaded
+            .inspect_err(|error| tracing::warn!(%error, "an animator has no clip"))
+            .ok();
         if playback.rest.is_none() {
             let pose = world.get::<Interpolated>(entity).map(|pose| pose.current);
             playback.rest = pose.or_else(|| world.get::<Transform>(entity).copied());
         }
+    } else if let Ok(clip) = load(world, &animator.clip)
+        && playback
+            .clip
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &clip))
+    {
+        // A changed file plays at the same time; a file that does not read keeps the old clip.
+        playback.warned.clear();
+        playback.clip = Some(clip);
     }
     let Some(clip) = playback.clip.clone() else {
         return;
@@ -188,47 +200,54 @@ fn product(rest: &Transform, key: &Transform) -> Transform {
 /// Writes the pose only if it differs (a write is a change for the renderer). `snap`:
 /// with no blend, and one more `PoseJumps`.
 fn write_pose(world: &mut World, entity: Entity, pose: Transform, snap: bool) {
-    let Some(mut current) = world.get_mut::<Interpolated>(entity) else {
-        // Only an animated object gets one; its first pose has no blend.
-        world.entity_mut(entity).insert(Interpolated::at(pose));
-        return;
-    };
-    if snap {
-        if *current != Interpolated::at(pose) {
-            let mut jumps = PoseJumps::default();
-            current.snap(pose, &mut jumps);
-            world.resource_mut::<PoseJumps>().0 += jumps.0;
+    let jumped = match world.get_mut::<Interpolated>(entity) {
+        Some(mut current) if snap => {
+            let jumped = *current != Interpolated::at(pose);
+            if jumped {
+                current.snap(pose);
+            }
+            jumped
         }
-    } else if current.current != pose {
-        current.current = pose;
+        Some(mut current) => {
+            if current.current != pose {
+                current.current = pose;
+            }
+            false
+        }
+        None => {
+            // Only an animated object gets one; its first pose has no blend.
+            let jumped = snap && world.get::<Transform>(entity) != Some(&pose);
+            world.entity_mut(entity).insert(Interpolated::at(pose));
+            jumped
+        }
+    };
+    // Only a jump touches the count: a write marks `PoseJumps` as changed.
+    if jumped {
+        world.resource_mut::<PoseJumps>().add(1);
     }
 }
 
-/// The clip of a reference, from the directory of the room. `None`, with a warning:
-/// the file does not read.
-fn load(world: &mut World, clip: &DataRef<Clip>) -> Option<Arc<Clip>> {
+/// The clip of a reference, from the directory of the room. `Err`: the file does not
+/// read.
+fn load(world: &mut World, clip: &DataRef<Clip>) -> Result<Arc<Clip>, String> {
     let room = world.get_resource::<CurrentRoom>();
     let directory = room
         .and_then(|room| room.path.parent())
         .unwrap_or(Path::new(""));
     let directory = directory.to_owned();
-    let loaded = world
+    world
         .resource_mut::<DataAssets>()
-        .get::<Clip>(&clip.file, &directory);
-    loaded
-        .inspect_err(|error| tracing::warn!(%error, "an animator has no clip"))
-        .ok()
+        .get::<Clip>(&clip.file, &directory)
 }
 
 /// Runs in `ResetPlay`: each animated object goes back to its rest pose, and the time
 /// of play to 0.
 fn reset_animators(mut animators: Query<(&mut Playback, Option<&mut Interpolated>)>) {
     for (mut playback, pose) in &mut animators {
-        // No jump count: a room load follows each `ResetPlay`.
         if let (Some(rest), Some(mut pose)) = (playback.rest, pose)
             && *pose != Interpolated::at(rest)
         {
-            *pose = Interpolated::at(rest);
+            pose.snap(rest);
         }
         *playback = Playback::default();
     }

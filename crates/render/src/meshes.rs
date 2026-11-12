@@ -796,11 +796,11 @@ mod tests {
             accumulation.jump_frame()
         };
         assert!(!frame(&mut world));
-        world.resource_mut::<PoseJumps>().0 += 1;
+        world.resource_mut::<PoseJumps>().add(1);
         assert!(frame(&mut world));
         assert!(!frame(&mut world));
         // Two jumps between two frames: one jump frame.
-        world.resource_mut::<PoseJumps>().0 += 2;
+        world.resource_mut::<PoseJumps>().add(2);
         assert!(frame(&mut world));
         assert!(!frame(&mut world));
     }

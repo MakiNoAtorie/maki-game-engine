@@ -38,8 +38,8 @@ pub struct Clip {
     /// How a track with no mode of its own goes from one key to the next.
     #[serde(skip_serializing_if = "is_default")]
     pub mode: KeyMode,
-    /// Frames in a second: the clip time is cut to its frames (animation on twos at
-    /// 12). None: no cut.
+    /// Frames in a second: the clip time is cut to its frames (12: animation on twos
+    /// of 24 frames in a second). None: no cut.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[field(some = 12.0)]
     pub fps: Option<f32>,

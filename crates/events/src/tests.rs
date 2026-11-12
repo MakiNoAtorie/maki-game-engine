@@ -800,7 +800,7 @@ fn counter_game(test: &str, room: &str) -> App {
          mut players: Query<&mut Interpolated, With<Player>>| {
             if let Some(at) = place.0.take() {
                 for mut pose in &mut players {
-                    pose.snap(Transform::from_translation(at.into()), &mut jumps);
+                    pose.jump(Transform::from_translation(at.into()), &mut jumps);
                 }
             }
         },

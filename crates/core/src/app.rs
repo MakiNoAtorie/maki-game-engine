@@ -123,7 +123,7 @@ impl App {
         // Built in, as `Time` is: see the `interpolation` module. Each simulation
         // system writes the pose of its own entities (the player, the movers), so
         // their order has no effect.
-        // Each snap adds one to `PoseJumps`: the order of two adds has no effect.
+        // Each jump adds one to `PoseJumps`: the order of two adds has no effect.
         app.allow_ambiguous_component::<crate::Interpolated>()
             .allow_ambiguous_resource::<crate::PoseJumps>()
             .init_resource::<crate::PoseJumps>()

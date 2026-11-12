@@ -211,7 +211,7 @@ mod tests {
             >| {
                 if time.fixed_tick == 10 {
                     for mut pose in &mut players {
-                        pose.snap(
+                        pose.jump(
                             Transform::from_translation([0.0, 0.0, 1.0].into()),
                             &mut jumps,
                         );

@@ -404,8 +404,7 @@ fn move_lights(
         if pose.current.translation != position {
             let mut next = pose.current;
             next.translation = position;
-            // No jump count: a light has no mesh, and a changed light softens the picture.
-            *pose = Interpolated::at(next);
+            pose.snap(next);
         }
     }
 }

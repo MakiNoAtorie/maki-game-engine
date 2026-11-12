@@ -1878,7 +1878,7 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         // Only a different value is a write: a write is a change for the renderer.
         light.set_if_neq(def.light());
         if pose.current.translation != Vec3::from(def.position) {
-            pose.snap(Transform::from_translation(def.position.into()), &mut jumps);
+            pose.jump(Transform::from_translation(def.position.into()), &mut jumps);
         }
     }
     // A door has a `Mover` too: its object has no `mover`, and it is left as it is.
@@ -1889,7 +1889,7 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         };
         let new = Mover::new(def.a.transform(), def.b.transform(), def.seconds);
         if mover.set_if_neq(new) {
-            pose.snap(new.a, &mut jumps);
+            pose.jump(new.a, &mut jumps);
         }
     }
     world.resource_scope(|world, meshes: Mut<Assets<Mesh>>| {
@@ -1917,16 +1917,18 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             // The object entity of a script: the blend of the poses writes the
             // `Transform` in each frame.
             if let Some(mut pose) = pose {
-                pose.snap(new, &mut jumps);
+                pose.jump(new, &mut jumps);
             }
             if let (Some(mut collider), Some(mesh)) = (collider, meshes.get(instance.0)) {
                 *collider = collider_around(mesh, &new);
             }
         }
     });
-    // A world with no `App` (a test) has no count.
-    if let Some(mut count) = world.get_resource_mut::<PoseJumps>() {
-        count.0 += jumps.0;
+    // A world with no `App` (a test) has no count. Only a jump writes: a write is a change.
+    if jumps.0 > 0
+        && let Some(mut count) = world.get_resource_mut::<PoseJumps>()
+    {
+        count.add(jumps.0);
     }
     // No change for the readers of the room: it was not loaded again.
     let mut current = world.resource_mut::<CurrentRoom>();

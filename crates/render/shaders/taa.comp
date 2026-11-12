@@ -74,8 +74,7 @@ layout(push_constant) uniform Push {
     // its sample count in a.
     uint direct;
     float frame_samples; // samples that one frame adds to that mean
-    // 1: an object jumped in this frame (maki_core::PoseJumps). A pixel at rest drops
-    // its history too if its surface changed.
+    // 1: an object jumped this frame (PoseJumps): a still pixel with a new surface drops history.
     uint jump;
 } push;
 
@@ -228,8 +227,7 @@ void main() {
             ? 0.0
             : 1.0 - clamp(frames / NEW_LIGHT_FRAMES, 0.0, 1.0);
         float blend = max(push.blend, max(moving, new_light) * push.motion_blend);
-        // Another surface was at that place: no history, if the point moves or an
-        // object jumped.
+        // A moving point, or any point after a jump, on another surface: no history.
         float tested = push.jump != 0u ? 1.0 : moving;
         if (tested > 0.0 && !same_surface(surface, ivec2(floor(was * vec2(src_size))), src_size)) {
             blend = max(blend, tested);

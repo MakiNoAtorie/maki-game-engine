@@ -320,3 +320,72 @@ fn reset_play_gives_back_the_rest_pose() {
         assert_eq!(pose(&app, 10), rest);
     });
 }
+
+#[test]
+fn a_changed_clip_file_plays_at_the_same_time() {
+    animated("reload", &[("stairs", stairs())], BOX, "").run(|mut app| {
+        steps(&mut app, 7);
+        assert_eq!(pose(&app, 10).current.translation.y, 1.0);
+        let mut tall = stairs();
+        tall.tracks[0].keys[1].value = vector(0.0, 10.0, 0.0);
+        let path = directory("l62d-reload").join("data/stairs.clip.ron");
+        std::fs::write(&path, maki_assets::data_text(&tall)).unwrap();
+        // What the watch does at a change (`AssetsModule` is not in this app).
+        app.resource_mut::<maki_assets::DataAssets>().forget(&path);
+        // Not the first key again: the time of play is kept.
+        steps(&mut app, 2);
+        assert_eq!(pose(&app, 10).current.translation.y, 10.0);
+    });
+}
+
+#[test]
+fn the_first_step_pose_away_from_the_rest_pose_counts_one_jump() {
+    let clip = Clip {
+        mode: KeyMode::Step,
+        fps: None,
+        length: 0.0,
+        tracks: vec![track(Channel::Position, &[(0.0, vector(0.0, 1.0, 0.0))])],
+    };
+    let object = BOX.replace("stairs", "up");
+    animated("first", &[("up", clip)], &object, "").run(|mut app| {
+        steps(&mut app, 3);
+        assert_eq!(pose(&app, 10).current.translation.y, 1.0);
+        assert_eq!(jumps(&app), 1);
+    });
+}
+
+#[test]
+fn the_room_check_warns_of_an_animator_with_a_fixed_collider() {
+    let objects = r#"
+        (id: 20, name: "crate", components: {"prop": (mesh: Cube(1.0)), "animator": (clip: "data/stairs.clip.ron")}),
+        (id: 21, name: "wall", components: {"collider": (), "animator": (clip: "data/stairs.clip.ron")}),
+        (id: 22, name: "ghost", components: {"prop": (mesh: Cube(1.0), collider: false), "animator": (clip: "data/stairs.clip.ron")}),
+        (id: 23, name: "ball", components: {"collider": (), "body": Fixed, "animator": (clip: "data/stairs.clip.ron")}),"#;
+    let mut app = animated("check", &[("stairs", stairs())], objects, "");
+    // The check knows the types of components after the modules are built.
+    app.update();
+    let path = directory("l62d-check").join("a.ron");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let room = maki_scene::parse_room(&text).unwrap();
+    let check = maki_scene::RoomCheck {
+        path: &path,
+        room: &room,
+        text: &text,
+    };
+    let validators = app.world().resource::<maki_scene::RoomValidators>();
+    let problems: Vec<_> = validators
+        .0
+        .iter()
+        .flat_map(|validate| validate(&check))
+        .collect();
+    let fixed: Vec<_> = problems
+        .iter()
+        .filter(|problem| problem.warning && problem.text.contains("fixed collider"))
+        .map(|problem| problem.text.as_str())
+        .collect();
+    assert_eq!(fixed.len(), 2, "{fixed:?}");
+    assert!(
+        fixed[0].contains("`crate`") && fixed[1].contains("`wall`"),
+        "{fixed:?}"
+    );
+}

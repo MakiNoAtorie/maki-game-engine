@@ -12,8 +12,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, FieldError, FieldWrite, Light, Mover, MoverState, ObjectId,
-    RoomRequest, RoomTarget, ScreenFade, write_field,
+    CurrentRoom, FieldError, FieldWrite, Light, Mover, MoverState, ObjectId, RoomRequest,
+    RoomTarget, ScreenFade, write_field,
 };
 use serde::{Deserialize, Serialize};
 
@@ -243,13 +243,6 @@ fn set_field(
     [component, field]: [&String; 2],
     value: &Value,
 ) {
-    if !world.resource::<ComponentTypes>().is_live(component) {
-        tracing::warn!(
-            component,
-            "SetField: the component has no value in the game"
-        );
-        return;
-    }
     // The entities of the reference first: an instance has its id and the prefab names.
     for entity in crate::objects::entities_of(world, object) {
         match write_field(world, entity, component, field, value) {
@@ -269,7 +262,12 @@ fn set_field(
             Err(FieldError::Rejected(error)) => {
                 tracing::warn!(%object, component, field, "SetField: {error}");
             }
-            Err(FieldError::NotLive) => unreachable!("checked above"),
+            Err(FieldError::NotLive) => {
+                tracing::warn!(
+                    component,
+                    "SetField: the component has no value in the game"
+                );
+            }
         }
         return;
     }
