@@ -31,6 +31,10 @@ jump     The gate of a pose jump: `reference jump_720p`, `reference light_step_7
          after the jump, and in `light_step_720p` (the lamp steps at the same frame)
          at the same crop; a control crop away from the cube; the old light change
          (240 frames of motion). `ok`: the jump at 4 frames is at most the light step.
+skinjump The gate of a skinned pose jump: `reference skin_jump_720p`, `reference
+         jump_720p`, then `skinjump`. The error at the place that the arm of the figure
+         left, 4 frames after the jump, against the cube of `jump_720p` at 4 frames.
+         `ok`: the arm is at most the cube.
 same     Compares the pictures that two runs of one scenario dumped (exact labels):
          `ok`, or the number of pixels that differ, the largest difference, and the means.
 selftest Checks the statistics against known answers.
@@ -125,6 +129,10 @@ SCENARIOS = {
     # The same room with the cube at rest and the lamp intensity stepped at the frame of
     # the jump: the baseline of the jump gate, after the same settled history.
     "light_step_720p": ((1280, 720), "light_step", {}),
+    # The figure of the game snaps its right arm up by a one-key step clip after 1 s
+    # (`SKIN_JUMP_ROOM` below), at the place of the cube of `jump_720p`; camera and light
+    # at rest. The gate of stage 63: `bench.py skinjump`.
+    "skin_jump_720p": ((1280, 720), "skin_jump", {}),
 }
 
 
@@ -180,6 +188,19 @@ LIGHT_STEP_ROOM = JUMP_ROOM.replace(""",
 JUMP_FRAME = 62
 JUMP_CROP = "565,300,80,80"
 CONTROL_CROP = "900,480,80,80"
+# The skinned jump: the clip names a joint of the figure; 150 degrees about Z lifts the
+# hanging arm up and outward, held after 1 s as the cube of `jump_720p`.
+SKIN_JUMP_CLIP = """(mode: Step, length: 1.0, tracks: [(channel: Rotation, target: "arm_r", keys: [
+    (time: 0.0, value: Vector((0.0, 0.0, 0.0))), (time: 1.0, value: Vector((0.0, 0.0, 150.0)))])])
+"""
+SKIN_JUMP_ROOM = JUMP_ROOM.replace(
+    """(pose: (position: (-1.0, 0.3, 0.5)), components: {"prop": (mesh: Cube(0.6), look: (color: (0.8, 0.3, 0.2))),
+            "animator": (clip: "jump.clip.ron", looping: false)}),""",
+    """(pose: (position: (-1.0, 0.0, 0.5)), components: {"prop": (mesh: File("figure.glb")),
+            "animator": (clip: "skin_jump.clip.ron", looping: false)}),""")
+assert SKIN_JUMP_ROOM != JUMP_ROOM, "the cube of jump_720p moved: update SKIN_JUMP_ROOM"
+# The place that the arm left, in pixels of the 1280 x 720 picture.
+SKIN_JUMP_CROP = "604,264,32,64"
 
 
 # The room file of a scenario with a generated scene: room A of the game (its size, its
@@ -312,6 +333,12 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         room_path.write_text(LIGHT_STEP_ROOM)
         (work / "step.clip.ron").write_text(LIGHT_STEP_CLIP)
         params += ";light_step"
+    elif scene == "skin_jump":
+        room_path = work / "room.ron"
+        room_path.write_text(SKIN_JUMP_ROOM)
+        (work / "skin_jump.clip.ron").write_text(SKIN_JUMP_CLIP)
+        (work / "figure.glb").write_bytes((ROOT / "game" / "assets" / "rooms" / "models" / "figure.glb").read_bytes())
+        params += ";skin_jump"
     elif scene:
         scene_text = ";".join(f"{key}={value}" for key, value in scene.items())
         # The generator is seeded: a file with these arguments in its name has this content.
@@ -588,7 +615,7 @@ def command_reference(args):
     if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:
         frames += WALK_FRAMES
     # The reference shows the cube at its second place.
-    if args.scenario in ("jump_720p", "light_step_720p"):
+    if args.scenario in ("jump_720p", "light_step_720p", "skin_jump_720p"):
         frames += JUMP_FRAME
     run_scenario(args.scenario, frames, 0, "reference", overrides, ["--bench-static"], path)
     print(f"{path.relative_to(ROOT).as_posix()}: {REFERENCE_SAMPLES} samples")
@@ -673,6 +700,23 @@ def command_jump(_args):
     writer.writerows(rows)
     print("ok" if jump[0] <= step[0] else "FAIL")
     if jump[0] > step[0]:
+        raise SystemExit(1)
+
+
+def command_skinjump(_args):
+    """The gate of stage 63: the error at the place that the arm of the figure left, 4
+    frames after its jump, against the crop of the cube of `jump_720p` 4 frames after its
+    jump (each against its own reference): a skinned jump smears no more than a rigid one."""
+    errors = []
+    for label, scenario, crop in (("skingate0", "skin_jump_720p", SKIN_JUMP_CROP), ("skingate1", "jump_720p", JUMP_CROP)):
+        common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference=None, crop=crop, light_frames=None)
+        errors.append(command_quality(argparse.Namespace(label=label, frames=JUMP_FRAME + 4, **common)))
+        command_drop(argparse.Namespace(label=label))
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(["measure", "frame", "relmse"])
+    writer.writerows([["skin_jump", JUMP_FRAME + 4, f"{errors[0]:.6g}"], ["jump", JUMP_FRAME + 4, f"{errors[1]:.6g}"]])
+    print("ok" if errors[0] <= errors[1] else "FAIL")
+    if errors[0] > errors[1]:
         raise SystemExit(1)
 
 
@@ -816,6 +860,7 @@ if __name__ == "__main__":
     gate.add_argument("--commit", help="another base than the merge-base with origin/main")
     gate.set_defaults(function=command_gate)
     commands.add_parser("jump", help="the picture gate of a pose jump (stage 62); needs `reference jump_720p` and `reference light_step_720p`").set_defaults(function=command_jump)
+    commands.add_parser("skinjump", help="the picture gate of a skinned pose jump (stage 63); needs `reference skin_jump_720p` and `reference jump_720p`").set_defaults(function=command_skinjump)
     commands.add_parser("selftest").set_defaults(function=command_selftest)
     arguments = parser.parse_args()
     arguments.function(arguments)

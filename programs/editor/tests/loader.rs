@@ -19,9 +19,15 @@ fn app() -> App {
     app
 }
 
-/// A DLL of this build: beside this test program.
+/// A DLL of this build: in the folder of this test program or above it.
+// Cargo 1.100 puts a test program below the folder of the DLLs, older ones beside them.
 fn beside(name: &str) -> PathBuf {
-    std::env::current_exe().unwrap().with_file_name(name)
+    let exe = std::env::current_exe().unwrap();
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(name))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| exe.with_file_name(name))
 }
 
 /// True: the app has the event command of the script crate.
@@ -48,7 +54,7 @@ fn the_script_dll_of_the_project_is_loaded_and_a_wrong_dll_is_refused() {
     assert!(has_shake(&loaded));
 
     // An older file than the engine DLL: of another build of the engine.
-    let old = std::env::temp_dir().join(format!("maki-old-{}.dll", std::process::id()));
+    let old = dll.with_file_name(format!("maki-old-{}.dll", std::process::id()));
     std::fs::copy(&dll, &old).unwrap();
     let before = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
     let file = std::fs::File::options().write(true).open(&old).unwrap();

@@ -11,15 +11,20 @@ use glam::{Mat3, Mat4, Vec3};
 use gltf::material::AlphaMode;
 use gltf::mesh::Mode;
 use gltf::texture::MagFilter;
+use maki_core::Transform;
 
+use crate::skin::{Joint, Skeleton};
 use crate::texture::{Source, decode_file};
 use crate::{Assets, Handle, Material, Mesh, Texture, TextureRef, Textures};
 
 /// The content of one model file: a mesh for each primitive of each mesh node, and
 /// the point lights. All are in the space of the model, so one transform places the model.
+/// The meshes of a skin are in its bind pose.
 pub struct Model {
     pub meshes: Vec<Handle<Mesh>>,
     pub lights: Vec<ModelLight>,
+    /// The joints of the skin of the file, if it has one.
+    pub skeleton: Option<Skeleton>,
 }
 
 /// A point light of a model file (glTF `KHR_lights_punctual`, type `point`).
@@ -85,6 +90,7 @@ fn finish(
             Some(Model {
                 meshes: read.meshes.into_iter().map(store).collect(),
                 lights: read.lights,
+                skeleton: read.skeleton,
             })
         }
         Err(error) => {
@@ -196,6 +202,7 @@ pub fn check_model(path: &Path) -> Result<()> {
 struct ReadModel {
     meshes: Vec<ReadMesh>,
     lights: Vec<ModelLight>,
+    skeleton: Option<Skeleton>,
     /// The images that the meshes use, decoded, each with where it came from.
     images: Vec<(Source, Result<Texture>)>,
 }
@@ -314,12 +321,28 @@ fn read_gltf(path: &Path) -> Result<ReadModel> {
         .or_else(|| document.scenes().next())
         .context("the file has no scene")?;
 
+    // ponytail: one skin for each file. Read more when a file has two characters.
+    let skin = document.skins().next();
+    if document.skins().len() > 1 {
+        tracing::warn!(
+            "{}: the file has {} skins; only the first is read, the meshes of the others are rigid",
+            path.display(),
+            document.skins().len()
+        );
+    }
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
-    // Nodes to visit, each with the transform of its parent.
-    let mut stack: Vec<_> = scene.nodes().map(|node| (node, Mat4::IDENTITY)).collect();
+    // The model-space transform and the parent of each node of the scene.
+    let mut nodes: Vec<Option<(Mat4, Option<usize>)>> = vec![None; document.nodes().len()];
+    // The primitives of the skin: read when all joints are known.
+    let mut skinned = Vec::new();
+    // Nodes to visit, each with its parent and the transform of its parent.
+    let mut stack: Vec<_> = scene
+        .nodes()
+        .map(|node| (node, None, Mat4::IDENTITY))
+        .collect();
     let mut visited = 0;
-    while let Some((node, parent)) = stack.pop() {
+    while let Some((node, parent_node, parent)) = stack.pop() {
         // In a valid file each node has one parent. Without this check, a file where
         // a node is its own descendant would make the loop endless.
         visited += 1;
@@ -328,6 +351,9 @@ fn read_gltf(path: &Path) -> Result<ReadModel> {
             "the node hierarchy is not a tree"
         );
         let to_model = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        nodes[node.index()] = Some((to_model, parent_node));
+        let of_skin = node.skin().is_some()
+            && node.skin().map(|s| s.index()) == skin.as_ref().map(|s| s.index());
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
                 let name = format!("{}/{}", mesh.name().unwrap_or("mesh"), primitive.index());
@@ -338,7 +364,11 @@ fn read_gltf(path: &Path) -> Result<ReadModel> {
                     );
                     continue;
                 }
-                meshes.push(read_primitive(&primitive, &mut images, to_model, name)?);
+                if of_skin {
+                    skinned.push((primitive, name));
+                } else {
+                    meshes.push(read_primitive(&primitive, &mut images, to_model, name)?);
+                }
             }
         }
         // Spot and directional lights are skipped: the renderer has sphere lights only.
@@ -351,14 +381,161 @@ fn read_gltf(path: &Path) -> Result<ReadModel> {
                 intensity: light.intensity(),
             });
         }
-        stack.extend(node.children().map(|child| (child, to_model)));
+        stack.extend(
+            node.children()
+                .map(|child| (child, Some(node.index()), to_model)),
+        );
     }
+    let skeleton = match &skin {
+        Some(skin) => {
+            let (skeleton, new_index) = read_skeleton(skin, &nodes, path, &buffers)?;
+            for (primitive, name) in skinned {
+                // glTF ignores the node transform of a skinned mesh: bind-pose vertices.
+                let mut read = read_primitive(&primitive, &mut images, Mat4::IDENTITY, name)?;
+                read.mesh = read_skin(&primitive, read.mesh, &new_index, &buffers)?;
+                meshes.push(read);
+            }
+            Some(skeleton)
+        }
+        None => None,
+    };
     ensure!(!meshes.is_empty(), "the file has no triangle mesh");
     Ok(ReadModel {
         meshes,
         lights,
+        skeleton,
         images: images.read,
     })
+}
+
+/// The joints of `skin` in parent-first order, and the new index of each joint of
+/// the file. `nodes` has the model-space transform and the parent of each node.
+fn read_skeleton(
+    skin: &gltf::Skin,
+    nodes: &[Option<(Mat4, Option<usize>)>],
+    path: &Path,
+    buffers: &[gltf::buffer::Data],
+) -> Result<(Skeleton, Vec<usize>)> {
+    let joint_nodes: Vec<usize> = skin.joints().map(|node| node.index()).collect();
+    ensure!(!joint_nodes.is_empty(), "the skin has no joint");
+    let mut places = Vec::new();
+    for &node in &joint_nodes {
+        let place =
+            nodes[node].with_context(|| format!("the joint node {node} is not in the scene"))?;
+        places.push(place);
+    }
+    // The nearest ancestor that is a joint, as an index of the file.
+    let joint_parent = |joint: usize| {
+        let mut ancestor = places[joint].1;
+        while let Some(at) = ancestor {
+            if let Some(parent) = joint_nodes.iter().position(|node| *node == at) {
+                return Some(parent);
+            }
+            ancestor = nodes[at].and_then(|(_, parent)| parent);
+        }
+        None
+    };
+    let depth = |mut joint: usize| {
+        let mut depth = 0;
+        while let Some(parent) = joint_parent(joint) {
+            (joint, depth) = (parent, depth + 1);
+        }
+        depth
+    };
+    // Parent-first: a parent is less deep than its children.
+    let mut order: Vec<usize> = (0..joint_nodes.len()).collect();
+    order.sort_by_key(|joint| depth(*joint));
+    let mut new_index = vec![0; order.len()];
+    for (new, old) in order.iter().enumerate() {
+        new_index[*old] = new;
+    }
+
+    let reader = skin.reader(|buffer| buffers.get(buffer.index()).map(|data| &data.0[..]));
+    let file_binds: Vec<Mat4> = match reader.read_inverse_bind_matrices() {
+        Some(matrices) => matrices.map(|m| Mat4::from_cols_array_2d(&m)).collect(),
+        // glTF: no matrices are identity matrices.
+        None => vec![Mat4::IDENTITY; joint_nodes.len()],
+    };
+    ensure!(
+        file_binds.len() == joint_nodes.len(),
+        "the skin has {} joints but {} inverse bind matrices",
+        joint_nodes.len(),
+        file_binds.len()
+    );
+    let names: Vec<Option<String>> = skin
+        .joints()
+        .map(|node| node.name().map(str::to_owned))
+        .collect();
+    let mut joints = Vec::new();
+    for &old in &order {
+        let parent = joint_parent(old);
+        // Nodes between a joint and its parent joint (an armature) go into its rest.
+        let to_parent = parent.map_or(Mat4::IDENTITY, |parent| places[parent].0);
+        let rest = to_parent.inverse() * places[old].0;
+        let (scale, rotation, translation) = rest.to_scale_rotation_translation();
+        let name = names[old]
+            .clone()
+            .unwrap_or_else(|| crate::skin::unnamed_joint(joint_nodes[old]));
+        if scale.max_element() - scale.min_element() > 1e-3 * scale.max_element() {
+            tracing::warn!(
+                "{}: the joint `{name}` has a non-uniform scale: its normals bend wrong",
+                path.display()
+            );
+        }
+        joints.push(Joint {
+            name,
+            parent: parent.map(|parent| new_index[parent]),
+            rest: Transform {
+                translation,
+                rotation,
+                scale,
+            },
+        });
+    }
+    let inverse_binds = order.iter().map(|old| file_binds[*old]).collect();
+    Ok((
+        Skeleton {
+            joints,
+            inverse_binds,
+        },
+        new_index,
+    ))
+}
+
+/// `mesh` with the joints and weights of `primitive`, the joints as indices of the
+/// skeleton (`new_index`).
+fn read_skin(
+    primitive: &gltf::Primitive,
+    mesh: Mesh,
+    new_index: &[usize],
+    buffers: &[gltf::buffer::Data],
+) -> Result<Mesh> {
+    let name = mesh.name().to_owned();
+    let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|data| &data.0[..]));
+    let (Some(joints), Some(weights)) = (reader.read_joints(0), reader.read_weights(0)) else {
+        bail!("the skinned mesh `{name}` has no JOINTS_0 or WEIGHTS_0");
+    };
+    // ponytail: four joints for each vertex; `JOINTS_1` is not read.
+    let weights: Vec<[f32; 4]> = weights.into_f32().collect();
+    let mut skin_joints = Vec::new();
+    for (set, vertex_weights) in joints.into_u16().zip(&weights) {
+        let mut out = [0; 4];
+        for slot in 0..4 {
+            // A slot with no weight is not read: its index can be anything.
+            if vertex_weights[slot] == 0.0 {
+                continue;
+            }
+            let joint = set[slot] as usize;
+            ensure!(
+                joint < new_index.len(),
+                "mesh `{name}` names joint {joint}, past the {} joints of the skin",
+                new_index.len()
+            );
+            out[slot] = new_index[joint] as u32;
+        }
+        skin_joints.push(out);
+    }
+    mesh.with_skin(skin_joints, weights)
 }
 
 /// Makes one mesh, with the node transform applied to its vertices.
@@ -593,7 +770,9 @@ mod tests {
             fs::remove_file(path.with_extension("bin")).unwrap();
             let model = models.get(model).expect("the model is ready");
             assert_eq!(model.meshes.len(), 1);
+            assert!(model.skeleton.is_none());
             let mesh = meshes.get(model.meshes[0]).unwrap();
+            assert!(mesh.joints().is_empty() && mesh.weights().is_empty());
 
             assert_eq!(mesh.name(), "fixture/0");
             assert_eq!(mesh.indices(), source.indices());
@@ -606,6 +785,127 @@ mod tests {
             for (loaded, original) in mesh.normals().iter().zip(source.normals()) {
                 assert!(loaded.distance(*original) < 1e-6);
             }
+        }
+    }
+
+    /// Writes a skinned triangle: an armature node `rig` at (0, 1, 0) holds the joint
+    /// `root`, which holds an unnamed joint (node 3) at (1, 0, 0) from it. The skin
+    /// names the child joint first. The mesh node has a translation that glTF ignores.
+    /// `joints` and `weights` are the four of each of the three vertices, as indices
+    /// of the skin.
+    fn write_skinned_gltf(name: &str, joints: [[u16; 4]; 3], weights: [[f32; 4]; 3]) -> PathBuf {
+        let positions = [Vec3::ZERO, Vec3::X, Vec3::Y];
+        // In the order of the skin: node 3, then node 2.
+        let inverse_binds = [
+            Mat4::from_translation(Vec3::new(-1.0, -1.0, 0.0)),
+            Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
+        ];
+        let mut bin: Vec<u8> = positions
+            .iter()
+            .flat_map(|p| p.to_array())
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        bin.extend(joints.as_flattened().iter().flat_map(|j| j.to_le_bytes()));
+        bin.extend(weights.as_flattened().iter().flat_map(|w| w.to_le_bytes()));
+        bin.extend(
+            inverse_binds
+                .iter()
+                .flat_map(|m| m.to_cols_array())
+                .flat_map(f32::to_le_bytes),
+        );
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0,1]}}],
+"nodes":[{{"name":"rig","translation":[0,1,0],"children":[2]}},
+{{"mesh":0,"skin":0,"translation":[5,5,5]}},
+{{"name":"root","children":[3]}},
+{{"translation":[1,0,0]}}],
+"skins":[{{"joints":[3,2],"inverseBindMatrices":3}}],
+"meshes":[{{"name":"skinned","primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}}}}]}}],
+"buffers":[{{"uri":"{name}.bin","byteLength":{}}}],
+"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":24}},
+{{"buffer":0,"byteOffset":60,"byteLength":48}},{{"buffer":0,"byteOffset":108,"byteLength":128}}],
+"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}},
+{{"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"}},
+{{"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"}},
+{{"bufferView":3,"componentType":5126,"count":2,"type":"MAT4"}}]}}"#,
+            bin.len()
+        );
+        let dir = std::env::temp_dir().join(format!("maki-assets-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.bin")), bin).unwrap();
+        let path = dir.join(format!("{name}.gltf"));
+        fs::write(&path, json).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_skinned_gltf_reads_its_skeleton_and_weights_in_bind_space() {
+        let path = write_skinned_gltf(
+            "skinned",
+            [[0, 0, 0, 0], [1, 0, 0, 0], [1, 7, 0, 0]],
+            // Not normalized; joint 7 of the last vertex has no weight, so it is not read.
+            [
+                [2.0, 0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ],
+        );
+        let (mut models, mut meshes) = (Assets::default(), Assets::default());
+        let model = load_gltf(&path, &mut models, &mut meshes, &mut Textures::default());
+        let model = models.get(model).expect("the model is ready");
+        let skeleton = model.skeleton.as_ref().expect("the file has a skin");
+
+        // Parent-first: the skin named the child first. The armature `rig` is in the rest of the root.
+        let names: Vec<_> = skeleton.joints.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, ["root", "joint3"]);
+        assert_eq!(skeleton.joints[0].parent, None);
+        assert_eq!(skeleton.joints[1].parent, Some(0));
+        assert!(skeleton.joints[0].rest.translation.distance(Vec3::Y) < 1e-6);
+        assert!(skeleton.joints[1].rest.translation.distance(Vec3::X) < 1e-6);
+        assert_eq!(
+            skeleton.inverse_binds,
+            [
+                Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
+                Mat4::from_translation(Vec3::new(-1.0, -1.0, 0.0)),
+            ]
+        );
+        // At rest each joint times its inverse bind is the identity: the mesh does not move.
+        let mut world = Vec::new();
+        for (joint, inverse_bind) in skeleton.joints.iter().zip(&skeleton.inverse_binds) {
+            let parent = joint.parent.map_or(Mat4::IDENTITY, |p| world[p]);
+            world.push(parent * joint.rest.matrix());
+            assert!((world.last().unwrap() * *inverse_bind).abs_diff_eq(Mat4::IDENTITY, 1e-6));
+        }
+
+        let mesh = meshes.get(model.meshes[0]).unwrap();
+        // The translation of the mesh node is ignored.
+        assert_eq!(mesh.positions(), [Vec3::ZERO, Vec3::X, Vec3::Y]);
+        // Joints as indices of the skeleton, weights with a sum of 1.
+        assert_eq!(mesh.joints(), [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]);
+        assert_eq!(
+            mesh.weights(),
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.5, 0.5, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0]
+            ]
+        );
+
+        // A joint with a weight past the two joints of the skin: the model fails.
+        let bad = write_skinned_gltf(
+            "past",
+            [[0; 4], [0; 4], [0, 2, 0, 0]],
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.5, 0.5, 0.0, 0.0],
+            ],
+        );
+        let failed = load_gltf(&bad, &mut models, &mut meshes, &mut Textures::default());
+        assert_eq!(models.state(failed), Some(LoadState::Failed));
+        for path in [path, bad] {
+            fs::remove_file(&path).unwrap();
+            fs::remove_file(path.with_extension("bin")).unwrap();
         }
     }
 

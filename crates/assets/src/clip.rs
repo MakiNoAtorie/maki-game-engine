@@ -22,8 +22,14 @@
 //!     ],
 //! )
 //! ```
+//!
+//! A glTF file has clips too: [`gltf_clips`] reads its animations, and a reference
+//! `models/figure.glb#wave` names one.
+
+use std::path::Path;
 
 use glam::{EulerRot, Quat, Vec3};
+use gltf::animation::{Interpolation, util::ReadOutputs};
 use maki_core::Fields;
 use maki_core::fields::Value;
 use serde::{Deserialize, Serialize};
@@ -51,6 +57,10 @@ pub struct Clip {
 
 impl DataAsset for Clip {
     const NAME: &'static str = "clip";
+
+    fn read_parts(path: &Path) -> Result<Vec<(String, Self)>, String> {
+        gltf_clips(path).map_err(|error| format!("{}: {error}", path.display()))
+    }
 }
 
 impl Clip {
@@ -81,6 +91,10 @@ pub enum KeyMode {
 #[fields(default)]
 pub struct Track {
     pub channel: Channel,
+    /// A joint of the model of the object, by its name in the model file. None: the
+    /// object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// None: the mode of the clip.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<KeyMode>,
@@ -215,6 +229,118 @@ fn rotation([x, y, z]: [f32; 3]) -> Quat {
     Quat::from_euler(EulerRot::YXZ, y, x, z)
 }
 
+/// A rotation as degrees around X, Y, and Z: the key that [`rotation`] reads back.
+fn degrees(rotation: Quat) -> [f32; 3] {
+    let (y, x, z) = rotation.to_euler(EulerRot::YXZ);
+    [x, y, z].map(f32::to_degrees)
+}
+
+/// The name of a joint: its node name, else [`crate::skin::unnamed_joint`].
+fn joint_name(node: &gltf::Node) -> String {
+    node.name()
+        .map_or_else(|| crate::skin::unnamed_joint(node.index()), str::to_owned)
+}
+
+/// The clips of the animations of a glTF file, by animation name (`animation<index>`
+/// for one with no name). Each channel is a track on its joint; see [`gltf_track`].
+pub fn gltf_clips(path: &Path) -> anyhow::Result<Vec<(String, Clip)>> {
+    let (clips, warnings) = read_gltf_clips(path)?;
+    for warning in warnings {
+        tracing::warn!(file = %path.display(), "{warning}");
+    }
+    Ok(clips)
+}
+
+/// Clips by name.
+type NamedClips = Vec<(String, Clip)>;
+
+/// [`gltf_clips`] with its warnings returned, not logged.
+fn read_gltf_clips(path: &Path) -> anyhow::Result<(NamedClips, Vec<String>)> {
+    let gltf::Gltf { document, blob } = gltf::Gltf::open(path)?;
+    // Not `gltf::import`: that decodes all images of the file.
+    let buffers = gltf::import_buffers(&document, path.parent(), blob)?;
+    let mut warnings = Vec::new();
+    let clips = document.animations().map(|animation| {
+        let name = animation
+            .name()
+            .map_or_else(|| format!("animation{}", animation.index()), str::to_owned);
+        let tracks = animation.channels().filter_map(|channel| {
+            gltf_track(&channel, &buffers, &mut warnings)
+                .map_err(|warning| warnings.push(format!("{name}: {warning}")))
+                .ok()
+        });
+        let clip = Clip {
+            tracks: tracks.collect(),
+            ..Clip::default()
+        };
+        (name, clip)
+    });
+    let clips = clips.collect();
+    Ok((clips, warnings))
+}
+
+/// A glTF channel as a track on its joint. `STEP` is a step track, `LINEAR` a linear
+/// one, `CUBICSPLINE` a linear one on its values (with a warning). The values are
+/// relative to the rest of the joint (rest^-1 x value), as the animator writes
+/// `rest x key`. The local rest of the node is enough also for a root joint, whose
+/// `Skeleton` rest folds in its non-joint ancestors: a translation, a turn, and a
+/// uniform scale cancel out of rest^-1 x value. `Err`: the warning of a channel that
+/// gives no track.
+fn gltf_track(
+    channel: &gltf::animation::Channel,
+    buffers: &[gltf::buffer::Data],
+    warnings: &mut Vec<String>,
+) -> Result<Track, String> {
+    let node = channel.target().node();
+    let joint = joint_name(&node);
+    let reader = channel.reader(|buffer| buffers.get(buffer.index()).map(|data| &data[..]));
+    let times = reader
+        .read_inputs()
+        .ok_or(format!("{joint}: no key times"))?;
+    let outputs = reader
+        .read_outputs()
+        .ok_or(format!("{joint}: no key values"))?;
+    // A CUBICSPLINE key is three values: in-tangent, value, out-tangent.
+    let (mode, stride) = match channel.sampler().interpolation() {
+        Interpolation::Step => (KeyMode::Step, 1),
+        Interpolation::Linear => (KeyMode::Linear, 1),
+        Interpolation::CubicSpline => {
+            warnings.push(format!("{joint}: CUBICSPLINE is read as LINEAR"));
+            (KeyMode::Linear, 3)
+        }
+    };
+    let (t, r, s) = node.transform().decomposed();
+    let (rest_t, rest_r, rest_s) = (Vec3::from(t), Quat::from_array(r), Vec3::from(s));
+    let (channel, values): (Channel, Vec<[f32; 3]>) = match outputs {
+        ReadOutputs::Translations(values) => {
+            let relative = |t| (rest_r.inverse() * (Vec3::from(t) - rest_t) / rest_s).into();
+            (Channel::Position, values.map(relative).collect())
+        }
+        ReadOutputs::Rotations(values) => {
+            let relative = |r| degrees(rest_r.inverse() * Quat::from_array(r).normalize());
+            (Channel::Rotation, values.into_f32().map(relative).collect())
+        }
+        ReadOutputs::Scales(values) => {
+            let relative = |s| (Vec3::from(s) / rest_s).into();
+            (Channel::Scale, values.map(relative).collect())
+        }
+        ReadOutputs::MorphTargetWeights(_) => {
+            return Err(format!("{joint}: morph target weights are not read"));
+        }
+    };
+    let values = values.into_iter().skip(stride / 2).step_by(stride);
+    let keys = times.zip(values).map(|(time, value)| Key {
+        time,
+        value: KeyValue::Vector(value),
+    });
+    Ok(Track {
+        channel,
+        mode: Some(mode),
+        target: Some(joint),
+        keys: keys.collect(),
+    })
+}
+
 /// A part of a frame: a time that float sums put just below a frame start lands on it.
 const FRAME_EPSILON: f32 = 1e-3;
 
@@ -262,6 +388,7 @@ mod tests {
         Track {
             channel,
             mode,
+            target: None,
             keys: keys.collect(),
         }
     }
@@ -490,5 +617,320 @@ mod tests {
         // A number for a position: no value, not a panic.
         let wrong = track(Channel::Position, None, &[(0.0, KeyValue::Number(1.0))]);
         assert_eq!(wrong.sample(0.0, KeyMode::Step), None);
+    }
+
+    /// A test channel of glTF: node, path, interpolation, key times, flat values.
+    type GltfChannel<'a> = (usize, &'a str, &'a str, &'a [f32], &'a [f32]);
+
+    /// The rest rotation of the joint `arm`: 90 degrees around Z.
+    fn arm_rest() -> Quat {
+        Quat::from_rotation_z(90f32.to_radians())
+    }
+
+    /// The nodes of the figure: the joints `root`, `arm` (at (0, 1, 0), turned by
+    /// [`arm_rest`]) and an unnamed node 2 (at (1, 0, 0), scale 2).
+    fn figure() -> String {
+        format!(
+            r#"[{{"name":"root","children":[1,2]}},{{"name":"arm","translation":[0,1,0],"rotation":{:?}}},{{"translation":[1,0,0],"scale":[2,2,2]}}]"#,
+            arm_rest().to_array()
+        )
+    }
+
+    /// Writes `dir/models/figure.gltf` and its `.bin` with `nodes` (JSON; node 0 is the
+    /// scene root) and `animations`. Returns the path of the `.gltf` file.
+    fn write_gltf(
+        dir: &Path,
+        nodes: &str,
+        animations: &[(&str, &[GltfChannel])],
+    ) -> std::path::PathBuf {
+        let mut bin: Vec<u8> = Vec::new();
+        let mut views = Vec::new();
+        let mut accessors = Vec::new();
+        let mut add = |values: &[f32], kind: &str, count: usize, bounds: String| {
+            views.push(format!(
+                r#"{{"buffer":0,"byteOffset":{},"byteLength":{}}}"#,
+                bin.len(),
+                values.len() * 4
+            ));
+            bin.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+            accessors.push(format!(
+                r#"{{"bufferView":{},"componentType":5126,"count":{count},"type":"{kind}"{bounds}}}"#,
+                views.len() - 1
+            ));
+            accessors.len() - 1
+        };
+        let mut json_animations = Vec::new();
+        for (name, channels) in animations {
+            let (mut samplers, mut targets) = (Vec::new(), Vec::new());
+            for (node, path, interpolation, times, values) in channels.iter() {
+                let bounds = format!(
+                    r#","min":[{:?}],"max":[{:?}]"#,
+                    times[0],
+                    times[times.len() - 1]
+                );
+                let input = add(times, "SCALAR", times.len(), bounds);
+                let (kind, width) = if *path == "rotation" {
+                    ("VEC4", 4)
+                } else {
+                    ("VEC3", 3)
+                };
+                let output = add(values, kind, values.len() / width, String::new());
+                targets.push(format!(
+                    r#"{{"sampler":{},"target":{{"node":{node},"path":"{path}"}}}}"#,
+                    samplers.len()
+                ));
+                samplers.push(format!(
+                    r#"{{"input":{input},"output":{output},"interpolation":"{interpolation}"}}"#
+                ));
+            }
+            json_animations.push(format!(
+                r#"{{"name":"{name}","samplers":[{}],"channels":[{}]}}"#,
+                samplers.join(","),
+                targets.join(",")
+            ));
+        }
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
+"nodes":{nodes},
+"animations":[{}],
+"buffers":[{{"uri":"figure.bin","byteLength":{}}}],
+"bufferViews":[{}],
+"accessors":[{}]}}"#,
+            json_animations.join(","),
+            bin.len(),
+            views.join(","),
+            accessors.join(",")
+        );
+        let models = dir.join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("figure.bin"), bin).unwrap();
+        let path = models.join("figure.gltf");
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("maki-l63b-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The vector keys of a track, checked against `expected` within float noise.
+    fn assert_keys(track: &Track, expected: &[[f32; 3]]) {
+        let values: Vec<Vec3> = track
+            .keys
+            .iter()
+            .map(|key| match key.value {
+                KeyValue::Vector(v) => Vec3::from(v),
+                ref other => panic!("not a vector: {other:?}"),
+            })
+            .collect();
+        assert_eq!(values.len(), expected.len(), "{track:?}");
+        for (value, expected) in values.iter().zip(expected) {
+            assert!(value.abs_diff_eq(Vec3::from(*expected), 1e-4), "{track:?}");
+        }
+    }
+
+    #[test]
+    fn a_clip_file_of_stage_62_has_no_target_and_writes_none() {
+        let dir = temp_dir("target");
+        let path = dir.join("wave.clip.ron");
+        std::fs::write(&path, "(tracks: [(channel: Rotation, keys: [])])").unwrap();
+        let mut clip = read_data::<Clip>(&path).unwrap();
+        assert_eq!(clip.tracks[0].target, None);
+        assert!(!data_text(&clip).contains("target"));
+        // A written target reads back.
+        clip.tracks[0].target = Some("arm".into());
+        std::fs::write(&path, data_text(&clip)).unwrap();
+        assert_eq!(read_data::<Clip>(&path).unwrap(), clip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gltf_channels_are_tracks_on_joints_relative_to_the_rest() {
+        let dir = temp_dir("tracks");
+        let turned = arm_rest() * Quat::from_rotation_x(90f32.to_radians());
+        let rotations: Vec<f32> = [arm_rest(), turned]
+            .iter()
+            .flat_map(|q| q.to_array())
+            .collect();
+        let hop: &[GltfChannel] = &[
+            (1, "rotation", "STEP", &[0.0, 1.0], &rotations),
+            (
+                2,
+                "translation",
+                "STEP",
+                &[0.0, 1.0],
+                &[1.0, 0.0, 0.0, 3.0, 0.0, 0.0],
+            ),
+        ];
+        let wave: &[GltfChannel] = &[(
+            2,
+            "scale",
+            "LINEAR",
+            &[0.0, 1.0],
+            &[2.0, 2.0, 2.0, 4.0, 4.0, 4.0],
+        )];
+        // In-tangent, value, out-tangent of each key: the 9s are tangents.
+        let cubic = [
+            9.0, 9.0, 9.0, 0.0, 1.0, 0.0, 9.0, 9.0, 9.0, //
+            9.0, 9.0, 9.0, 0.0, 3.0, 0.0, 9.0, 9.0, 9.0,
+        ];
+        let swing: &[GltfChannel] = &[(1, "translation", "CUBICSPLINE", &[0.0, 1.0], &cubic)];
+        let path = write_gltf(
+            &dir,
+            &figure(),
+            &[("hop", hop), ("wave", wave), ("swing", swing)],
+        );
+        let (clips, warnings) = read_gltf_clips(&path).unwrap();
+        let names: Vec<&str> = clips.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["hop", "wave", "swing"]);
+
+        // STEP: a step track on the joint by name; the rotation is relative to the rest.
+        let hop = &clips[0].1.tracks;
+        assert_eq!(hop[0].target.as_deref(), Some("arm"));
+        assert_eq!(
+            (&hop[0].channel, hop[0].mode),
+            (&Channel::Rotation, Some(KeyMode::Step))
+        );
+        assert_keys(&hop[0], &[[0.0; 3], [90.0, 0.0, 0.0]]);
+        // An unnamed node is `joint<node index>`; rest^-1 x value: (3 - 1) / 2.
+        assert_eq!(hop[1].target.as_deref(), Some("joint2"));
+        assert_eq!(hop[1].channel, Channel::Position);
+        assert_keys(&hop[1], &[[0.0; 3], [1.0, 0.0, 0.0]]);
+        // LINEAR: a linear track; a scale is the factor of the rest scale.
+        let wave = &clips[1].1.tracks[0];
+        assert_eq!(
+            (&wave.channel, wave.mode),
+            (&Channel::Scale, Some(KeyMode::Linear))
+        );
+        assert_keys(wave, &[[1.0; 3], [2.0; 3]]);
+        // CUBICSPLINE: linear on the middle values, with a warning; (0, 2, 0) in the space of the turned rest is (2, 0, 0).
+        let swing = &clips[2].1.tracks[0];
+        assert_eq!(swing.mode, Some(KeyMode::Linear));
+        assert_keys(swing, &[[0.0; 3], [2.0, 0.0, 0.0]]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("CUBICSPLINE"), "{warnings:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gltf_clip_reads_by_name_and_a_changed_file_is_forgotten() {
+        use bevy_ecs::message::Messages;
+
+        use crate::{AssetChanged, DataAssets, FileRef};
+
+        let mut app = maki_core::App::new(maki_core::ConfigFile::default()).unwrap();
+        app.add_module(crate::AssetsModule);
+        let dir = temp_dir("data");
+        let grow = |end: f32| [2.0, 2.0, 2.0, end, end, end];
+        let path = write_gltf(
+            &dir,
+            &figure(),
+            &[("grow", &[(2, "scale", "LINEAR", &[0.0, 1.0], &grow(4.0))])],
+        );
+        let get = |app: &mut maki_core::App, name: &str| {
+            let file = FileRef::from(format!("models/figure.gltf#{name}").as_str());
+            app.resource_mut::<DataAssets>().get::<Clip>(&file, &dir)
+        };
+        assert_keys(
+            &get(&mut app, "grow").unwrap().tracks[0],
+            &[[1.0; 3], [2.0; 3]],
+        );
+        let error = get(&mut app, "nothing").unwrap_err();
+        assert!(error.contains("nothing"), "{error}");
+
+        write_gltf(
+            &dir,
+            &figure(),
+            &[("grow", &[(2, "scale", "LINEAR", &[0.0, 1.0], &grow(6.0))])],
+        );
+        // The store keeps what it read until the watch tells of the change.
+        assert_keys(
+            &get(&mut app, "grow").unwrap().tracks[0],
+            &[[1.0; 3], [2.0; 3]],
+        );
+        app.resource_mut::<Messages<AssetChanged>>()
+            .write(AssetChanged(path));
+        app.update();
+        assert_keys(
+            &get(&mut app, "grow").unwrap().tracks[0],
+            &[[1.0; 3], [3.0; 3]],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_joint_under_an_armature_is_relative_to_the_rest_of_the_skeleton() {
+        use maki_core::Transform;
+
+        let dir = temp_dir("armature");
+        let armature = Transform {
+            translation: Vec3::new(0.0, 0.0, 5.0),
+            rotation: Quat::from_rotation_y(90f32.to_radians()),
+            scale: Vec3::splat(2.0),
+        };
+        let hip = Transform {
+            translation: Vec3::Y,
+            rotation: arm_rest(),
+            scale: Vec3::ONE,
+        };
+        let nodes = format!(
+            r#"[{{"name":"armature","translation":{:?},"rotation":{:?},"scale":[2,2,2],"children":[1]}},{{"name":"hip","translation":[0,1,0],"rotation":{:?}}}]"#,
+            armature.translation.to_array(),
+            armature.rotation.to_array(),
+            arm_rest().to_array()
+        );
+        let animated = Transform {
+            translation: Vec3::new(1.0, 1.0, 0.0),
+            rotation: arm_rest() * Quat::from_rotation_x(90f32.to_radians()),
+            scale: Vec3::splat(3.0),
+        };
+        let rotations: Vec<f32> = [arm_rest(), animated.rotation]
+            .iter()
+            .flat_map(|q| q.to_array())
+            .collect();
+        let channels: &[GltfChannel] = &[
+            (
+                1,
+                "translation",
+                "STEP",
+                &[0.0, 1.0],
+                &[0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+            ),
+            (1, "rotation", "STEP", &[0.0, 1.0], &rotations),
+            (
+                1,
+                "scale",
+                "STEP",
+                &[0.0, 1.0],
+                &[1.0, 1.0, 1.0, 3.0, 3.0, 3.0],
+            ),
+        ];
+        let path = write_gltf(&dir, &nodes, &[("move", channels)]);
+        let (clips, _) = read_gltf_clips(&path).unwrap();
+        let last = |track: &Track| match track.keys[1].value {
+            KeyValue::Vector(v) => v,
+            ref other => panic!("not a vector: {other:?}"),
+        };
+        let tracks = &clips[0].1.tracks;
+        let key = Transform {
+            translation: last(&tracks[0]).into(),
+            rotation: rotation(last(&tracks[1])),
+            scale: last(&tracks[2]).into(),
+        };
+        // The rest of a root joint folds in its armature, as `Skeleton` has it.
+        let (scale, rotation, translation) =
+            (armature.matrix() * hip.matrix()).to_scale_rotation_translation();
+        // `rest x key` as the animator writes it gives the animated node under the armature.
+        let posed = Transform {
+            translation: translation + rotation * (scale * key.translation),
+            rotation: rotation * key.rotation,
+            scale: scale * key.scale,
+        };
+        let expected = armature.matrix() * animated.matrix();
+        assert!(posed.matrix().abs_diff_eq(expected, 1e-4), "{posed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

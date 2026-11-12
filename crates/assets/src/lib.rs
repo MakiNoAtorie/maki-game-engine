@@ -10,6 +10,7 @@ mod data;
 mod file_ref;
 mod mesh;
 mod model;
+pub mod skin;
 mod texture;
 mod watch;
 
@@ -30,6 +31,7 @@ pub use data::{
 pub use file_ref::{FileId, FileRef, forget_id_tables, path_of_id};
 pub use mesh::{Doorway, Material, Mesh, Wall};
 pub use model::{Model, ModelLight, ModelLoads, check_model, load_gltf};
+pub use skin::{Joint, Skeleton};
 pub use texture::{Texture, TextureRef, Textures, check_image};
 pub use watch::{AssetChanged, AssetFailed, AssetWatch, Check, forget_changed};
 

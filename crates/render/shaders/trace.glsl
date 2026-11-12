@@ -183,7 +183,14 @@ layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly 
 // frame before, as three rows. Must agree with `instance_bytes` in src/motion.rs.
 struct InstanceData {
     vec4 rows[3];
+    uint previous_positions; // corners of the frame before (skinned); NO_POSITIONS: rigid
 };
+const uint NO_POSITIONS = 0xFFFFFFFFu;
+
+// Skinned corners, 3 floats each, in the order of the normals of the group (src/skins.rs).
+layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer CornerPositions {
+    float values[];
+} corner_positions[];
 layout(set = BINDLESS_SET, binding = BINDLESS_STORAGE_BUFFERS, std430) readonly buffer InstanceBuffer {
     InstanceData instances[];
 } instance_buffers[];
@@ -352,14 +359,36 @@ vec2 previous_screen(vec3 world, vec2 size) {
     return (screen * 0.5 + 0.5) * size;
 }
 
+// The hit point one frame before: same barycentrics, corners of then.
+vec3 previous_skin_point(rayQueryEXT query, uint positions) {
+    uint first_mesh = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+    uint mesh = first_mesh + rayQueryGetIntersectionGeometryIndexEXT(query, true);
+    // Corners follow the normals' order; the low 32 address bits suffice below 4 GB.
+    uint normals_start = uvec2(mesh_tables[nonuniformEXT(push.mesh_table)].meshes[first_mesh].normals).x;
+    uint normals_mesh = uvec2(mesh_tables[nonuniformEXT(push.mesh_table)].meshes[mesh].normals).x;
+    uint corner = (normals_mesh - normals_start) / 4u
+        + rayQueryGetIntersectionPrimitiveIndexEXT(query, true) * 3u;
+    vec3 p[3];
+    for (uint i = 0u; i < 3u; i++) {
+        uint at = (corner + i) * 3u;
+        p[i] = vec3(corner_positions[nonuniformEXT(positions)].values[at],
+            corner_positions[nonuniformEXT(positions)].values[at + 1u],
+            corner_positions[nonuniformEXT(positions)].values[at + 2u]);
+    }
+    vec2 b = rayQueryGetIntersectionBarycentricsEXT(query, true);
+    return p[0] * (1.0 - b.x - b.y) + p[1] * b.x + p[2] * b.y;
+}
+
 // Where the point that a ray query hit was in the world one frame before.
 vec3 previous_world(rayQueryEXT query) {
-    // The point in the space of its instance does not change when the instance moves.
-    vec3 object_point = rayQueryGetIntersectionObjectRayOriginEXT(query, true)
-        + rayQueryGetIntersectionTEXT(query, true)
-        * rayQueryGetIntersectionObjectRayDirectionEXT(query, true);
     uint instance = rayQueryGetIntersectionInstanceIdEXT(query, true);
     InstanceData data = instance_buffers[nonuniformEXT(push.instances)].instances[instance];
+    // A rigid instance keeps its object-space point when it moves; a skinned one bends.
+    vec3 object_point = data.previous_positions == NO_POSITIONS
+        ? rayQueryGetIntersectionObjectRayOriginEXT(query, true)
+            + rayQueryGetIntersectionTEXT(query, true)
+            * rayQueryGetIntersectionObjectRayDirectionEXT(query, true)
+        : previous_skin_point(query, data.previous_positions);
     vec4 point = vec4(object_point, 1.0);
     return vec3(dot(data.rows[0], point), dot(data.rows[1], point), dot(data.rows[2], point));
 }

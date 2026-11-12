@@ -10,6 +10,9 @@ mod mover;
 mod object;
 mod prefab;
 mod room;
+mod skin;
+#[cfg(test)]
+mod tests;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -37,6 +40,7 @@ pub use room::{
     SpawnPoint, TextureDef, check_room, load_requested_room, parse_room, patch_room, pose_in,
     pose_out, read_room, ron_options, room_text,
 };
+pub use skin::{SkinPalette, SkinPose, make_palettes};
 
 /// Adds the systems of the world components (movers, doors) and the room loader.
 pub struct SceneModule;
@@ -56,6 +60,7 @@ impl Module for SceneModule {
         add_component_type::<PrefabFile>(app, "prefab");
         add_component_type::<SpawnPoint>(app, "spawn");
         add_object_component::<Hidden>(app, "hidden");
+        skin::add(app);
         // The stores normally come from `AssetsModule`. This keeps the loader
         // independent of the order in which the modules are added.
         app.init_resource::<maki_assets::Assets<Mesh>>()

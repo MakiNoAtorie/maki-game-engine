@@ -30,7 +30,8 @@ pub(crate) const ENGINE: &str = "maki_engine_dylib";
 /// another build of the engine), it does not load (it names functions that this
 /// engine DLL does not have), or it has its own copy of the engine.
 pub fn load_project(app: &mut App, dll: &Path) -> Result<()> {
-    let engine = std::env::current_exe()?.with_file_name(libloading::library_filename(ENGINE));
+    // The engine DLL of the same build is beside the script DLL.
+    let engine = dll.with_file_name(libloading::library_filename(ENGINE));
     let written = |path: &Path| {
         let data = std::fs::metadata(path).with_context(|| format!("no file {}", path.display()));
         Ok::<_, anyhow::Error>(data?.modified()?)

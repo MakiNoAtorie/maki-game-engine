@@ -11,7 +11,9 @@
 //! those of frame N.
 //! - the camera buffer: the camera of the frame before. `Trace` writes it.
 //! - the instance buffer: the transform of the frame before for each TLAS instance, in
-//!   TLAS order (a ray hit gives that index). `BuildTlas` writes it.
+//!   TLAS order (a ray hit gives that index). `BuildTlas` writes it. A skinned instance
+//!   also names the corner positions of the frame before (the `skins` module): its
+//!   vertices move by themselves, not only by the transform.
 
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -24,8 +26,12 @@ use crate::{MAX_INSTANCES, RenderGpu, RenderWorld, setup_renderer};
 
 /// Bytes of the camera buffer: `PreviousCamera` in `shaders/trace.glsl`.
 const CAMERA_BYTES: usize = 64;
-/// Bytes of one instance in the instance buffer: three rows of a matrix.
-const INSTANCE_BYTES: usize = 48;
+/// Bytes of one instance in the instance buffer: three rows of a matrix, the bindless
+/// index of the previous corner positions, and 12 bytes of padding (`InstanceData` in
+/// `shaders/trace.glsl`).
+const INSTANCE_BYTES: usize = 64;
+/// The previous corner positions of a rigid instance: none.
+pub(crate) const NO_POSITIONS: u32 = u32::MAX;
 
 /// A resource of the render world.
 #[derive(Resource)]
@@ -113,10 +119,17 @@ pub(crate) fn matrix_rows(matrix: Mat4) -> [f32; 12] {
     rows[..12].try_into().expect("12 of 16 values")
 }
 
-/// The content of the instance buffer.
-pub(crate) fn instance_bytes(previous: &[[f32; 12]]) -> Vec<u8> {
-    let values = previous.iter().flatten();
-    values.flat_map(|value| value.to_ne_bytes()).collect()
+/// The content of the instance buffer: for each instance the rows of its transform of
+/// the frame before, and the bindless index of its previous corner positions
+/// (`NO_POSITIONS` for a rigid instance).
+pub(crate) fn instance_bytes(previous: &[([f32; 12], u32)]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(previous.len() * INSTANCE_BYTES);
+    for (rows, positions) in previous {
+        bytes.extend(rows.iter().flat_map(|value| value.to_ne_bytes()));
+        bytes.extend(positions.to_ne_bytes());
+        bytes.extend([0; 12]);
+    }
+    bytes
 }
 
 #[cfg(test)]
@@ -177,6 +190,16 @@ mod tests {
         // The translation is the fourth value of each row.
         let rows = matrix_rows(Mat4::from_translation(Vec3::new(7.0, 8.0, 9.0)));
         assert_eq!([rows[3], rows[7], rows[11]], [7.0, 8.0, 9.0]);
-        assert_eq!(instance_bytes(&[rows, rows]).len(), 2 * INSTANCE_BYTES);
+    }
+
+    #[test]
+    fn a_rigid_instance_names_no_previous_positions() {
+        let rows = matrix_rows(Mat4::from_translation(Vec3::new(7.0, 8.0, 9.0)));
+        let bytes = instance_bytes(&[(rows, NO_POSITIONS), (rows, 7)]);
+        assert_eq!(bytes.len(), 2 * INSTANCE_BYTES);
+        let u32_at = |offset: usize| u32::from_ne_bytes(bytes[offset..][..4].try_into().unwrap());
+        assert_eq!(u32_at(12), 7.0_f32.to_bits());
+        assert_eq!(u32_at(48), NO_POSITIONS);
+        assert_eq!(u32_at(INSTANCE_BYTES + 48), 7);
     }
 }

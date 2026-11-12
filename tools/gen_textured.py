@@ -165,10 +165,16 @@ def texture_of(names, name, nearest=False):
     return {"index": names.index(name) * 2 + (1 if nearest else 0)}
 
 
-def write_glb(path, images, materials, meshes, generator):
+def write_glb(path, images, materials, meshes, generator, skin=None, animations=None):
     """A `.glb` file. `images`: {name: PNG bytes} for an image in the file, or
     {name: text} for the path of an image file, from the directory of the `.glb`.
-    `meshes`: (name, (positions, normals, uvs, indices), material index, place)."""
+    `meshes`: (name, (positions, normals, uvs, indices), material index, place).
+    `skin`: {"mesh": index in `meshes` of the skinned mesh, "joints": [{"name", "translation",
+    "children": [joint indices]}], "inverse_bind": one 16-float column-major matrix per
+    joint, "joint_indices" and "weights": 4 values per vertex, "wide": joint indices as
+    unsigned shorts instead of bytes}. Joint 0 is the root, a node of the scene.
+    `animations`: [{"name", "channels": [(joint index, "translation" | "rotation" | "scale",
+    "STEP" | "LINEAR", times, values)]}]; they need a skin."""
     names = list(images)
     parts, accessors, gltf_meshes, nodes = [], [], [], []
     for name, (positions, normals, uvs, indices), material, place in meshes:
@@ -185,8 +191,43 @@ def write_glb(path, images, materials, meshes, generator):
         parts.append(array("I", indices).tobytes())
         accessors.append({"bufferView": len(parts) - 1, "componentType": 5125, "count": len(indices), "type": "SCALAR"})
         attributes = {"POSITION": first, "NORMAL": first + 1, "TEXCOORD_0": first + 2}
+        node = {"name": name, "mesh": len(gltf_meshes), "translation": list(place)}
+        if skin and skin["mesh"] == len(gltf_meshes):
+            wide = skin.get("wide")
+            for key, code, data, ctype in (
+                ("JOINTS_0", "H" if wide else "B", skin["joint_indices"], 5123 if wide else 5121),
+                ("WEIGHTS_0", "f", skin["weights"], 5126),
+            ):
+                parts.append(array(code, [c for value in data for c in value]).tobytes())
+                accessors.append({"bufferView": len(parts) - 1, "componentType": ctype, "count": len(data), "type": "VEC4"})
+                attributes[key] = len(accessors) - 1
+            node["skin"] = 0
         gltf_meshes.append({"name": name, "primitives": [{"attributes": attributes, "indices": first + 3, "material": material}]})
-        nodes.append({"name": name, "mesh": len(gltf_meshes) - 1, "translation": list(place)})
+        nodes.append(node)
+    scene_nodes = list(range(len(nodes)))
+    gltf_skins, gltf_animations = [], []
+    if skin:
+        base = len(nodes)  # the joint nodes follow the mesh nodes
+        for joint in skin["joints"]:
+            node = {k: v for k, v in joint.items() if k != "children"}
+            if joint.get("children"):
+                node["children"] = [base + c for c in joint["children"]]
+            nodes.append(node)
+        scene_nodes.append(base)
+        parts.append(array("f", [c for matrix in skin["inverse_bind"] for c in matrix]).tobytes())
+        accessors.append({"bufferView": len(parts) - 1, "componentType": 5126, "count": len(skin["inverse_bind"]), "type": "MAT4"})
+        gltf_skins.append({"joints": [base + j for j in range(len(skin["joints"]))], "inverseBindMatrices": len(accessors) - 1, "skeleton": base})
+        for animation in animations or []:
+            samplers, channels = [], []
+            for joint, field, interpolation, times, values in animation["channels"]:
+                ends = []
+                for data, kind, extra in ((times, "SCALAR", {"min": [min(times)], "max": [max(times)]}), (values, "VEC4" if field == "rotation" else "VEC3", {})):
+                    parts.append(array("f", [c for v in data for c in (v if isinstance(v, (tuple, list)) else (v,))]).tobytes())
+                    accessors.append({"bufferView": len(parts) - 1, "componentType": 5126, "count": len(data), "type": kind, **extra})
+                    ends.append(len(accessors) - 1)
+                samplers.append({"input": ends[0], "output": ends[1], "interpolation": interpolation})
+                channels.append({"sampler": len(samplers) - 1, "target": {"node": base + joint, "path": field}})
+            gltf_animations.append({"name": animation["name"], "samplers": samplers, "channels": channels})
     image_views = []
     gltf_images = []
     for name in names:
@@ -208,7 +249,7 @@ def write_glb(path, images, materials, meshes, generator):
     document = {
         "asset": {"version": "2.0", "generator": generator},
         "scene": 0,
-        "scenes": [{"nodes": list(range(len(nodes)))}],
+        "scenes": [{"nodes": scene_nodes}],
         "nodes": nodes,
         "meshes": gltf_meshes,
         "materials": materials,
@@ -220,6 +261,10 @@ def write_glb(path, images, materials, meshes, generator):
         "bufferViews": views,
         "accessors": accessors,
     }
+    if gltf_skins:
+        document["skins"] = gltf_skins
+    if gltf_animations:
+        document["animations"] = gltf_animations
     if sys.byteorder != "little":
         raise SystemExit("glTF buffers are little-endian; this script does not swap bytes")
     text = json.dumps(document, separators=(",", ":")).encode()

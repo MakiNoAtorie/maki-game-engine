@@ -11,10 +11,14 @@
 //! the object when its first clip starts): pose = rest x key. A write from a step (a
 //! step key, a clip with `fps`, a cut) is a snap, so the picture jumps.
 //!
+//! A track with a `target` writes the joint of that name in the `SkinPose` of the
+//! object: joint pose = joint rest x key.
+//!
 //! `animate` runs before the events (`run_events.after(animate)`): an exclusive system
 //! after them would need an order to each system that runs after them. So a `SetField`
 //! of an animator plays from the next fixed step.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -31,7 +35,7 @@ use maki_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{CurrentRoom, add_object_component, move_movers, write_field};
+use crate::{CurrentRoom, SkinPose, add_object_component, move_movers, write_field};
 
 /// Adds the component `animator`, the data asset `clip`, and [`animate`].
 pub struct AnimationModule;
@@ -151,16 +155,18 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
     // The key of each transform channel; a channel with no track keeps the rest.
     let mut key = Transform::IDENTITY;
     let (mut posed, mut stepped) = (false, cut || clip.fps.is_some());
+    // The key of each joint with a track, and if it is a step.
+    let mut joint_keys: BTreeMap<usize, (Transform, bool)> = BTreeMap::new();
+    let skeleton = world
+        .get::<SkinPose>(entity)
+        .map(|pose| pose.skeleton.clone());
     for (index, track) in clip.tracks.iter().enumerate() {
         let Some(sample) = track.sample(t, clip.mode) else {
             continue;
         };
         let step = track.mode_in(clip.mode) == KeyMode::Step;
-        match (&track.channel, sample) {
-            (Channel::Position, Sample::Vector(v)) => key.translation = v,
-            (Channel::Scale, Sample::Vector(v)) => key.scale = v,
-            (Channel::Rotation, Sample::Rotation(r)) => key.rotation = r,
-            (Channel::Field { component, field }, Sample::Value(value)) => {
+        if let Channel::Field { component, field } = &track.channel {
+            if let Sample::Value(value) = sample {
                 let written = write_field(world, entity, component, field, &value);
                 if let Err(error) = written
                     && !playback.warned.contains(&index)
@@ -174,18 +180,89 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
                         "a field track does not write"
                     );
                 }
-                continue;
             }
-            _ => continue,
+            continue;
         }
-        posed = true;
-        stepped |= step;
+        let Some(target) = &track.target else {
+            if set_channel(&mut key, &track.channel, sample) {
+                posed = true;
+                stepped |= step;
+            }
+            continue;
+        };
+        // No skeleton yet: the model has not loaded, which is not a missing joint.
+        let Some(skeleton) = &skeleton else {
+            continue;
+        };
+        let joints = &skeleton.joints;
+        let Some(joint) = joints.iter().position(|joint| joint.name == *target) else {
+            if !playback.warned.contains(&index) {
+                playback.warned.push(index);
+                tracing::warn!(?entity, target, "a track names no joint of the model");
+            }
+            continue;
+        };
+        let (key, snap) = joint_keys
+            .entry(joint)
+            .or_insert((Transform::IDENTITY, cut || clip.fps.is_some()));
+        if set_channel(key, &track.channel, sample) {
+            *snap |= step;
+        }
+    }
+    // A cut sends a joint with no track in the new clip to its rest, as an object channel.
+    if cut && let Some(skeleton) = &skeleton {
+        for joint in 0..skeleton.joints.len() {
+            joint_keys
+                .entry(joint)
+                .or_insert((Transform::IDENTITY, true));
+        }
+    }
+    if !joint_keys.is_empty() {
+        write_joints(world, entity, &joint_keys);
     }
     if !posed {
         return;
     }
     let rest = playback.rest.unwrap_or(Transform::IDENTITY);
     write_pose(world, entity, product(&rest, &key), stepped);
+}
+
+/// Sets the part of `key` of a transform channel. False: not a transform sample.
+fn set_channel(key: &mut Transform, channel: &Channel, sample: Sample) -> bool {
+    match (channel, sample) {
+        (Channel::Position, Sample::Vector(v)) => key.translation = v,
+        (Channel::Scale, Sample::Vector(v)) => key.scale = v,
+        (Channel::Rotation, Sample::Rotation(r)) => key.rotation = r,
+        _ => return false,
+    }
+    true
+}
+
+/// Writes the joints of `keys` into `SkinPose::current` (joint rest x key), only if a
+/// pose differs. A snap sets `previous` too and counts one `PoseJumps` for the pose.
+fn write_joints(world: &mut World, entity: Entity, keys: &BTreeMap<usize, (Transform, bool)>) {
+    let Some(skin) = world.get::<SkinPose>(entity) else {
+        return;
+    };
+    let (mut previous, mut current) = (skin.previous.clone(), skin.current.clone());
+    let mut jumped = false;
+    for (&joint, (key, snap)) in keys {
+        let pose = product(&skin.skeleton.joints[joint].rest, key);
+        if *snap {
+            jumped |= previous[joint] != pose || current[joint] != pose;
+            previous[joint] = pose;
+        }
+        current[joint] = pose;
+    }
+    if previous != skin.previous || current != skin.current {
+        let mut skin = world.get_mut::<SkinPose>(entity).expect("read above");
+        skin.previous = previous;
+        skin.current = current;
+    }
+    // Only a jump touches the count: a write marks `PoseJumps` as changed.
+    if jumped {
+        world.resource_mut::<PoseJumps>().add(1);
+    }
 }
 
 /// `rest x key`: the key in the space of the rest pose.

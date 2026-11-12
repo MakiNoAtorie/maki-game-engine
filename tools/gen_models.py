@@ -7,11 +7,16 @@
   handles, and four feet. Its origin is on the floor, and its front faces +Z. It
   names `textures/wood.png`: the image is not in the model file.
 
+- `models/figure.glb`: a test character of 1.7 m: a body, a head, and two arms; the joints
+  `root`, `arm_l`, `arm_r` (the arms are children of root); the clips `wave` (LINEAR) and
+  `hop` (STEP). Its origin is on the floor, and its front faces +Z. No texture.
+
 All content is drawn by the code below: no file of a modelling tool. The files are
 the same in each run. Put a real file of the same name in their place: the room
 files do not change.
 """
 
+import math
 from pathlib import Path
 
 from gen_textured import box, merge, png, texture_of, write_glb
@@ -59,6 +64,50 @@ def cabinet():
     return materials, meshes
 
 
+def figure():
+    """The materials, the meshes, the skin, and the animations of the figure."""
+    materials = [{"name": "figure", "pbrMetallicRoughness": {"baseColorFactor": [0.75, 0.55, 0.4, 1.0], "roughnessFactor": 0.9}}]
+    shoulders = {1: (-0.275, 1.45, 0.0), 2: (0.275, 1.45, 0.0)}
+    # (box, joint of its vertices)
+    boxes = [
+        (box((-0.2, 0.0, -0.1), (0.2, 1.5, 0.1)), 0),
+        (box((-0.12, 1.5, -0.12), (0.12, 1.7, 0.12)), 0),
+        (box((-0.35, 0.7, -0.07), (-0.2, 1.5, 0.07)), 1),
+        (box((0.2, 0.7, -0.07), (0.35, 1.5, 0.07)), 2),
+    ]
+    mesh = merge([b for b, _ in boxes])
+    joint_indices, weights = [], []
+    for (positions, *_), joint in boxes:
+        for p in positions:
+            joint_indices.append((joint, 0, 0, 0))
+            # The top vertices of an arm are at the shoulder: half on the arm, half on root.
+            weights.append((0.5, 0.5, 0.0, 0.0) if joint and p[1] == 1.5 else (1.0, 0.0, 0.0, 0.0))
+    # The joints have no rotation at rest: the inverse bind matrix is a translation.
+    inverse = lambda t: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -t[0], -t[1], -t[2], 1]
+    skin = {
+        "mesh": 0,
+        "joints": [
+            {"name": "root", "translation": [0.0, 0.0, 0.0], "children": [1, 2]},
+            {"name": "arm_l", "translation": list(shoulders[1])},
+            {"name": "arm_r", "translation": list(shoulders[2])},
+        ],
+        "inverse_bind": [inverse((0, 0, 0)), inverse(shoulders[1]), inverse(shoulders[2])],
+        "joint_indices": joint_indices,
+        "weights": weights,
+    }
+    # A turn about Z: a hanging arm (along -Y) at +150 degrees points up and outward (+X).
+    turn = lambda degrees: (0.0, 0.0, math.sin(math.radians(degrees) / 2), math.cos(math.radians(degrees) / 2))
+    animations = [
+        # First key equals last: the loop has no jump.
+        {"name": "wave", "channels": [(2, "rotation", "LINEAR", [0.0, 0.5, 1.0], [turn(0), turn(150), turn(0)])]},
+        {"name": "hop", "channels": [
+            (1, "rotation", "STEP", [0.0, 1.0, 2.0], [turn(0), turn(-150), turn(0)]),
+            (2, "rotation", "STEP", [0.0, 1.0, 2.0], [turn(0), turn(150), turn(0)]),
+        ]},
+    ]
+    return materials, [("figure", mesh, 0, (0.0, 0.0, 0.0))], skin, animations
+
+
 if __name__ == "__main__":
     for directory in ("textures", "models"):
         (OUT / directory).mkdir(parents=True, exist_ok=True)
@@ -66,5 +115,7 @@ if __name__ == "__main__":
     materials, meshes = cabinet()
     images = {"wood": "../textures/wood.png"}
     write_glb(OUT / "models" / "cabinet.glb", images, materials, meshes, "maki tools/gen_models.py")
-    for name in ("textures/wood.png", "models/cabinet.glb"):
+    materials, meshes, skin, animations = figure()
+    write_glb(OUT / "models" / "figure.glb", {}, materials, meshes, "maki tools/gen_models.py", skin, animations)
+    for name in ("textures/wood.png", "models/cabinet.glb", "models/figure.glb"):
         print(f"{OUT / name}: {(OUT / name).stat().st_size} bytes")

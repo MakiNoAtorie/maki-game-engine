@@ -6,7 +6,7 @@ Judgement rules for the review of a diff. The architecture rules are in `CLAUDE.
 
 - **Write only a different value** to a component or resource that the renderer or a change detection reads (`Transform`, `Light`, `Interpolated`, `Camera`, a resource of a module): `set_if_neq`, or a compare before the write. A write is a change: the denoiser drops its history and the benchmark picture changes.
 - **No new component on an entity of a light or a mesh of a room** for state that the renderer does not need. A new archetype changes the order of the lights for the renderer, so the noise of the picture of a room at rest. Script state goes on an object of its own.
-- **A room file change keeps the benchmark pictures**: an object that moves or changes by itself is not in a scenario room, and never on the first light of a room (the benchmark moves it). The check: `bench.py same` (`docs/CONVENTIONS.md`, "Picture gate"). Exception: the scenarios `jump_720p` and `light_step_720p` animate by design (the pose-jump gate).
+- **A room file change keeps the benchmark pictures**: an object that moves or changes by itself is not in a scenario room, and never on the first light of a room (the benchmark moves it). The check: `bench.py same` (`docs/CONVENTIONS.md`, "Picture gate"). Exception: the scenarios `jump_720p`, `skin_jump_720p` and `light_step_720p` animate by design (the pose-jump gate).
 
 ## The schedule
 

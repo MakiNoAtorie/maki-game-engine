@@ -44,7 +44,7 @@ use device::DeviceContext;
 use resources::{Buffer, COLOR_RANGE, Garbage, Image, Sampler};
 use swapchain::Swapchain;
 
-pub use accel::{BlasDesc, BlasGeometry, TlasInstance};
+pub use accel::{BlasDesc, BlasGeometry, DynamicBlasDesc, DynamicGeometry, TlasInstance};
 pub use raster::GraphicsPipelineDesc;
 pub use resources::{
     Access, BlasHandle, BufferDesc, BufferHandle, ComputePipelineHandle, Format,
@@ -939,6 +939,28 @@ impl Gpu {
                 device.cmd_push_constants(cmd, layout, PUSH_STAGES, 0, push_constants);
             }
             device.cmd_dispatch(cmd, groups[0], groups[1], groups[2]);
+        }
+        Ok(())
+    }
+
+    /// Records a barrier between the buffer accesses of compute shaders: the shaders
+    /// after it wait for those before, and see their writes. The frame graph plans the
+    /// barriers of images only; a pass that writes a buffer that another shader reads
+    /// (or reads one that it writes after) calls this.
+    pub fn compute_barrier(&mut self) -> Result<()> {
+        ensure!(self.active.is_some(), "compute_barrier outside of a frame");
+        use vk::AccessFlags2 as A;
+        use vk::PipelineStageFlags2 as S;
+        let barrier = [vk::MemoryBarrier2::default()
+            .src_stage_mask(S::COMPUTE_SHADER)
+            .src_access_mask(A::SHADER_STORAGE_WRITE)
+            .dst_stage_mask(S::COMPUTE_SHADER)
+            .dst_access_mask(A::SHADER_STORAGE_READ | A::SHADER_STORAGE_WRITE)];
+        unsafe {
+            self.ctx.device.cmd_pipeline_barrier2(
+                self.frames[self.slot].cmd,
+                &vk::DependencyInfo::default().memory_barriers(&barrier),
+            );
         }
         Ok(())
     }
