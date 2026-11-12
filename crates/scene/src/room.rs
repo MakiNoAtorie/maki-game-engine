@@ -36,6 +36,7 @@ use maki_assets::{
 use maki_core::{Fields, Interpolated, PoseJumps, Transform};
 use serde::{Deserialize, Serialize};
 
+use crate::light_animation::{LightAnimDef, LightAnimation, write_light};
 use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
@@ -611,6 +612,9 @@ pub struct LightDef {
     /// A sound that loops at the place of the light: a lamp that hums.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<SoundDef>,
+    /// Flicker, pulse, fade, a color by temperature.
+    #[serde(default, skip_serializing_if = "LightAnimDef::is_default")]
+    pub animation: LightAnimDef,
 }
 
 /// A sound that loops at the place of a thing of the room.
@@ -712,34 +716,113 @@ pub struct LightSource {
     /// A sound that loops at the place of the light: a lamp that hums.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<SoundDef>,
+    /// Kelvin. 0: off. Else the color is `kelvin_rgb(temperature) * color`.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    #[field(label = "temperature (K, 0: off)", range = 0.0..=25000.0, step = 10.0)]
+    pub temperature: f32,
+    /// 0 to 1: how far the intensity drops at most in a step of the flicker.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    #[field(range = 0.0..=1.0, step = 0.01)]
+    pub flicker: f32,
+    /// Steps of the flicker in a second.
+    #[serde(default = "ten", skip_serializing_if = "is_ten")]
+    #[field(label = "flicker rate (steps/s)", range = 0.0..=60.0, step = 0.1, default = 10.0)]
+    pub flicker_rate: f32,
+    /// 0 to 1: how far the intensity drops at the low point of a pulse.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    #[field(range = 0.0..=1.0, step = 0.01)]
+    pub pulse: f32,
+    /// Length of one pulse.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    #[field(label = "pulse (seconds)", range = 0.05..=60.0, step = 0.01, default = 1.0)]
+    pub pulse_seconds: f32,
+    /// Seconds from off to full and back for a change of `on`. 0: at once.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    #[field(label = "fade (seconds)", range = 0.0..=30.0, step = 0.01)]
+    pub fade: f32,
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
+}
+
+fn ten() -> f32 {
+    10.0
+}
+
+fn is_ten(value: &f32) -> bool {
+    *value == 10.0
 }
 
 impl LightSource {
+    /// The animation fields.
+    fn animation(&self) -> LightAnimDef {
+        LightAnimDef {
+            temperature: self.temperature,
+            flicker: self.flicker,
+            flicker_rate: self.flicker_rate,
+            pulse: self.pulse,
+            pulse_seconds: self.pulse_seconds,
+            fade: self.fade,
+        }
+    }
+
+    /// The component of `light` with the fields of `animation`.
+    fn of(light: &Light, animation: LightAnimDef, sound: Option<SoundDef>) -> Self {
+        let LightAnimDef {
+            temperature,
+            flicker,
+            flicker_rate,
+            pulse,
+            pulse_seconds,
+            fade,
+        } = animation;
+        LightSource {
+            radius: light.radius,
+            color: light.color.into(),
+            intensity: light.intensity,
+            on: light.on,
+            direction: Some(light.direction.into()),
+            cone: (light.cone_degrees < 180.0).then_some(light.cone_degrees),
+            sound,
+            temperature,
+            flicker,
+            flicker_rate,
+            pulse,
+            pulse_seconds,
+            fade,
+        }
+    }
+
     /// The live form of the component `light`: the tree of a [`Light`] of the game,
     /// and a tree written back into it. The sound is another component: it is not a
-    /// live field.
+    /// live field. An animated light reads and writes the values of the file (the base),
+    /// not the animated `Light`.
     pub(crate) const LIVE: Live = Live {
-        fields: Some(&["radius", "color", "intensity", "on", "direction", "cone"]),
+        fields: Some(&[
+            "radius",
+            "color",
+            "intensity",
+            "on",
+            "direction",
+            "cone",
+            "temperature",
+            "flicker",
+            "flicker_rate",
+            "pulse",
+            "pulse_seconds",
+            "fade",
+        ]),
         get: |world, entity| {
-            let light = world.get::<Light>(entity)?;
-            let source = LightSource {
-                radius: light.radius,
-                color: light.color.into(),
-                intensity: light.intensity,
-                on: light.on,
-                direction: Some(light.direction.into()),
-                cone: (light.cone_degrees < 180.0).then_some(light.cone_degrees),
-                sound: None,
+            let source = match world.get::<LightAnimation>(entity) {
+                Some(animation) => LightSource::of(&animation.base, animation.def, None),
+                None => LightSource::of(world.get::<Light>(entity)?, LightAnimDef::default(), None),
             };
             Some(source.tree())
         },
         set: |world, entity, tree| {
             let source = maki_core::fields::read::<LightSource>(tree).map_err(|e| e.to_string())?;
-            let mut light = world
-                .get_mut::<Light>(entity)
-                .ok_or("the entity has no light")?;
-            light.set_if_neq(LightDef::from_source(source).light());
-            Ok(())
+            write_light(world, entity, &LightDef::from_source(source))
         },
     };
 }
@@ -780,6 +863,7 @@ impl DoorLeaf {
 impl LightDef {
     /// A light at the origin with no name, with the values of the component.
     fn from_source(source: LightSource) -> Self {
+        let animation = source.animation();
         let LightSource {
             radius,
             color,
@@ -788,6 +872,7 @@ impl LightDef {
             direction,
             cone,
             sound,
+            ..
         } = source;
         LightDef {
             name: None,
@@ -799,6 +884,7 @@ impl LightDef {
             direction,
             cone,
             sound,
+            animation,
         }
     }
 
@@ -814,7 +900,16 @@ impl LightDef {
             direction,
             cone,
             sound,
+            animation,
         } = self;
+        let LightAnimDef {
+            temperature,
+            flicker,
+            flicker_rate,
+            pulse,
+            pulse_seconds,
+            fade,
+        } = animation;
         let light = LightSource {
             radius,
             color,
@@ -823,6 +918,12 @@ impl LightDef {
             direction,
             cone,
             sound,
+            temperature,
+            flicker,
+            flicker_rate,
+            pulse,
+            pulse_seconds,
+            fade,
         };
         ObjectDef {
             id: None,
@@ -852,6 +953,7 @@ impl ObjectDef {
                     on: light.on,
                     direction: light.direction,
                     cone: light.cone,
+                    animation: light.animation(),
                     sound: light.sound,
                 }),
         )
@@ -1639,6 +1741,12 @@ impl Spawner<'_, '_, '_> {
             Interpolated::at(Transform::from_translation(light.position.into())),
             light.light(),
         ));
+        // Only an animated light: a new component changes the order of the lights.
+        if light.animation.is_animated() {
+            let seed = self.id.map_or(item.0 as u32, |id| id.0);
+            let animation = LightAnimation::new(light.light(), light.animation, seed);
+            entity.insert((animation.effective(0.0), animation));
+        }
         if let Some(name) = &light.name {
             entity.insert(Name(name.clone()));
         }
@@ -1882,16 +1990,20 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
     // The room is not loaded again: a pose that changes is a jump for the renderer.
     let mut jumps = PoseJumps::default();
     // Not the lights of a model file: they have the object of the file.
-    let mut lights = world.query::<(&RoomItem, &mut Light, &mut Interpolated)>();
-    for (item, mut light, mut pose) in lights.iter_mut(world) {
+    let mut lights = world.query_filtered::<(Entity, &RoomItem, &mut Interpolated), With<Light>>();
+    let mut written = Vec::new();
+    for (entity, item, mut pose) in lights.iter_mut(world) {
         let Some(Ok(def)) = room.objects[item.0].light() else {
             continue;
         };
-        // Only a different value is a write: a write is a change for the renderer.
-        light.set_if_neq(def.light());
         if pose.current.translation != Vec3::from(def.position) {
             pose.jump(Transform::from_translation(def.position.into()), &mut jumps);
         }
+        written.push((entity, def));
+    }
+    // Only a different value is a write: a write is a change for the renderer.
+    for (entity, def) in written {
+        write_light(world, entity, &def).expect("the query has a light");
     }
     // A door has a `Mover` too: its object has no `mover`, and it is left as it is.
     let mut movers = world.query::<(&RoomItem, &mut Mover, &mut Interpolated)>();
@@ -2103,6 +2215,7 @@ mod tests {
                 reach: 6.0,
                 on: false,
             }),
+            animation: Default::default(),
         };
         let mut door = ObjectDef {
             name: Some("door".to_owned()),

@@ -74,6 +74,7 @@ impl Document {
             direction: None,
             cone: None,
             sound: None,
+            animation: Default::default(),
         };
         let mut room = Self {
             path,
