@@ -76,6 +76,17 @@ impl Script for Chaser {
     }
 
     fn step(&mut self, context: &mut ScriptContext) {
+        let was = self.state;
+        self.decide(context);
+        if self.state != was {
+            maki_engine::tracing::debug!("{} enters {:?}", context.name(), self.state);
+        }
+    }
+}
+
+impl Chaser {
+    /// One step of the states: what it sees, then where it walks.
+    fn decide(&mut self, context: &mut ScriptContext) {
         // The player in view, and its place.
         let player = context
             .world

@@ -1,0 +1,44 @@
+# The run by hand of stage 61, with no input of the desktop: an input script of the
+# editor (crates/devtools/src/input_script.rs). The room is room_chase: the player
+# starts at (-3, 0, 0), a wall at x = 0 from z -3 to 3, the chaser at (3, 0, 0)
+# faces the wall (-X) and sees 120 degrees.
+# A config for it: [rooms] start = "game/assets/rooms/room_chase.ron", start_spawn = 2,
+# [window] focus = false, [audio] output = false, [save] enabled = false.
+# With [walk] mode = "Grid" in the config, the same script walks on the grid.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage61.txt --input-shots DIR
+wait 60
+shot room
+tap F5
+wait 60
+shot play
+
+# Around the end of the wall, into the view of the chaser.
+press S
+wait 160
+release S
+press D
+wait 90
+release D
+wait 20
+shot seen
+wait 60
+shot follows
+
+# The player runs behind the wall: the chaser (1 m/s) loses the player.
+press Shift+A
+wait 70
+release Shift+A
+press Shift+W
+wait 80
+release Shift+W
+wait 30
+shot hidden
+# The chaser searches at the last place, gives up after 3 s, and goes back.
+wait 360
+shot gave_up
+wait 300
+shot back
+
+tap F5
+wait 30
+quit

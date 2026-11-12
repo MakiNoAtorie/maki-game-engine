@@ -405,6 +405,13 @@ pub fn can_see(world: &World, viewer: Entity, target: Entity, distance: f32, ang
     let Some(physics) = world.get_resource::<Physics>() else {
         return false;
     };
+    // In the first steps of a room the player and the colliders are not in place yet.
+    if world
+        .get_resource::<EventRunner>()
+        .is_some_and(EventRunner::starting_room)
+    {
+        return false;
+    }
     let pose = |entity| world.get::<Interpolated>(entity).map(|pose| pose.current);
     let (Some(from), Some(to)) = (pose(viewer), pose(target)) else {
         return false;

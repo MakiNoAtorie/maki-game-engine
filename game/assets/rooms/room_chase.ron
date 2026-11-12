@@ -12,7 +12,7 @@
         (
             id: 1,
             name: "lamp",
-            pose: (position: (0.0, 2.6, 0.0)),
+            pose: (position: (0.0, 2.6, 4.0)),
             components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)},
         ),
         (id: 2, name: "start", pose: (position: (-3.0, 0.0, 0.0)), components: {"spawn": ()}),
@@ -29,7 +29,7 @@
             components: {
                 "chaser": (distance: 12.0, give_up: 3.0),
                 "prop": (mesh: Cube(1.0), look: (color: (0.9, 0.2, 0.2))),
-                "walker": (),
+                "walker": (speed: 1.0),
             },
         ),
     ],
