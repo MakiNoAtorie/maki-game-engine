@@ -28,7 +28,7 @@ use bevy_ecs::query::QueryState;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::Query;
 use bevy_ecs::world::World;
-use maki_assets::clip::{Channel, Clip, KeyMode, Sample, clip_time};
+use maki_assets::clip::{Channel, Clip, KeyMode, Sample, Track, clip_time};
 use maki_assets::{DataAssets, DataRef, FileRef, add_data_type};
 use maki_core::{
     App, Fields, FixedUpdate, Interpolated, Module, PoseJumps, ResetPlay, Time, Transform,
@@ -48,6 +48,8 @@ impl Module for AnimationModule {
             // Before the movers: the physics sees the new poses.
             .add_systems(FixedUpdate, animate.before(move_movers))
             .add_systems(ResetPlay, reset_animators);
+        crate::timeline::add(app);
+        crate::light_animation::add(app);
     }
 }
 
@@ -152,26 +154,72 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
     let t = clip_time(time, clip.duration(), animator.looping, clip.fps);
     playback.steps += f64::from(animator.speed);
 
+    let target = Target {
+        entity,
+        rest: playback.rest.unwrap_or(Transform::IDENTITY),
+        cut,
+        fps: clip.fps.is_some(),
+    };
+    write_tracks(
+        world,
+        &target,
+        &clip.tracks,
+        t,
+        clip.mode,
+        &mut playback.warned,
+    );
+}
+
+/// What a track list writes to: one entity, its start pose, and how the time moved.
+pub(crate) struct Target {
+    pub entity: Entity,
+    /// The pose of the entity at the start: a transform track is relative to it.
+    pub rest: Transform,
+    /// The tracks changed (a new clip, a first step): every write is a jump, and a
+    /// joint with no track goes to its rest.
+    pub cut: bool,
+    /// The tracks step (a clip with `fps`): every write is a jump.
+    pub fps: bool,
+}
+
+/// Writes the tracks sampled at `t` to `target.entity`: transform tracks as rest x key,
+/// joint tracks into its `SkinPose`, field tracks through `write_field`. A step write
+/// counts one `PoseJumps`. `warned`: the indices of the tracks that already warned
+/// (one warning each); the caller keeps it per owner and clears it when the tracks change.
+pub(crate) fn write_tracks(
+    world: &mut World,
+    target: &Target,
+    tracks: &[Track],
+    t: f32,
+    mode: KeyMode,
+    warned: &mut Vec<usize>,
+) {
+    let Target {
+        entity,
+        rest,
+        cut,
+        fps,
+    } = *target;
     // The key of each transform channel; a channel with no track keeps the rest.
     let mut key = Transform::IDENTITY;
-    let (mut posed, mut stepped) = (false, cut || clip.fps.is_some());
+    let (mut posed, mut stepped) = (false, cut || fps);
     // The key of each joint with a track, and if it is a step.
     let mut joint_keys: BTreeMap<usize, (Transform, bool)> = BTreeMap::new();
     let skeleton = world
         .get::<SkinPose>(entity)
         .map(|pose| pose.skeleton.clone());
-    for (index, track) in clip.tracks.iter().enumerate() {
-        let Some(sample) = track.sample(t, clip.mode) else {
+    for (index, track) in tracks.iter().enumerate() {
+        let Some(sample) = track.sample(t, mode) else {
             continue;
         };
-        let step = track.mode_in(clip.mode) == KeyMode::Step;
+        let step = track.mode_in(mode) == KeyMode::Step;
         if let Channel::Field { component, field } = &track.channel {
             if let Sample::Value(value) = sample {
                 let written = write_field(world, entity, component, field, &value);
                 if let Err(error) = written
-                    && !playback.warned.contains(&index)
+                    && !warned.contains(&index)
                 {
-                    playback.warned.push(index);
+                    warned.push(index);
                     tracing::warn!(
                         ?entity,
                         component,
@@ -196,15 +244,15 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
         };
         let joints = &skeleton.joints;
         let Some(joint) = joints.iter().position(|joint| joint.name == *target) else {
-            if !playback.warned.contains(&index) {
-                playback.warned.push(index);
+            if !warned.contains(&index) {
+                warned.push(index);
                 tracing::warn!(?entity, target, "a track names no joint of the model");
             }
             continue;
         };
         let (key, snap) = joint_keys
             .entry(joint)
-            .or_insert((Transform::IDENTITY, cut || clip.fps.is_some()));
+            .or_insert((Transform::IDENTITY, cut || fps));
         if set_channel(key, &track.channel, sample) {
             *snap |= step;
         }
@@ -223,7 +271,6 @@ fn play(world: &mut World, entity: Entity, animator: &Animator, playback: &mut P
     if !posed {
         return;
     }
-    let rest = playback.rest.unwrap_or(Transform::IDENTITY);
     write_pose(world, entity, product(&rest, &key), stepped);
 }
 
