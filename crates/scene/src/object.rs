@@ -586,6 +586,7 @@ mod tests {
             direction: Some([0.0, -1.0, 0.0]),
             cone: Some(30.0),
             sound: None,
+            animation: Default::default(),
         };
         let mut object = light.clone().into_object();
         assert_eq!(object.pose.position, light.position);

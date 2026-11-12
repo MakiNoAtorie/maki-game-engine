@@ -25,6 +25,7 @@ use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transfo
 pub use animation::{AnimationModule, Animator, Playback, animate};
 pub use collision::{Collider, room_colliders};
 pub use hidden::Hidden;
+pub use light_animation::{LightAnimDef, LightAnimation, animate_lights, kelvin_rgb};
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
     ComponentText, ComponentType, ComponentTypes, FieldError, FieldWrite, Live, ObjectDef,
