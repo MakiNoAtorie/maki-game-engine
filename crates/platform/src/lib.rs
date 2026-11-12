@@ -8,8 +8,9 @@ use bevy_ecs::schedule::common_conditions::resource_exists;
 use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
-    Action, ActionState, Binding, Bindings, Chord, FixedActionState, InputCapture, InputMode, Key,
-    Modifiers, Pointer, RawInput, ScriptedActions, add_bindings, add_mode_bindings, update_actions,
+    Action, ActionState, Binding, Bindings, Chord, FixedActionState, GamepadSettings, InputCapture,
+    InputMode, Key, Modifiers, Pointer, RawInput, ScriptedActions, Stick, add_bindings,
+    add_mode_bindings, update_actions,
 };
 pub use window::{
     MakeApp, NextApp, Picture, PictureFit, QuitHold, QuitRequested, RawWindowEvent, Window,
@@ -21,7 +22,8 @@ pub struct PlatformModule;
 
 impl Module for PlatformModule {
     fn build(&self, app: &mut App) {
-        app.add_settings::<WindowSettings>();
+        app.add_settings::<WindowSettings>()
+            .add_settings::<GamepadSettings>();
         let window = app.world().resource::<WindowSettings>().clone();
         let margin = WindowMargin::default();
         app.insert_resource(WindowTitle(window.title.clone()))
@@ -154,6 +156,68 @@ mod tests {
         frame(&mut app, &[KeyDown(Key::Q)]);
         frame(&mut app, &[FocusLost]);
         assert_eq!(state(&app, DOWN), (false, false, true));
+    }
+
+    #[test]
+    fn pad_buttons_and_sticks_are_keys_with_values() {
+        use RawInput::*;
+
+        const RUN: Action = Action("run");
+        let mut app = app("[gamepad]\ndead_zone = 0.2");
+        add_bindings(
+            &mut app,
+            &[
+                (Key::PadA, RUN, "Run"),
+                (Key::LeftStickUp, FORWARD, "Forward"),
+                (Key::RightStickLeft, DOWN, "Down"),
+            ],
+        );
+        let value = |app: &App, action| app.world().resource::<ActionState>().value(action);
+        let fixed = |app: &App, action| app.world().resource::<FixedActionState>().value(action);
+
+        for label in [
+            "Pad A",
+            "Pad Start",
+            "Pad down",
+            "Left stick up",
+            "Right stick right",
+        ] {
+            let key = Key::from_label(label).unwrap();
+            assert!(key.is_pad() && key.label() == label);
+        }
+        assert!(!Key::A.is_pad() && !Key::WheelDown.is_pad());
+
+        // A button: 1 while down.
+        frame(&mut app, &[KeyDown(Key::PadA)]);
+        assert_eq!(value(&app, RUN), 1.0);
+        frame(&mut app, &[KeyUp(Key::PadA)]);
+        assert_eq!(value(&app, RUN), 0.0);
+
+        // Under the dead zone: nothing. Past it: rescaled, (0.6 - 0.2) / 0.8.
+        frame(&mut app, &[PadAxis(Stick::Left, [0.0, 0.1])]);
+        assert!(!app.world().resource::<ActionState>().pressed(FORWARD));
+        frame(&mut app, &[PadAxis(Stick::Left, [0.0, 0.6])]);
+        assert!(app.world().resource::<ActionState>().just_pressed(FORWARD));
+        assert!((value(&app, FORWARD) - 0.5).abs() < 1e-6);
+        assert!((fixed(&app, FORWARD) - 0.5).abs() < 1e-6);
+        // A key and the stick on one action: the largest value.
+        frame(&mut app, &[KeyDown(Key::W)]);
+        assert_eq!(value(&app, FORWARD), 1.0);
+        frame(
+            &mut app,
+            &[KeyUp(Key::W), PadAxis(Stick::Right, [-1.0, 0.0])],
+        );
+        assert!((value(&app, FORWARD) - 0.5).abs() < 1e-6);
+        assert_eq!(value(&app, DOWN), 1.0);
+
+        // A lost pad releases its buttons and sticks, not the keys.
+        frame(&mut app, &[KeyDown(Key::PadA), KeyDown(Key::E)]);
+        frame(&mut app, &[PadLost]);
+        assert_eq!(
+            [RUN, FORWARD, DOWN, UP].map(|action| value(&app, action)),
+            [0.0, 0.0, 0.0, 1.0]
+        );
+        assert!(app.world().resource::<ActionState>().just_released(RUN));
     }
 
     #[derive(bevy_ecs::message::Message, Clone, Copy)]
