@@ -8,6 +8,8 @@
 //! - `wait N`: N frames with no new step.
 //! - `press KEYS`, `release KEYS`, `tap KEYS`: the key labels of the bindings joined
 //!   by `+` ("W", "F5", "Ctrl+P", "Esc"). `tap` holds the keys for one frame.
+//!   Pad buttons and stick directions by their labels too ("Pad A", "Left stick up").
+//! - `stick left|right X Y`: the stick at X, Y (-1 to 1, Y up); `stick left 0 0` releases it.
 //! - `type TEXT`: the rest of the line as text into the egui field with the focus.
 //! - `move X Y`, `click X Y`, `drag X1 Y1 X2 Y2`: the left mouse button, at window
 //!   pixels (as a shot shows them).
@@ -28,7 +30,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::world::World;
 use maki_core::{App, Input, Module};
-use maki_platform::{Key, QuitHold, QuitRequested, RawInput, update_actions};
+use maki_platform::{Key, QuitHold, QuitRequested, RawInput, Stick, update_actions};
 use maki_render::{FrameGraph, RenderGpu};
 use maki_ui::{ScriptedUiInput, egui, run_command};
 
@@ -38,6 +40,8 @@ pub enum InputStep {
     Wait(u32),
     /// A key down (true) or up (false).
     Key(Key, bool),
+    /// A stick of the pad at this place, as `RawInput::PadAxis`.
+    Stick(Stick, [f32; 2]),
     Text(String),
     /// The pointer goes to this place of the window, in physical pixels.
     Move([f32; 2]),
@@ -96,6 +100,19 @@ fn parse_line(line: &str, steps: &mut Vec<InputStep>) -> anyhow::Result<()> {
             steps.extend(down(&keys));
             steps.push(InputStep::Wait(1));
             steps.extend(up(&keys));
+        }
+        "stick" => {
+            let (side, at) = rest.split_once(' ').unwrap_or((rest, ""));
+            let stick = match side {
+                "left" => Stick::Left,
+                "right" => Stick::Right,
+                _ => bail!("stick needs left or right"),
+            };
+            let at = at.split_whitespace().map(str::parse::<f32>);
+            match at.collect::<Result<Vec<_>, _>>()?.as_slice() {
+                &[x, y] => steps.push(InputStep::Stick(stick, [x, y])),
+                _ => bail!("stick needs 2 numbers"),
+            }
         }
         "type" if !rest.is_empty() => steps.push(InputStep::Text(rest.to_owned())),
         // egui finds a click or a drag from events in more than one frame.
@@ -294,6 +311,9 @@ fn apply(world: &mut World, state: &mut ScriptState, step: InputStep) {
                 }
             }
         }
+        InputStep::Stick(stick, at) => {
+            world.write_message(RawInput::PadAxis(stick, at));
+        }
         InputStep::Text(text) => ui.push(egui::Event::Text(text)),
         InputStep::Move(at) => {
             state.pointer = at;
@@ -351,7 +371,7 @@ mod tests {
 
     #[test]
     fn a_script_text_gives_its_steps() {
-        let text = "# a comment\n\nwait 3\ntap Ctrl+P\ntype New script\nclick 10 20\ncommand editor.save\nshot one\nquit\n";
+        let text = "# a comment\n\nwait 3\ntap Ctrl+P\npress Pad A\nrelease Left stick up\nstick left 0.5 0\nstick right -1 0\ntype New script\nclick 10 20\ncommand editor.save\nshot one\nquit\n";
         let steps = parse_script(text).unwrap();
         use InputStep::*;
         assert_eq!(
@@ -363,6 +383,10 @@ mod tests {
                 Wait(1),
                 Key(maki_platform::Key::P, false),
                 Key(maki_platform::Key::Control, false),
+                Key(maki_platform::Key::PadA, true),
+                Key(maki_platform::Key::LeftStickUp, false),
+                Stick(maki_platform::Stick::Left, [0.5, 0.0]),
+                Stick(maki_platform::Stick::Right, [-1.0, 0.0]),
                 Text("New script".into()),
                 Move([10.0, 20.0]),
                 Wait(1),
@@ -382,6 +406,9 @@ mod tests {
             "click 1",
             "drag 1 2 3",
             "type",
+            "stick up 1 0",
+            "stick left 1",
+            "stick left x 0",
         ] {
             let error = parse_script(&format!("wait 1\n{bad}")).unwrap_err();
             assert!(format!("{error:#}").contains("line 2"), "{bad}: {error:#}");

@@ -156,8 +156,8 @@ output = false",
             assert_eq!(again.room, document.room, "{path:?}");
             assert_eq!(again.text(), text, "{path:?}");
         }
-        // Room D: the button (wires only) and the pad.
-        assert_eq!((count, pages), (10, 11));
+        // Room D: the button (wires only), the pad, and the sign.
+        assert_eq!((count, pages), (11, 12));
     }
 
     /// The text of a room of the game after a rename of one object in the editor.
