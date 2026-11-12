@@ -17,13 +17,14 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::query::{With, Without};
+use bevy_ecs::query::{Has, With, Without};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::{Mut, World};
@@ -38,7 +39,8 @@ use serde::{Deserialize, Serialize};
 use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
 use crate::prefab::{PrefabUse, instance_objects, read_prefab};
 use crate::{
-    Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SoundSource, room_colliders,
+    Collider, Door, Light, MeshInstance, Mover, MoverState, Name, SkinPose, SoundSource,
+    room_colliders,
 };
 
 /// The content of a room file.
@@ -1343,8 +1345,8 @@ fn prefab_files(current: &CurrentRoom) -> Vec<PathBuf> {
         .collect()
 }
 
-/// A model of a prop while it loads. `spawn_loaded_models` replaces the entity with
-/// one entity for each mesh and each light of the model.
+/// A model of a prop while it loads. `spawn_loaded_models` gives the meshes and the
+/// lights of the model their entities.
 #[derive(Component)]
 pub(crate) struct PendingModel {
     model: Handle<Model>,
@@ -1571,14 +1573,14 @@ impl Spawner<'_, '_, '_> {
     /// the text of each of them.
     ///
     /// The components of `bevy_ecs` of the object (`add_object_component`: the
-    /// scripts) go to one entity, the object entity: that of its prop with a
-    /// generated mesh, of its light, door, or mover, else a new one. It has the pose
+    /// scripts) go to one entity, the object entity: that of its prop (for a file:
+    /// the entity of the load), of its light, door, or mover, else a new one. It has the pose
     /// of the object as `Interpolated`, so a script that moves it moves the mesh.
     fn object(&mut self, object: &ObjectDef, item: RoomItem, width: f32, depth: f32) {
         self.id = object.id;
         let mut main = None;
         if let Some(Ok(prop)) = object.prop() {
-            main = self.prop(&prop, item);
+            main = Some(self.prop(&prop, item));
         }
         let of_prop = main.is_some();
         if let Some(Ok(light)) = object.light() {
@@ -1671,10 +1673,10 @@ impl Spawner<'_, '_, '_> {
         }
     }
 
-    /// The entity of a generated mesh. `None` for a file: its meshes come later.
-    fn prop(&mut self, prop: &PropDef, item: RoomItem) -> Option<Entity> {
+    /// The entity of the prop. For a file, the entity of the load: `spawn_loaded_models`
+    /// keeps it only as an object entity or for a skinned model.
+    fn prop(&mut self, prop: &PropDef, item: RoomItem) -> Entity {
         let transform = prop.pose.transform();
-        let file = matches!(prop.mesh, MeshDef::File(_));
         let mut entity = match &prop.mesh {
             MeshDef::File(path) => {
                 let path = path.resolve(self.directory);
@@ -1687,6 +1689,7 @@ impl Spawner<'_, '_, '_> {
                     .or_insert_with(|| loads.load(&path, models, meshes, textures));
                 self.commands.spawn((
                     RoomEntity,
+                    item,
                     transform,
                     PendingModel {
                         model,
@@ -1718,7 +1721,7 @@ impl Spawner<'_, '_, '_> {
         if let Some(id) = self.id {
             entity.insert(id);
         }
-        (!file).then(|| entity.id())
+        entity.id()
     }
 
     fn mover(&mut self, mover: &MoverDef, item: RoomItem) -> Option<Entity> {
@@ -1819,7 +1822,16 @@ impl Spawner<'_, '_, '_> {
 
 /// The box around a mesh at a transform.
 fn collider_around(mesh: &Mesh, transform: &Transform) -> Collider {
-    let (min, max) = mesh.positions().iter().fold(
+    collider_around_all([mesh], transform)
+}
+
+/// The box around some meshes. For a skinned model: the box of its bind pose.
+fn collider_around_all<'a>(
+    meshes: impl IntoIterator<Item = &'a Mesh>,
+    transform: &Transform,
+) -> Collider {
+    let positions = meshes.into_iter().flat_map(|mesh| mesh.positions());
+    let (min, max) = positions.fold(
         (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
         |(min, max), position| (min.min(*position), max.max(*position)),
     );
@@ -1941,18 +1953,42 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
 /// Runs in `Update`. Polls the pending models. This system does not know if the
 /// loader is synchronous (the model is ready in the first frame) or not (it is ready
 /// some frames later).
+///
+/// A model with a skeleton keeps the entity of the load as its object entity: it gets
+/// the first mesh (the group of the model draws all its meshes, as the player model)
+/// and a [`SkinPose`]. A model with no skeleton gets one entity for each mesh.
 pub(crate) fn spawn_loaded_models(
     mut commands: Commands,
-    pending: Query<(Entity, &Transform, &PendingModel)>,
+    pending: Query<(Entity, &Transform, &PendingModel, Has<Interpolated>)>,
     models: Res<Assets<Model>>,
     meshes: Res<Assets<Mesh>>,
 ) {
-    for (entity, transform, pending) in &pending {
+    for (entity, transform, pending, of_object) in &pending {
+        // `object()` gives `Interpolated` to the entity only if it has object components.
+        let mut keep = of_object;
         match models.state(pending.model) {
             Some(LoadState::Loading) => continue,
             Some(LoadState::Ready) => {
                 let model = models.get(pending.model).expect("the state is Ready");
-                for handle in &model.meshes {
+                let skinned = model.skeleton.as_ref().zip(model.meshes.first());
+                if let Some((skeleton, first)) = skinned {
+                    keep = true;
+                    let mut entity = commands.entity(entity);
+                    entity.insert((
+                        MeshInstance(*first),
+                        SkinPose::rest(Arc::new(skeleton.clone())),
+                    ));
+                    if pending.collider {
+                        let all = model.meshes.iter().filter_map(|handle| meshes.get(*handle));
+                        entity.insert(collider_around_all(all, transform));
+                    }
+                }
+                let rigid = if skinned.is_some() {
+                    &[][..]
+                } else {
+                    &model.meshes[..]
+                };
+                for handle in rigid {
                     let mut entity = commands.spawn((
                         RoomEntity,
                         pending.item,
@@ -1984,7 +2020,11 @@ pub(crate) fn spawn_loaded_models(
             // The loader logged the reason. The prop does not show.
             Some(LoadState::Failed) | None => {}
         }
-        commands.entity(entity).despawn();
+        if keep {
+            commands.entity(entity).remove::<PendingModel>();
+        } else {
+            commands.entity(entity).despawn();
+        }
     }
 }
 
