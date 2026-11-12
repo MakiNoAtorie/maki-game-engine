@@ -1,0 +1,40 @@
+# The run by hand of stage 62, with no input of the desktop: an input script of the
+# editor (crates/devtools/src/input_script.rs). The room is room_anim: the player
+# starts at (-2, 0, 2.5); the cube at (1.5, 0.4, -1) hops on twos (12 frames in a
+# second: a new pose each 5 frames at 60); the lamp pulses in 2 s; the area at
+# (-2.5, 0, -2) cuts the cube to the spin clip.
+# A config for it: [rooms] start = "game/assets/rooms/room_anim.ron", start_spawn = 2,
+# [window] focus = false, [audio] output = false, [save] enabled = false.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage62.txt --input-shots DIR
+wait 60
+shot room
+tap F5
+wait 60
+shot play
+
+# Two shots one frame apart on one pose, then the next pose: a jump with no ghost.
+wait 2
+shot hop_a
+wait 1
+shot hop_b
+wait 5
+shot hop_c
+# Half of the pulse later: the lamp at another intensity.
+wait 60
+shot pulse
+
+# Into the area: the cube cuts to the spin clip.
+press W
+wait 170
+release W
+press A
+wait 20
+release A
+wait 30
+shot cut
+wait 20
+shot spin
+
+tap F5
+wait 30
+quit

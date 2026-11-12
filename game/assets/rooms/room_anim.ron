@@ -1,0 +1,48 @@
+// Room anim: test room of the animator (stage 62). A cube hops on twos (a step
+// clip at 12 frames in a second), the lamp pulses (a linear field track of its
+// intensity), and the area at the left back corner cuts the cube to a second clip.
+// The clips are in data/clips. Lengths are meters, angles degrees.
+(
+    width: 8.0,
+    depth: 8.0,
+    height: 3.0,
+    next_id: 5,
+    objects: [
+        (
+            id: 1,
+            name: "lamp",
+            pose: (position: (0.0, 2.6, 0.0)),
+            components: {
+                "animator": (clip: "data/clips/pulse.clip.ron"),
+                "light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 8.0),
+            },
+        ),
+        (id: 2, name: "start", pose: (position: (-2.0, 0.0, 2.5)), components: {"spawn": ()}),
+        (
+            id: 3,
+            name: "hopper",
+            pose: (position: (1.5, 0.4, -1.0)),
+            components: {
+                "animator": (clip: "data/clips/hop.clip.ron"),
+                "prop": (mesh: Cube(0.8), look: (color: (0.8, 0.3, 0.2))),
+            },
+        ),
+        // Walk in: the cube cuts to the spin clip, at its first key.
+        (
+            id: 4,
+            name: "cut",
+            pose: (position: (-2.5, 0.0, -2.0)),
+            components: {
+                "area": (width: 1.4, depth: 1.4),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Touch,
+                            commands: [SetField(3, "animator", "clip", "data/clips/spin.clip.ron")],
+                        ),
+                    ],
+                ),
+            },
+        ),
+    ],
+)

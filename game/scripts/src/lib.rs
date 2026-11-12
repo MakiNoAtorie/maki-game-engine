@@ -59,20 +59,28 @@ output = false",
         app
     }
 
-    /// The chase room (not a benchmark room): the loader finds nothing wrong, and the
-    /// editor writes it as it is.
+    /// The test rooms of the run by hand (not benchmark rooms): the loader finds
+    /// nothing wrong, and the editor writes each as it is.
     #[test]
-    fn the_chase_room_loads_and_is_in_the_form_of_the_editor() {
+    fn the_test_rooms_load_and_are_in_the_form_of_the_editor() {
         let app = game_app();
         let registry = app.world().resource::<events::CommandRegistry>();
-        let path = PathBuf::from("../assets/rooms/room_chase.ron");
-        let validators = app.world().resource::<scene::RoomValidators>();
-        scene::read_room(&path, validators).unwrap();
-        let document = maki_editor::Document::read(&path, registry).unwrap();
-        let file = std::fs::read_to_string(&path)
-            .unwrap()
-            .replace("\r\n", "\n");
-        assert_eq!(file, document.text());
+        for path in [
+            "../assets/rooms/room_chase.ron",
+            "../assets/rooms/room_anim.ron",
+        ] {
+            let path = PathBuf::from(path);
+            let validators = app.world().resource::<scene::RoomValidators>();
+            scene::read_room(&path, validators).unwrap();
+            let document = maki_editor::Document::read(&path, registry).unwrap();
+            if std::env::var_os("MAKI_WRITE_ROOMS").is_some() {
+                std::fs::write(&path, document.text()).unwrap();
+            }
+            let file = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("\r\n", "\n");
+            assert_eq!(file, document.text(), "{path:?}");
+        }
     }
 
     /// The editor writes the room files of the game with all that they hold: the

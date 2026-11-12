@@ -1,0 +1,6 @@
+// The lamp of room_anim pulses: a linear field track of the light intensity, 2 s.
+(mode: Linear, tracks: [(channel: Field(component: "light", field: "intensity"), keys: [
+    (time: 0.0, value: Number(4.0)),
+    (time: 1.0, value: Number(14.0)),
+    (time: 2.0, value: Number(4.0)),
+])])
