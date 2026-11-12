@@ -1762,3 +1762,23 @@ fn a_new_file_reference_gets_its_id_and_a_moved_path_is_a_step_to_undo() {
     assert_eq!(file(&app).path, Path::new("x.glb"));
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn the_snap_step_is_the_cell_of_the_room_over_the_divisions() {
+    let settings = EditorSettings::default();
+    assert_eq!(settings.grid_step(2.0), 0.5);
+    assert_eq!(settings.grid_step(1.0), 0.25);
+}
+
+#[test]
+fn an_old_config_with_grid_step_loads_and_the_key_is_not_written_again() {
+    let old = "[editor]\ngrid_step = 0.5\nsnap_divisions = 2\n";
+    let mut app = App::new(ConfigFile::from_text(old)).unwrap();
+    app.add_settings::<EditorSettings>();
+    app.check_config().unwrap();
+    let settings = app.world().resource::<EditorSettings>().clone();
+    assert_eq!(settings.snap_divisions, 2);
+    let mut file = ConfigFile::from_text("");
+    file.write(&settings).unwrap();
+    assert!(!file.text().contains("grid_step"), "{}", file.text());
+}

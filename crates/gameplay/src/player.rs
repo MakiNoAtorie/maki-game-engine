@@ -12,19 +12,21 @@ use std::path::{Path, PathBuf};
 
 use maki_assets::FileRef;
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::query::{Changed, With};
+use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Commands, EntityCommands, Local, Query, Res, ResMut};
-use glam::{Quat, Vec3};
+use glam::{IVec2, Quat, Vec3};
 use maki_assets::{
     AssetChanged, AssetWatch, Assets, Handle, LoadState, Mesh, Model, Textures, load_gltf,
 };
 use maki_core::{
-    App, Fields, FixedUpdate, Interpolated, Module, ResetPlay, Startup, Time, Transform, Update,
-    interpolate_transforms,
+    App, Fields, FixedUpdate, Interpolated, Module, ResetPlay, Settings, Startup, Time, Transform,
+    Update, interpolate_transforms,
 };
 use maki_events::run_events;
 use maki_physics::{CharacterSettings, Kinematic, Physics, PhysicsSet, QueryFilter, Shape};
@@ -34,9 +36,11 @@ use maki_scene::{
     add_component_type, read_prefab,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::control::{Controller, control_home, control_home_if_lost};
 use crate::controls::{MoveCapture, RUN, move_direction};
+use crate::grid::WalkGrid;
 
 /// An entity that walks on the floor and stops at colliders. `walk` moves it; some
 /// other system tells it where to go (`steer_player` for the player; an NPC module
@@ -210,12 +214,17 @@ impl Module for PlayerModule {
             prefab: self.prefab.clone(),
         };
         app.insert_resource(file.clone())
+            .add_settings::<WalkSettings>()
+            // Empty until a `GridModule` makes it: the grid walk then stands still.
+            .init_resource::<WalkGrid>()
             .init_resource::<Textures>()
             .init_resource::<MoveCapture>()
             .init_resource::<Controller>()
+            .init_resource::<GridMoves>()
             .add_systems(Startup, spawn_player)
             // Exclusive systems: only the order to the loader and the placement counts.
             .add_systems(ResetPlay, control_home.ambiguous_with_all())
+            .add_systems(ResetPlay, clear_grid_moves.ambiguous_with_all())
             .add_systems(
                 Update,
                 control_home_if_lost
@@ -486,33 +495,185 @@ fn place_player(
     }
 }
 
+/// How the player walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WalkMode {
+    /// Any direction, any distance.
+    #[default]
+    Free,
+    /// Center to center of the cells of the room, in the 4 directions of the axes.
+    Grid,
+}
+
+/// The `[walk]` table of the config file.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WalkSettings {
+    pub mode: WalkMode,
+}
+
+impl Settings for WalkSettings {
+    const TABLE: &'static str = "walk";
+}
+
+/// A walker this near its goal, in meters, has arrived and snaps to it.
+const ARRIVED: f32 = 1e-3;
+
+/// The axis direction on the floor that a floor vector points along most: Z on a tie
+/// (so with two move actions held, forward and back win over left and right). `None`
+/// for zero.
+fn along_axis(v: Vec3) -> Option<IVec2> {
+    if v.x == 0.0 && v.z == 0.0 {
+        None
+    } else if v.z.abs() >= v.x.abs() {
+        Some(IVec2::new(0, v.z.signum() as i32))
+    } else {
+        Some(IVec2::new(v.x.signum() as i32, 0))
+    }
+}
+
+/// A move of the grid walk: the center it goes to, the center it came from, and the
+/// seconds it has taken.
+#[derive(Clone, Copy)]
+pub struct GridMove {
+    to: Vec3,
+    back: Vec3,
+    seconds: f32,
+}
+
+/// The grid moves of the players under way: play state, empty again on `ResetPlay`.
+#[derive(Resource, Default)]
+pub struct GridMoves(pub(crate) HashMap<Entity, GridMove>);
+
+/// Runs in `ResetPlay`: no move of the grid walk goes on into a new play.
+fn clear_grid_moves(mut moves: ResMut<GridMoves>) {
+    moves.0.clear();
+}
+
+/// A move that takes this many times its free time turns back to its cell: a body
+/// that blocks the cell must not hold the player in a move forever.
+const MOVE_PATIENCE: f32 = 3.0;
+
+/// The grid walk of one player for one fixed step: finish the move to the goal cell,
+/// else go to the center of its own cell, else turn to a new direction, else start the
+/// move to the next cell if it is free.
+fn grid_step(
+    walker: &mut Walker,
+    pose: &mut Transform,
+    speed: f32,
+    input: Option<IVec2>,
+    goal: &mut Option<GridMove>,
+    (grid, physics, seconds): (&WalkGrid, &Physics, f32),
+) {
+    let at = pose.translation;
+    if let Some(GridMove { to, .. }) = *goal
+        && (to - at).with_y(0.0).length() <= ARRIVED
+    {
+        pose.translation = Vec3::new(to.x, at.y, to.z);
+        *goal = None;
+    }
+    if let Some(step) = goal.as_mut() {
+        step.seconds += seconds;
+        if step.seconds > MOVE_PATIENCE * grid.cell() / speed.max(0.1) {
+            *step = GridMove {
+                to: step.back,
+                back: step.to,
+                seconds: 0.0,
+            };
+        }
+    }
+    if goal.is_none()
+        && let Some(want) = input
+    {
+        let at = pose.translation;
+        let cell = grid.cell_of(at);
+        let off_center = cell
+            .map(|cell| grid.center(cell))
+            .filter(|here| (*here - at).with_y(0.0).length() > ARRIVED);
+        if let Some(here) = off_center {
+            // Off a center (a spawn, a free walk): the moves go center to center on an axis.
+            *goal = Some(GridMove {
+                to: here,
+                back: here,
+                seconds: 0.0,
+            });
+        } else if along_axis(pose.rotation * Vec3::Z) != Some(want) {
+            // A press of another direction turns first.
+            let facing = Vec3::new(want.x as f32, 0.0, want.y as f32);
+            pose.rotation = Quat::from_rotation_y(facing.x.atan2(facing.z));
+        } else if let Some(cell) = cell
+            && grid.is_free(physics, cell + want)
+        {
+            *goal = Some(GridMove {
+                to: grid.center(cell + want),
+                back: grid.center(cell),
+                seconds: 0.0,
+            });
+        }
+    }
+    let left = goal.map_or(Vec3::ZERO, |step| (step.to - pose.translation).with_y(0.0));
+    walker.direction = left.normalize_or_zero();
+    // Not faster than the rest of the way: no overshoot of the center.
+    walker.speed = speed.min(left.length() / seconds);
+}
+
 /// Runs in `FixedUpdate`: the controller. The move actions tell the pawn where to
 /// walk, while the rules of the game let them (`Controller::active`).
+// A system: each argument is a system parameter.
+#[allow(clippy::too_many_arguments)]
 pub fn steer_player(
     actions: Res<FixedActionState>,
     capture: Res<MoveCapture>,
     controller: Res<Controller>,
+    settings: Res<WalkSettings>,
+    grid: Res<WalkGrid>,
+    physics: Res<Physics>,
+    time: Res<Time>,
     cameras: Query<&Camera, With<ActiveCamera>>,
-    mut players: Query<(&mut Walker, &PlayerDef), With<Player>>,
+    mut players: Query<(Entity, &mut Walker, &PlayerDef, &mut Interpolated), With<Player>>,
+    mut goals: ResMut<GridMoves>,
 ) {
     let direction = if capture.0 || !controller.active {
         Vec3::ZERO
     } else {
         move_direction(&actions, cameras.iter().next())
     };
-    for (mut walker, def) in &mut players {
+    if settings.mode == WalkMode::Free && !goals.0.is_empty() {
+        goals.0.clear();
+    }
+    for (entity, mut walker, def, mut pose) in &mut players {
         let speed = if actions.pressed(RUN) {
             def.run_speed
         } else {
             def.walk_speed
         };
+        if settings.mode == WalkMode::Grid {
+            let mut goal = goals.0.remove(&entity);
+            let seconds = time.fixed_delta.as_secs_f32();
+            // Copies: only a different value is written, so a player at rest is not changed.
+            let (mut steered, mut current) = (*walker, pose.current);
+            grid_step(
+                &mut steered,
+                &mut current,
+                speed,
+                along_axis(direction),
+                &mut goal,
+                (&grid, &physics, seconds),
+            );
+            walker.set_if_neq(steered);
+            if pose.current != current {
+                pose.current = current;
+            }
+            goals.0.extend(goal.map(|goal| (entity, goal)));
+            continue;
+        }
         (walker.direction, walker.speed) = (direction, speed);
     }
 }
 
 /// Runs in `FixedUpdate`: gives each walker the [`Kinematic`] of its capsule, and a new
 /// one when its size changes.
-fn fit_walker_bodies(
+pub(crate) fn fit_walker_bodies(
     mut commands: Commands,
     walkers: Query<(Entity, &Walker, Option<&Kinematic>), Changed<Walker>>,
 ) {

@@ -326,6 +326,55 @@ impl<'w> ScriptContext<'w> {
         physics.overlap(shape, center, Quat::IDENTITY, self.query_filter())
     }
 
+    /// True when `target` is closer than `distance` meters, inside the cone of `angle`
+    /// degrees (the full angle, around the facing of this object: the +Z axis of its
+    /// rotation, as the player faces), and in line of sight from the eyes
+    /// ([`EYE_HEIGHT`] above the pose). See [`can_see`].
+    pub fn sees(&self, target: Entity, distance: f32, angle: f32) -> bool {
+        can_see(self.world, self.entity, target, distance, angle)
+    }
+
+    /// Walks this object (a `walker` of the room) to a place by a path search around
+    /// the colliders. The walk starts in this step; [`Self::arrived`] tells the end.
+    /// A call with the place of the last walk does nothing (after NoPath it searches
+    /// again: a door can be open now).
+    pub fn walk_to(&mut self, target: Vec3) {
+        let Some(mut goal) = self.world.get_mut::<WalkGoal>(self.entity) else {
+            return;
+        };
+        if let WalkGoal::Asked(place) | WalkGoal::Walking(place) | WalkGoal::Arrived(place) = *goal
+            && place == target
+        {
+            return;
+        }
+        *goal = WalkGoal::Asked(target);
+    }
+
+    /// Stops the walk of [`Self::walk_to`]: the object stands.
+    pub fn stop(&mut self) {
+        if let Some(mut goal) = self.world.get_mut::<WalkGoal>(self.entity) {
+            goal.set_if_neq(WalkGoal::Idle);
+        }
+    }
+
+    /// True when the walk of [`Self::walk_to`] got to its place, until the next walk or
+    /// stop.
+    pub fn arrived(&self) -> bool {
+        matches!(
+            self.world.get::<WalkGoal>(self.entity),
+            Some(WalkGoal::Arrived(_))
+        )
+    }
+
+    /// True when the walk of [`Self::walk_to`] found no path to its place, until the
+    /// next walk or stop.
+    pub fn no_path(&self) -> bool {
+        matches!(
+            self.world.get::<WalkGoal>(self.entity),
+            Some(WalkGoal::NoPath)
+        )
+    }
+
     /// The id of an entity that a query found, if it is an object of the room.
     pub fn object_id(&self, entity: Entity) -> Option<ObjectId> {
         self.world.get::<ObjectId>(entity).copied()
@@ -337,6 +386,86 @@ impl<'w> ScriptContext<'w> {
             ..QueryFilter::default()
         }
     }
+}
+
+/// Where a walker of the room goes, and how far it got: what a script
+/// ([`ScriptContext::walk_to`]) or the command `WalkTo` asks. `maki-gameplay`
+/// (`WalkersModule`) searches the path and walks it: this crate is below the walk.
+/// Each walker has one from its start: a change of its value, not an insert, asks a walk.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+pub enum WalkGoal {
+    /// No walk: the walker stands.
+    #[default]
+    Idle,
+    /// A path search to this place in the next step of the walkers.
+    Asked(Vec3),
+    /// On the path to this place.
+    Walking(Vec3),
+    /// At the place.
+    Arrived(Vec3),
+    /// No path to the place: the walker stands.
+    NoPath,
+}
+
+/// The entity of an object with a pose. An object can have more entities (a light):
+/// the walker (with a [`WalkGoal`]) comes first, else the first one found.
+pub fn object_entity(world: &World, object: ObjectId) -> Option<Entity> {
+    // `WalkGoal` is read by entity: a query that names it is `None` while no walker exists.
+    let mut query = world.try_query_filtered::<(Entity, &ObjectId), With<Interpolated>>()?;
+    let mut found = None;
+    for (entity, id) in query.iter(world) {
+        if *id == object {
+            if world.get::<WalkGoal>(entity).is_some() {
+                return Some(entity);
+            }
+            found = found.or(Some(entity));
+        }
+    }
+    found
+}
+
+/// The height of the eyes above the pose of an object, in meters. `maki-events` is
+/// below `maki-gameplay`, so it cannot read the `Walker` height.
+pub const EYE_HEIGHT: f32 = 1.5;
+
+/// True when `target` is closer than `distance` (on the floor plane), inside the cone of
+/// `angle` degrees around the facing of `viewer` (360 or more: all around), and no
+/// collider blocks the line between the eyes of both. Sensors and both entities are
+/// not blockers. No `Physics`, or a pose missing: false.
+pub fn can_see(world: &World, viewer: Entity, target: Entity, distance: f32, angle: f32) -> bool {
+    let Some(physics) = world.get_resource::<Physics>() else {
+        return false;
+    };
+    // In the first steps of a room the player and the colliders are not in place yet.
+    if world
+        .get_resource::<EventRunner>()
+        .is_some_and(EventRunner::starting_room)
+    {
+        return false;
+    }
+    let pose = |entity| world.get::<Interpolated>(entity).map(|pose| pose.current);
+    let (Some(from), Some(to)) = (pose(viewer), pose(target)) else {
+        return false;
+    };
+    let eyes = from.translation + Vec3::Y * EYE_HEIGHT;
+    let aim = to.translation + Vec3::Y * EYE_HEIGHT;
+    let flat = Vec3::new(aim.x - eyes.x, 0.0, aim.z - eyes.z);
+    let length = flat.length();
+    if length >= distance {
+        return false;
+    }
+    if angle < 360.0 && length > 1e-3 {
+        let forward = from.rotation * Vec3::Z;
+        let forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        if flat.dot(forward) / length < (angle.to_radians() / 2.0).cos() {
+            return false;
+        }
+    }
+    let filter = QueryFilter {
+        exclude: Some(viewer),
+        ..QueryFilter::default()
+    };
+    physics.line_of_sight(eyes, aim, filter, Some(target))
 }
 
 /// The area of an object, for the hooks `interact`, `enter_area`, and `leave_area`:

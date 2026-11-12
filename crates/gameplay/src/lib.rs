@@ -14,11 +14,15 @@ mod camera;
 mod control;
 mod controls;
 mod game;
+mod grid;
 mod light_control;
 mod player;
 mod rooms;
 mod save;
 mod screens;
+#[cfg(test)]
+mod tests;
+mod walkers;
 
 pub use camera::{CameraModule, CameraSettings, FollowCamera, follow_player};
 pub use control::{Controller, give_control};
@@ -27,11 +31,13 @@ pub use controls::{
     QUIT, RUN, TOGGLE_MOVERS, move_direction,
 };
 pub use game::{GameCommand, GameModule, GameRules, PAUSE};
+pub use grid::{GridModule, GridSettings, WalkGrid, find_cells};
 pub use light_control::{
     LIGHT_DOWN, LIGHT_INTENSITY_DOWN, LIGHT_INTENSITY_UP, LIGHT_UP, LightControlModule,
     TOGGLE_LIGHT_CONTROL, clamp_to_room,
 };
-pub use player::{PlayerDef, PlayerModule, Walker, steer_player, walk};
+pub use player::{PlayerDef, PlayerModule, WalkMode, WalkSettings, Walker, steer_player, walk};
 pub use rooms::{RELOAD_ROOM, RoomSettings, RoomsModule, StartRoom, check_start_room};
 pub use save::{LOAD_GAME, SaveCommand, SaveData, SaveFile, SaveModule, SaveSettings};
 pub use screens::{PlayCommand, ScreenSettings, ScreensModule};
+pub use walkers::{PathFollow, WalkCommand, WalkTarget, WalkerDef, WalkersModule, steer_walkers};

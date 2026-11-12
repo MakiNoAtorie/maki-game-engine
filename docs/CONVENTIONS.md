@@ -54,6 +54,5 @@ Decide before each subagent and pass `model` explicitly; state the choice and wh
 - A command reaches an object and its children (`tree_entities`). Readers of meshes, lights, colliders, areas filter `Without<Hidden>`.
 - Play state goes back on `ResetPlay`; code that sets it at the start runs after that `ResetPlay`, not in `Startup`.
 - Lane tests in a shared crate: `src/tests/<lane>.rs`, one `mod` line; temp directories prefixed by the lane.
-
-## Code intelligence
-- `rust-analyzer-lsp` in local sessions (lookup by symbol, errors after each edit). No index tool until searches repeat.
+- A script reaches a higher crate by a request component in `events` (`WalkGoal`: required, changed, never inserted). Entity of an object: `object_entity`.
+- Physics is empty while `starting_room`: a test waits; a test wall is above `EYE_HEIGHT`.

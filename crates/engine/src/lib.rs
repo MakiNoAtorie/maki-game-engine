@@ -176,6 +176,8 @@ fn add_modules(
             prefab: project.player.clone(),
         })
         .add_module(maki_gameplay::GameModule)
+        .add_module(maki_gameplay::GridModule)
+        .add_module(maki_gameplay::WalkersModule)
         .add_module(maki_gameplay::CameraModule)
         .add_module(maki_gameplay::RoomsModule {
             start_room: project.start_room.clone(),

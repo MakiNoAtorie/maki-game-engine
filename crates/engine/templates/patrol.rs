@@ -1,5 +1,6 @@
-//! ScriptName: the object walks from its place to a point and back, and waits at each
-//! end. Give an object with a mesh the component `"script_name": (to: (3.0, 0.0, 0.0))`.
+//! ScriptName: the object walks from its place to a point and back around walls, and
+//! waits at each end. Give an object with a mesh the components `"walker": ()` (it
+//! sets the speed) and `"script_name": (to: (3.0, 0.0, 0.0))`.
 
 use bevy_ecs::component::Component;
 use glam::Vec3;
@@ -13,9 +14,6 @@ use serde::{Deserialize, Serialize};
 pub struct ScriptName {
     /// The far point, from the place of the object in the room.
     pub to: [f32; 3],
-    /// Meters in a second.
-    #[field(range = 0.0..=20.0, step = 0.1)]
-    pub speed: f32,
     /// Seconds at each end.
     #[field(range = 0.0..=60.0, step = 0.1)]
     pub wait: f32,
@@ -37,7 +35,6 @@ impl Default for ScriptName {
     fn default() -> Self {
         Self {
             to: [3.0, 0.0, 0.0],
-            speed: 1.0,
             wait: 1.0,
             ends: [[0.0; 3]; 2],
             target: 1,
@@ -50,26 +47,21 @@ impl Script for ScriptName {
     fn start(&mut self, context: &mut ScriptContext) {
         let at = context.pose().translation;
         self.ends = [at.into(), (at + Vec3::from(self.to)).into()];
+        context.walk_to(Vec3::from(self.ends[self.target]));
     }
 
     fn step(&mut self, context: &mut ScriptContext) {
         if self.waits > 0.0 {
             self.waits -= context.seconds();
-            return;
-        }
-        let mut pose = context.pose();
-        let target = Vec3::from(self.ends[self.target]);
-        let way = target - pose.translation;
-        let step = self.speed * context.seconds();
-        if way.length() <= step {
-            // At the end: wait, then back to the other end.
-            pose.translation = target;
+            if self.waits <= 0.0 {
+                // The wait ended: walk to the other end.
+                context.walk_to(Vec3::from(self.ends[self.target]));
+            }
+        } else if context.arrived() || context.no_path() {
+            // At the end, or no path to it: wait, then go to the other end.
             self.target = 1 - self.target;
-            self.waits = self.wait;
-        } else {
-            pose.translation += way.normalize() * step;
+            self.waits = self.wait.max(0.001);
         }
-        context.set_pose(pose);
     }
 }
 

@@ -345,6 +345,9 @@ fn condition_text(condition: &Condition) -> String {
             format!("{}.{name} {} {value}", object(id), compare_sign(*compare))
         }
         Condition::Variables(a, compare, b) => format!("{a} {} {b}", compare_sign(*compare)),
+        Condition::Sees(id, target, distance) => {
+            format!("{} sees {} within {distance}", object(id), object(target))
+        }
         Condition::Item(item, compare, value) => {
             format!(
                 "item {} {} {value}",

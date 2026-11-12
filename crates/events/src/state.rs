@@ -218,6 +218,16 @@ pub(crate) fn condition_problem(
         Condition::Switch(object, _)
         | Condition::NotSwitch(object, _)
         | Condition::Number(object, ..) => *object,
+        Condition::Sees(object, target, _) => {
+            let missing = |id: Option<ObjectId>| {
+                let id = id?;
+                let none = context.room.find(&id).is_none();
+                none.then(|| format!("the room has no object `{id}`"))
+            };
+            // Target 0 is the player, not an object of the room.
+            let target = (*target != ObjectId::default()).then_some(*target);
+            return missing(resolve(*object, this)).or_else(|| missing(target));
+        }
         Condition::Item(item, ..) => {
             return crate::items::item_problem(&item.file, context.directory);
         }

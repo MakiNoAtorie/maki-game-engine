@@ -351,6 +351,34 @@ impl Physics {
         })
     }
 
+    /// True when no collider lies on the segment from `from` to `to`. Sensors are
+    /// skipped unless `filter.sensors`; so are the colliders of `filter.exclude` and of
+    /// `also` (the two ends of a look).
+    pub fn line_of_sight(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        filter: QueryFilter,
+        also: Option<Entity>,
+    ) -> bool {
+        let span = to - from;
+        let Some(direction) = span.try_normalize() else {
+            return true;
+        };
+        let ray = rp::Ray::new(vector(from), vector(direction));
+        let base = self.sees(&filter);
+        let predicate = move |handle, collider: &rp::Collider| {
+            base(handle, collider) && Some(owner(collider)) != also
+        };
+        let blocked = self.world.cast_ray(
+            &ray,
+            span.length(),
+            true,
+            rapier_filter(&filter, &predicate),
+        );
+        blocked.is_none()
+    }
+
     /// The entities with a collider that overlaps `shape` at a pose, each one time, in
     /// the order of the entities.
     pub fn overlap(
