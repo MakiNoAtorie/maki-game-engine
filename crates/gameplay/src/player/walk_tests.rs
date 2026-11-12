@@ -307,7 +307,7 @@ fn a_jump_of_a_walker_does_not_throw_a_dynamic_box() {
     let rest = place(&app, box_);
     change(&mut app, move |world| {
         let at = Transform::from_translation(Vec3::new(0.0, 0.0, 2.0));
-        world.get_mut::<Interpolated>(walker).unwrap().snap(at);
+        *world.get_mut::<Interpolated>(walker).unwrap() = Interpolated::at(at);
     });
     steps(&mut app, 10);
     let after = place(&app, box_);

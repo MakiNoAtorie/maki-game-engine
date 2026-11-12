@@ -433,7 +433,8 @@ pub(crate) fn restart_bodies(
             continue;
         };
         match poses.get_mut(*entity) {
-            Ok((Some(mut pose), _)) => pose.snap(solid.start),
+            // No jump count: a room load follows each `ResetPlay`.
+            Ok((Some(mut pose), _)) => *pose = Interpolated::at(solid.start),
             Ok((None, Some(mut transform))) => *transform = solid.start,
             _ => {}
         }

@@ -20,6 +20,9 @@
 //!   [`fade_frames`]. The direct light keeps its history where the denoiser finds no
 //!   change (the fast history of `shaders/denoise_temporal.comp`): the noise of the
 //!   indirect light is too large for such a test at one sample for each frame.
+//! - [`RenderWorld::jump_accumulation`]: an object jumped to another pose
+//!   (`maki_core::PoseJumps`). A soft reset, and in that frame the TAA drops the history
+//!   of a pixel at rest whose surface changed: the pixels that the object left.
 //! - [`RenderWorld::reset_accumulation`]: the old samples are of no use (a new image
 //!   size, the manual reset). Each pixel starts again.
 
@@ -43,6 +46,8 @@ pub struct Accumulation {
     soft_reset: bool,
     /// A wake is waiting.
     wake: bool,
+    /// A jump is waiting.
+    jump: bool,
     /// Number of samples since the last change, with the samples of this frame.
     samples: u32,
     /// Samples that this frame traces and adds to the mean. 0: the picture is complete.
@@ -51,6 +56,8 @@ pub struct Accumulation {
     history_limit: u32,
     /// This frame started with a reset: no image of the frame before is valid.
     reset_frame: bool,
+    /// This frame started with a jump: the TAA tests the surface of a pixel at rest too.
+    jump_frame: bool,
     /// Frames, with this one, in which the history stays short after a soft reset.
     fade_frames: u32,
 }
@@ -62,10 +69,12 @@ impl Default for Accumulation {
             reset: true,
             soft_reset: false,
             wake: false,
+            jump: false,
             samples: 0,
             frame_samples: 0,
             history_limit: 0,
             reset_frame: true,
+            jump_frame: false,
             fade_frames: 0,
         }
     }
@@ -85,6 +94,18 @@ impl Accumulation {
     /// The next drawn frame starts the sample count again and keeps the history.
     pub fn request_wake(&mut self) {
         self.wake = true;
+    }
+
+    /// The next drawn frame is a soft reset, and its TAA drops the history of each pixel
+    /// whose surface changed, also at rest.
+    pub fn request_jump(&mut self) {
+        self.jump = true;
+        self.soft_reset = true;
+    }
+
+    /// True in a frame that started with a jump.
+    pub fn jump_frame(&self) -> bool {
+        self.jump_frame
     }
 
     /// Number of samples since the last change, with the samples of this frame. A
@@ -126,6 +147,7 @@ impl Accumulation {
     ) {
         let reset = std::mem::take(&mut self.reset);
         self.reset_frame = reset;
+        self.jump_frame = std::mem::take(&mut self.jump);
         let wake = std::mem::take(&mut self.wake);
         if std::mem::take(&mut self.soft_reset) {
             self.fade_frames = fade_frames(history_samples, samples_per_frame);
@@ -399,5 +421,20 @@ mod tests {
         accumulation.request_reset();
         accumulation.start_frame(1000, 4, 32);
         assert_eq!(accumulation.samples(), 4);
+    }
+
+    #[test]
+    fn a_jump_is_a_soft_reset_and_a_jump_frame_once() {
+        let mut accumulation = Accumulation::default();
+        for _ in 0..25 {
+            accumulation.start_frame(1000, 4, 32);
+        }
+        assert!(!accumulation.jump_frame());
+        accumulation.request_jump();
+        accumulation.start_frame(1000, 4, 32);
+        assert!(accumulation.jump_frame());
+        assert_eq!(accumulation.history_limit(), 32);
+        accumulation.start_frame(1000, 4, 32);
+        assert!(!accumulation.jump_frame());
     }
 }

@@ -794,10 +794,12 @@ fn counter_game(test: &str, room: &str) -> App {
     add_script::<Counter>(&mut app, "counter");
     app.init_resource::<PlaceAt>().add_systems(
         maki_core::FixedFirst,
-        |mut place: ResMut<PlaceAt>, mut players: Query<&mut Interpolated, With<Player>>| {
+        |mut place: ResMut<PlaceAt>,
+         mut jumps: ResMut<maki_core::PoseJumps>,
+         mut players: Query<&mut Interpolated, With<Player>>| {
             if let Some(at) = place.0.take() {
                 for mut pose in &mut players {
-                    pose.snap(Transform::from_translation(at.into()));
+                    pose.snap(Transform::from_translation(at.into()), &mut jumps);
                 }
             }
         },

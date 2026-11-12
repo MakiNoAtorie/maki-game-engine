@@ -108,6 +108,13 @@ impl RenderWorld {
         self.0.resource_mut::<Accumulation>().request_soft_reset();
     }
 
+    /// A soft reset, and in that frame the TAA drops the history of a pixel at rest
+    /// whose surface changed. Call from an `Extract` system when an object jumped to
+    /// another pose: the pixels that it left are at rest and show it no more.
+    pub fn jump_accumulation(&mut self) {
+        self.0.resource_mut::<Accumulation>().request_jump();
+    }
+
     /// Makes new samples and keeps the history. Call from an `Extract` system when
     /// the view has changed: the old samples are correct, and the denoiser finds them
     /// at their new place in the picture.
