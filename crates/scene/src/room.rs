@@ -42,7 +42,7 @@ use crate::{
 };
 
 /// The content of a room file.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoomDef {
     /// Inner size in meters, along X.
@@ -51,6 +51,10 @@ pub struct RoomDef {
     pub depth: f32,
     /// Along Y.
     pub height: f32,
+    /// The side of a square cell of the grid of the room, in meters. A cell edge is at
+    /// the corner (-width/2, -depth/2). The path search and the grid walk use it.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub cell: f32,
     /// The texture of the floor of the room and of its passages. Its coordinates are
     /// meters: with `scale: 1.0` the image is one meter wide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +71,22 @@ pub struct RoomDef {
     pub objects: Vec<ObjectDef>,
 }
 
+// By hand: `cell` is 1.0 when not set, as in a file.
+impl Default for RoomDef {
+    fn default() -> Self {
+        Self {
+            width: 0.0,
+            depth: 0.0,
+            height: 0.0,
+            cell: 1.0,
+            floor: None,
+            walls: None,
+            next_id: 0,
+            objects: Vec::new(),
+        }
+    }
+}
+
 /// The fields of a room that are of the room itself, not of a thing in it: what a
 /// tool shows for "the room".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Fields)]
@@ -77,6 +97,8 @@ pub struct RoomShell {
     pub depth: f32,
     #[field(label = "height (Y)", range = 1.0..=100.0, step = 0.05)]
     pub height: f32,
+    #[field(label = "grid cell", range = 0.1..=10.0, step = 0.05)]
+    pub cell: f32,
     #[field(label = "floor texture")]
     pub floor: Option<TextureDef>,
     #[field(label = "wall texture")]
@@ -173,6 +195,7 @@ impl RoomDef {
             width: self.width,
             depth: self.depth,
             height: self.height,
+            cell: self.cell,
             floor: self.floor.clone(),
             walls: self.walls.clone(),
         }
@@ -182,6 +205,7 @@ impl RoomDef {
         self.width = shell.width;
         self.depth = shell.depth;
         self.height = shell.height;
+        self.cell = shell.cell;
         self.floor = shell.floor;
         self.walls = shell.walls;
     }
@@ -2065,6 +2089,7 @@ mod tests {
             width: 6.0,
             depth: 5.0,
             height: 3.0,
+            cell: 1.0,
             next_id: 0,
             objects: vec![
                 PropDef {
@@ -2093,6 +2118,19 @@ mod tests {
         let config = ron::ser::PrettyConfig::default();
         let text = ron_options().to_string_pretty(&room, config).unwrap();
         assert_eq!(parse_room(&text).unwrap(), room);
+    }
+
+    #[test]
+    fn the_cell_of_a_room_reads_and_writes_and_is_not_written_at_one_meter() {
+        let write = |room: &RoomDef| ron_options().to_string(room).unwrap();
+        let room = parse_room(&room_text(4.0, 4.0, 3.0, &[])).unwrap();
+        assert_eq!(room.cell, 1.0);
+        assert!(!write(&room).contains("cell"));
+
+        let big = RoomDef { cell: 2.0, ..room };
+        assert!(write(&big).contains("cell"));
+        assert_eq!(parse_room(&write(&big)).unwrap().cell, 2.0);
+        assert_eq!(big.shell().cell, 2.0);
     }
 
     #[test]
