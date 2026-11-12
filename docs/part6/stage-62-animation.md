@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.6 (animation in steps), 2.15 ("Animation": one c
 Goal: a clip is a data asset: tracks of keys, each track the pose of an object (position, rotation, scale) or a field of a component of it, each with the mode `Step` or `Linear`, and the clip with an optional frame rate of its own. An object with the component `animator` plays a clip: a step key holds its value until the next key, a clip at 12 frames in a second plays its curves in steps, and a change of the clip is a cut. A pose that jumps does not smear in the picture.
 Gate: a test in code: a clip with step keys holds each value until the next key and jumps with no blend between fixed steps; a linear clip at 8 frames in a second changes its value 8 times in a second; a field track changes the intensity of a light; a change of `animator.clip` by `SetField` starts the new clip at its first key, with no blend. The picture: in the scenario `jump_720p` (an object that jumps by a step clip, the camera at rest), the crop of the place that the object left, 4 frames after the jump, has no larger error against the reference than the same crop 4 frames after a light change (`bench.py quality --crop`). The game plays as before: the trip run, `bench.py gate`, the GPU time against `s61`.
 
-State: written by the session from the plan and the code at commit `2d394e8`; a proposal: taken as given if the owner does not change it.
+State: written by the session from the plan and the code at commit `2d394e8`; a proposal: taken as given if the owner does not change it.  Done (2026-11-12): report `stage-62.md`; the gate of the picture deferred by the owner.
 
 ## Now (the code at stage 61)
 
