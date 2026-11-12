@@ -125,6 +125,9 @@ pub struct Mesh {
     emissive_texture: Option<TextureRef>,
     alpha_cutoff: Option<f32>,
     open_back: bool,
+    /// Empty for a mesh with no skin; else one entry for each position.
+    joints: Vec<[u32; 4]>,
+    weights: Vec<[f32; 4]>,
 }
 
 impl Mesh {
@@ -180,7 +183,45 @@ impl Mesh {
             emissive_texture: None,
             alpha_cutoff: None,
             open_back: false,
+            joints: Vec::new(),
+            weights: Vec::new(),
         })
+    }
+
+    /// The same mesh with a skin: for each position, up to four joints of the
+    /// skeleton and their weights. The weights are normalized to a sum of 1; a joint
+    /// with no weight becomes joint 0, so each index with a weight is one that the
+    /// skin reads. The loader checks the indices against the joint count.
+    pub fn with_skin(
+        mut self,
+        mut joints: Vec<[u32; 4]>,
+        mut weights: Vec<[f32; 4]>,
+    ) -> Result<Self> {
+        let name = &self.name;
+        ensure!(
+            joints.len() == self.positions.len() && weights.len() == self.positions.len(),
+            "mesh `{name}` has {} positions but {} joint sets and {} weight sets",
+            self.positions.len(),
+            joints.len(),
+            weights.len()
+        );
+        for (joints, weights) in joints.iter_mut().zip(&mut weights) {
+            ensure!(
+                weights.iter().all(|w| w.is_finite() && *w >= 0.0),
+                "mesh `{name}` has a weight that is negative or not a finite number"
+            );
+            let sum: f32 = weights.iter().sum();
+            ensure!(sum > 0.0, "mesh `{name}` has a vertex with no weight");
+            for (joint, weight) in joints.iter_mut().zip(weights.iter_mut()) {
+                *weight /= sum;
+                if *weight == 0.0 {
+                    *joint = 0;
+                }
+            }
+        }
+        self.joints = joints;
+        self.weights = weights;
+        Ok(self)
     }
 
     /// The same mesh with texture coordinates: one for each position. (0, 0) is the
@@ -274,6 +315,16 @@ impl Mesh {
     /// Three indices for each triangle.
     pub fn indices(&self) -> &[u32] {
         &self.indices
+    }
+
+    /// The joints of the skin, four for each position. Empty for a mesh with no skin.
+    pub fn joints(&self) -> &[[u32; 4]] {
+        &self.joints
+    }
+
+    /// The weights of [`Mesh::joints`], each four with a sum of 1.
+    pub fn weights(&self) -> &[[f32; 4]] {
+        &self.weights
     }
 
     /// One texture coordinate for each position. All zero for a mesh that has none.
