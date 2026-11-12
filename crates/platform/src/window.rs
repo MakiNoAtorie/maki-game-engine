@@ -21,6 +21,7 @@ use winit::raw_window_handle::{
 };
 use winit::window::WindowId;
 
+use crate::gamepad::Gamepads;
 use crate::input::{Key, RawInput};
 
 /// The OS window. Exists from before `Startup` until the app ends.
@@ -293,6 +294,7 @@ pub fn run(app: App) -> Result<()> {
         window: None,
         minimized: false,
         error: None,
+        gamepads: Gamepads::new(),
     };
     event_loop.run_app(&mut runner)?;
     runner.error.map_or(Ok(()), Err)
@@ -306,6 +308,8 @@ struct Runner {
     minimized: bool,
     /// The winit callbacks cannot return an error, so it waits here for `run`.
     error: Option<anyhow::Error>,
+    /// `None`: gilrs did not start, the game runs without a pad.
+    gamepads: Option<Gamepads>,
 }
 
 impl ApplicationHandler for Runner {
@@ -437,6 +441,11 @@ impl ApplicationHandler for Runner {
                 // Resized event that ends the pause.
                 if self.minimized {
                     return;
+                }
+                if let Some(gamepads) = &mut self.gamepads {
+                    gamepads.poll(|input| {
+                        app.write_message(input);
+                    });
                 }
                 app.update();
                 let next = app.resource_mut::<NextApp>().0.take();

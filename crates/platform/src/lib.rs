@@ -1,5 +1,6 @@
-//! Window and raw input (winit), translated into input actions.
+//! Window and raw input (winit, gilrs), translated into input actions.
 
+mod gamepad;
 mod input;
 mod window;
 
