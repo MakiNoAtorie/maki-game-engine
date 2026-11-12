@@ -1,0 +1,7 @@
+// The hop of room_anim: up 0.6 m and down in 2 s, a linear curve played at 12 frames
+// in a second (on twos): each frame a jump, with no slide between.
+(mode: Step, fps: 12.0, tracks: [(channel: Position, mode: Linear, keys: [
+    (time: 0.0, value: Vector((0.0, 0.0, 0.0))),
+    (time: 1.0, value: Vector((0.0, 0.6, 0.0))),
+    (time: 2.0, value: Vector((0.0, 0.0, 0.0))),
+])])

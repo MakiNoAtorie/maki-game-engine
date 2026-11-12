@@ -8,9 +8,14 @@
 //! most one step behind the simulation.
 //!
 //! Rule for the simulation: read and write `Interpolated::current`, not `Transform`.
+//!
+//! A jump to another pose in the same room is a [`Interpolated::jump`]: it counts in
+//! [`PoseJumps`], so the renderer drops the history of the pixels that the object left.
+//! A room change needs no count: [`Interpolated::snap`], the renderer starts again.
 
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
+use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Query, Res};
 
 use crate::{Time, Transform};
@@ -34,9 +39,32 @@ impl Interpolated {
         }
     }
 
-    /// Moves to a pose with no motion between: for a jump to another place.
+    /// Moves to a pose with no motion between, with no jump count: a room change
+    /// follows, or no mesh moves.
     pub fn snap(&mut self, pose: Transform) {
         *self = Self::at(pose);
+    }
+
+    /// Moves to a pose with no motion between in the same room. A pose that changes
+    /// counts one jump; a jump to the pose it has does not.
+    pub fn jump(&mut self, pose: Transform, jumps: &mut PoseJumps) {
+        let snapped = Self::at(pose);
+        if *self != snapped {
+            *self = snapped;
+            jumps.add(1);
+        }
+    }
+}
+
+/// The number of pose jumps (snaps) since the start. `App` adds it. The renderer sees a
+/// new value and drops the history of the pixels that a jumping object left.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PoseJumps(pub u64);
+
+impl PoseJumps {
+    /// Adds a number of jumps.
+    pub fn add(&mut self, jumps: u64) {
+        self.0 += jumps;
     }
 }
 
@@ -129,5 +157,22 @@ mod tests {
             let written = &app.world().resource::<Written>().0;
             assert!(written[0] && !written[1..].contains(&true), "{written:?}");
         });
+    }
+
+    #[test]
+    fn a_jump_that_changes_the_pose_counts_one() {
+        let mut jumps = PoseJumps::default();
+        let mut pose = Interpolated::at(Transform::IDENTITY);
+        pose.jump(Transform::IDENTITY, &mut jumps);
+        assert_eq!(jumps, PoseJumps(0));
+        let there = Transform::from_translation(Vec3::X);
+        pose.jump(there, &mut jumps);
+        assert_eq!((pose, jumps), (Interpolated::at(there), PoseJumps(1)));
+        pose.jump(there, &mut jumps);
+        assert_eq!(jumps, PoseJumps(1));
+        // In motion toward the pose: the previous pose differs, so it is a jump.
+        pose.current = Transform::IDENTITY;
+        pose.jump(Transform::IDENTITY, &mut jumps);
+        assert_eq!(jumps, PoseJumps(2));
     }
 }

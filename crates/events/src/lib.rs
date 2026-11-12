@@ -177,8 +177,11 @@ impl Module for EventsModule {
         let check = registry.validator();
         app.resource_mut::<RoomValidators>().0.push(check);
         app.insert_resource(registry)
-            // Before the movers: a door starts to turn in the step of its command.
-            .add_systems(FixedUpdate, run_events.before(move_movers))
+            // A door turns in the step of its command; the animator runs first, so no system needs an order to it.
+            .add_systems(
+                FixedUpdate,
+                run_events.before(move_movers).after(maki_scene::animate),
+            )
             .add_systems(ResetPlay, interpreter::reset_play)
             .add_systems(
                 Update,

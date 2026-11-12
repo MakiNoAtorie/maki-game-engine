@@ -27,7 +27,8 @@
 //    (normal and distance, as in the denoiser): the 3x3 range is wide at an edge, so a
 //    ghost of the object stays in it. At rest there is no such test: on an edge, the
 //    jitter shows one surface in one frame and the other in the next, and the mean
-//    of the two is what this pass is for.
+//    of the two is what this pass is for. In a frame in which an object jumped (`jump`),
+//    a pixel at rest is tested too: the pixels that the object left drop its old pose.
 // 4. The new color is the history, moved toward the sample by a small part. The part
 //    is smaller for a sample that is not in the square of the output pixel (only with
 //    an output larger than the input).
@@ -73,6 +74,8 @@ layout(push_constant) uniform Push {
     // its sample count in a.
     uint direct;
     float frame_samples; // samples that one frame adds to that mean
+    // 1: an object jumped this frame (PoseJumps): a still pixel with a new surface drops history.
+    uint jump;
 } push;
 
 // How fast the part of a sample falls with its distance from the square of the output
@@ -224,9 +227,10 @@ void main() {
             ? 0.0
             : 1.0 - clamp(frames / NEW_LIGHT_FRAMES, 0.0, 1.0);
         float blend = max(push.blend, max(moving, new_light) * push.motion_blend);
-        // Another surface was at that place: no history, if the point moves.
-        if (moving > 0.0 && !same_surface(surface, ivec2(floor(was * vec2(src_size))), src_size)) {
-            blend = max(blend, moving);
+        // A moving point, or any point after a jump, on another surface: no history.
+        float tested = push.jump != 0u ? 1.0 : moving;
+        if (tested > 0.0 && !same_surface(surface, ivec2(floor(was * vec2(src_size))), src_size)) {
+            blend = max(blend, tested);
         }
         // A sample in the square of the output pixel counts in full. With an input as
         // large as the output, each sample is in its square.

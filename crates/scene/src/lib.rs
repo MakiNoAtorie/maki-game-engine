@@ -3,6 +3,7 @@
 //!
 //! This crate must not depend on `gpu`, `render`, or `ui`.
 
+mod animation;
 mod collision;
 mod hidden;
 mod mover;
@@ -16,12 +17,14 @@ use glam::Vec3;
 use maki_assets::{Handle, Mesh};
 use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transforms};
 
+pub use animation::{AnimationModule, Animator, Playback, animate};
 pub use collision::{Collider, room_colliders};
 pub use hidden::Hidden;
 pub use mover::{Door, Mover, MoverState, move_movers};
 pub use object::{
-    ComponentText, ComponentType, ComponentTypes, Live, ObjectDef, ObjectId, add_component_reader,
-    add_component_type, add_live_component_type, add_object_component,
+    ComponentText, ComponentType, ComponentTypes, FieldError, FieldWrite, Live, ObjectDef,
+    ObjectId, add_component_reader, add_component_type, add_live_component_type,
+    add_object_component, write_field,
 };
 pub use prefab::{
     PrefabDef, PrefabFile, PrefabUse, change_key, changed_text, difference, instance_objects,

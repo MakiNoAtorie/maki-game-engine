@@ -162,6 +162,8 @@ impl Pass for Taa {
             MOTION_BLEND.to_bits(),
             ctx.bindless_index(self.direct),
             (accumulation.frame_samples() as f32).to_bits(),
+            // An object jumped: test the surface of a pixel at rest too.
+            u32::from(accumulation.jump_frame()),
         ]);
         ctx.gpu
             .dispatch_compute(self.pipeline, &push, groups(ctx.extent(self.resolved)))

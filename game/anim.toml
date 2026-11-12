@@ -1,0 +1,4 @@
+# Config for the run by hand in the animator room: cargo run -p maki-game -- game/anim.toml
+[rooms]
+start = "game/assets/rooms/room_anim.ron"
+start_spawn = 2

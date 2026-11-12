@@ -204,13 +204,17 @@ mod tests {
         app.add_systems(
             FixedFirst,
             |time: bevy_ecs::system::Res<maki_engine::core::Time>,
+             mut jumps: bevy_ecs::system::ResMut<maki_engine::core::PoseJumps>,
              mut players: bevy_ecs::system::Query<
                 &mut Interpolated,
                 bevy_ecs::query::With<Player>,
             >| {
                 if time.fixed_tick == 10 {
                     for mut pose in &mut players {
-                        pose.snap(Transform::from_translation([0.0, 0.0, 1.0].into()));
+                        pose.jump(
+                            Transform::from_translation([0.0, 0.0, 1.0].into()),
+                            &mut jumps,
+                        );
                     }
                 }
             },

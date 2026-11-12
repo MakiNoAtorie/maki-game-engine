@@ -7,7 +7,8 @@ use bevy_ecs::component::Component;
 use bevy_ecs::message::{Message, MessageRegistry, Messages, message_update_system};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{
-    IntoScheduleConfigs, LogLevel, Schedule, ScheduleBuildSettings, ScheduleLabel, Schedules,
+    IntoScheduleConfigs, LogLevel, Schedule, ScheduleBuildError, ScheduleBuildSettings,
+    ScheduleLabel, Schedules,
 };
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::{FromWorld, World};
@@ -122,7 +123,10 @@ impl App {
         // Built in, as `Time` is: see the `interpolation` module. Each simulation
         // system writes the pose of its own entities (the player, the movers), so
         // their order has no effect.
+        // Each jump adds one to `PoseJumps`: the order of two adds has no effect.
         app.allow_ambiguous_component::<crate::Interpolated>()
+            .allow_ambiguous_resource::<crate::PoseJumps>()
+            .init_resource::<crate::PoseJumps>()
             .add_systems(FixedFirst, crate::interpolation::shift_poses)
             .add_systems(Update, crate::interpolation::interpolate_transforms);
         Ok(app)
@@ -178,6 +182,21 @@ impl App {
     /// Runs the [`ResetPlay`] schedule now.
     pub fn reset_play(&mut self) {
         run_schedule!(self.world, ResetPlay);
+    }
+
+    /// Builds each schedule now, with no run: the check of an ambiguous order. For a
+    /// test of a module list, as a game needs a window and a GPU to run.
+    pub fn build_schedules(&mut self) -> Result<()> {
+        let schedules = self.world.resource::<Schedules>().iter();
+        let labels: Vec<_> = schedules.map(|(_, schedule)| schedule.label()).collect();
+        for label in labels {
+            self.world.schedule_scope(label, |world, schedule| {
+                let built = schedule.initialize(world).map(drop);
+                let text = |error: ScheduleBuildError| error.to_string(schedule.graph(), world);
+                built.map_err(|error| anyhow::anyhow!("{label:?}: {}", text(error)))
+            })?;
+        }
+        Ok(())
     }
 
     /// Call after the last module was added. Returns the errors of the config tables

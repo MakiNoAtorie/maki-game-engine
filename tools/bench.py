@@ -26,6 +26,11 @@ quality  Runs a scenario with a static light (or `--moving`) and prints two numb
          For `walk_720p` use `--frames 180`: the picture of the last frame with motion.
          `--set table.key=value` changes config keys.
          Compare two settings at equal GPU time, not at equal frame count.
+jump     The gate of a pose jump: `reference jump_720p`, `reference light_step_720p`,
+         then `jump`. The error at the place that the cube left, 4, 8 and 28 frames
+         after the jump, and in `light_step_720p` (the lamp steps at the same frame)
+         at the same crop; a control crop away from the cube; the old light change
+         (240 frames of motion). `ok`: the jump at 4 frames is at most the light step.
 same     Compares the pictures that two runs of one scenario dumped (exact labels):
          `ok`, or the number of pixels that differ, the largest difference, and the means.
 selftest Checks the statistics against known answers.
@@ -114,6 +119,12 @@ SCENARIOS = {
     # 50 cubes with dynamic bodies (`bodies_room` below) fall, hit, and come to rest in
     # about 2 s: the cost of moving objects (TLAS updates). Use `--frames 300 --warmup 0`.
     "bodies_720p": ((1280, 720), "bodies", {}),
+    # One cube jumps sideways by a step clip after 1 s (`jump_room` below); camera and
+    # light at rest. The gate of stage 62: `bench.py jump`.
+    "jump_720p": ((1280, 720), "jump", {}),
+    # The same room with the cube at rest and the lamp intensity stepped at the frame of
+    # the jump: the baseline of the jump gate, after the same settled history.
+    "light_step_720p": ((1280, 720), "light_step", {}),
 }
 
 
@@ -139,6 +150,36 @@ def bodies_room(count=50):
     ],
 )
 """
+
+
+# The jump of `jump_720p`: a step clip, 1 s at the rest pose, then 1.5 m along +X (the
+# cube is 0.6 m wide), held. The bench runs one fixed step (1/60 s) in each frame.
+JUMP_CLIP = """(mode: Step, length: 1.0, tracks: [(channel: Position, keys: [
+    (time: 0.0, value: Vector((0.0, 0.0, 0.0))), (time: 1.0, value: Vector((1.5, 0.0, 0.0)))])])
+"""
+JUMP_ROOM = """(
+    width: 8.0, depth: 8.0, height: 3.0,
+    objects: [
+        (pose: (position: (-1.0, 0.3, 0.5)), components: {"prop": (mesh: Cube(0.6), look: (color: (0.8, 0.3, 0.2))),
+            "animator": (clip: "jump.clip.ron", looping: false)}),
+        (pose: (position: (0.0, 2.6, 0.0)), components: {"light": (radius: 0.15, color: (1.0, 0.9, 0.8), intensity: 12.0)}),
+        (id: 1, name: "start", pose: (position: (-0.5, 0.0, 3.2)), components: {"spawn": ()}),
+    ],
+)
+"""
+# The lamp of `light_step_720p`: 12 to 24 at 1 s, by a step field track.
+LIGHT_STEP_CLIP = """(mode: Step, length: 1.0, tracks: [(channel: Field(component: "light", field: "intensity"), keys: [
+    (time: 0.0, value: Number(12.0)), (time: 1.0, value: Number(24.0))])])
+"""
+LIGHT_STEP_ROOM = JUMP_ROOM.replace(""",
+            "animator": (clip: "jump.clip.ron", looping: false)}""", "}").replace(
+    'intensity: 12.0)}', 'intensity: 12.0), "animator": (clip: "step.clip.ron", looping: false)}')
+# The first bench frame with the cube at its second place, and the crop (x, y, w, h) of
+# the place that it left, in pixels of the 1280 x 720 picture. The control: floor away
+# from the cube, its shadow and the player.
+JUMP_FRAME = 62
+JUMP_CROP = "565,300,80,80"
+CONTROL_CROP = "900,480,80,80"
 
 
 # The room file of a scenario with a generated scene: room A of the game (its size, its
@@ -261,6 +302,16 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         room_path = work / "room.ron"
         room_path.write_text(bodies_room())
         params += ";bodies=50"
+    elif scene == "jump":
+        room_path = work / "room.ron"
+        room_path.write_text(JUMP_ROOM)
+        (work / "jump.clip.ron").write_text(JUMP_CLIP)
+        params += ";jump"
+    elif scene == "light_step":
+        room_path = work / "room.ron"
+        room_path.write_text(LIGHT_STEP_ROOM)
+        (work / "step.clip.ron").write_text(LIGHT_STEP_CLIP)
+        params += ";light_step"
     elif scene:
         scene_text = ";".join(f"{key}={value}" for key, value in scene.items())
         # The generator is seeded: a file with these arguments in its name has this content.
@@ -536,6 +587,9 @@ def command_reference(args):
     # The picture starts again when the walk script ends.
     if "walk" in (SCENARIOS[args.scenario][3:] or [[]])[0]:
         frames += WALK_FRAMES
+    # The reference shows the cube at its second place.
+    if args.scenario in ("jump_720p", "light_step_720p"):
+        frames += JUMP_FRAME
     run_scenario(args.scenario, frames, 0, "reference", overrides, ["--bench-static"], path)
     print(f"{path.relative_to(ROOT).as_posix()}: {REFERENCE_SAMPLES} samples")
 
@@ -589,6 +643,37 @@ def command_quality(args):
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow(["label", "frames", "relmse", "sharpness", "noise", "gpu_total_ms", "gpu_ms_all_frames", "sheet"])
     writer.writerow([args.label, args.frames, f"{error:.6g}", f"{sharp:.4f}", f"{noise:.4f}", f"{gpu_ms:.3f}", f"{gpu_ms * args.frames:.1f}", sheet.relative_to(ROOT).as_posix()])
+    return error
+
+
+def command_jump(_args):
+    """The gate of stage 62: the error at the place that the cube left after the jump,
+    against the same crop after a step of the lamp at the same frame (each against its
+    own reference). Also a control crop and the old light change (the light moves for
+    240 frames and ends at its static place). Needs the references of both scenarios."""
+    labels, rows = [], []
+
+    def measure(name, scenario, after, crop=JUMP_CROP, light_frames=None, frames=None):
+        label = f"jumpgate{len(labels)}"
+        labels.append(label)
+        frames = frames or JUMP_FRAME + after
+        common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference=None, crop=crop)
+        error = command_quality(argparse.Namespace(label=label, frames=frames, light_frames=light_frames, **common))
+        rows.append([name, frames, f"{error:.6g}"])
+        return error
+
+    jump = [measure("jump", "jump_720p", after) for after in (4, 8, 28)]
+    step = [measure("light_step", "light_step_720p", after) for after in (4, 8, 28)]
+    measure("control", "jump_720p", 4, crop=CONTROL_CROP)
+    measure("light_change", "jump_720p", 4, light_frames=240, frames=244)
+    for label in labels:
+        command_drop(argparse.Namespace(label=label))
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(["measure", "frame", "relmse"])
+    writer.writerows(rows)
+    print("ok" if jump[0] <= step[0] else "FAIL")
+    if jump[0] > step[0]:
+        raise SystemExit(1)
 
 
 def difference(scenario, label_a, label_b):
@@ -730,6 +815,7 @@ if __name__ == "__main__":
     gate.add_argument("scenarios", nargs="*", default=GATE, metavar="SCENARIO")
     gate.add_argument("--commit", help="another base than the merge-base with origin/main")
     gate.set_defaults(function=command_gate)
+    commands.add_parser("jump", help="the picture gate of a pose jump (stage 62); needs `reference jump_720p` and `reference light_step_720p`").set_defaults(function=command_jump)
     commands.add_parser("selftest").set_defaults(function=command_selftest)
     arguments = parser.parse_args()
     arguments.function(arguments)

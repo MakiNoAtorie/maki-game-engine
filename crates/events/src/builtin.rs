@@ -12,8 +12,8 @@ use maki_core::Time;
 use maki_core::fields::Value;
 use maki_platform::FixedActionState;
 use maki_scene::{
-    ComponentTypes, CurrentRoom, Light, Live, Mover, MoverState, ObjectId, RoomRequest, RoomTarget,
-    ScreenFade,
+    CurrentRoom, FieldError, FieldWrite, Light, Mover, MoverState, ObjectId, RoomRequest,
+    RoomTarget, ScreenFade, write_field,
 };
 use serde::{Deserialize, Serialize};
 
@@ -243,46 +243,39 @@ fn set_field(
     [component, field]: [&String; 2],
     value: &Value,
 ) {
-    let types = world.resource::<ComponentTypes>();
-    let live = types
-        .get(component)
-        .and_then(|component_type| component_type.live);
-    let Some(Live { get, set, .. }) = live else {
-        tracing::warn!(
-            component,
-            "SetField: the component has no value in the game"
-        );
-        return;
-    };
     // The entities of the reference first: an instance has its id and the prefab names.
-    let mut candidates = crate::objects::entities_of(world, object).into_iter();
-    let target = candidates.find_map(|entity| Some((entity, get(world, entity)?)));
-    let Some((entity, mut tree)) = target else {
-        tracing::warn!(
-            %object,
-            component,
-            "SetField: no such object with the component"
-        );
-        return;
-    };
-    let Some(slot) = tree.get_mut(field.as_str()) else {
-        tracing::warn!(
-            %object,
-            component,
-            field,
-            "SetField: the component has no such field"
-        );
-        return;
-    };
-    // Only a new value is a write: a write is a change.
-    if slot == value {
+    for entity in crate::objects::entities_of(world, object) {
+        match write_field(world, entity, component, field, value) {
+            Ok(FieldWrite::Written) => {
+                tracing::debug!(%object, component, field, %value, "SetField");
+            }
+            Ok(FieldWrite::Unchanged) => {}
+            Err(FieldError::NoComponent) => continue,
+            Err(FieldError::NoField) => {
+                tracing::warn!(
+                    %object,
+                    component,
+                    field,
+                    "SetField: the component has no such field"
+                );
+            }
+            Err(FieldError::Rejected(error)) => {
+                tracing::warn!(%object, component, field, "SetField: {error}");
+            }
+            Err(FieldError::NotLive) => {
+                tracing::warn!(
+                    component,
+                    "SetField: the component has no value in the game"
+                );
+            }
+        }
         return;
     }
-    *slot = value.clone();
-    match set(world, entity, tree) {
-        Ok(()) => tracing::debug!(%object, component, field, %value, "SetField"),
-        Err(error) => tracing::warn!(%object, component, field, "SetField: {error}"),
-    }
+    tracing::warn!(
+        %object,
+        component,
+        "SetField: no such object with the component"
+    );
 }
 
 /// The command lists of a built-in command (`CommandRegistry::add_lists`): the two

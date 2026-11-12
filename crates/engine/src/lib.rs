@@ -167,6 +167,7 @@ fn add_modules(
     app.add_module(maki_platform::PlatformModule)
         .add_module(maki_assets::AssetsModule)
         .add_module(maki_scene::SceneModule)
+        .add_module(maki_scene::AnimationModule)
         .add_module(maki_physics::PhysicsModule)
         .add_module(maki_events::EventsModule)
         .add_module(maki_audio::AudioModule)
@@ -247,5 +248,32 @@ mod tests {
         assert_eq!(path(&["my.toml"]).unwrap(), PathBuf::from("my.toml"));
         assert!(path(&["--bench"]).is_err());
         assert!(path(&["a.toml", "b.toml"]).is_err());
+    }
+
+    /// The module list of the game and of the editor builds each schedule: no two
+    /// systems in an ambiguous order. Runs in each build form (`tools/check.sh`).
+    #[test]
+    fn the_module_list_of_the_game_and_of_the_editor_has_no_ambiguous_order() {
+        let project = Project::load(Path::new("../../game")).unwrap();
+        for editor in [false, true] {
+            let mut app = App::new(ConfigFile::from_text("[audio]\noutput = false")).unwrap();
+            add_modules(&mut app, &project, editor, |_| {});
+            app.add_module(maki_gameplay::LightControlModule)
+                .add_module(maki_gameplay::MoverToggleModule);
+            if editor {
+                // The editor crate is in the dynamic form only.
+                #[cfg(feature = "dynamic")]
+                app.add_module(maki_editor::EditorModule {
+                    rooms: project.rooms.clone(),
+                    project: project.name.clone(),
+                    session: None,
+                });
+            } else {
+                app.add_module(maki_devtools::StagesModule)
+                    .add_module(maki_devtools::BenchModule { start: None });
+            }
+            app.build_schedules()
+                .unwrap_or_else(|error| panic!("editor {editor}: {error:#}"));
+        }
     }
 }

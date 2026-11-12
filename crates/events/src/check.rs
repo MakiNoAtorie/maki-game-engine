@@ -293,8 +293,11 @@ impl CommandRegistry {
                 warning: false,
                 text: text.clone(),
             });
-            let tables: Vec<RoomProblem> = tables.collect();
+            let mut tables: Vec<RoomProblem> = tables.collect();
             drop(texts);
+            let types = registry.component_types.read().expect("no writer panics");
+            tables.extend(fixed_colliders(check.room, directory, &types));
+            drop(types);
             let with_line = |problem: Problem| {
                 let stop = match &problem.command {
                     Some((_, command)) => Stop::Command(command.order),
@@ -313,6 +316,32 @@ impl CommandRegistry {
                 .collect()
         })
     }
+}
+
+/// A warning for each object with an `animator` and a fixed collider (a prop's box, or a
+/// `collider` with no `body`): the collider stays at the rest pose.
+fn fixed_colliders(room: &RoomDef, directory: &Path, types: &ComponentTypes) -> Vec<RoomProblem> {
+    let fixed = |object: &maki_scene::ObjectDef| {
+        let components = object.reached_components(directory, types);
+        let prop = components
+            .get("prop")
+            .and_then(|text| text.read::<maki_scene::Prop>().ok())
+            .is_some_and(|prop| prop.collider);
+        let collider = components.contains_key("collider") && !components.contains_key("body");
+        components.contains_key("animator") && (prop || collider)
+    };
+    let objects = room.objects.iter().filter(|object| fixed(object));
+    objects
+        .map(|object| {
+            let name = object.name.as_deref().unwrap_or("");
+            RoomProblem {
+                warning: true,
+                text: format!(
+                    "the object `{name}` has an animator and a fixed collider: the collider stays at the rest pose"
+                ),
+            }
+        })
+        .collect()
 }
 
 /// The spawn points of the room files that a `Transfer` names.

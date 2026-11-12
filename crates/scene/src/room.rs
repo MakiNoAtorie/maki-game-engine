@@ -32,7 +32,7 @@ use maki_assets::{
     AssetChanged, AssetWatch, Assets, Doorway, FileRef, Handle, LoadState, Material, Mesh, Model,
     ModelLoads, TextureRef, Textures,
 };
-use maki_core::{Fields, Interpolated, Transform};
+use maki_core::{Fields, Interpolated, PoseJumps, Transform};
 use serde::{Deserialize, Serialize};
 
 use crate::object::{ComponentText, ComponentTypes, Live, ObjectDef, ObjectId};
@@ -1867,6 +1867,8 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         return false;
     }
 
+    // The room is not loaded again: a pose that changes is a jump for the renderer.
+    let mut jumps = PoseJumps::default();
     // Not the lights of a model file: they have the object of the file.
     let mut lights = world.query::<(&RoomItem, &mut Light, &mut Interpolated)>();
     for (item, mut light, mut pose) in lights.iter_mut(world) {
@@ -1876,7 +1878,7 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         // Only a different value is a write: a write is a change for the renderer.
         light.set_if_neq(def.light());
         if pose.current.translation != Vec3::from(def.position) {
-            pose.snap(Transform::from_translation(def.position.into()));
+            pose.jump(Transform::from_translation(def.position.into()), &mut jumps);
         }
     }
     // A door has a `Mover` too: its object has no `mover`, and it is left as it is.
@@ -1887,7 +1889,7 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
         };
         let new = Mover::new(def.a.transform(), def.b.transform(), def.seconds);
         if mover.set_if_neq(new) {
-            pose.snap(new.a);
+            pose.jump(new.a, &mut jumps);
         }
     }
     world.resource_scope(|world, meshes: Mut<Assets<Mesh>>| {
@@ -1915,13 +1917,19 @@ pub fn patch_room(world: &mut World, room: &RoomDef, text: String) -> bool {
             // The object entity of a script: the blend of the poses writes the
             // `Transform` in each frame.
             if let Some(mut pose) = pose {
-                pose.snap(new);
+                pose.jump(new, &mut jumps);
             }
             if let (Some(mut collider), Some(mesh)) = (collider, meshes.get(instance.0)) {
                 *collider = collider_around(mesh, &new);
             }
         }
     });
+    // A world with no `App` (a test) has no count. Only a jump writes: a write is a change.
+    if jumps.0 > 0
+        && let Some(mut count) = world.get_resource_mut::<PoseJumps>()
+    {
+        count.add(jumps.0);
+    }
     // No change for the readers of the room: it was not loaded again.
     let mut current = world.resource_mut::<CurrentRoom>();
     let current = current.bypass_change_detection();
