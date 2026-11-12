@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 2.6 (the step mode), 2.7 (the template "Cutscene t
 Goal: a timeline is a component of a room object: tracks of keys, each on an object of the room by its id, on the same channels and modes as a clip. An event row or a script plays it, waits for its end, stops it, or skips it to its end. A light has fields that animate by themselves (flicker, pulse, fade, a color by temperature), and a timeline track can key them. The editor has a timeline panel. A cutscene of the slice can be made with no code.
 Gate: a test in code: a timeline with a step position track on one object and a linear field track on the intensity of a lamp writes each value at its time and jumps with no blend at a step key; `PlayTimeline(t, wait)` waits until the last key; `StopTimeline(t, end)` writes the end values; a text key on `animator.clip` cuts the clip of a character; a light with `flicker` gives the same intensities in two runs and holds each for `1 / flicker_rate` s; `kelvin_rgb(6500)` is white within 3 %. The game plays as before: the trip run, `bench.py gate` (equal: no benchmark room changes), the GPU time against `s63`.
 
-State: written by the session from the plan and the code at commit `67f4bd3`; a proposal: taken as given if the owner does not change it.
+State: written by the session from the plan and the code at commit `67f4bd3`; a proposal: taken as given if the owner does not change it. Done (2026-11-12): report `stage-64.md`.
 
 ## Now (the code at stage 63)
 
