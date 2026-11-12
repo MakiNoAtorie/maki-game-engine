@@ -24,7 +24,7 @@ mod screens;
 mod tests;
 mod walkers;
 
-pub use camera::{CameraModule, CameraSettings, FollowCamera, follow_player};
+pub use camera::{CameraDef, CameraModule, CameraSettings, FollowCamera, follow_player};
 pub use control::{Controller, give_control};
 pub use controls::{
     ControlsModule, MOVE_BACK, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, MoveCapture, MoverToggleModule,
