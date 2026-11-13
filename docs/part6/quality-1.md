@@ -68,7 +68,7 @@ Validation (debug build, 300 frames of `skin_crowd_720p`, `test_1080p`, `light_a
 
 ## 5. Deviations and decisions
 
-- The skinned jump gate (`bench.py skinjump`) now fails: skinned arm 0.0128, rigid cube 0.0017. The two crops have different floors: the arm crop is 0.0100 at frame 150 (the edge of the body against the reference), the cube crop 0.0002. Above its own floor the arm is 0.0028, the cube 0.0014. Both are noise of the restarted indirect light; neither has the old shadow. Before: arm 0.015, cube 0.093. A question to the owner (see 6).
+- `bench.py skinjump` now measures the error that a jump adds: the error at 4 frames over the error of the settled frame 150 of the same crop (the owner, 2026-11-13). The arm crop has a floor of 0.0100 (an edge of the body against the reference), the cube crop 0.0002. The arm adds 0.00275, the cube 0.00147: the gate still fails. Both are noise of the restarted indirect light; neither has the old shadow. Before this session: arm 0.015, cube 0.093 (raw).
 - `LAG` = 0.05 by measurement: 0.01 gave 0.0028, 0.025 gave 0.0016, 0.05 gave 0.00097, 0.1 gave 0.00125, 0.2 gave 0.0022 (`light_anim_720p`, frame 120).
 - A switch of a light (off to on) is a brightness change of 1.0: in that frame the indirect light starts again, then grows. Before: a fade of 16 samples.
 - A light that moves, or changes its color with the same brightness, keeps the soft reset of before.
@@ -76,6 +76,6 @@ Validation (debug build, 300 frames of `skin_crowd_720p`, `test_1080p`, `light_a
 
 ## 6. Open
 
-- The skinned jump gate: compare each crop above its own settled picture, or drop the gate, since a skinned and a rigid jump now take the same path.
+- `bench.py skinjump` fails above the floor too (0.00275 against 0.00147): the pass bar is the owner's decision.
 - The test of `Gpu::set_serial` is the picture of runs, not a unit test.
 - The window of brightness changes counts drawn frames of the extract, not frames of the GPU: a frame that is not drawn is counted.

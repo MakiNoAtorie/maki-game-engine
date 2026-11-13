@@ -34,9 +34,10 @@ jump     The gate of a pose jump: `reference jump_720p`, `reference light_step_7
          at the same crop; a control crop away from the cube; the old light change
          (240 frames of motion). `ok`: the jump at 4 frames is at most the light step.
 skinjump The gate of a skinned pose jump: `reference skin_jump_720p`, `reference
-         jump_720p`, then `skinjump`. The error at the place that the arm of the figure
-         left, 4 frames after the jump, against the cube of `jump_720p` at 4 frames.
-         `ok`: the arm is at most the cube.
+         jump_720p`, then `skinjump`. The error that the jump adds (4 frames after it,
+         over the settled frame 150) at the place that the arm left, against the same
+         at the place that the cube of `jump_720p` left. `ok`: the arm adds at most
+         what the cube adds.
 lightanim The noise of a pulsing lamp: `reference light_still_720p`, then `lightanim`.
          `light_anim_720p` and `light_still_720p` against the still reference at frames
          at the end of a pulse. A measure, no gate.
@@ -198,6 +199,8 @@ LIGHT_STEP_ROOM = JUMP_ROOM.replace(""",
 # the place that it left, in pixels of the 1280 x 720 picture. The control: floor away
 # from the cube, its shadow and the player.
 JUMP_FRAME = 62
+# A frame long after the jump: the floor of the error of a crop (`skinjump`).
+SETTLED_FRAME = 150
 JUMP_CROP = "565,300,80,80"
 CONTROL_CROP = "900,480,80,80"
 # The skinned jump: the clip names a joint of the figure; 150 degrees about Z lifts the
@@ -755,19 +758,27 @@ def command_jump(_args):
 
 
 def command_skinjump(_args):
-    """The gate of stage 63: the error at the place that the arm of the figure left, 4
-    frames after its jump, against the crop of the cube of `jump_720p` 4 frames after its
-    jump (each against its own reference): a skinned jump smears no more than a rigid one."""
-    errors = []
-    for label, scenario, crop in (("skingate0", "skin_jump_720p", SKIN_JUMP_CROP), ("skingate1", "jump_720p", JUMP_CROP)):
-        common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference=None, crop=crop, light_frames=None)
-        errors.append(command_quality(argparse.Namespace(label=label, frames=JUMP_FRAME + 4, **common)))
-        command_drop(argparse.Namespace(label=label))
+    """The gate of stage 63: the error that a jump adds, 4 frames after it, at the place
+    that the arm of the figure left, against the same at the place that the cube of
+    `jump_720p` left. The error a jump adds is the error at 4 frames over the error of the
+    settled picture (`SETTLED_FRAME`) of the same crop: the two crops have different
+    floors (the arm crop has an edge of the body that never matches the reference)."""
+    rows, excess = [], []
+    for scenario, crop in (("skin_jump_720p", SKIN_JUMP_CROP), ("jump_720p", JUMP_CROP)):
+        errors = []
+        for frames in (JUMP_FRAME + 4, SETTLED_FRAME):
+            label = f"skingate{len(rows)}"
+            common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference=None, crop=crop, light_frames=None)
+            errors.append(command_quality(argparse.Namespace(label=label, frames=frames, **common)))
+            command_drop(argparse.Namespace(label=label))
+            rows.append([scenario, frames, f"{errors[-1]:.6g}"])
+        excess.append(errors[0] - errors[1])
+        rows.append([scenario, "excess", f"{excess[-1]:.6g}"])
     writer = csv.writer(sys.stdout, lineterminator="\n")
-    writer.writerow(["measure", "frame", "relmse"])
-    writer.writerows([["skin_jump", JUMP_FRAME + 4, f"{errors[0]:.6g}"], ["jump", JUMP_FRAME + 4, f"{errors[1]:.6g}"]])
-    print("ok" if errors[0] <= errors[1] else "FAIL")
-    if errors[0] > errors[1]:
+    writer.writerow(["scenario", "frame", "relmse"])
+    writer.writerows(rows)
+    print("ok" if excess[0] <= excess[1] else "FAIL")
+    if excess[0] > excess[1]:
         raise SystemExit(1)
 
 
