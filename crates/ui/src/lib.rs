@@ -31,6 +31,7 @@
 //! added in the same way.
 
 mod commands;
+mod debug_shapes;
 mod events;
 mod game_ui;
 mod help;
@@ -59,6 +60,7 @@ pub use commands::{
     COMMAND_SEARCH, ToolCommand, ToolCommands, add_command, command_item, command_keys, key_label,
     queue_command, run_command, run_queued,
 };
+pub use debug_shapes::DebugShapesModule;
 pub use egui;
 pub use events::{EventsUiModule, game_state_panel};
 pub use game_ui::{GAME_FONT, GameUiModule, GameUiSettings, game_fonts};

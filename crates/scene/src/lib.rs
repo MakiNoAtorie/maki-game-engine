@@ -5,6 +5,7 @@
 
 mod animation;
 mod collision;
+mod debug;
 mod hidden;
 mod light_animation;
 mod mover;
@@ -24,6 +25,7 @@ use maki_core::{App, FixedUpdate, Module, ResetPlay, Update, interpolate_transfo
 
 pub use animation::{AnimationModule, Animator, Playback, animate, pose_on_rest, set_channel};
 pub use collision::{Collider, room_colliders};
+pub use debug::{DebugShape, DebugShapes};
 pub use hidden::Hidden;
 pub use light_animation::{LightAnimDef, LightAnimation, animate_lights, kelvin_rgb};
 pub use mover::{Door, Mover, MoverState, move_movers};
@@ -79,6 +81,8 @@ impl Module for SceneModule {
             .init_resource::<RoomValidators>()
             .init_resource::<room::RoomOverride>()
             .init_resource::<ScreenFade>()
+            .init_resource::<DebugShapes>()
+            .add_systems(maki_core::FixedFirst, debug::clear)
             // Each writer asks for a room; the loader takes the last request.
             .allow_ambiguous_resource::<RoomRequest>()
             // The watch of the asset files, if `AssetsModule` is there.

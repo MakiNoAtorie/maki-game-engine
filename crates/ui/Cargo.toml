@@ -6,6 +6,7 @@ edition.workspace = true
 build = "../render/build.rs"
 
 [dependencies]
+glam.workspace = true
 maki-core.workspace = true
 maki-platform.workspace = true
 maki-assets.workspace = true

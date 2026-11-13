@@ -52,7 +52,7 @@ use maki_platform::{Picture, Window, WindowSettings, WindowSize, update_picture}
 use maki_scene::{CurrentRoom, ScreenFade};
 
 pub use accumulation::{Accumulation, RESET_ACCUMULATION};
-pub use camera::{ExtractedCamera, ray_basis};
+pub use camera::{ExtractedCamera, NEAR, project_point, project_segment, ray_basis};
 pub use denoise::MAX_DENOISE_PASSES;
 pub use distance::{Distances, half_to_f32, read_distances};
 pub use graph::{

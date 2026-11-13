@@ -12,13 +12,11 @@ use bevy_ecs::world::World;
 use glam::{Mat4, Vec3};
 use maki_assets::{Assets, Mesh};
 use maki_core::Transform;
-use maki_render::ray_basis;
+use maki_render::{NEAR, project_point, project_segment, ray_basis};
 use maki_scene::{Camera, MeshInstance, RoomItem};
 
 use crate::{Document, Item};
 
-/// Points nearer to the camera than this are not drawn, in meters.
-const NEAR: f32 = 0.05;
 /// A light and a spawn point are picked as a sphere of at least this radius, in meters.
 pub(crate) const MARK_RADIUS: f32 = 0.2;
 
@@ -50,37 +48,12 @@ impl View {
     /// The pixel that shows a point, from the top left corner of the picture. It
     /// can be out of the picture. `None`: the point is behind the camera.
     pub fn project(&self, point: Vec3) -> Option<[f32; 2]> {
-        let [right, up, forward] = self.basis;
-        let to_point = point - self.camera.position;
-        let depth = to_point.dot(forward);
-        if depth < NEAR {
-            return None;
-        }
-        // The lengths of `right` and `up` hold the field of view.
-        let x = to_point.dot(right) / right.length_squared() / depth;
-        let y = to_point.dot(up) / up.length_squared() / depth;
-        let [width, height] = self.size;
-        Some([(x + 1.0) / 2.0 * width, (1.0 - y) / 2.0 * height])
+        project_point(&self.camera, self.basis, self.size, point)
     }
 
     /// The pixels of the part of a line that is in front of the camera.
-    pub fn segment(&self, mut a: Vec3, mut b: Vec3) -> Option<[[f32; 2]; 2]> {
-        let forward = self.basis[2];
-        let depth = |point: Vec3| (point - self.camera.position).dot(forward);
-        let (depth_a, depth_b) = (depth(a), depth(b));
-        if depth_a < NEAR && depth_b < NEAR {
-            return None;
-        }
-        // The end that is behind the camera moves to the near plane.
-        let cut = a + (b - a) * ((NEAR - depth_a) / (depth_b - depth_a));
-        if depth_a < NEAR {
-            a = cut;
-        } else if depth_b < NEAR {
-            b = cut;
-        }
-        // A little in front of the near plane: rounding must not drop the cut point.
-        let project = |point| self.project(point + forward * 1e-4);
-        Some([project(a)?, project(b)?])
+    pub fn segment(&self, a: Vec3, b: Vec3) -> Option<[[f32; 2]; 2]> {
+        project_segment(&self.camera, self.basis, self.size, a, b)
     }
 
     /// The ray of the camera through a pixel.

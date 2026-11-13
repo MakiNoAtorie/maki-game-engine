@@ -102,6 +102,11 @@ impl<'w> ScriptContext<'w> {
         }
     }
 
+    /// The debug shapes of this step: lines, boxes, and labels over the picture.
+    pub fn debug(&mut self) -> Mut<'_, maki_scene::DebugShapes> {
+        self.world.resource_mut::<maki_scene::DebugShapes>()
+    }
+
     /// The length of a step, in seconds.
     pub fn seconds(&self) -> f32 {
         self.world.resource::<Time>().fixed_delta.as_secs_f32()

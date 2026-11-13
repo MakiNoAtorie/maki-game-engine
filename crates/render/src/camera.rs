@@ -31,6 +31,57 @@ pub fn ray_basis(camera: &Camera, aspect: f32) -> [Vec3; 3] {
     [right * half_height * aspect, up * half_height, forward]
 }
 
+/// Points nearer to the camera than this are not drawn, in meters.
+pub const NEAR: f32 = 0.05;
+
+/// The pixel that shows a point, from the top left corner of a picture of `size`.
+/// It can be out of the picture. `basis`: [`ray_basis`] for the aspect of `size`.
+/// `None`: the point is behind the camera.
+pub fn project_point(
+    camera: &Camera,
+    basis: [Vec3; 3],
+    size: [f32; 2],
+    point: Vec3,
+) -> Option<[f32; 2]> {
+    let [right, up, forward] = basis;
+    let to_point = point - camera.position;
+    let depth = to_point.dot(forward);
+    if depth < NEAR {
+        return None;
+    }
+    // The lengths of `right` and `up` hold the field of view.
+    let x = to_point.dot(right) / right.length_squared() / depth;
+    let y = to_point.dot(up) / up.length_squared() / depth;
+    let [width, height] = size;
+    Some([(x + 1.0) / 2.0 * width, (1.0 - y) / 2.0 * height])
+}
+
+/// The pixels of the part of a line that is in front of the camera.
+pub fn project_segment(
+    camera: &Camera,
+    basis: [Vec3; 3],
+    size: [f32; 2],
+    mut a: Vec3,
+    mut b: Vec3,
+) -> Option<[[f32; 2]; 2]> {
+    let forward = basis[2];
+    let depth = |point: Vec3| (point - camera.position).dot(forward);
+    let (depth_a, depth_b) = (depth(a), depth(b));
+    if depth_a < NEAR && depth_b < NEAR {
+        return None;
+    }
+    // The end that is behind the camera moves to the near plane.
+    let cut = a + (b - a) * ((NEAR - depth_a) / (depth_b - depth_a));
+    if depth_a < NEAR {
+        a = cut;
+    } else if depth_b < NEAR {
+        b = cut;
+    }
+    // A little in front of the near plane: rounding must not drop the cut point.
+    let project = |point| project_point(camera, basis, size, point + forward * 1e-4);
+    Some([project(a)?, project(b)?])
+}
+
 /// The camera of the frame. A resource of the render world.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct ExtractedCamera {
