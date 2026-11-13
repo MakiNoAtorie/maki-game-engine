@@ -401,10 +401,10 @@ fn a_click_selects_what_the_picture_shows_and_a_drag_of_the_gizmo_is_one_undo_st
         // tool key, and S alone saves nothing.
         let chord = |app: &mut App, key| {
             app.write_message(RawInput::KeyDown(Key::Control))
-                .write_message(RawInput::KeyDown(key));
+                .write_message(maki_platform::RawInput::KeyDown(key));
             frames(app, 1);
             app.write_message(RawInput::KeyUp(Key::Control))
-                .write_message(RawInput::KeyUp(key));
+                .write_message(maki_platform::RawInput::KeyUp(key));
             frames(app, 2);
         };
         chord(&mut app, Key::Z);
@@ -1788,4 +1788,58 @@ fn an_old_config_with_grid_step_loads_and_the_key_is_not_written_again() {
     let mut file = ConfigFile::from_text("");
     file.write(&settings).unwrap();
     assert!(!file.text().contains("grid_step"), "{}", file.text());
+}
+
+/// A press and a release of a key, a frame each.
+fn tap(app: &mut App, key: Key) {
+    app.write_message(maki_platform::RawInput::KeyDown(key));
+    frames(app, 1);
+    app.write_message(maki_platform::RawInput::KeyUp(key));
+    frames(app, 1);
+}
+
+#[test]
+fn pause_holds_the_steps_and_one_frame_runs_one() {
+    let (app, directory) = editor_app("pause");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        request(&mut app, Command::Play);
+        tap(&mut app, Key::F6);
+        frames(&mut app, 1);
+        let tick = app.world().resource::<Time>().fixed_tick;
+        frames(&mut app, 5);
+        assert_eq!(app.world().resource::<Time>().fixed_tick, tick);
+        tap(&mut app, Key::F7);
+        frames(&mut app, 3);
+        assert_eq!(app.world().resource::<Time>().fixed_tick, tick + 1);
+        tap(&mut app, Key::F6);
+        frames(&mut app, 3);
+        assert!(app.world().resource::<Time>().fixed_tick > tick + 1);
+        // A stop ends the pause: the next play runs.
+        request(&mut app, Command::Stop);
+        request(&mut app, Command::Play);
+        assert!(!app.world().resource::<Editor>().paused);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_script_panic_stops_the_play_or_pauses_it() {
+    let (app, directory) = editor_app("panic");
+    app.run(|mut app| {
+        frames(&mut app, 2);
+        request(&mut app, Command::Play);
+        app.resource_mut::<maki_events::ScriptPanics>().caught = Some("boom (a.rs:1)".into());
+        frames(&mut app, 1);
+        assert!(!app.world().resource::<Editor>().playing());
+
+        app.resource_mut::<EditorSettings>().pause_at_error = true;
+        request(&mut app, Command::Play);
+        app.resource_mut::<maki_events::ScriptPanics>().caught = Some("boom (a.rs:1)".into());
+        frames(&mut app, 1);
+        let editor = app.world().resource::<Editor>();
+        assert!(editor.playing() && editor.paused);
+        assert!(app.world().resource::<Time>().paused);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
 }

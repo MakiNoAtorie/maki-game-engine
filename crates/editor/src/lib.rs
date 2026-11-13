@@ -119,6 +119,10 @@ pub const FRAME: Action = Action("editor_frame");
 pub const CANCEL: Action = Action("editor_cancel");
 /// The name of the selected item becomes a text field in its row of the outliner.
 pub const RENAME: Action = Action("editor_rename");
+/// In a game: pause and go on.
+pub const PAUSE: Action = Action("editor_pause");
+/// In a game in pause: one fixed step.
+pub const FRAME_STEP: Action = Action("editor_frame_step");
 
 const BINDINGS: [(Key, Action, &str); 12] = [
     (Key::F5, PLAY, "Play"),
@@ -166,6 +170,8 @@ pub struct EditorSettings {
     /// The program file of Blender, for the `.blend` and `.obj` files of the asset
     /// folder (`sources` module). Empty: the editor looks at the usual places.
     pub blender: String,
+    /// True: a script that panics pauses the game, to look at it; false: it stops.
+    pub pause_at_error: bool,
     /// The key `grid_step` of a config from before stage 61: read and dropped, so an
     /// old config still loads with `deny_unknown_fields`.
     #[serde(rename = "grid_step", skip_serializing)]
@@ -180,6 +186,7 @@ impl Default for EditorSettings {
             angle_step: 15.0,
             code_editor: "code -g \"{file}:{line}\"".to_owned(),
             blender: String::new(),
+            pause_at_error: false,
             old_grid_step: serde::de::IgnoredAny,
         }
     }
@@ -303,6 +310,8 @@ pub struct Editor {
     /// The spawn point where the game starts on `Play`. `None`, or one that the room
     /// does not have: the first one ([`play_spawn`]).
     pub play_from: Option<ObjectId>,
+    /// The game is in the pause of the editor (`Time::paused`, not the pause of the game).
+    pub paused: bool,
     /// One line for the user: what the last command did. The status row shows it.
     pub status: String,
     /// Why a command did not do its work. It becomes a notice in the same frame.
@@ -894,6 +903,7 @@ impl Editor {
 
     fn play(&mut self, world: &mut World) {
         self.playing = Some(world.resource::<GameState>().clone());
+        self.paused = false;
         reset_play_state(world);
         let spawns = spawn_points(&self.document.room);
         let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| *spawn);
@@ -925,6 +935,7 @@ impl Editor {
         let Some(state) = self.playing.take() else {
             return;
         };
+        self.paused = false;
         *world.resource_mut::<GameState>() = state;
         reset_play_state(world);
         world.resource_mut::<RoomOverride>().0 = None;
@@ -966,8 +977,9 @@ impl Editor {
         let playing = self.playing();
         let mode = if playing { InputMode::GAME } else { MODE };
         world.resource_mut::<InputMode>().set_if_neq(mode);
-        if world.resource::<Time>().paused == playing {
-            world.resource_mut::<Time>().paused = !playing;
+        let paused = !playing || self.paused;
+        if world.resource::<Time>().paused != paused {
+            world.resource_mut::<Time>().paused = paused;
         }
 
         // The player is not a part of the room: it does not show in the editor.
@@ -1028,6 +1040,11 @@ fn editing(world: &World) -> bool {
 
 fn playing(world: &World) -> bool {
     world.resource::<Editor>().playing()
+}
+
+fn paused(world: &World) -> bool {
+    let editor = world.resource::<Editor>();
+    editor.playing() && editor.paused
 }
 
 /// A test runs: the events wait for a step.
@@ -1274,6 +1291,25 @@ fn add_commands(app: &mut App) {
             editor.local = !editor.local;
         },
     );
+    add(
+        "editor.pause",
+        "Pause / go on",
+        "",
+        Some(PAUSE),
+        playing,
+        |world| {
+            let mut editor = world.resource_mut::<Editor>();
+            editor.paused = !editor.paused;
+        },
+    );
+    add(
+        "editor.frame_step",
+        "One frame",
+        "",
+        Some(FRAME_STEP),
+        paused,
+        |world| world.resource_mut::<Time>().step_once(),
+    );
     let step = "Step (next command)";
     add("editor.step", step, "", None, stepping, |world| {
         world.resource_mut::<EventRunner>().step_command();
@@ -1405,7 +1441,14 @@ impl Module for EditorModule {
         add_mode_bindings(app, MODE, &BINDINGS);
         add_mode_bindings(app, MODE, &CHORDS);
         // In a game: the same key and the same action stop it.
-        maki_platform::add_bindings(app, &[(Key::F5, PLAY, "Stop the game (editor)")]);
+        maki_platform::add_bindings(
+            app,
+            &[
+                (Key::F5, PLAY, "Stop the game (editor)"),
+                (Key::F6, PAUSE, "Pause and go on (editor)"),
+                (Key::F7, FRAME_STEP, "One frame in pause (editor)"),
+            ],
+        );
         add_mode_bindings(app, MODE, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
         // F5 plays here: the room reload loses its key after all modules, in any order.
         app.add_systems(Startup, |mut bindings: ResMut<Bindings>| {
@@ -1456,6 +1499,7 @@ impl Module for EditorModule {
             }],
             pending: None,
             playing: None,
+            paused: false,
             shown: None,
             item_buffer: None,
             prefab_name: String::new(),
@@ -1627,8 +1671,14 @@ pub fn run_commands(world: &mut World) {
             history.track(document, selection, busy);
         }
         if let Some(message) = world.resource_mut::<ScriptPanics>().caught.take() {
-            editor.stop(world);
-            editor.status = "Stopped: a script panicked".to_owned();
+            if world.resource::<EditorSettings>().pause_at_error && editor.playing() {
+                // The world stays as the panic left it, to look at; the panicked value is lost.
+                editor.paused = true;
+                editor.status = "Paused: a script panicked".to_owned();
+            } else {
+                editor.stop(world);
+                editor.status = "Stopped: a script panicked".to_owned();
+            }
             editor.error = Some(format!("A script panicked: {message}"));
         }
         editor.sync(world);

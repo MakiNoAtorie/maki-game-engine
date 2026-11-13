@@ -58,6 +58,7 @@ pub mod icon {
     pub const PLAY: &str = "▶";
     pub const STOP: &str = "⏹";
     pub const STEP: &str = "⏭";
+    pub const PAUSE: &str = "⏸";
     pub const MOVE: &str = "↔";
     pub const ROTATE: &str = "↻";
     pub const SCALE: &str = "⛶";

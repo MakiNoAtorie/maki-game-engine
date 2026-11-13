@@ -29,3 +29,10 @@ pub struct Time {
     /// Frame time not yet consumed by fixed steps.
     pub(crate) accumulator: Duration,
 }
+
+impl Time {
+    /// Runs one fixed step in the next frame, also while `paused`: one frame of a tool.
+    pub fn step_once(&mut self) {
+        self.accumulator += self.fixed_delta;
+    }
+}

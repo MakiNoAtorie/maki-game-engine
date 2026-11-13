@@ -301,12 +301,35 @@ fn prefab_menu(ui: &mut Ui, editor: &mut Editor) {
     }
 }
 
+/// The switch of [`crate::EditorSettings::pause_at_error`].
+fn pause_at_error(ui: &mut Ui, world: &mut World) {
+    let mut settings = world.resource_mut::<crate::EditorSettings>();
+    let mut on = settings.pause_at_error;
+    let switch = ui.checkbox(&mut on, "Pause at error");
+    switch.on_hover_text("A script that panics pauses the game instead of stopping it.");
+    if on != settings.pause_at_error {
+        settings.pause_at_error = on;
+    }
+}
+
 /// The middle of the tool row: play, and where the game starts. In a game: stop,
 /// and in a test the steps.
 fn play_row(ui: &mut Ui, world: &mut World) {
     if world.resource::<Editor>().playing() {
         let stop = egui::RichText::new(format!("{} Stop", icon::STOP)).color(THEME.play);
         tool_button(ui, world, "editor.stop", stop, false);
+        let paused = world.resource::<Editor>().paused;
+        let pause = if paused {
+            format!("{} Go on", icon::PLAY)
+        } else {
+            format!("{} Pause", icon::PAUSE)
+        };
+        tool_button(ui, world, "editor.pause", pause, paused);
+        if paused {
+            let frame = format!("{} One frame", icon::STEP);
+            tool_button(ui, world, "editor.frame_step", frame, false);
+        }
+        pause_at_error(ui, world);
         // A test: the events wait for a step before each command.
         if world.resource::<EventRunner>().step_mode() {
             tool_button(
@@ -333,6 +356,7 @@ fn play_row(ui: &mut Ui, world: &mut World) {
         format!("{} Play", icon::PLAY),
         false,
     );
+    pause_at_error(ui, world);
     // Where the game starts.
     let mut editor = world.resource_mut::<Editor>();
     let spawns = crate::spawn_points(&editor.document.room);
