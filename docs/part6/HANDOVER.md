@@ -7,7 +7,7 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 - The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
 - `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
 - Stages 54 to 65 and the symbol limit (#23, `symbol-limit.md`) are done.
-- Quality session 1 is done (`quality-1.md`): the run-to-run picture change is the driver (the gate now runs serial frames), a pose jump and a change of brightness cut the indirect history, the skinned BLAS is refit. Open: the skinned jump gate (`quality-1.md`, section 6).
+- Quality session 1 is done (`quality-1.md`): the run-to-run picture change is the driver (the gate now runs serial frames), a pose jump and a change of brightness cut the indirect history, the skinned BLAS is refit. `bench.py skinjump` measures the error a jump adds, with a bar of 2 times the cube.
 - Next: the stage table (README 3.1) ends at 65. The plan of what comes after (the vertical slice of 2.15, the quality and optimization session) is the owner's.
 - No optimization in the stages: it is a session of its own after the whole program is built (the owner, 2026-11-12). A GPU-time step goes into the report; a picture change still stops.
 

@@ -37,7 +37,7 @@ skinjump The gate of a skinned pose jump: `reference skin_jump_720p`, `reference
          jump_720p`, then `skinjump`. The error that the jump adds (4 frames after it,
          over the settled frame 150) at the place that the arm left, against the same
          at the place that the cube of `jump_720p` left. `ok`: the arm adds at most
-         what the cube adds.
+         two times what the cube adds.
 lightanim The noise of a pulsing lamp: `reference light_still_720p`, then `lightanim`.
          `light_anim_720p` and `light_still_720p` against the still reference at frames
          at the end of a pulse. A measure, no gate.
@@ -201,6 +201,8 @@ LIGHT_STEP_ROOM = JUMP_ROOM.replace(""",
 JUMP_FRAME = 62
 # A frame long after the jump: the floor of the error of a crop (`skinjump`).
 SETTLED_FRAME = 150
+# `skinjump`: the arm may add this many times what the cube adds.
+SKIN_JUMP_FACTOR = 2.0
 JUMP_CROP = "565,300,80,80"
 CONTROL_CROP = "900,480,80,80"
 # The skinned jump: the clip names a joint of the figure; 150 degrees about Z lifts the
@@ -777,8 +779,10 @@ def command_skinjump(_args):
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow(["scenario", "frame", "relmse"])
     writer.writerows(rows)
-    print("ok" if excess[0] <= excess[1] else "FAIL")
-    if excess[0] > excess[1]:
+    # 2x: the arm crop is small and at edges, where the filter blurs less (the owner, 2026-11-13).
+    passed = excess[0] <= SKIN_JUMP_FACTOR * excess[1]
+    print("ok" if passed else "FAIL")
+    if not passed:
         raise SystemExit(1)
 
 
