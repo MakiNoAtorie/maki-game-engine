@@ -234,7 +234,13 @@ fn menu_fields(ui: &mut Ui, menu: &mut Menu, lists: &Lists) -> bool {
             };
             true
         }
-        Err(_) => false,
+        Err(error) => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("Value refused: {error}"),
+            );
+            false
+        }
     }
 }
 

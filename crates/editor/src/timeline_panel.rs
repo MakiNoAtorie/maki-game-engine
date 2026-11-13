@@ -86,6 +86,15 @@ impl Ruler {
     }
 }
 
+/// The seconds that the ruler shows. A timeline with a `length` shows it. Else the
+/// last key and a quarter more, so that a key can go past the last one.
+fn view_span(timeline: &Timeline) -> f32 {
+    match timeline.length > 0.0 {
+        true => timeline.length,
+        false => (timeline.duration() * 1.25).max(1.0),
+    }
+}
+
 /// What the pointer drags.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Drag {
@@ -346,12 +355,23 @@ fn tool_row(
             state.key = None;
         }
         let head = egui::DragValue::new(&mut state.head)
-            .range(0.0..=timeline.duration().max(1.0))
+            .range(0.0..=view_span(timeline))
             .speed(0.01)
             .max_decimals(2)
             .suffix(" s");
         if ui.add(head).on_hover_text("Play head time").changed() {
             state.scrubbed = true;
+        }
+        if state.scrubbed
+            && ui
+                .button("Back to document")
+                .on_hover_text(format!(
+                    "The view shows the timeline at {:.2} s. Show the document.",
+                    state.head
+                ))
+                .clicked()
+        {
+            state.stop_scrub();
         }
         if !state.note.is_empty() {
             ui.colored_label(THEME.warning, &state.note);
@@ -415,8 +435,7 @@ fn ruler(
         RULER + ROW * rows.max(1) as f32,
     );
     let (area, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
-    let duration = timeline.duration();
-    let span = if duration > 0.0 { duration } else { 1.0 };
+    let span = view_span(timeline);
     // A deleted or moved last key shortens the span: the play head stays in view.
     state.head = state.head.min(span);
     let ruler = Ruler { area, span };
@@ -425,14 +444,16 @@ fn ruler(
     if response.drag_started()
         && let Some(origin) = ui.input(|input| input.pointer.press_origin())
     {
-        state.drag = Some(match ruler.key_at(origin, timeline) {
+        state.drag = match ruler.key_at(origin, timeline) {
             Some((track, key)) => {
                 (state.track, state.key) = (Some(track), Some(key));
                 let time = timeline.tracks[track].track.keys[key].time;
-                Drag::Key { track, key, time }
+                Some(Drag::Key { track, key, time })
             }
-            None => Drag::Head,
-        });
+            // A drag in the column of the names moves nothing.
+            None if origin.x >= ruler.left() => Some(Drag::Head),
+            None => None,
+        };
     }
     if response.dragged()
         && let Some(at) = response.interact_pointer_pos()
@@ -449,7 +470,12 @@ fn ruler(
     if response.drag_stopped()
         && let Some(Drag::Key { track, key, time }) = state.drag.take()
     {
-        timeline.tracks[track].track.keys[key].time = time;
+        state.key = Some(move_key(
+            &mut timeline.tracks[track].track,
+            key,
+            time,
+            timeline.fps,
+        ));
     }
     if response.clicked()
         && let Some(at) = response.interact_pointer_pos()
@@ -672,6 +698,24 @@ fn value_of(tree: &Value) -> Option<KeyValue> {
     })
 }
 
+/// Moves a key to `time` (on the frames of `fps`, if the timeline has them). A key
+/// that is there already is replaced, as `set_key` does. The new index of the key.
+fn move_key(track: &mut Track, key: usize, time: f32, fps: Option<f32>) -> usize {
+    let time = fps
+        .filter(|fps| *fps > 0.0)
+        .map_or(time, |fps| (time * fps).round() / fps);
+    track.keys[key].time = time;
+    // The key stays where it is in the list; a key of the same time goes.
+    let mut at = key;
+    for other in (0..track.keys.len()).rev() {
+        if other != key && (track.keys[other].time - time).abs() < 1e-4 {
+            track.keys.remove(other);
+            at -= usize::from(other < key);
+        }
+    }
+    at
+}
+
 /// Sets the key at `time`: the value of a key there changes, else a new key. Its index.
 fn set_key(track: &mut Track, time: f32, value: KeyValue) -> usize {
     if let Some(index) = track
@@ -744,6 +788,24 @@ fn sampled_room(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_key_dropped_on_another_key_replaces_it() {
+        let key = |time: f32| Key {
+            time,
+            value: KeyValue::Number(time),
+        };
+        let mut track = Track {
+            keys: vec![key(0.0), key(1.0), key(2.0)],
+            ..Track::default()
+        };
+        let at = move_key(&mut track, 0, 1.00001, None);
+        assert_eq!(track.keys.len(), 2);
+        assert_eq!(track.keys[at].value, KeyValue::Number(0.0));
+        let at = move_key(&mut track, 0, 0.26, Some(4.0));
+        assert_eq!(track.keys[at].time, 0.25);
+        assert_eq!(view_span(&Timeline::default()), 1.0);
+    }
+
     use super::*;
     use crate::History;
     use maki_core::ConfigFile;

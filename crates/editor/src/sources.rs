@@ -45,7 +45,12 @@ const SETTLE: Duration = Duration::from_millis(300);
 pub struct Tools {
     /// The Blender program. `None`: not found.
     pub blender: Option<PathBuf>,
+    /// Set at the end of the app: a Blender that runs is killed.
+    pub stop: Arc<AtomicBool>,
 }
+
+/// A Blender that runs longer is killed.
+const BLENDER_LIMIT: Duration = Duration::from_secs(300);
 
 /// Writes the result file of a source file. `result`: the temporary name, with the
 /// extension of the result.
@@ -282,6 +287,7 @@ fn run(
     flags: Flags,
 ) {
     let Flags { stop, retry } = flags;
+    tools.stop = stop.clone();
     let mut failed = HashMap::new();
     let mut known = Vec::new();
     while !stop.load(Ordering::Relaxed) {
@@ -363,8 +369,20 @@ pub fn find_blender(setting: &str) -> Option<PathBuf> {
     let versions = std::fs::read_dir(folder).ok()?.flatten();
     let mut found: Vec<PathBuf> = versions.map(|entry| entry.path().join(name)).collect();
     found.retain(|path| path.is_file());
-    found.sort();
+    // By the number of the version: "Blender 4.10" is newer than "Blender 4.2".
+    found.sort_by_key(|path| version_of(path));
     found.pop()
+}
+
+/// The numbers in the name of the folder of a Blender: "Blender 4.10" is [4, 10].
+fn version_of(program: &Path) -> Vec<u32> {
+    let folder = program.parent().and_then(Path::file_name);
+    let name = folder
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    name.split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
 }
 
 /// Starts the converter thread for the asset folder of the editor. `blender`: the
@@ -376,6 +394,7 @@ pub(crate) fn start(app: &mut App, directory: &Path, blender: &str) {
     let converters = app.world().resource::<Converters>().clone();
     let tools = Tools {
         blender: find_blender(blender),
+        ..Tools::default()
     };
     match &tools.blender {
         Some(blender) => {
@@ -494,6 +513,52 @@ const IMPORT_OBJ: &str = "import bpy, sys; \
     bpy.ops.wm.read_factory_settings(use_empty=True); \
     bpy.ops.wm.obj_import(filepath=sys.argv[sys.argv.index('--') + 2]); ";
 
+/// Runs the command to its end. A command that runs longer than `limit`, or at the
+/// end of the app (`stop`), is killed and gives an error.
+fn run_limited(
+    command: &mut Command,
+    stop: &AtomicBool,
+    limit: Duration,
+) -> Result<std::process::Output> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // The pipes are read on threads: a full pipe would stop the child.
+    fn read(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let (out, error) = (read(child.stdout.take()), read(child.stderr.take()));
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if stop.load(Ordering::Relaxed) || start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "it took longer than {} s, or the app ended",
+                limit.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let bytes = |thread: std::thread::JoinHandle<Vec<u8>>| thread.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout: bytes(out),
+        stderr: bytes(error),
+    })
+}
+
 /// Runs Blender with no window. `open`: the `.blend` file to open. `script`: what it
 /// runs. `arguments`: for the script, after `--`.
 fn blender(tools: &Tools, open: Option<&Path>, script: &str, arguments: &[&Path]) -> Result<()> {
@@ -518,8 +583,7 @@ fn blender(tools: &Tools, open: Option<&Path>, script: &str, arguments: &[&Path]
         // No console window of the child (CREATE_NO_WINDOW).
         command.creation_flags(0x0800_0000);
     }
-    let output = command
-        .output()
+    let output = run_limited(&mut command, &tools.stop, BLENDER_LIMIT)
         .with_context(|| format!("cannot run {}", blender.display()))?;
     if !output.status.success() {
         let (out, error) = (
@@ -632,6 +696,15 @@ fn read_psd(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     ensure!(
         channels >= color && width > 0 && height > 0,
         "the file has no picture"
+    );
+    // The limits of the format, and 1 GiB: a damaged header must not allocate more.
+    ensure!(
+        width <= 30_000 && height <= 30_000 && channels <= 56,
+        "the picture is bigger than the format allows"
+    );
+    ensure!(
+        width * height * channels * depth / 8 <= 1 << 30,
+        "the picture is too big to read ({width} x {height} pixels)"
     );
     // Three parts that are not the flat picture: the color table, the resources,
     // the layers. Each has its length first.
@@ -1011,5 +1084,33 @@ mod tests {
         let error = blend_to_glb(&source, &result, &Tools::default()).unwrap_err();
         assert!(format!("{error:#}").contains("[editor] blender"));
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn the_newest_blender_is_the_highest_version() {
+        let program = |folder: &str| PathBuf::from(folder).join("blender.exe");
+        let mut found = [
+            program("Blender 4.2"),
+            program("Blender 4.10"),
+            program("Blender 3.6"),
+        ];
+        found.sort_by_key(|path| version_of(path));
+        assert_eq!(found[2], program("Blender 4.10"));
+    }
+
+    #[test]
+    fn a_psd_header_with_a_huge_size_is_refused_before_it_allocates() {
+        let header = |channels: u16, height: u32, width: u32| {
+            let mut bytes = b"8BPS\0\x01\0\0\0\0\0\0".to_vec();
+            bytes.extend(channels.to_be_bytes());
+            bytes.extend(height.to_be_bytes());
+            bytes.extend(width.to_be_bytes());
+            bytes.extend([0, 8, 0, 3]);
+            bytes
+        };
+        for bytes in [header(3, 4, 4_000_000_000), header(3, 30_000, 30_000)] {
+            let error = read_psd(&bytes).unwrap_err().to_string();
+            assert!(error.contains("big"), "{error}");
+        }
     }
 }
