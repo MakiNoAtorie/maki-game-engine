@@ -14,6 +14,15 @@ use crate::document::Document;
 // `Item(`: also `GiveItem(` and `TakeItem(`; the inventory names an item by the id.
 const BARE: [&str; 4] = ["path:", "file:", "File(", "Item("];
 
+/// True: `before` ends with `key`. A field key (`file:`) starts at a field boundary,
+/// so the field `profile:` is not `file:`; a variant key (`Item(`) matches by suffix.
+fn key_ends(before: &str, key: &str) -> bool {
+    let Some(rest) = before.strip_suffix(key) else {
+        return false;
+    };
+    !key.ends_with(':') || rest.chars().next_back().is_none_or(|c| "(,{ ".contains(c))
+}
+
 /// Gives each reference of the document that resolves by its id the new path, and
 /// each reference with a path only the id of its file, and marks the document as
 /// changed. Returns the count of references that changed.
@@ -51,7 +60,7 @@ pub fn correct_paths(document: &mut Document) -> usize {
         let literal = &from[..length];
         let path = BARE
             .iter()
-            .any(|key| before.ends_with(key))
+            .any(|key| key_ends(before, key))
             .then(|| ron_options().from_str::<PathBuf>(literal).ok())
             .flatten();
         match path.and_then(|path| Some((FileId::read(&directory.join(&path))?, path))) {
@@ -127,6 +136,15 @@ mod tests {
     use super::*;
     use maki_assets::FileId;
     use maki_scene::MeshDef;
+
+    #[test]
+    fn a_field_key_matches_only_at_a_field_boundary() {
+        assert!(key_ends("floor:Some((path:", "path:"));
+        assert!(key_ends("(name:\"a\",file:", "file:"));
+        assert!(!key_ends("(name:\"a\",profile:", "file:"));
+        assert!(!key_ends("(tile:", "file:"));
+        assert!(key_ends("[GiveItem(", "Item("));
+    }
 
     #[test]
     fn a_model_moved_with_its_id_file_gets_its_new_path_and_the_room_is_changed() {

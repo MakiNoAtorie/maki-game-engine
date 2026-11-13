@@ -622,10 +622,15 @@ impl Editor {
                     Err(error) => self.fail(format!("{error:#}")),
                 }
             }
-            Command::Save => self.save(),
-            Command::SaveAs(path) => {
-                self.document.path = path;
+            Command::Save => {
                 self.save();
+            }
+            Command::SaveAs(path) => {
+                // A failed write leaves the document at its old file.
+                let old = std::mem::replace(&mut self.document.path, path);
+                if !self.save() {
+                    self.document.path = old;
+                }
             }
             Command::Play => self.play(world),
             Command::Stop => self.stop(world),
@@ -811,7 +816,8 @@ impl Editor {
         self.event_ui.row = None;
     }
 
-    fn save(&mut self) {
+    /// True: the file was written.
+    fn save(&mut self) -> bool {
         match self.document.save() {
             Ok(()) => {
                 // A "Save as" is a new file among the others.
@@ -823,8 +829,12 @@ impl Editor {
                     1 => format!("Saved {file}, with 1 problem in the events"),
                     count => format!("Saved {file}, with {count} problems in the events"),
                 };
+                true
             }
-            Err(error) => self.fail(format!("{error:#}")),
+            Err(error) => {
+                self.fail(format!("{error:#}"));
+                false
+            }
         }
     }
 
@@ -1636,8 +1646,8 @@ pub fn run_commands(world: &mut World) {
         {
             editor.test = None;
         }
-        // The room that the game is in, for the panel.
-        if editor.playing() {
+        // The room name replaces only "Playing ...": a command result stays.
+        if editor.playing() && editor.status.starts_with("Playing") {
             let room = &world.resource::<CurrentRoom>().path;
             let name = room.file_name().unwrap_or(room.as_os_str());
             let status = format!("Playing {}", name.to_string_lossy());

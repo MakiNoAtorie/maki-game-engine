@@ -19,6 +19,8 @@ pub struct DataEdit {
     pub tree: Value,
     /// The time of the file at the last read or write: a newer file is read again.
     pub time: Option<std::time::SystemTime>,
+    /// The last write failed: the tree is newer than the file.
+    pub unsaved: bool,
 }
 
 fn time_of(path: &Path) -> Option<std::time::SystemTime> {
@@ -43,6 +45,7 @@ impl DataEdit {
             type_name: type_name.to_owned(),
             tree,
             time: time_of(path),
+            unsaved: false,
         })
     }
 
@@ -52,6 +55,7 @@ impl DataEdit {
         std::fs::write(&self.path, text)
             .map_err(|error| format!("{} not written: {error}", self.path.display()))?;
         self.time = time_of(&self.path);
+        self.unsaved = false;
         Ok(())
     }
 }
@@ -195,7 +199,11 @@ pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor
     if time_of(&edit.path) != edit.time {
         match DataEdit::open(&edit.path, types) {
             Ok(new) => *edit = new,
-            Err(error) => editor.error = Some(error),
+            Err(error) => {
+                // Remember the time, so the error shows once, not every frame.
+                edit.time = time_of(&edit.path);
+                editor.error = Some(error);
+            }
         }
     }
     let Some(edit) = editor.data.as_mut() else {
@@ -207,6 +215,9 @@ pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor
         ui.strong(name)
             .on_hover_text(edit.path.display().to_string());
         ui.weak(&edit.type_name);
+        if edit.unsaved {
+            ui.colored_label(ui.visuals().error_fg_color, "not saved");
+        }
         close = ui
             .button("Close")
             .on_hover_text("Close the data asset (Esc)")
@@ -225,9 +236,16 @@ pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor
             changed = crate::fields::show(ui, &data_type.kind, tree, Lists::objects(&[]));
         });
     }
-    let saved = if changed { edit.save(types) } else { Ok(()) };
+    // A pending write is tried again on Close; a failure keeps the panel open.
+    let saved = if changed || (close && edit.unsaved) {
+        edit.save(types)
+    } else {
+        Ok(())
+    };
     if let Err(error) = saved {
+        edit.unsaved = true;
         editor.error = Some(error);
+        close = false;
     }
     if close {
         editor.data = None;

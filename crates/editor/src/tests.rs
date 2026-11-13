@@ -254,6 +254,12 @@ fn a_room_is_opened_changed_and_saved_and_the_file_reads_as_the_document() {
             editor.status
         );
         assert_eq!(editor.document.room.width, 8.0);
+
+        // A write that fails leaves the document at its old file.
+        let before = editor.document.path.clone();
+        request(&mut app, Command::SaveAs(directory.clone()));
+        let editor = app.world().resource::<Editor>();
+        assert_eq!(editor.document.path, before);
     });
     std::fs::remove_dir_all(&directory).unwrap();
 }
