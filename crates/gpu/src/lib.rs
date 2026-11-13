@@ -102,6 +102,8 @@ pub struct Gpu {
     waited: std::time::Duration,
     window_size: (u32, u32),
     vsync: bool,
+    /// See [`Gpu::set_serial`].
+    serial: bool,
     bindless: Bindless,
     buffers: SlotMap<BufferHandle, Buffer>,
     images: SlotMap<ImageHandle, Image>,
@@ -227,6 +229,7 @@ impl Gpu {
             finished_timestamps: Vec::new(),
             waiting: std::time::Duration::ZERO,
             waited: std::time::Duration::ZERO,
+            serial: false,
             ctx,
         })
     }
@@ -702,6 +705,15 @@ impl Gpu {
             self.window_size = (width, height);
             self.swapchain_dirty = true;
         }
+    }
+
+    /// True: each frame waits until the GPU has finished it, so no two frames are in
+    /// work at the same time. Slower. For a picture that must be the same in each run:
+    /// with frames in flight, the NVIDIA driver changed the result of a hot compute
+    /// shader by one step of a 16-bit float at a frame that was not the same in each
+    /// run (`docs/part6/quality-1.md`).
+    pub fn set_serial(&mut self, serial: bool) {
+        self.serial = serial;
     }
 
     /// Sets vsync on or off. The swapchain is built again before the next frame.
@@ -1202,6 +1214,9 @@ impl Gpu {
             .command_buffer_infos(&commands)
             .signal_semaphore_infos(&signal);
         unsafe { device.queue_submit2(self.ctx.queue, &[submit], frame.in_flight) }?;
+        if self.serial {
+            unsafe { device.queue_wait_idle(self.ctx.queue) }?;
+        }
 
         let present_wait = [self.swapchain.render_finished[image]];
         let swapchains = [self.swapchain.handle];

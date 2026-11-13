@@ -102,7 +102,15 @@ struct DynamicBuild {
     vertices: BufferHandle,
     /// The address at creation: a new buffer under the same handle is an error.
     vertex_address: u64,
+    /// Refits since the last full build. `None`: never built.
+    refits: Option<u32>,
 }
+
+/// A refit keeps the tree of the last full build and only moves its boxes: fast, but
+/// the boxes get loose as the pose goes away from that build. After this many refits
+/// the next build is a full one.
+// ponytail: a fixed count; measure the trace time of a pose far from the build if a model needs a better rule.
+const MAX_REFITS: u32 = 30;
 
 /// Bytes of one corner position.
 const CORNER_BYTES: u64 = 12;
@@ -145,11 +153,19 @@ pub(crate) struct BlasBuild {
 /// The size query and the build of a BLAS must use the same type and flags.
 fn blas_build_info<'a>(
     geometries: &'a [vk::AccelerationStructureGeometryKHR<'a>],
+    dynamic: bool,
 ) -> vk::AccelerationStructureBuildGeometryInfoKHR<'a> {
+    use vk::BuildAccelerationStructureFlagsKHR as F;
+    // A dynamic BLAS also permits a refit (see `Gpu::rebuild_blas`).
+    let flags = if dynamic {
+        F::PREFER_FAST_TRACE | F::ALLOW_UPDATE
+    } else {
+        F::PREFER_FAST_TRACE
+    };
     vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         // Traced in every frame, built once or on a pose change: trace time counts more.
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(flags)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .geometries(geometries)
 }
@@ -272,7 +288,7 @@ impl Gpu {
         }
         let counts: Vec<u32> = ranges.iter().map(|range| range.primitive_count).collect();
         let made = {
-            let mut info = blas_build_info(&geometries);
+            let mut info = blas_build_info(&geometries, false);
             self.create_accel(desc.name, &mut info, &counts)
         };
         let (raw, storage, scratch) = made.inspect_err(|_| {
@@ -344,7 +360,7 @@ impl Gpu {
         }
         let counts: Vec<u32> = ranges.iter().map(|range| range.primitive_count).collect();
         let (raw, storage, scratch) = {
-            let mut info = blas_build_info(&geometries);
+            let mut info = blas_build_info(&geometries, true);
             self.create_accel(desc.name, &mut info, &counts)?
         };
         let address_info =
@@ -363,29 +379,49 @@ impl Gpu {
                 scratch,
                 vertices: desc.vertices,
                 vertex_address,
+                refits: None,
             }),
         }))
     }
 
-    /// Records a full build of a dynamic BLAS from the current content of its vertex
-    /// buffer. Call in a frame, after the compute shader that writes the positions and
+    /// Records a build of a dynamic BLAS from the current content of its vertex
+    /// buffer: a refit of the last full build, or a full build after `MAX_REFITS` refits. Call in a frame, after the compute shader that writes the positions and
     /// before [`Gpu::build_tlas`]; the TLAS must be built again after it, also with an
     /// equal instance list. The barriers before and after are part of the call.
     pub fn rebuild_blas(&mut self, blas: BlasHandle) -> Result<()> {
         ensure!(self.active.is_some(), "rebuild_blas outside of a frame");
-        let blas = self.blases.get(blas).context("stale BLAS handle")?;
-        let build = blas.dynamic.as_ref().context("the BLAS is not dynamic")?;
+        let build = (self
+            .blases
+            .get_mut(blas)
+            .context("stale BLAS handle")?
+            .dynamic
+            .as_mut())
+        .context("the BLAS is not dynamic")?;
+        let refit = build.refits.is_some_and(|refits| refits < MAX_REFITS);
+        build.refits = Some(if refit {
+            build.refits.unwrap_or(0) + 1
+        } else {
+            0
+        });
+        let blas = &self.blases[blas];
+        let build = blas.dynamic.as_ref().expect("checked above");
         ensure!(
             self.buffers
                 .get(build.vertices)
                 .is_some_and(|b| b.address == build.vertex_address),
             "the vertex buffer of a dynamic BLAS is gone"
         );
-        let info = blas_build_info(&build.geometries)
-            .dst_acceleration_structure(blas.raw)
-            .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: self.scratch_address(build.scratch),
-            });
+        let mut info =
+            blas_build_info(&build.geometries, true).dst_acceleration_structure(blas.raw);
+        if refit {
+            // The source and the target are the same structure: an update in place.
+            info = info
+                .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+                .src_acceleration_structure(blas.raw);
+        }
+        let info = info.scratch_data(vk::DeviceOrHostAddressKHR {
+            device_address: self.scratch_address(build.scratch),
+        });
 
         use vk::AccessFlags2 as A;
         use vk::PipelineStageFlags2 as S;
@@ -441,7 +477,7 @@ impl Gpu {
         let infos: Vec<_> = builds
             .iter()
             .map(|build| {
-                blas_build_info(&build.geometries)
+                blas_build_info(&build.geometries, false)
                     .dst_acceleration_structure(build.raw)
                     .scratch_data(vk::DeviceOrHostAddressKHR {
                         device_address: self.scratch_address(build.scratch),
@@ -654,7 +690,8 @@ impl Gpu {
         let scratch_desc = BufferDesc {
             name,
             // Room to move the start to the next multiple of the alignment.
-            size: sizes.build_scratch_size + self.scratch_alignment,
+            // A refit needs its own size of work memory (zero without `ALLOW_UPDATE`).
+            size: sizes.build_scratch_size.max(sizes.update_scratch_size) + self.scratch_alignment,
             cpu_writable: false,
         };
         // Memory of its own: see `create_buffer_in`.

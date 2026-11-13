@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::QueryState;
@@ -361,8 +362,10 @@ fn load(world: &mut World, clip: &DataRef<Clip>) -> Result<Arc<Clip>, String> {
         .and_then(|room| room.path.parent())
         .unwrap_or(Path::new(""));
     let directory = directory.to_owned();
+    // Asked in each step of each animator: a cache hit must not mark the resource changed.
     world
         .resource_mut::<DataAssets>()
+        .bypass_change_detection()
         .get::<Clip>(&clip.file, &directory)
 }
 

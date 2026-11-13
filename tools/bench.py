@@ -4,6 +4,8 @@
 run      Builds the release binary, runs each scenario, and appends one row for each
          measured column to tools/bench_history.csv (median, p95, p99, min, max over
          the frames after the warmup). Appends the environment to tools/bench_env.csv.
+         `--serial`: one GPU frame at a time, so two runs give the same picture (the
+         gate uses it; the CPU times are then not those of the game).
 compare  Prints a CSV with the medians of two stored runs and the change in percent.
          A run is named by a part of its run_id (the label); the newest match is used.
          `--total`: the GPU total of each scenario only.
@@ -32,9 +34,10 @@ jump     The gate of a pose jump: `reference jump_720p`, `reference light_step_7
          at the same crop; a control crop away from the cube; the old light change
          (240 frames of motion). `ok`: the jump at 4 frames is at most the light step.
 skinjump The gate of a skinned pose jump: `reference skin_jump_720p`, `reference
-         jump_720p`, then `skinjump`. The error at the place that the arm of the figure
-         left, 4 frames after the jump, against the cube of `jump_720p` at 4 frames.
-         `ok`: the arm is at most the cube.
+         jump_720p`, then `skinjump`. The error that the jump adds (4 frames after it,
+         over the settled frame 150) at the place that the arm left, against the same
+         at the place that the cube of `jump_720p` left. `ok`: the arm adds at most
+         two times what the cube adds.
 lightanim The noise of a pulsing lamp: `reference light_still_720p`, then `lightanim`.
          `light_anim_720p` and `light_still_720p` against the still reference at frames
          at the end of a pulse. A measure, no gate.
@@ -136,6 +139,8 @@ SCENARIOS = {
     # (`SKIN_JUMP_ROOM` below), at the place of the cube of `jump_720p`; camera and light
     # at rest. The gate of stage 63: `bench.py skinjump`.
     "skin_jump_720p": ((1280, 720), "skin_jump", {}),
+    # 16 figures that swing an arm in each frame: the skin pass and a BLAS build of each (`SKIN_CROWD_ROOM`).
+    "skin_crowd_720p": ((1280, 720), "skin_crowd", {}),
     # A red lamp pulses (`LIGHT_ANIM_ROOM` below: each fixed step changes the light, a soft
     # reset of the denoiser); camera, cube, and first light at rest. `bench.py lightanim`.
     "light_anim_720p": ((1280, 720), "light_anim", {}),
@@ -194,6 +199,10 @@ LIGHT_STEP_ROOM = JUMP_ROOM.replace(""",
 # the place that it left, in pixels of the 1280 x 720 picture. The control: floor away
 # from the cube, its shadow and the player.
 JUMP_FRAME = 62
+# A frame long after the jump: the floor of the error of a crop (`skinjump`).
+SETTLED_FRAME = 150
+# `skinjump`: the arm may add this many times what the cube adds.
+SKIN_JUMP_FACTOR = 2.0
 JUMP_CROP = "565,300,80,80"
 CONTROL_CROP = "900,480,80,80"
 # The skinned jump: the clip names a joint of the figure; 150 degrees about Z lifts the
@@ -207,6 +216,16 @@ SKIN_JUMP_ROOM = JUMP_ROOM.replace(
     """(pose: (position: (-1.0, 0.0, 0.5)), components: {"prop": (mesh: File("figure.glb")),
             "animator": (clip: "skin_jump.clip.ron", looping: false)}),""")
 assert SKIN_JUMP_ROOM != JUMP_ROOM, "the cube of jump_720p moved: update SKIN_JUMP_ROOM"
+# `skin_crowd_720p`: 16 figures in a 4 x 4 grid, each arm up and down in 1 s, looping.
+SKIN_CROWD_CLIP = """(mode: Linear, length: 1.0, tracks: [(channel: Rotation, target: "arm_r", keys: [
+    (time: 0.0, value: Vector((0.0, 0.0, 0.0))), (time: 0.5, value: Vector((0.0, 0.0, 150.0))), (time: 1.0, value: Vector((0.0, 0.0, 0.0)))])])
+"""
+SKIN_CROWD_ROOM = JUMP_ROOM.replace(
+    """(pose: (position: (-1.0, 0.3, 0.5)), components: {"prop": (mesh: Cube(0.6), look: (color: (0.8, 0.3, 0.2))),
+            "animator": (clip: "jump.clip.ron", looping: false)}),""",
+    "\n        ".join(
+        f"""(pose: (position: ({x * 1.2 - 1.8:.1f}, 0.0, {z * 1.2 - 2.0:.1f})), components: {{"prop": (mesh: File("figure.glb"), collider: false), "animator": (clip: "crowd.clip.ron", looping: true)}}),"""
+        for x in range(4) for z in range(4)))
 # The place that the arm left, in pixels of the 1280 x 720 picture.
 SKIN_JUMP_CROP = "604,264,32,64"
 
@@ -365,6 +384,12 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         (work / "skin_jump.clip.ron").write_text(SKIN_JUMP_CLIP)
         (work / "figure.glb").write_bytes((ROOT / "game" / "assets" / "rooms" / "models" / "figure.glb").read_bytes())
         params += ";skin_jump"
+    elif scene == "skin_crowd":
+        room_path = work / "room.ron"
+        room_path.write_text(SKIN_CROWD_ROOM)
+        (work / "crowd.clip.ron").write_text(SKIN_CROWD_CLIP)
+        (work / "figure.glb").write_bytes((ROOT / "game" / "assets" / "rooms" / "models" / "figure.glb").read_bytes())
+        params += ";skin_crowd"
     elif scene:
         scene_text = ";".join(f"{key}={value}" for key, value in scene.items())
         # The generator is seeded: a file with these arguments in its name has this content.
@@ -422,7 +447,9 @@ def command_run(args):
     for name in names:
         # `--behind`: the window opens behind the others and takes no focus.
         overrides = {"window.focus": False} if args.behind else None
-        params, columns = run_scenario(name, args.frames, args.warmup, args.label, overrides)
+        # `--serial`: one GPU frame at a time, for a picture that is the same in each run.
+        arguments = ["--bench-serial"] if getattr(args, "serial", False) else []
+        params, columns = run_scenario(name, args.frames, args.warmup, args.label, overrides, arguments)
         for column, values in columns.items():
             stats = (f"{value:.3f}" for value in summarize(values))
             rows.append([run_id, commit, f"{name}/{column}", params, len(values), "ms", *stats])
@@ -485,6 +512,9 @@ def command_base(args):
     command = [sys.executable, str(base / "tools" / "bench.py"), "run", "--label", args.label]
     command += ["--only", *args.only] if args.only else []
     command += ["--behind"] if args.behind else []
+    # A commit from before `--bench-serial` has no such option.
+    if getattr(args, "serial", False) and "--bench-serial" in (base / "tools" / "bench.py").read_text(encoding="utf-8"):
+        command += ["--serial"]
     subprocess.run(command, cwd=base, check=True)
     for name, path in (("bench_history.csv", HISTORY), ("bench_env.csv", ENVIRONMENT)):
         source = base / "tools" / name
@@ -730,19 +760,29 @@ def command_jump(_args):
 
 
 def command_skinjump(_args):
-    """The gate of stage 63: the error at the place that the arm of the figure left, 4
-    frames after its jump, against the crop of the cube of `jump_720p` 4 frames after its
-    jump (each against its own reference): a skinned jump smears no more than a rigid one."""
-    errors = []
-    for label, scenario, crop in (("skingate0", "skin_jump_720p", SKIN_JUMP_CROP), ("skingate1", "jump_720p", JUMP_CROP)):
-        common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference=None, crop=crop, light_frames=None)
-        errors.append(command_quality(argparse.Namespace(label=label, frames=JUMP_FRAME + 4, **common)))
-        command_drop(argparse.Namespace(label=label))
+    """The gate of stage 63: the error that a jump adds, 4 frames after it, at the place
+    that the arm of the figure left, against the same at the place that the cube of
+    `jump_720p` left. The error a jump adds is the error at 4 frames over the error of the
+    settled picture (`SETTLED_FRAME`) of the same crop: the two crops have different
+    floors (the arm crop has an edge of the body that never matches the reference)."""
+    rows, excess = [], []
+    for scenario, crop in (("skin_jump_720p", SKIN_JUMP_CROP), ("jump_720p", JUMP_CROP)):
+        errors = []
+        for frames in (JUMP_FRAME + 4, SETTLED_FRAME):
+            label = f"skingate{len(rows)}"
+            common = dict(scenario=scenario, set=["window.focus=false"], moving=False, reference=None, crop=crop, light_frames=None)
+            errors.append(command_quality(argparse.Namespace(label=label, frames=frames, **common)))
+            command_drop(argparse.Namespace(label=label))
+            rows.append([scenario, frames, f"{errors[-1]:.6g}"])
+        excess.append(errors[0] - errors[1])
+        rows.append([scenario, "excess", f"{excess[-1]:.6g}"])
     writer = csv.writer(sys.stdout, lineterminator="\n")
-    writer.writerow(["measure", "frame", "relmse"])
-    writer.writerows([["skin_jump", JUMP_FRAME + 4, f"{errors[0]:.6g}"], ["jump", JUMP_FRAME + 4, f"{errors[1]:.6g}"]])
-    print("ok" if errors[0] <= errors[1] else "FAIL")
-    if errors[0] > errors[1]:
+    writer.writerow(["scenario", "frame", "relmse"])
+    writer.writerows(rows)
+    # 2x: the arm crop is small and at edges, where the filter blurs less (the owner, 2026-11-13).
+    passed = excess[0] <= SKIN_JUMP_FACTOR * excess[1]
+    print("ok" if passed else "FAIL")
+    if not passed:
         raise SystemExit(1)
 
 
@@ -802,7 +842,9 @@ NOISE = 0.001
 def command_gate(args):
     """The picture gate: the build of the merge-base with main and this tree, back to back."""
     commit = args.commit or git("merge-base", "origin/main", "HEAD")
-    common = {"only": args.scenarios, "behind": True}
+    # Serial GPU frames: with frames in flight the driver changes a hot shader at a
+    # frame that differs from run to run (`docs/part6/quality-1.md`).
+    common = {"only": args.scenarios, "behind": True, "serial": True}
     command_base(argparse.Namespace(commit=commit, label="gatebase", **common))
     command_run(argparse.Namespace(label="gatethis", frames=700, warmup=100, **common))
     writer = csv.writer(sys.stdout, lineterminator="\n")
@@ -858,6 +900,7 @@ if __name__ == "__main__":
     run.add_argument("--warmup", type=int, default=100, help="first frames that are not measured")
     run.add_argument("--only", nargs="+", metavar="SCENARIO")
     run.add_argument("--behind", action="store_true", help="the window behind the others, with no focus")
+    run.add_argument("--serial", action="store_true", help="one GPU frame at a time: the same picture in each run")
     run.set_defaults(function=command_run)
     compare = commands.add_parser("compare")
     compare.add_argument("a")
@@ -869,6 +912,7 @@ if __name__ == "__main__":
     base.add_argument("--label", required=True)
     base.add_argument("--only", nargs="+", metavar="SCENARIO")
     base.add_argument("--behind", action="store_true")
+    base.add_argument("--serial", action="store_true")
     base.set_defaults(function=command_base)
     drop = commands.add_parser("drop", help="remove each run whose run_id ends with -LABEL")
     drop.add_argument("label")

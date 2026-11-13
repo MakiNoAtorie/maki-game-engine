@@ -1,14 +1,16 @@
 //! Lights: the copies of the `Light` components in the render world, and the light
 //! buffer that the trace shader reads.
 
+use std::collections::{HashMap, VecDeque};
 use std::f32::consts::PI;
 
 use bevy_ecs::change_detection::{DetectChanges, Ref};
+use bevy_ecs::entity::Entity;
 use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::query::{Added, With, Without};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::{Query, ResMut};
+use bevy_ecs::system::{Local, Query, ResMut};
 use glam::Vec3;
 use maki_core::{App, Extract, Startup, Transform};
 use maki_gpu::{BufferDesc, BufferHandle, FRAMES_IN_FLIGHT};
@@ -96,29 +98,115 @@ fn setup_lights(mut gpu: ResMut<RenderGpu>, mut render_world: ResMut<RenderWorld
     render_world.0.insert_resource(LightBuffers(buffers));
 }
 
+/// The indirect light keeps the frames over which the lights changed their brightness
+/// by at most this part in sum: the mean then lags a pulse or a fade by about this
+/// part. A slow change keeps a long history, a fast one a short history, a light at
+/// rest all of it (`bench.py lightanim`).
+const LAG: f32 = 0.05;
+/// The frames of brightness changes that are kept: the longest history (`max_samples`
+/// at one sample for each frame).
+const CHANGE_FRAMES: usize = 1024;
+
+/// The brightness of a light, for the size of a change. Zero for a light that is off.
+fn power(light: &Light) -> f32 {
+    if light.on {
+        light.intensity * light.color.dot(Vec3::new(0.2126, 0.7152, 0.0722))
+    } else {
+        0.0
+    }
+}
+
+/// What a write of a light changed.
+enum Change {
+    /// Nothing: the same value was written again.
+    None,
+    /// Only the brightness, by this part (0 to 1).
+    Brightness(f32),
+    /// A move, a new shape or color, a new light: the full soft reset.
+    Other,
+}
+
+fn change(old: Option<&Light>, transform_changed: bool, light: &Light) -> Change {
+    let Some(old) = old else {
+        return Change::Other;
+    };
+    let shape = |l: &Light| (l.radius, l.direction, l.cone_degrees);
+    if transform_changed || shape(old) != shape(light) {
+        return Change::Other;
+    }
+    let (before, after) = (power(old), power(light));
+    if before == after {
+        // A write of the same value (an animation at rest), or of a color with the same brightness.
+        return if old == light {
+            Change::None
+        } else {
+            Change::Other
+        };
+    }
+    Change::Brightness((after - before).abs() / before.max(after))
+}
+
+/// The newest frames whose brightness changes (`changes`, oldest first) are at most
+/// `LAG` in sum. `None`: all of them.
+fn frames_within_lag(changes: &VecDeque<f32>) -> Option<u32> {
+    let mut sum = 0.0;
+    for (frames, part) in changes.iter().rev().enumerate() {
+        sum += part;
+        if sum > LAG {
+            return Some(frames as u32);
+        }
+    }
+    None
+}
+
 fn extract_lights(
-    lights: Query<(Ref<Transform>, Ref<Light>), Without<Hidden>>,
+    lights: Query<(Entity, Ref<Transform>, Ref<Light>), Without<Hidden>>,
     mut removed: RemovedComponents<Light>,
     hidden: Query<(), (Added<Hidden>, With<Light>)>,
     mut shown: RemovedComponents<Hidden>,
     mut render_world: ResMut<RenderWorld>,
+    // Each light of the last frame, for the size of a change.
+    mut last: Local<HashMap<Entity, Light>>,
+    // The largest brightness change of each recent frame, oldest first.
+    mut changes: Local<VecDeque<f32>>,
 ) {
     // A light is new, was written, moved, or went away: the old samples show other
     // lighting, but the same surfaces. The mean keeps a short history.
-    let changed = |(transform, light): (Ref<Transform>, Ref<Light>)| {
-        transform.is_changed() || light.is_changed()
-    };
     // A hide or a show is as a despawn or a spawn.
     let shown = shown.read().count() > 0;
-    if removed.read().count() > 0 || shown || !hidden.is_empty() || lights.iter().any(changed) {
+    let mut full = removed.read().count() > 0 || shown || !hidden.is_empty();
+    let mut brightness = 0.0_f32;
+    for (entity, transform, light) in &lights {
+        if !(transform.is_changed() || light.is_changed()) {
+            continue;
+        }
+        match change(last.get(&entity), transform.is_changed(), &light) {
+            Change::None => {}
+            Change::Brightness(part) => brightness = brightness.max(part),
+            Change::Other => full = true,
+        }
+    }
+    if full {
         tracing::trace!("a light changed");
         render_world.soften_accumulation();
     }
+    if changes.len() == CHANGE_FRAMES {
+        changes.pop_front();
+    }
+    changes.push_back(brightness);
+    // A frame with no change asks too: the history must not reach back over a change.
+    if let Some(history) = frames_within_lag(&changes) {
+        render_world.limit_accumulation(history);
+    }
+    *last = lights
+        .iter()
+        .map(|(entity, _, light)| (entity, *light))
+        .collect();
     let mut lights: Vec<ExtractedLight> = lights
         .iter()
         // A light that is off is no light for the renderer.
-        .filter(|(_, light)| light.on)
-        .map(|(transform, light)| ExtractedLight {
+        .filter(|(_, _, light)| light.on)
+        .map(|(_, transform, light)| ExtractedLight {
             position: transform.translation,
             light: *light,
         })
@@ -145,6 +233,45 @@ mod tests {
 
     use super::*;
     use crate::Accumulation;
+
+    #[test]
+    fn only_a_change_of_brightness_has_a_size() {
+        let lamp = Light {
+            intensity: 8.0,
+            ..Light::default()
+        };
+        let dim = Light {
+            intensity: 2.0,
+            ..lamp
+        };
+        assert!(matches!(change(Some(&lamp), false, &lamp), Change::None));
+        assert!(
+            matches!(change(Some(&lamp), false, &dim), Change::Brightness(part) if part == 0.75)
+        );
+        // Off and on: the full brightness.
+        let off = Light { on: false, ..lamp };
+        assert!(
+            matches!(change(Some(&off), false, &lamp), Change::Brightness(part) if part == 1.0)
+        );
+        // A move, a new light: the full soft reset.
+        assert!(matches!(change(Some(&lamp), true, &dim), Change::Other));
+        assert!(matches!(change(None, false, &lamp), Change::Other));
+    }
+
+    #[test]
+    fn the_history_reaches_back_until_the_changes_sum_to_the_lag() {
+        let changes = |parts: &[f32]| parts.iter().copied().collect::<VecDeque<f32>>();
+        // A light at rest: no limit.
+        assert_eq!(frames_within_lag(&changes(&[0.0; 8])), None);
+        // A step 3 frames ago: the 3 frames after it.
+        assert_eq!(
+            frames_within_lag(&changes(&[0.0, 0.5, 0.0, 0.0, 0.0])),
+            Some(3)
+        );
+        // A slow fade: as many frames as sum to `LAG`.
+        let slow = changes(&[LAG / 4.0; 10]);
+        assert_eq!(frames_within_lag(&slow), Some(4));
+    }
 
     #[test]
     fn light_bytes_follow_the_shader_layout() {

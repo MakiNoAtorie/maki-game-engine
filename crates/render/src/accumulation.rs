@@ -13,16 +13,21 @@
 //! - [`RenderWorld::wake_accumulation`]: the view changed (the camera). The old samples
 //!   are correct, at another place of the picture: the temporal pass finds them with
 //!   the `motion` image. Only the count starts again, so new samples come.
-//! - [`RenderWorld::soften_accumulation`]: the lighting changed (a light, or an object
+//! - [`RenderWorld::soften_accumulation`]: the lighting changed (a light moved, came or went, or an object
 //!   that moved and so its shadow). The old samples are almost correct. The indirect
 //!   light of each pixel keeps a short history (`light_history_samples` of the
 //!   config) for some frames, so the new light replaces the old one: see
 //!   [`fade_frames`]. The direct light keeps its history where the denoiser finds no
 //!   change (the fast history of `shaders/denoise_temporal.comp`): the noise of the
 //!   indirect light is too large for such a test at one sample for each frame.
+//! - [`RenderWorld::limit_accumulation`]: a light changed its brightness (a pulse, a
+//!   fade, a switch). In each frame the indirect light keeps only the frames over which
+//!   the brightness changed by a small part in sum (`light.rs`): a slow change keeps a
+//!   long history, a fast one a short history.
 //! - [`RenderWorld::jump_accumulation`]: an object jumped to another pose
-//!   (`maki_core::PoseJumps`). A soft reset, and in that frame the TAA drops the history
-//!   of a pixel at rest whose surface changed: the pixels that the object left.
+//!   (`maki_core::PoseJumps`). A soft reset, and in that frame the indirect light keeps
+//!   no history and the TAA drops the history of a pixel at rest whose surface changed:
+//!   the pixels that the object left.
 //! - [`RenderWorld::reset_accumulation`]: the old samples are of no use (a new image
 //!   size, the manual reset). Each pixel starts again.
 
@@ -44,6 +49,8 @@ pub struct Accumulation {
     reset: bool,
     /// A soft reset is waiting.
     soft_reset: bool,
+    /// The largest indirect history of the next drawn frame, in frames. `u32::MAX`: no limit.
+    limit_request: u32,
     /// A wake is waiting.
     wake: bool,
     /// A jump is waiting.
@@ -68,6 +75,7 @@ impl Default for Accumulation {
         Self {
             reset: true,
             soft_reset: false,
+            limit_request: u32::MAX,
             wake: false,
             jump: false,
             samples: 0,
@@ -91,6 +99,13 @@ impl Accumulation {
         self.soft_reset = true;
     }
 
+    /// In the next drawn frame the indirect light keeps at most the samples of `frames`
+    /// frames, and the sample count starts again from there. No fade after it: a caller
+    /// that wants a longer effect asks in each frame. The smallest request counts.
+    pub fn request_history_limit(&mut self, frames: u32) {
+        self.limit_request = self.limit_request.min(frames);
+    }
+
     /// The next drawn frame starts the sample count again and keeps the history.
     pub fn request_wake(&mut self) {
         self.wake = true;
@@ -100,7 +115,9 @@ impl Accumulation {
     /// whose surface changed, also at rest.
     pub fn request_jump(&mut self) {
         self.jump = true;
+        // No indirect history: old shadow and bounce light stayed (`bench.py jump`: 0.093 -> 0.0017).
         self.soft_reset = true;
+        self.request_history_limit(0);
     }
 
     /// True in a frame that started with a jump.
@@ -157,6 +174,8 @@ impl Accumulation {
         }
         let fading = self.fade_frames > 0;
         self.fade_frames = self.fade_frames.saturating_sub(1);
+        let request = std::mem::replace(&mut self.limit_request, u32::MAX)
+            .saturating_mul(samples_per_frame.max(1));
         self.history_limit = if reset {
             0
         } else if fading {
@@ -167,6 +186,9 @@ impl Accumulation {
         if fading {
             self.samples = self.samples.min(history_samples);
         }
+        // A jump, or a light that changes its brightness (`light.rs`).
+        self.history_limit = self.history_limit.min(request);
+        self.samples = self.samples.min(request);
         if reset || wake {
             // Not logged for a count of one frame: a moving camera wakes in each frame.
             if self.samples > samples_per_frame {
@@ -424,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn a_jump_is_a_soft_reset_and_a_jump_frame_once() {
+    fn a_jump_drops_the_history_once_then_fades_as_a_soft_reset() {
         let mut accumulation = Accumulation::default();
         for _ in 0..25 {
             accumulation.start_frame(1000, 4, 32);
@@ -433,8 +455,12 @@ mod tests {
         accumulation.request_jump();
         accumulation.start_frame(1000, 4, 32);
         assert!(accumulation.jump_frame());
-        assert_eq!(accumulation.history_limit(), 32);
+        assert_eq!(
+            (accumulation.history_limit(), accumulation.samples()),
+            (0, 4)
+        );
         accumulation.start_frame(1000, 4, 32);
         assert!(!accumulation.jump_frame());
+        assert_eq!(accumulation.history_limit(), 32);
     }
 }

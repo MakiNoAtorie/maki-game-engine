@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use crate::script::Script;
 use anyhow::{Context, bail};
+use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Query, Res, ResMut};
@@ -52,7 +53,7 @@ use maki_ui::{Panels, add_panel, egui};
 use crate::stages::RoomDirs;
 
 /// The options of the command line that `parse_args` reads.
-pub const USAGE: &str = "[--bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames N] [--bench-script NAME]]";
+pub const USAGE: &str = "[--bench-frames N [--bench-dump FILE [--bench-shot]] [--bench-static | --bench-light-frames N] [--bench-script NAME] [--bench-serial]]";
 /// `tools/bench.py` writes `<scenario>/room.ron` here. Relative to the working directory.
 const BENCH_DIR: &str = "target/bench";
 
@@ -134,6 +135,9 @@ pub struct BenchRun {
     /// `Some`: the script of this name runs ([`BenchScripts`]), and the light does
     /// not move.
     pub script: Option<String>,
+    /// True: the GPU runs one frame at a time (`Gpu::set_serial`), so two runs give
+    /// the same picture. For the picture gate, not for a time.
+    pub serial: bool,
 }
 
 /// Takes the benchmark options out of a command line (without the program name).
@@ -144,6 +148,7 @@ pub fn parse_args(
     let mut args = args.into_iter();
     let (mut frames, mut dump, mut shot) = (None, None, false);
     let (mut fixed_light, mut script, mut light_frames) = (false, None, None);
+    let mut serial = false;
     let mut rest = Vec::new();
     while let Some(arg) = args.next() {
         if arg == "--bench-frames" {
@@ -158,6 +163,8 @@ pub fn parse_args(
             fixed_light = true;
         } else if arg == "--bench-shot" {
             shot = true;
+        } else if arg == "--bench-serial" {
+            serial = true;
         } else if arg == "--bench-light-frames" {
             let count = args.next().and_then(|frames| frames.to_str()?.parse().ok());
             light_frames = Some(count.context("--bench-light-frames needs a number")?);
@@ -173,7 +180,13 @@ pub fn parse_args(
         }
     }
     let Some(frames) = frames else {
-        if dump.is_some() || fixed_light || shot || script.is_some() || light_frames.is_some() {
+        if dump.is_some()
+            || fixed_light
+            || shot
+            || serial
+            || script.is_some()
+            || light_frames.is_some()
+        {
             bail!("the --bench options need --bench-frames");
         }
         return Ok((None, rest));
@@ -185,6 +198,7 @@ pub fn parse_args(
         // A light that does not move: one that stops before the first frame.
         light_frames: if fixed_light { Some(0) } else { light_frames },
         script,
+        serial,
     };
     Ok((Some(run), rest))
 }
@@ -313,6 +327,7 @@ impl Module for BenchModule {
                         shot: false,
                         light_frames: static_light.then_some(0),
                         script: script_name.map(str::to_owned),
+                        serial: false,
                     });
                 }
             });
@@ -387,7 +402,12 @@ fn move_lights(
     room: Res<CurrentRoom>,
     bench: Res<Bench>,
     // The first light of the room file: only those have a pose for fixed steps.
-    mut lights: Query<(&mut Interpolated, &Light)>,
+    mut lights: Query<(
+        Entity,
+        Option<&maki_scene::ObjectId>,
+        &mut Interpolated,
+        &Light,
+    )>,
 ) {
     let Some(active) = &bench.active else { return };
     // The light path depends on the frame number, a script on game time: a picture
@@ -398,7 +418,11 @@ fn move_lights(
         let frame = active.bench_frame(time.frame);
         frame.min(active.run.light_frames.unwrap_or(u64::MAX))
     };
-    if let Some((mut pose, light)) = lights.iter_mut().next() {
+    // Lowest object id, then entity: query order follows ECS tables (a pulse moves a light).
+    let first = |(entity, id, ..): &(Entity, Option<&maki_scene::ObjectId>, _, _)| {
+        (id.map_or(u32::MAX, |id| id.0), *entity)
+    };
+    if let Some((_, _, mut pose, light)) = lights.iter_mut().min_by_key(first) {
         let position = path_position(frame, light.radius, &room.def);
         // A write marks the light as changed, and a changed light starts the picture again.
         if pose.current.translation != position {
@@ -420,7 +444,7 @@ fn record_frame(
     start_room: Res<StartRoom>,
     mut room_request: ResMut<RoomRequest>,
     graph: Option<Res<FrameGraph>>,
-    gpu: Option<ResMut<RenderGpu>>,
+    mut gpu: Option<ResMut<RenderGpu>>,
     room: Res<CurrentRoom>,
     render_world: Option<Res<RenderWorld>>,
     mut bench: ResMut<Bench>,
@@ -441,6 +465,9 @@ fn record_frame(
         }
         if let (true, Some(mut panels)) = (run.shot, panels) {
             panels.close_all();
+        }
+        if let Some(gpu) = gpu.as_mut() {
+            gpu.0.set_serial(run.serial);
         }
         if run.script.is_some() {
             // The frame numbers of a script start at the spawn point of the start room.
@@ -467,14 +494,14 @@ fn record_frame(
     // is recorded and no newer frame has changed it. A fixed frame, so two runs dump
     // the same picture.
     if frame == frames + 1
-        && let (Some(path), Some(graph), Some(mut gpu)) = (&active.run.dump, &graph, gpu)
+        && let (Some(path), Some(graph), Some(gpu)) = (&active.run.dump, &graph, gpu.as_mut())
     {
         let image = if active.run.shot {
             "output"
         } else {
             "resolved"
         };
-        match dump_picture(path, graph, &mut gpu, image) {
+        match dump_picture(path, graph, gpu, image) {
             Ok(()) => tracing::info!(path = %path.display(), "picture dumped"),
             Err(error) => {
                 tracing::error!(path = %path.display(), "cannot dump the picture: {error:#}")
@@ -530,6 +557,9 @@ fn record_frame(
         time.frame_time = None;
         if active.vsync {
             config.vsync = true;
+        }
+        if let Some(gpu) = gpu.as_mut() {
+            gpu.0.set_serial(false);
         }
         bench.active = None;
         quit.0 |= bench.quit_at_end;
@@ -637,6 +667,8 @@ mod tests {
         let run = run.unwrap().0.unwrap();
         assert_eq!(run.dump, Some(PathBuf::from("a.bin")));
         assert_eq!(run.light_frames, Some(0));
+        let run = parse(&["--bench-frames", "3", "--bench-serial"]);
+        assert!(run.unwrap().0.unwrap().serial);
         let run = parse(&["--bench-frames", "3", "--bench-script", "walk"]);
         assert_eq!(run.unwrap().0.unwrap().script.as_deref(), Some("walk"));
         for bad in [
@@ -645,6 +677,7 @@ mod tests {
             &["--bench-frames", "many"],
             &["--bench-dump", "a.bin"],
             &["--bench-static"],
+            &["--bench-serial"],
             &["--bench-script", "walk"],
             &["--bench-frames", "3", "--bench-script"],
             &["--bench-frames", "3", "--bench-dump"],
