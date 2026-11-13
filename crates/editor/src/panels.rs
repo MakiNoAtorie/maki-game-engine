@@ -187,11 +187,17 @@ pub(crate) fn build(app: &mut App) {
     });
     crate::timeline_panel::add(app);
     crate::text_panel::add(app);
+    let mut assets = crate::assets_panel::AssetPanel::default();
+    let assets_place = panel("editor assets", "Assets", icon::ROOM, ToolPlace::Bottom);
+    add_tool_panel(app, assets_place, move |ui, world| {
+        crate::assets_panel::assets_panel(ui, world, &mut assets);
+    });
     let status = panel("editor status", "Status", "", ToolPlace::Status);
     add_tool_panel(app, status, |ui, world| {
         with_editor(world, |world, editor| status_bar(ui, world, editor));
     });
     add_overlay(app, "Editor marks", true, |ui, world| {
+        crate::assets_panel::drop_on_picture(ui, world);
         with_editor(world, |world, editor| {
             crate::overlay::draw(ui, world, editor)
         });

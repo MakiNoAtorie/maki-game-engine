@@ -329,7 +329,7 @@ Decided for it:
 | 63 | Skinned characters (item 9) | Planned |
 | 64 | The timeline (item 6), and light animation (item 26) | Planned |
 | 65 | Gamepad (item 10) | Planned |
-| Editor lane, after 55 | A script that panics (31), pause and one frame (33), the log file (32), the console (30), the values of a game that runs (14), debug shapes (34), the asset browser (13). A stage number for each when it starts | Planned |
+| Editor lane, after 55 | A script that panics (31), pause and one frame (33), the log file (32), the console (30), the values of a game that runs (14), debug shapes (34), the asset browser (13). A stage number for each when it starts | Done (2026-11-13, no stage files). Open: the drag of a sound into the picture (no sound component in the engine); a prefab opens for a change (no prefab document) |
 | Renderer lane, after 54 | Post effects (19 to 22), load of the shaders while the engine runs (23), particles and effect files (16, 24), fog (17), water (18), decals (25), more light kinds (27), baked lighting (28). A stage number for each when it starts; one lane runs the benchmark at a time | Planned |
 
 All of it comes before the owner makes the vertical slice (2.15).

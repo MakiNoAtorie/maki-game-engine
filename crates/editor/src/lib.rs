@@ -26,6 +26,7 @@
 //! The editor program (`maki_engine::run_editor`) adds [`EditorModule`] after the
 //! modules of the engine and of the project. The program of a game does not have it.
 
+mod assets_panel;
 mod audio;
 mod camera;
 mod data_panel;
@@ -233,6 +234,8 @@ pub enum Command {
     Test(ObjectId, usize),
     /// A new item, on the floor at the point that the view looks at.
     Add(Kind),
+    /// A new item at a point of the floor (a drop of the asset panel), on the grid.
+    AddAt(Kind, Vec3),
     /// Removes the selected items, or the selected command rows: what had the last
     /// click (`EventUi::focused`). The same for `Duplicate`, `Copy`, and `Paste`.
     Delete,
@@ -651,13 +654,17 @@ impl Editor {
                 world.resource_mut::<EventRunner>().set_step_mode(true);
                 self.test = Some((event, page));
             }
-            Command::Add(kind) => {
-                // On the floor, at the point that the view looks at, on the grid.
-                let mut cameras = world.query::<&EditorCamera>();
-                let target = cameras
-                    .iter(world)
-                    .next()
-                    .map_or(Vec3::ZERO, |camera| camera.target);
+            Command::Add(_) | Command::AddAt(..) => {
+                let (kind, target) = match command {
+                    Command::AddAt(kind, at) => (kind, at),
+                    Command::Add(kind) => {
+                        // On the floor, at the point that the view looks at.
+                        let mut cameras = world.query::<&EditorCamera>();
+                        let target = cameras.iter(world).next();
+                        (kind, target.map_or(Vec3::ZERO, |camera| camera.target))
+                    }
+                    _ => unreachable!("the arm has the two commands"),
+                };
                 let step = world
                     .resource::<EditorSettings>()
                     .grid_step(self.document.room.cell);

@@ -106,34 +106,44 @@ pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -
         .collect();
     // Forward slashes: the same room file on each system.
     let mut name = value.to_string_lossy().replace('\\', "/");
-    row(ui, text, |ui| {
-        let show = |ui: &mut Ui, name: &str| {
-            crate::pictures::show(ui, &directory.join(name));
-            source_mark(ui, &directory.join(name), &converters);
-        };
-        let pictures = crate::pictures::has_picture(extensions);
-        if pictures && !name.is_empty() {
-            show(ui, &name);
+    let shown = ui.scope(|ui| {
+        row(ui, text, |ui| {
+            let show = |ui: &mut Ui, name: &str| {
+                crate::pictures::show(ui, &directory.join(name));
+                source_mark(ui, &directory.join(name), &converters);
+            };
+            let pictures = crate::pictures::has_picture(extensions);
+            if pictures && !name.is_empty() {
+                show(ui, &name);
+            }
+            let picture: Option<crate::event_panel::Picture> =
+                if pictures { Some(&show) } else { None };
+            let changed =
+                crate::event_panel::picker_with(ui, text, &mut name, &known, &[], false, picture);
+            if known.is_empty() {
+                let kinds = extensions
+                    .iter()
+                    .map(|e| format!(".{e}"))
+                    .collect::<Vec<_>>();
+                ui.weak("No files").on_hover_text(format!(
+                    "No {} files in the project folder.",
+                    kinds.join(" / ")
+                ));
+            }
+            if changed {
+                *value = PathBuf::from(name);
+            }
+            changed
+        })
+    });
+    // A file of the asset panel dropped on the field.
+    match crate::assets_panel::take_drop(ui, shown.response.rect, extensions) {
+        Some(dropped) => {
+            *value = dropped;
+            true
         }
-        let picture: Option<crate::event_panel::Picture> =
-            if pictures { Some(&show) } else { None };
-        let changed =
-            crate::event_panel::picker_with(ui, text, &mut name, &known, &[], false, picture);
-        if known.is_empty() {
-            let kinds = extensions
-                .iter()
-                .map(|e| format!(".{e}"))
-                .collect::<Vec<_>>();
-            ui.weak("No files").on_hover_text(format!(
-                "No {} files in the project folder.",
-                kinds.join(" / ")
-            ));
-        }
-        if changed {
-            *value = PathBuf::from(name);
-        }
-        changed
-    })
+        None => shown.inner,
+    }
 }
 
 /// A name of a list, picked from it by a click, with a search field: a thing of the
