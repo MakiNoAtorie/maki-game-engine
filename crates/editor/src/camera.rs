@@ -21,6 +21,8 @@ pub const PAN: Action = Action("editor_pan");
 pub const ZOOM_IN: Action = Action("editor_zoom_in");
 pub const ZOOM_OUT: Action = Action("editor_zoom_out");
 pub const VIEW_TOP: Action = Action("editor_view_top");
+/// Farthest orbit distance; "Top view" of a large room must fit under it.
+const MAX_DISTANCE: f32 = 2000.0;
 pub const VIEW_GAME: Action = Action("editor_view_game");
 
 pub(crate) const BINDINGS: [(Key, Action, &str); 6] = [
@@ -117,7 +119,7 @@ pub(crate) fn move_camera(
         }
         let steps =
             f32::from(actions.just_pressed(ZOOM_OUT)) - f32::from(actions.just_pressed(ZOOM_IN));
-        new.distance = (new.distance * ZOOM_STEP.powf(steps)).clamp(0.1, 200.0);
+        new.distance = (new.distance * ZOOM_STEP.powf(steps)).clamp(0.1, MAX_DISTANCE);
         // Only a different value is a write: a camera at rest keeps the picture.
         view.set_if_neq(new);
         camera.set_if_neq(new.camera());

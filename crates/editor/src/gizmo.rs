@@ -62,6 +62,45 @@ pub enum Extra {
 const AREA_CORNERS: [[f32; 2]; 4] = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
 /// A drag of a corner makes no area and no doorway smaller than this, in meters.
 const SMALLEST: f32 = 0.1;
+
+/// The angles [x, y, z] in degrees of `rotation` (YXZ order) that are nearest to
+/// `previous`: past 90 degrees on X the same turn has a second triple, and the
+/// inspector must not jump to it.
+fn nearest_euler(rotation: Quat, previous: [f32; 3]) -> [f32; 3] {
+    let (y, x, z) = rotation.to_euler(EulerRot::YXZ);
+    let [x, y, z] = [x, y, z].map(f32::to_degrees);
+    // Each angle moved by whole turns to the one nearest to the old angle.
+    let near = |angles: [f32; 3]| {
+        let mut angles = angles;
+        for (angle, old) in angles.iter_mut().zip(previous) {
+            *angle = old + (*angle - old + 180.0).rem_euclid(360.0) - 180.0;
+        }
+        let distance: f32 = angles
+            .iter()
+            .zip(previous)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        (distance, angles)
+    };
+    let (first, second) = (near([x, y, z]), near([180.0 - x, y + 180.0, z + 180.0]));
+    if second.0 < first.0 {
+        second.1
+    } else {
+        first.1
+    }
+}
+
+/// The center and the size of an area edge that goes from `fixed` to `to`, with the
+/// size at least `SMALLEST`: the edge at `fixed` does not move.
+fn dragged_corner(fixed: f32, to: f32) -> (f32, f32) {
+    let size = (to - fixed).abs().max(SMALLEST);
+    let to = if to < fixed {
+        fixed - size
+    } else {
+        fixed + size
+    };
+    ((fixed + to) / 2.0, size)
+}
 /// The aim handle of a light that does not point at the floor is this far from the
 /// light, in meters: the length of the cone that the overlay draws.
 const AIM_LENGTH: f32 = 2.0;
@@ -357,8 +396,8 @@ impl Drag {
                     for axis in 0..2 {
                         // The corner across stays where it is.
                         let fixed = area.center[axis] + across[axis] * area.size[axis] / 2.0;
-                        area.center[axis] = round((fixed + to[axis]) / 2.0);
-                        area.size[axis] = round((to[axis] - fixed).abs().max(SMALLEST));
+                        let (center, size) = dragged_corner(fixed, to[axis]);
+                        (area.center[axis], area.size[axis]) = (round(center), round(size));
                     }
                     document.set_area(item, area);
                 }
@@ -381,9 +420,9 @@ impl Drag {
                     let (from, to) = doorway.span(length);
                     // The other side of the opening stays where it is.
                     let (from, to) = if corner == 0 {
-                        (at.clamp(0.0, to - SMALLEST), to)
+                        (at.min(to - SMALLEST).max(0.0), to)
                     } else {
-                        (from, at.clamp(from + SMALLEST, length))
+                        (from, at.max(from + SMALLEST).min(length))
                     };
                     doorway.width = round(to - from);
                     doorway.offset = round((from + to) / 2.0 - length / 2.0);
@@ -449,10 +488,9 @@ impl Drag {
                     }
                 };
                 let turned = |pose: &mut PoseDef| {
-                    let (y, x, z) = (turn * pose.transform().rotation).to_euler(EulerRot::YXZ);
+                    let turned = nearest_euler(turn * pose.transform().rotation, pose.rotation);
                     // Hundredths of a degree: no 29.999998 in a room file.
-                    pose.rotation =
-                        [x, y, z].map(|angle| (angle.to_degrees() * 100.0).round() / 100.0 + 0.0);
+                    pose.rotation = turned.map(|angle| (angle * 100.0).round() / 100.0 + 0.0);
                     around(&mut pose.position);
                 };
                 for item in selection {
@@ -512,6 +550,31 @@ mod tests {
     use maki_scene::{Camera, PropDef};
 
     use super::*;
+
+    #[test]
+    fn a_corner_drag_below_the_smallest_size_keeps_the_other_edge() {
+        let (center, size) = dragged_corner(0.0, 0.02);
+        assert_eq!((center, size), (0.05, SMALLEST));
+        let (center, size) = dragged_corner(0.0, -0.02);
+        assert_eq!((center, size), (-0.05, SMALLEST));
+        assert_eq!(dragged_corner(1.0, 3.0), (2.0, 2.0));
+    }
+
+    #[test]
+    fn euler_angles_stay_near_the_old_ones_past_90_degrees() {
+        let turn = |[x, y, z]: [f32; 3]| {
+            Quat::from_euler(
+                EulerRot::YXZ,
+                y.to_radians(),
+                x.to_radians(),
+                z.to_radians(),
+            )
+        };
+        let near = nearest_euler(turn([100.0, 0.0, 0.0]), [80.0, 0.0, 0.0]);
+        for (angle, want) in near.iter().zip([100.0, 0.0, 0.0]) {
+            assert!((angle - want).abs() < 1e-2, "{near:?}");
+        }
+    }
 
     /// A view from the +Z side and above, and a room with one cube at (1.1, 0.5, 0):
     /// object 2, behind the lamp and the spawn point of a new room.

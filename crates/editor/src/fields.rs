@@ -10,11 +10,12 @@ use maki_core::Fields;
 use maki_core::fields::{Kind, Value, Variant, number, read, variant_of};
 use maki_scene::ObjectId;
 use maki_ui::egui::{self, Ui};
+use maki_ui::theme::icon;
 use maki_ui::widgets::help;
 
 use crate::widgets::{
-    MODELS, PICTURES, PREFABS, SOUNDS, choice, color, file, number_or, object_pick, optional, pick,
-    row, text, toggle, vector,
+    MODELS, PICTURES, PREFABS, SOUNDS, choice, color, drag, file, number_or, object_pick, optional,
+    pick, row, text, toggle, vector,
 };
 
 /// What the picks of the rows offer.
@@ -68,6 +69,39 @@ fn extensions(group: &str) -> &'static [&'static str] {
     }
 }
 
+/// A whole number on `i64`, not `f32`: an id or a seed above 2^24 stays exact.
+fn whole_number(
+    ui: &mut Ui,
+    label: &str,
+    tree: &mut Value,
+    default: Option<&Value>,
+    range: Option<[f64; 2]>,
+    step: f64,
+) -> bool {
+    let mut shown = tree
+        .as_i64()
+        .unwrap_or_else(|| tree.as_f64().unwrap_or(0.0) as i64);
+    let default = default.and_then(Value::as_i64);
+    let (min, max) = range.map_or((i64::MIN, i64::MAX), |[min, max]| (min as i64, max as i64));
+    let changed = row(ui, label, |ui| {
+        let drag = drag(&mut shown).speed(step).range(min..=max);
+        let mut changed = ui.add(drag).changed();
+        if let Some(default) = default.filter(|default| *default != shown) {
+            let reset = ui
+                .small_button(icon::RESET)
+                .on_hover_text("Back to default");
+            if reset.clicked() {
+                (shown, changed) = (default, true);
+            }
+        }
+        changed
+    });
+    if changed {
+        *tree = Value::from(shown);
+    }
+    changed
+}
+
 fn numbers(value: &Value) -> [f32; 3] {
     let part = |index: usize| value.get(index).and_then(Value::as_f64).unwrap_or(0.0) as f32;
     [part(0), part(1), part(2)]
@@ -85,6 +119,11 @@ fn value(
 ) -> bool {
     help(ui, help_text);
     match kind {
+        Kind::Number {
+            range,
+            step,
+            whole: true,
+        } => whole_number(ui, label, tree, default, *range, *step),
         Kind::Number { range, step, whole } => {
             // The widgets have `f32`, as the fields of the engine have.
             let mut shown = tree.as_f64().unwrap_or(0.0) as f32;
@@ -188,9 +227,8 @@ fn value(
             changed
         }
         Kind::Object => {
-            let Ok(mut object) = read::<ObjectId>(tree.clone()) else {
-                return false;
-            };
+            // A tree that is no id counts as no object; a pick repairs it.
+            let mut object = read::<ObjectId>(tree.clone()).unwrap_or_default();
             let names: Vec<String> = lists.objects.iter().map(|(_, name)| name.clone()).collect();
             let changed = object_pick(&mut object, lists.objects, |name| {
                 pick(ui, label, name, &names)
@@ -225,6 +263,10 @@ fn value(
             let mut rows = |ui: &mut Ui| {
                 let mut changed = false;
                 for field in table {
+                    // A file from before the field: it starts with the default.
+                    if let Some(map) = tree.as_object_mut() {
+                        map.entry(field.name).or_insert_with(|| field.zero());
+                    }
                     if let Some(part) = tree.get_mut(field.name) {
                         let default = field.default.as_ref();
                         changed |= value(
