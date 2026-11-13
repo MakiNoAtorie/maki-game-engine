@@ -80,6 +80,8 @@ proc-macro2 = "1.0.107"
 erased-serde = "0.4.10"
 # Windows on Linux need the default x11/wayland features, so defaults stay on.
 winit = "0.30.12"
+# Gamepads. Default backend on Windows: Windows.Gaming.Input (events only while a window has focus).
+gilrs = "0.11.2"
 # No default fonts means no text, so that feature stays on.
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
 # No clipboard and no link opening: the debug panels do not need them.

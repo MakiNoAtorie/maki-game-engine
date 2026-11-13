@@ -22,7 +22,7 @@ use maki_events::{
     CHOICE_DOWN, CHOICE_UP, ChoiceBox, Choices, INTERACT, MenuPlace, Menus, MessageBox, ShownMenu,
     ShownMenus,
 };
-use maki_platform::{Action, Bindings};
+use maki_platform::{Action, Binding, Bindings};
 use serde::{Deserialize, Serialize};
 
 use crate::{Panels, UiContext, add_overlay};
@@ -279,9 +279,12 @@ fn menu_box(ui: &mut egui::Ui, index: usize, menu: &ShownMenu, scale: f32) {
         });
 }
 
-/// The keys of an action, as the binding table has them: "Z or Enter".
+/// The keyboard keys of an action, as the binding table has them: "Z or Enter".
+/// The pad rows are left out to keep the hint short; the help panel lists them.
 fn keys(bindings: &Bindings, action: Action) -> String {
-    let keys = bindings.0.iter().filter(|binding| binding.action == action);
+    let of_action = |binding: &&Binding| binding.action == action;
+    let keys = bindings.0.iter().filter(of_action);
+    let keys = keys.filter(|binding| !binding.chord.key.is_pad());
     let labels: Vec<_> = keys.map(|binding| binding.chord.label()).collect();
     labels.join(" or ")
 }
@@ -305,6 +308,19 @@ fn show_menus(menus: Res<Menus>, mut panels: ResMut<Panels>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hint_names_the_keyboard_keys_only() {
+        let binding = |key: maki_platform::Key| Binding {
+            chord: key.into(),
+            action: INTERACT,
+            description: "Interact",
+            mode: maki_platform::InputMode::GAME,
+        };
+        let keys_of = [maki_platform::Key::PadA, maki_platform::Key::Z];
+        let bindings = Bindings(keys_of.map(binding).to_vec());
+        assert_eq!(keys(&bindings, INTERACT), "Z");
+    }
 
     /// The texts of the text box in egui frames. The second frame: egui measures a
     /// new area in its first one and does not show it.

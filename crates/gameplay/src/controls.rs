@@ -33,6 +33,15 @@ impl Module for ControlsModule {
         add_bindings(
             app,
             &[
+                (Key::LeftStickUp, MOVE_FORWARD, "Move forward"),
+                (Key::PadUp, MOVE_FORWARD, "Move forward"),
+                (Key::LeftStickDown, MOVE_BACK, "Move back"),
+                (Key::PadDown, MOVE_BACK, "Move back"),
+                (Key::LeftStickLeft, MOVE_LEFT, "Move left"),
+                (Key::PadLeft, MOVE_LEFT, "Move left"),
+                (Key::LeftStickRight, MOVE_RIGHT, "Move right"),
+                (Key::PadRight, MOVE_RIGHT, "Move right"),
+                (Key::PadX, RUN, "Run"),
                 (Key::W, MOVE_FORWARD, "Move forward"),
                 (Key::ArrowUp, MOVE_FORWARD, "Move forward"),
                 (Key::S, MOVE_BACK, "Move back"),
@@ -72,17 +81,15 @@ impl Module for MoverToggleModule {
     }
 }
 
-/// The direction on the floor that the move actions ask for, in world space. Length 1,
-/// or zero for no move.
+/// The direction on the floor that the move actions ask for, in world space. Length 1
+/// for keys, 0..1 for a tilted stick (the walk is slower), zero for no move.
 ///
 /// "Forward" is the view direction of the camera along the floor, so the move goes up
 /// on the screen. A camera that looks straight down has no such direction: -Z is up
 /// on the screen then (see `maki_render::ray_basis`).
 pub fn move_direction(actions: &ActionState, camera: Option<&Camera>) -> Vec3 {
-    // 1.0, -1.0, or 0.0 from a pair of opposite actions.
-    let axis = |positive, negative| {
-        f32::from(actions.pressed(positive)) - f32::from(actions.pressed(negative))
-    };
+    // -1..1 from a pair of opposite actions: a key gives 1, a stick its tilt.
+    let axis = |positive, negative| actions.value(positive) - actions.value(negative);
     let forward = camera
         .and_then(|camera| {
             (camera.target - camera.position)
@@ -91,8 +98,13 @@ pub fn move_direction(actions: &ActionState, camera: Option<&Camera>) -> Vec3 {
         })
         .unwrap_or(Vec3::NEG_Z);
     let right = forward.cross(Vec3::Y);
-    (forward * axis(MOVE_FORWARD, MOVE_BACK) + right * axis(MOVE_RIGHT, MOVE_LEFT))
-        .normalize_or_zero()
+    let direction = forward * axis(MOVE_FORWARD, MOVE_BACK) + right * axis(MOVE_RIGHT, MOVE_LEFT);
+    // A key diagonal is 1.41 long and a stick corner too: both are cut to 1.
+    if direction.length_squared() > 1.0 {
+        direction.normalize()
+    } else {
+        direction
+    }
 }
 
 fn quit_on_action(actions: Res<ActionState>, mut quit: ResMut<QuitRequested>) {

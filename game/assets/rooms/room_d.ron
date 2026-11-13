@@ -7,7 +7,7 @@
     width: 6.0,
     depth: 6.0,
     height: 3.0,
-    next_id: 6,
+    next_id: 7,
     objects: [
         (
             id: 1,
@@ -43,6 +43,32 @@
             components: {
                 "area": (width: 1.0, depth: 1.0),
                 "event": (pages: [(trigger: Touch, commands: [Signal(4, "used")])]),
+            },
+        ),
+        // At the right: a sign that asks a question; "Open it" opens the door.
+        (
+            id: 6,
+            name: "sign",
+            pose: (position: (2.6, 0.4, 0.0), scale: (0.1, 0.8, 0.4)),
+            components: {
+                "area": (width: 1.0, depth: 1.0),
+                "event": (
+                    pages: [
+                        (
+                            trigger: Interact,
+                            commands: [
+                                Choice(
+                                    "room_d.sign_ask",
+                                    [
+                                        ("room_d.sign_leave", [Message("room_d.sign_left")]),
+                                        ("room_d.sign_open", [OpenDoor(2)]),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                "prop": (mesh: Cube(1.0)),
             },
         ),
     ],

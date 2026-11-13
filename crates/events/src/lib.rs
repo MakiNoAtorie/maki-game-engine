@@ -130,8 +130,18 @@ impl Module for EventsModule {
         add_bindings(
             app,
             &[
+                (Key::PadA, INTERACT, "Interact"),
                 (Key::Z, INTERACT, "Interact"),
                 (Key::Enter, INTERACT, "Interact"),
+                (Key::PadUp, CHOICE_UP, "Question: the answer above"),
+                (Key::LeftStickUp, CHOICE_UP, "Question: the answer above"),
+                (Key::PadDown, CHOICE_DOWN, "Question: the answer below"),
+                (
+                    Key::LeftStickDown,
+                    CHOICE_DOWN,
+                    "Question: the answer below",
+                ),
+                (Key::PadB, BACK, "Menu: back"),
                 (Key::ArrowUp, CHOICE_UP, "Question: the answer above"),
                 (Key::W, CHOICE_UP, "Question: the answer above"),
                 (Key::ArrowDown, CHOICE_DOWN, "Question: the answer below"),

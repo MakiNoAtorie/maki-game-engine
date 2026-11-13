@@ -823,6 +823,7 @@ mod tests {
         let bindings = Bindings(vec![
             binding(Key::R.into(), "Changed binding"),
             binding(maki_platform::Chord::ctrl(Key::Z), "A chord"),
+            binding(Key::PadA.into(), "A pad row"),
         ]);
         let mode = maki_platform::InputMode::GAME;
         let rows = help::rows(&bindings, mode, |_| None);
@@ -830,7 +831,14 @@ mod tests {
             .iter()
             .map(|(key, text)| (key.as_str(), *text))
             .collect();
-        assert_eq!(rows, [("R", "Changed binding"), ("Ctrl+Z", "A chord")]);
+        assert_eq!(
+            rows,
+            [
+                ("R", "Changed binding"),
+                ("Ctrl+Z", "A chord"),
+                ("Pad A", "A pad row")
+            ]
+        );
         assert!(help::rows(&bindings, maki_platform::InputMode("other"), |_| None).is_empty());
         // A command of a tool gives its name to the row of its key.
         let named = help::rows(&bindings, mode, |_| Some("Command"));

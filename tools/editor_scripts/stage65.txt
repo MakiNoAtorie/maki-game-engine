@@ -1,0 +1,75 @@
+# The run by hand of stage 65, by the pad only (no key of the game): an input script of
+# the editor (crates/devtools/src/input_script.rs). The room is room_d: the player starts
+# at (0, 0, 0); the sign at (2.6, 0, 0) asks a question: "Open it" opens the door in the
+# back wall. The pause menu has no pad button: `P` opens it, the pad moves and closes it.
+# A config for it: [rooms] start = "game/assets/rooms/room_d.ron", start_spawn = 3,
+# [window] focus = false, [audio] output = false, [save] enabled = false; and once more
+# with [walk] mode = "Grid": the stick moves cell by cell.
+# maki-editor game CONFIG --input-script tools/editor_scripts/stage65.txt --input-shots DIR
+wait 90
+tap F5
+wait 60
+shot play
+
+# Half a tilt to the right: half the walk speed; then a full tilt for as long.
+stick left 0.5 0
+wait 40
+stick left 0 0
+wait 10
+shot half
+stick left 1 0
+wait 40
+stick left 0 0
+wait 10
+shot full
+
+# Run (Pad X) up to the sign.
+press Pad X
+stick left 1 0
+wait 30
+stick left 0 0
+release Pad X
+wait 10
+shot run
+
+# The question: D-pad down to "Open it", Pad A picks it.
+tap Pad A
+wait 30
+shot ask
+tap Pad down
+wait 10
+shot ask_down
+tap Pad A
+wait 90
+shot door_open
+
+# Again: Pad A takes "Leave it"; its message closes with Pad A.
+tap Pad A
+wait 30
+tap Pad A
+wait 30
+shot left_message
+tap Pad A
+wait 20
+
+# The pause menu: the D-pad moves it, Pad B closes it.
+tap P
+wait 30
+shot pause
+tap Pad down
+wait 10
+shot pause_down
+tap Pad B
+wait 30
+shot unpaused
+
+# A diagonal tilt: on the grid, one cell forward (the dominant axis; the cell at the
+# left has the button). Half a tilt (above) is under the grid tilt: no grid move.
+stick left -0.4 0.7
+wait 30
+stick left 0 0
+wait 30
+shot diagonal
+tap F5
+wait 30
+quit

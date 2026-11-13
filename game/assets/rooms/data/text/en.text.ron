@@ -2,6 +2,22 @@
     language: "en",
     texts: [
         (
+            key: "room_d.sign_ask",
+            text: "A sign: the door opens from here.",
+        ),
+        (
+            key: "room_d.sign_leave",
+            text: "Leave it",
+        ),
+        (
+            key: "room_d.sign_open",
+            text: "Open it",
+        ),
+        (
+            key: "room_d.sign_left",
+            text: "You leave the sign alone.",
+        ),
+        (
             key: "room_a.door_locked",
             text: "The door is locked. Something hums behind it.",
         ),

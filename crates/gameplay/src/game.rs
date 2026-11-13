@@ -71,7 +71,10 @@ pub struct GameModule;
 impl Module for GameModule {
     fn build(&self, app: &mut App) {
         app.add_settings::<GameRules>();
-        add_bindings(app, &[(Key::P, PAUSE, "Pause")]);
+        add_bindings(
+            app,
+            &[(Key::P, PAUSE, "Pause"), (Key::PadStart, PAUSE, "Pause")],
+        );
         let registry = app.world().resource::<CommandRegistry>();
         registry.add(|command: &GameCommand, step, world| {
             match command {

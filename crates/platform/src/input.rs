@@ -6,7 +6,8 @@ use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Local, Res, ResMut};
-use maki_core::App;
+use maki_core::{App, Settings};
+use serde::{Deserialize, Serialize};
 
 /// A thing that the player can ask for: `Action("interact")`. The text is the
 /// identity: two actions with the same text are the same action.
@@ -17,17 +18,24 @@ use maki_core::App;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Action(pub &'static str);
 
-/// A physical input that a binding can use: a key, a mouse button, or one direction
-/// of the mouse wheel. Letter keys are positions on a US keyboard, so W/A/S/D keep
-/// their shape on other layouts.
+/// A physical input that a binding can use: a key, a mouse button, one direction
+/// of the mouse wheel, a button of a pad, or one direction of a stick. Letter keys
+/// are positions on a US keyboard, so W/A/S/D keep their shape on other layouts.
 ///
 /// One row of the table for each input: the name, the winit key codes that give it
-/// (none for an input of the mouse), and the text for the user. A new key is a new row.
+/// (none for an input of the mouse or a pad), and the text for the user, in the
+/// part of its kind: keyboard, pointer (the mouse), or pad. A new key is a new row.
 macro_rules! keys {
-    ($($key:ident [$($code:ident),*] $label:literal,)*) => {
+    (
+        keyboard { $($key:ident [$($code:ident),*] $label:literal,)* }
+        pointer { $($pointer:ident $pointer_label:literal,)* }
+        pad { $($pad:ident $pad_label:literal,)* }
+    ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum Key {
             $($key,)*
+            $($pointer,)*
+            $($pad,)*
         }
 
         impl Key {
@@ -35,6 +43,8 @@ macro_rules! keys {
             pub fn label(self) -> &'static str {
                 match self {
                     $(Key::$key => $label,)*
+                    $(Key::$pointer => $pointer_label,)*
+                    $(Key::$pad => $pad_label,)*
                 }
             }
 
@@ -42,8 +52,20 @@ macro_rules! keys {
             pub fn from_label(label: &str) -> Option<Key> {
                 match label {
                     $($label => Some(Key::$key),)*
+                    $($pointer_label => Some(Key::$pointer),)*
+                    $($pad_label => Some(Key::$pad),)*
                     _ => None,
                 }
+            }
+
+            /// True for an input of the mouse, false for a key of the keyboard.
+            pub fn is_pointer(self) -> bool {
+                matches!(self, $(Key::$pointer)|*)
+            }
+
+            /// True for a button or a stick direction of a pad.
+            pub fn is_pad(self) -> bool {
+                matches!(self, $(Key::$pad)|*)
             }
 
             /// The key of a winit key code. `None`: no binding can use that key.
@@ -59,88 +81,167 @@ macro_rules! keys {
 }
 
 keys! {
-    A [KeyA] "A",
-    B [KeyB] "B",
-    C [KeyC] "C",
-    D [KeyD] "D",
-    E [KeyE] "E",
-    F [KeyF] "F",
-    G [KeyG] "G",
-    H [KeyH] "H",
-    I [KeyI] "I",
-    J [KeyJ] "J",
-    K [KeyK] "K",
-    L [KeyL] "L",
-    M [KeyM] "M",
-    N [KeyN] "N",
-    O [KeyO] "O",
-    P [KeyP] "P",
-    Q [KeyQ] "Q",
-    R [KeyR] "R",
-    S [KeyS] "S",
-    T [KeyT] "T",
-    U [KeyU] "U",
-    V [KeyV] "V",
-    W [KeyW] "W",
-    X [KeyX] "X",
-    Y [KeyY] "Y",
-    Z [KeyZ] "Z",
-    Digit0 [Digit0, Numpad0] "0",
-    Digit1 [Digit1, Numpad1] "1",
-    Digit2 [Digit2, Numpad2] "2",
-    Digit3 [Digit3, Numpad3] "3",
-    Digit4 [Digit4, Numpad4] "4",
-    Digit5 [Digit5, Numpad5] "5",
-    Digit6 [Digit6, Numpad6] "6",
-    Digit7 [Digit7, Numpad7] "7",
-    Digit8 [Digit8, Numpad8] "8",
-    Digit9 [Digit9, Numpad9] "9",
-    Shift [ShiftLeft, ShiftRight] "Shift",
-    Control [ControlLeft, ControlRight] "Ctrl",
-    Alt [AltLeft, AltRight] "Alt",
-    Enter [Enter, NumpadEnter] "Enter",
-    Space [Space] "Space",
-    Tab [Tab] "Tab",
-    Backspace [Backspace] "Backspace",
-    Delete [Delete] "Delete",
-    Insert [Insert] "Insert",
-    Home [Home] "Home",
-    End [End] "End",
-    ArrowUp [ArrowUp] "Up",
-    ArrowDown [ArrowDown] "Down",
-    ArrowLeft [ArrowLeft] "Left",
-    ArrowRight [ArrowRight] "Right",
-    PageUp [PageUp] "Page up",
-    PageDown [PageDown] "Page down",
-    Escape [Escape] "Esc",
-    F1 [F1] "F1",
-    F2 [F2] "F2",
-    F3 [F3] "F3",
-    F4 [F4] "F4",
-    F5 [F5] "F5",
-    F6 [F6] "F6",
-    F7 [F7] "F7",
-    F8 [F8] "F8",
-    F9 [F9] "F9",
-    F10 [F10] "F10",
-    F11 [F11] "F11",
-    F12 [F12] "F12",
-    MouseLeft [] "Left mouse button",
-    MouseRight [] "Right mouse button",
-    MouseMiddle [] "Middle mouse button",
-    WheelUp [] "Wheel up",
-    WheelDown [] "Wheel down",
+    keyboard {
+        A [KeyA] "A",
+        B [KeyB] "B",
+        C [KeyC] "C",
+        D [KeyD] "D",
+        E [KeyE] "E",
+        F [KeyF] "F",
+        G [KeyG] "G",
+        H [KeyH] "H",
+        I [KeyI] "I",
+        J [KeyJ] "J",
+        K [KeyK] "K",
+        L [KeyL] "L",
+        M [KeyM] "M",
+        N [KeyN] "N",
+        O [KeyO] "O",
+        P [KeyP] "P",
+        Q [KeyQ] "Q",
+        R [KeyR] "R",
+        S [KeyS] "S",
+        T [KeyT] "T",
+        U [KeyU] "U",
+        V [KeyV] "V",
+        W [KeyW] "W",
+        X [KeyX] "X",
+        Y [KeyY] "Y",
+        Z [KeyZ] "Z",
+        Digit0 [Digit0, Numpad0] "0",
+        Digit1 [Digit1, Numpad1] "1",
+        Digit2 [Digit2, Numpad2] "2",
+        Digit3 [Digit3, Numpad3] "3",
+        Digit4 [Digit4, Numpad4] "4",
+        Digit5 [Digit5, Numpad5] "5",
+        Digit6 [Digit6, Numpad6] "6",
+        Digit7 [Digit7, Numpad7] "7",
+        Digit8 [Digit8, Numpad8] "8",
+        Digit9 [Digit9, Numpad9] "9",
+        Shift [ShiftLeft, ShiftRight] "Shift",
+        Control [ControlLeft, ControlRight] "Ctrl",
+        Alt [AltLeft, AltRight] "Alt",
+        Enter [Enter, NumpadEnter] "Enter",
+        Space [Space] "Space",
+        Tab [Tab] "Tab",
+        Backspace [Backspace] "Backspace",
+        Delete [Delete] "Delete",
+        Insert [Insert] "Insert",
+        Home [Home] "Home",
+        End [End] "End",
+        ArrowUp [ArrowUp] "Up",
+        ArrowDown [ArrowDown] "Down",
+        ArrowLeft [ArrowLeft] "Left",
+        ArrowRight [ArrowRight] "Right",
+        PageUp [PageUp] "Page up",
+        PageDown [PageDown] "Page down",
+        Escape [Escape] "Esc",
+        F1 [F1] "F1",
+        F2 [F2] "F2",
+        F3 [F3] "F3",
+        F4 [F4] "F4",
+        F5 [F5] "F5",
+        F6 [F6] "F6",
+        F7 [F7] "F7",
+        F8 [F8] "F8",
+        F9 [F9] "F9",
+        F10 [F10] "F10",
+        F11 [F11] "F11",
+        F12 [F12] "F12",
+    }
+    pointer {
+        MouseLeft "Left mouse button",
+        MouseRight "Right mouse button",
+        MouseMiddle "Middle mouse button",
+        WheelUp "Wheel up",
+        WheelDown "Wheel down",
+    }
+    // The pad: names of the Xbox layout, with "Pad" so that "A" stays the key A.
+    pad {
+        PadA "Pad A",
+        PadB "Pad B",
+        PadX "Pad X",
+        PadY "Pad Y",
+        PadLB "Pad LB",
+        PadRB "Pad RB",
+        PadLT "Pad LT",
+        PadRT "Pad RT",
+        PadStart "Pad Start",
+        PadSelect "Pad Select",
+        PadL3 "Pad L3",
+        PadR3 "Pad R3",
+        PadUp "Pad up",
+        PadDown "Pad down",
+        PadLeft "Pad left",
+        PadRight "Pad right",
+        LeftStickUp "Left stick up",
+        LeftStickDown "Left stick down",
+        LeftStickLeft "Left stick left",
+        LeftStickRight "Left stick right",
+        RightStickUp "Right stick up",
+        RightStickDown "Right stick down",
+        RightStickLeft "Right stick left",
+        RightStickRight "Right stick right",
+    }
 }
 
-impl Key {
-    /// True for an input of the mouse, false for a key of the keyboard.
-    pub fn is_pointer(self) -> bool {
-        use Key::*;
-        matches!(
-            self,
-            MouseLeft | MouseRight | MouseMiddle | WheelUp | WheelDown
-        )
+/// The 8 stick directions: the key, its stick, its axis, its sign.
+const STICK_DIRECTIONS: [(Key, Stick, Axis, f32); 8] = [
+    (Key::LeftStickUp, Stick::Left, Axis::Y, 1.0),
+    (Key::LeftStickDown, Stick::Left, Axis::Y, -1.0),
+    (Key::LeftStickLeft, Stick::Left, Axis::X, -1.0),
+    (Key::LeftStickRight, Stick::Left, Axis::X, 1.0),
+    (Key::RightStickUp, Stick::Right, Axis::Y, 1.0),
+    (Key::RightStickDown, Stick::Right, Axis::Y, -1.0),
+    (Key::RightStickLeft, Stick::Right, Axis::X, -1.0),
+    (Key::RightStickRight, Stick::Right, Axis::X, 1.0),
+];
+
+/// A stick of the pad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Stick {
+    Left,
+    Right,
+}
+
+/// An axis of a stick: X to the right, Y up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Axis {
+    X,
+    Y,
+}
+
+/// The `[gamepad]` table of the config file.
+#[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GamepadSettings {
+    /// A stick axis under this value gives nothing, so a stick at rest does not
+    /// drift. Past it, the value is rescaled to 0..1. In 0..1.
+    pub dead_zone: f32,
+}
+
+impl Default for GamepadSettings {
+    fn default() -> Self {
+        Self { dead_zone: 0.2 }
     }
+}
+
+impl Settings for GamepadSettings {
+    const TABLE: &'static str = "gamepad";
+
+    fn check(&self) -> Result<(), String> {
+        if (0.0..1.0).contains(&self.dead_zone) {
+            Ok(())
+        } else {
+            Err(format!("dead_zone must be in 0..1, not {}", self.dead_zone))
+        }
+    }
+}
+
+/// The value of one axis of a stick: 0 under the dead zone, then rescaled to 0..1.
+// ponytail: per axis, not radial; radial if a stick feels square.
+fn past_dead_zone(axis: f32, dead_zone: f32) -> f32 {
+    ((axis - dead_zone) / (1.0 - dead_zone)).clamp(0.0, 1.0)
 }
 
 /// The modifier keys that are down with the key of a chord.
@@ -276,6 +377,8 @@ pub fn add_mode_bindings(
 #[derive(Resource, Debug, Default)]
 pub struct ActionState {
     pressed: HashSet<Action>,
+    // The value of each pressed action, in 0..1 and more than 0.
+    values: HashMap<Action, f32>,
     just_pressed: HashSet<Action>,
     just_released: HashSet<Action>,
 }
@@ -283,6 +386,13 @@ pub struct ActionState {
 impl ActionState {
     pub fn pressed(&self, action: Action) -> bool {
         self.pressed.contains(&action)
+    }
+
+    /// How far the action is pressed, 0..1: 0 when not pressed, 1 by a key, a pad
+    /// button, or a script; a stick direction gives its value past the dead zone.
+    /// The largest value of the inputs that hold the action.
+    pub fn value(&self, action: Action) -> f32 {
+        self.values.get(&action).copied().unwrap_or(0.0)
     }
 
     pub fn just_pressed(&self, action: Action) -> bool {
@@ -354,7 +464,10 @@ pub struct Pointer {
 
 impl InputCapture {
     fn has(self, key: Key) -> bool {
-        if key.is_pointer() {
+        // No consumer of the UI reads the pad.
+        if key.is_pad() {
+            false
+        } else if key.is_pointer() {
             self.pointer
         } else {
             self.keyboard
@@ -379,6 +492,11 @@ pub enum RawInput {
     PointerMoved([f32; 2]),
     /// The pointer went out of the window.
     PointerLeft,
+    /// One axis of a stick of the pad is at this value, from -1 to 1. The other axis
+    /// keeps its value; 0 on both releases the directions of the stick.
+    PadAxis(Stick, Axis, f32),
+    /// The pad is gone: all its buttons and sticks are released.
+    PadLost,
 }
 
 pub(crate) fn update_pointer(
@@ -420,6 +538,9 @@ pub fn update_actions(
     mut events: MessageReader<RawInput>,
     // Each key that is down, with the modifiers that were down when it went down.
     mut held: Local<HashMap<Key, Modifiers>>,
+    // The place of each stick (x, y), as the `PadAxis` events gave it.
+    mut sticks: Local<[[f32; 2]; 2]>,
+    gamepad: Res<GamepadSettings>,
     bindings: Res<Bindings>,
     mode: Res<InputMode>,
     capture: Res<InputCapture>,
@@ -452,11 +573,29 @@ pub fn update_actions(
                 held.remove(&key);
             }
             // Without this, a key held during Alt+Tab would stay down.
-            RawInput::FocusLost => held.clear(),
+            RawInput::FocusLost => {
+                held.clear();
+                *sticks = Default::default();
+            }
+            RawInput::PadAxis(stick, axis, value) => sticks[stick as usize][axis as usize] = value,
+            RawInput::PadLost => {
+                held.retain(|key, _| !key.is_pad());
+                *sticks = Default::default();
+            }
             RawInput::PointerMoved(_) | RawInput::PointerLeft => {}
         }
     }
     down.extend(held.iter().map(|(key, modifiers)| (*key, *modifiers)));
+    // A stick direction past the dead zone is down, with a value; a key-down of it wins.
+    let mut values = HashMap::new();
+    for (key, stick, axis, sign) in STICK_DIRECTIONS {
+        let at = sticks[stick as usize][axis as usize];
+        let value = past_dead_zone(sign * at, gamepad.dead_zone);
+        if value > 0.0 && !down.contains_key(&key) {
+            values.insert(key, value);
+            down.insert(key, Modifiers::NONE);
+        }
+    }
 
     let mode = *mode;
     // The modifiers of a binding that its key can start now: the binding is of the
@@ -466,24 +605,33 @@ pub fn update_actions(
         let with = down.get(&key).filter(|_| binding.mode == mode)?;
         modifiers.all_in(*with).then_some(modifiers.count())
     };
-    let pressed: HashSet<Action> = bindings
-        .0
-        .iter()
-        .filter(|binding| {
-            // The chord with the most modifiers wins over the plain key.
-            let same_key = |other: &&Binding| other.chord.key == binding.chord.key;
-            let most = bindings.0.iter().filter(same_key).filter_map(fits).max();
-            fits(binding).is_some_and(|count| Some(count) == most)
+    let started = bindings.0.iter().filter(|binding| {
+        // The chord with the most modifiers wins over the plain key.
+        let same_key = |other: &&Binding| other.chord.key == binding.chord.key;
+        let most = bindings.0.iter().filter(same_key).filter_map(fits).max();
+        fits(binding).is_some_and(|count| Some(count) == most)
+    });
+    // A key that is not a stick direction gives 1. The largest value wins.
+    let mut action_values: HashMap<Action, f32> = HashMap::new();
+    let inputs = started
+        .map(|binding| {
+            let key = binding.chord.key;
+            (binding.action, values.get(&key).copied().unwrap_or(1.0))
         })
-        .map(|binding| binding.action)
-        .chain(scripted.0.iter().copied())
-        .collect();
+        .chain(scripted.0.iter().map(|action| (*action, 1.0)));
+    for (action, value) in inputs {
+        let max = action_values.entry(action).or_default();
+        *max = max.max(value);
+    }
+    let pressed: HashSet<Action> = action_values.keys().copied().collect();
+    state.values = action_values;
     state.just_pressed = &pressed - &state.pressed;
     state.just_released = &state.pressed - &pressed;
     state.pressed = pressed;
 
     // Changes collect here until a fixed step reads them. A frame can have no step.
     fixed.0.pressed.clone_from(&state.pressed);
+    fixed.0.values.clone_from(&state.values);
     fixed.0.just_pressed.extend(&state.just_pressed);
     fixed.0.just_released.extend(&state.just_released);
 }
