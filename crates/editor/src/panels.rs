@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use bevy_ecs::entity::Entity;
 use bevy_ecs::world::{Mut, World};
 use maki_core::fields::Value;
 use maki_core::{App, FieldTypes};
@@ -135,6 +136,7 @@ pub(crate) fn build(app: &mut App) {
         scroll.show(ui, |ui| {
             // In a game: what the game changes, in place of what the editor changes.
             if world.resource::<Editor>().playing() {
+                live_values(ui, world);
                 ui.strong("Game state");
                 game_state_panel(ui, world, &mut new_name);
                 return;
@@ -535,6 +537,54 @@ fn room_file_name(name: &str) -> Option<String> {
     })
 }
 
+/// In a game: the values of the object selected in the outliner, as the game has
+/// them now. A change writes into the game, not into the room.
+fn live_values(ui: &mut Ui, world: &mut World) {
+    let Some(entity) = world.resource::<Editor>().live else {
+        ui.weak("Select an object in the Outliner to see its values in the game.");
+        ui.separator();
+        return;
+    };
+    let Some(name) = world
+        .get::<maki_scene::Name>(entity)
+        .map(|name| name.0.clone())
+    else {
+        world.resource_mut::<Editor>().live = None;
+        return;
+    };
+    ui.strong(name);
+    let types = world.resource::<ComponentTypes>().clone();
+    let mut error = None;
+    for (component, found) in types.iter() {
+        let Some(live) = found.live else {
+            continue;
+        };
+        let Some(mut tree) = (live.get)(world, entity) else {
+            continue;
+        };
+        let Some(kind) = world
+            .get_resource::<FieldTypes>()
+            .and_then(|tables| tables.get(component))
+            .map(|table| table.kind.clone())
+        else {
+            continue;
+        };
+        egui::CollapsingHeader::new(component)
+            .default_open(true)
+            .show(ui, |ui| {
+                if crate::fields::show(ui, &kind, &mut tree, Lists::objects(&[]))
+                    && let Err(why) = (live.set)(world, entity, tree)
+                {
+                    error = Some(format!("{component}: {why}"));
+                }
+            });
+    }
+    if let Some(error) = error {
+        world.resource_mut::<Editor>().error = Some(error);
+    }
+    ui.separator();
+}
+
 /// The outliner: each item of the room. In a game: what each event does now.
 fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, filter: &mut String) {
     if editor.playing() {
@@ -550,6 +600,26 @@ fn outliner(ui: &mut Ui, world: &mut World, editor: &mut Editor, filter: &mut St
         if runner.running().is_empty() {
             ui.weak("No running events");
         }
+        ui.separator();
+        ui.strong("Objects");
+        tree_filter(ui, filter);
+        let mut objects = world.query::<(Entity, &maki_scene::Name)>();
+        let mut objects: Vec<(Entity, String)> = objects
+            .iter(world)
+            .filter(|(_, name)| tree_shows(filter, &name.0))
+            .map(|(entity, name)| (entity, name.0.clone()))
+            .collect();
+        objects.sort_by(|a, b| a.1.cmp(&b.1));
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                for (entity, name) in objects {
+                    let selected = editor.live == Some(entity);
+                    if ui.selectable_label(selected, name).clicked() {
+                        editor.live = Some(entity);
+                    }
+                }
+            });
         return;
     }
     tree_filter(ui, filter);

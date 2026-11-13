@@ -312,6 +312,8 @@ pub struct Editor {
     pub play_from: Option<ObjectId>,
     /// The game is in the pause of the editor (`Time::paused`, not the pause of the game).
     pub paused: bool,
+    /// In a game: the object whose values the inspector shows.
+    pub live: Option<Entity>,
     /// One line for the user: what the last command did. The status row shows it.
     pub status: String,
     /// Why a command did not do its work. It becomes a notice in the same frame.
@@ -904,6 +906,7 @@ impl Editor {
     fn play(&mut self, world: &mut World) {
         self.playing = Some(world.resource::<GameState>().clone());
         self.paused = false;
+        self.live = None;
         reset_play_state(world);
         let spawns = spawn_points(&self.document.room);
         let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| *spawn);
@@ -1500,6 +1503,7 @@ impl Module for EditorModule {
             pending: None,
             playing: None,
             paused: false,
+            live: None,
             shown: None,
             item_buffer: None,
             prefab_name: String::new(),

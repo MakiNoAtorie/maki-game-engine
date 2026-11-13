@@ -307,6 +307,7 @@ pub fn run_game(project: &str, entry: Entry) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn the_log_file_keeps_the_file_of_the_session_before() {
         use std::io::Write;

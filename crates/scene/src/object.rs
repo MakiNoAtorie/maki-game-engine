@@ -247,6 +247,11 @@ impl ComponentTypes {
         self.0.get(name)
     }
 
+    /// In the order of the names.
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &ComponentType)> {
+        self.0.iter().map(|(name, found)| (*name, found))
+    }
+
     /// True if the type has a value in the game that `SetField` changes.
     pub fn is_live(&self, name: &str) -> bool {
         self.get(name).is_some_and(|found| found.live.is_some())
