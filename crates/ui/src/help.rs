@@ -19,6 +19,8 @@ pub const TOGGLE_HELP: Action = Action("toggle_help");
 pub(crate) fn build(app: &mut App) {
     add_bindings(app, &[(Key::F1, TOGGLE_HELP, "Toggle help panel")]);
     add_panel(app, HELP, true, help_panel);
+    // Open at the start: F1 shows the controls, not a folded header.
+    app.resource_mut::<Panels>().unfold(HELP);
     // Before the egui frame: the panel opens or closes in the frame of the key press.
     app.add_systems(Update, toggle_help.before(run_ui));
 }
@@ -53,15 +55,16 @@ fn help_panel(ui: &mut egui::Ui, world: &mut World) {
             let mode = *world.resource::<InputMode>();
             let commands = world.get_resource::<ToolCommands>().cloned();
             let commands = commands.unwrap_or_default();
-            // One name for a command at each place: that of the command list.
+            // Commands of other panels can share a key: the one that can run now names it.
             let command = |action| {
-                let of_key = |command: &&ToolCommand| {
-                    command.action == Some(action) && (command.can_run)(world)
-                };
-                commands.iter().find(of_key).map(|command| command.name)
+                let of_key: Vec<&ToolCommand> = (commands.iter())
+                    .filter(|command| command.action == Some(action))
+                    .collect();
+                let can_run = of_key.iter().find(|command| (command.can_run)(world));
+                can_run.or(of_key.first()).map(|command| command.name)
             };
             for (key, text) in rows(world.resource::<Bindings>(), mode, command) {
-                ui.label(key);
+                ui.monospace(key);
                 ui.label(text);
                 ui.end_row();
             }

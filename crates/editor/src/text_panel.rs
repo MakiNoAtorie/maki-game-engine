@@ -140,7 +140,7 @@ fn add_language(directory: &Path, tables: &mut Vec<Table>, code: &str) -> Result
     let code = code.trim();
     let letters = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
     if code.is_empty() || !code.chars().all(letters) {
-        return Err("A language code has letters, numbers, `_`, and `-`.".to_owned());
+        return Err("Use letters, numbers, `_`, and `-` in a language code.".to_owned());
     }
     let mut data = tables.iter().filter_map(|t| t.data.as_ref());
     let path = maki_events::table_path(directory, code);
@@ -224,51 +224,86 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
     let directory = editor.document.directory();
     state.refresh(&directory, &mut editor.error);
 
+    let Grid { languages, rows } = grid(&state.tables, &state.search);
+    let total = grid(&state.tables, "").rows.len();
     ui.horizontal(|ui| {
         ui.label(icon::SEARCH);
-        ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search"));
+        let search = ui
+            .add(egui::TextEdit::singleline(&mut state.search).hint_text("Search keys and texts"));
+        let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        if search.has_focus() && escape {
+            state.search.clear();
+        }
+        if !state.search.trim().is_empty() {
+            if ui
+                .button(icon::CLOSE)
+                .on_hover_text("Clear search")
+                .clicked()
+            {
+                state.search.clear();
+            }
+            ui.weak(format!("{} of {total} keys", rows.len()));
+        }
         ui.separator();
-        let field = egui::TextEdit::singleline(&mut state.new_key)
-            .desired_width(120.0)
-            .hint_text("key");
-        ui.add(field);
-        if ui.button("New key").clicked() {
-            match add_key(&mut state.tables, &state.new_key) {
-                Ok(()) => state.new_key.clear(),
+        let languages_there = !languages.is_empty();
+        let key =
+            maki_ui::widgets::name_row(ui, &mut state.new_key, "Key", "Add key", languages_there);
+        if let Some(key) = key {
+            match add_key(&mut state.tables, &key) {
+                Ok(()) => editor.status = format!("Key \"{key}\" added."),
                 Err(error) => editor.error = Some(error),
             }
         }
         ui.separator();
-        let field = egui::TextEdit::singleline(&mut state.new_language)
-            .desired_width(60.0)
-            .hint_text("code");
-        ui.add(field);
-        if ui.button("New language").clicked() {
-            match add_language(&directory, &mut state.tables, &state.new_language) {
-                Ok(path) => {
-                    editor.status = format!("{} written.", path.display());
-                    state.new_language.clear();
-                }
+        let code = maki_ui::widgets::name_row(
+            ui,
+            &mut state.new_language,
+            "Code, e.g. fr",
+            "Add language",
+            true,
+        );
+        if let Some(code) = code {
+            match add_language(&directory, &mut state.tables, &code) {
+                Ok(_) => editor.status = format!("Language \"{code}\" added."),
                 Err(error) => editor.error = Some(error),
             }
         }
     });
     ui.separator();
 
-    let Grid { languages, rows } = grid(&state.tables, &state.search);
     if languages.is_empty() {
-        ui.weak("No text table. \"New language\" writes one.");
+        ui.weak("No languages yet. Type a language code above and press Add language.");
         return;
     }
+    if rows.is_empty() {
+        ui.weak(if total == 0 {
+            "No keys yet. Use Add key."
+        } else {
+            "No results."
+        });
+        return;
+    }
+    let missing: Vec<usize> = (0..languages.len())
+        .map(|column| {
+            rows.iter()
+                .filter(|(_, cells)| cells[column].is_none())
+                .count()
+        })
+        .collect();
     // At most one cell changes in a frame.
     let mut change = None;
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
         // A grid gives a column the width of its first frame: a cell takes its width here.
         let grid = egui::Grid::new("texts").striped(true).min_col_width(240.0);
         grid.show(ui, |ui| {
-            ui.strong("key");
-            for language in &languages {
-                ui.strong(language);
+            ui.strong("Key");
+            for (language, missing) in languages.iter().zip(&missing) {
+                ui.horizontal(|ui| {
+                    ui.strong(language);
+                    if *missing > 0 {
+                        ui.colored_label(THEME.error, format!("{missing} missing"));
+                    }
+                });
             }
             ui.end_row();
             for (key, cells) in rows {

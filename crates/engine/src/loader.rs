@@ -37,11 +37,13 @@ pub fn load_project(app: &mut App, dll: &Path) -> Result<()> {
         Ok::<_, anyhow::Error>(data?.modified()?)
     };
     // One build writes the engine DLL first, and then each DLL that links to it.
+    let name = |path: &Path| path.file_name().unwrap_or_default().display().to_string();
     if written(dll)? < written(&engine)? {
         bail!(
-            "{} is of another build of the engine: it is older than {}. Build the project again",
-            dll.display(),
-            engine.display()
+            "{} is older than {}: it is of another build of the engine. Build the scripts; \
+             if the engine changed, restart the editor",
+            name(dll),
+            name(&engine)
         );
     }
 
@@ -70,8 +72,8 @@ pub fn load_project(app: &mut App, dll: &Path) -> Result<()> {
         let library = libloading::Library::new(&copy).with_context(|| {
             format!(
                 "{} does not load: it is of another build of the engine, or not a DLL of a \
-                 project. Build the project again",
-                dll.display()
+                 project. Build the scripts; if the engine changed, restart the editor",
+                name(dll)
             )
         })?;
         if library.get::<*const u8>(ENGINE_COPY).is_ok() {

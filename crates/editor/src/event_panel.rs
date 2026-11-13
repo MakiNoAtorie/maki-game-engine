@@ -58,6 +58,8 @@ pub struct EventUi {
     /// The `SetField` lists and the room and directory they are of: a prefab file is
     /// read again only when the document changes.
     pub(crate) live: Option<(RoomDef, std::path::PathBuf, LiveLists)>,
+    /// A line for the notice corner: what a delete, copy, or paste did.
+    notice: Option<String>,
 }
 
 /// The parts of [`Lists`] that `live_lists` fills.
@@ -114,6 +116,19 @@ pub enum RowCommand {
     Paste,
     /// A copy of the rows, after them.
     Duplicate,
+    /// The rows one place up in their list.
+    MoveUp,
+    MoveDown,
+}
+
+/// Where a new command goes (Add, Paste, Duplicate): after the selected rows, inside
+/// a branch for an `Else` or answer row, after an `End`, or at the end of the page.
+fn new_place(ui: &EventUi, commands: &[Command], registry: &CommandRegistry) -> (ListPath, usize) {
+    match (ui.selected(), &ui.row) {
+        (Some((path, range)), _) => (path, range.end() + 1),
+        (None, Some(row)) => row.insert_place(commands, registry),
+        (None, None) => (Vec::new(), commands.len()),
+    }
 }
 
 /// Does a command of the user on the selected rows of a page. True: the list of
@@ -132,19 +147,16 @@ pub(crate) fn row_command(
             .cloned()
             .collect()
     };
-    // New commands: after the last selected row, or where a new command goes for
-    // an `Else` or an `End`, or at the end of the page.
-    let place = |ui: &EventUi, commands: &[Command]| match (&selected, &ui.row) {
-        (Some((path, range)), _) => (path.clone(), range.end() + 1),
-        (None, Some(row)) => row.insert_place(commands, registry),
-        (None, None) => (Vec::new(), commands.len()),
-    };
     let new = match command {
         RowCommand::Copy => {
             if let Some((path, range)) = &selected {
                 ui.clipboard = copies(range, path);
+                ui.notice = Some(count_text("Copied", ui.clipboard.len()));
             }
             return false;
+        }
+        RowCommand::MoveUp | RowCommand::MoveDown => {
+            return move_rows(commands, ui, registry, command == RowCommand::MoveUp);
         }
         RowCommand::Delete => {
             let Some((path, range)) = selected else {
@@ -166,8 +178,11 @@ pub(crate) fn row_command(
     if new.is_empty() {
         return false;
     }
-    let (path, index) = place(ui, commands);
+    let (path, index) = new_place(ui, commands, registry);
     let count = new.len();
+    if command == RowCommand::Paste {
+        ui.notice = Some(count_text("Pasted", count));
+    }
     let done = edit_list(commands, &path, registry, |list| {
         let index = index.min(list.len());
         list.splice(index..index, new);
@@ -183,6 +198,52 @@ pub(crate) fn row_command(
     };
     ui.anchor = Some((last.clone(), index));
     ui.row = Some(last);
+    true
+}
+
+/// "Copied 3 commands", "Pasted 1 command".
+fn count_text(done: &str, count: usize) -> String {
+    match count {
+        1 => format!("{done} 1 command"),
+        _ => format!("{done} {count} commands"),
+    }
+}
+
+/// Moves the selected rows one place up or down in their list: the row next to
+/// them goes to their other side. True: the list changed.
+fn move_rows(
+    commands: &mut Vec<Command>,
+    ui: &mut EventUi,
+    registry: &CommandRegistry,
+    up: bool,
+) -> bool {
+    let Some((path, range)) = ui.selected() else {
+        return false;
+    };
+    let (from, to) = match up {
+        true => match range.start().checked_sub(1) {
+            Some(before) => (before, range.end() + 1),
+            None => return false,
+        },
+        false => (range.end() + 1, *range.start()),
+    };
+    let len = crate::events::list(commands, &path, registry).map_or(0, |list| list.len());
+    let neighbour = Row {
+        list: path.clone(),
+        index: from,
+        kind: RowKind::Command,
+    };
+    if from >= len || !move_command(commands, &neighbour, (path, to), registry) {
+        return false;
+    }
+    let step = |index: &mut usize| *index = if up { *index - 1 } else { *index + 1 };
+    if let Some(row) = &mut ui.row {
+        step(&mut row.index);
+    }
+    if let Some((row, other)) = &mut ui.anchor {
+        step(&mut row.index);
+        step(other);
+    }
     true
 }
 
@@ -294,13 +355,13 @@ fn described_list(
     picture: Option<Picture>,
 ) -> Option<Picked> {
     let mut picked = None;
-    egui::ComboBox::from_id_salt(id)
+    let search_id = id.with("search");
+    let shown = egui::ComboBox::from_id_salt(id)
         .selected_text(button)
         .height(320.0)
         // A click into the search field does not close the list.
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
-            let search_id = id.with("search");
             let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
             let field = egui::TextEdit::singleline(&mut search)
                 .hint_text("search")
@@ -313,15 +374,31 @@ fn described_list(
                 .iter()
                 .filter(|name| name.to_lowercase().contains(&wanted))
                 .collect();
-            if new && ui.selectable_label(false, "New...").clicked() {
+            // A typed name that the list does not have: "New" takes it as it is.
+            let typed = search.trim().to_owned();
+            let typed_new = new && !typed.is_empty() && !names.contains(&typed);
+            if typed_new {
+                if ui
+                    .selectable_label(false, format!("New: {typed}"))
+                    .clicked()
+                {
+                    picked = Some(Picked::Name(typed.clone()));
+                }
+            } else if new && ui.selectable_label(false, "New...").clicked() {
                 picked = Some(Picked::New);
             }
-            // Enter takes the first name that the search leaves.
-            if let (true, Some(first)) = (
-                ui.input(|input| input.key_pressed(egui::Key::Enter)),
-                found.first(),
-            ) {
-                picked = Some(Picked::Name((*first).clone()));
+            // Enter takes the first name that the search leaves, else the new name.
+            if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                match found.first() {
+                    Some(first) => picked = Some(Picked::Name((*first).clone())),
+                    None if typed_new => picked = Some(Picked::Name(typed.clone())),
+                    None => {}
+                }
+            }
+            if names.is_empty() {
+                ui.weak("Nothing to pick: this room has none.");
+            } else if found.is_empty() && !typed_new {
+                ui.weak("No results");
             }
             for name in found {
                 let label = if marked.contains(name) {
@@ -352,6 +429,10 @@ fn described_list(
             }
             ui.data_mut(|data| data.insert_temp(search_id, search));
         });
+    // A closed list forgets its search: the next open shows all names.
+    if shown.inner.is_none() {
+        ui.data_mut(|data| data.remove::<String>(search_id));
+    }
     picked
 }
 
@@ -401,7 +482,10 @@ pub(crate) fn picker_with(
         ui.data_mut(|data| data.insert_temp(typed_id, typed));
         return false;
     }
-    let shown = egui::RichText::new(value.as_str());
+    let shown = match value.is_empty() {
+        true => egui::RichText::new("(none)").italics(),
+        false => egui::RichText::new(value.as_str()),
+    };
     let shown = if known.contains(value) {
         shown
     } else {
@@ -446,6 +530,7 @@ pub(crate) fn pick_key(ui: &mut Ui, salt: &str, key: &mut TextKey, lists: &Lists
         }
     }
     match text_of(&key.0) {
+        Some("") => ui.colored_label(HINT, "Empty text: write it in the Texts panel."),
         Some(text) => ui.label(text),
         None => {
             let language = &lists.texts.language;
@@ -987,6 +1072,9 @@ pub(crate) fn event_panel(
         .cloned()
         .unwrap_or_default();
 
+    if let Some(text) = editor.event_ui.notice.take() {
+        maki_ui::notify(world, maki_ui::NoticeLevel::Info, text);
+    }
     let Editor {
         document,
         event_ui,
@@ -1051,6 +1139,9 @@ pub(crate) fn event_panel(
     if changed {
         document.set_event(index, &event);
     }
+    if let Some(text) = event_ui.notice.take() {
+        maki_ui::notify(world, maki_ui::NoticeLevel::Info, text);
+    }
     Some(changed)
 }
 
@@ -1082,59 +1173,71 @@ fn pages(
     let active = active_page(pages, facts);
     ui.horizontal_wrapped(|ui| {
         ui.label("Page");
-        for page in 0..count {
-            let star = if active == Some(page) { " *" } else { "" };
+        for (index, page) in pages.iter().enumerate() {
+            let star = if active == Some(index) { " *" } else { "" };
+            let conditions = match page.conditions.len() {
+                1 => "1 condition".to_owned(),
+                n => format!("{n} conditions"),
+            };
             let tab = ui
-                .selectable_label(event_ui.page == page, format!("{}{star}", page + 1))
-                .on_hover_text(
-                    "* the page that is active with the flags and variables of the \
-                     Game state panel: the last one whose conditions hold",
-                );
+                .selectable_label(event_ui.page == index, format!("{}{star}", index + 1))
+                .on_hover_text(format!(
+                    "{}: {}, {conditions}",
+                    index + 1,
+                    trigger_name(&page.trigger)
+                ));
             if tab.clicked() {
-                event_ui.page = page;
+                event_ui.page = index;
                 event_ui.row = None;
             }
         }
+        if active.is_some() {
+            ui.weak("* active").on_hover_text(
+                "The page that runs with the flags and variables of the Game state                  panel: the last one whose conditions hold",
+            );
+        }
     });
-    // A wire is shown: no page part.
-    if event_ui.page >= count {
-        return changed;
-    }
-    let at = event_ui.page;
-    ui.horizontal(|ui| {
-        let before = (pages.clone(), at);
-        if ui.button("Add").clicked() {
+    // A wire is shown: the page buttons stay, disabled.
+    let on_page = event_ui.page < count;
+    let at = event_ui.page.min(count - 1);
+    ui.horizontal_wrapped(|ui| {
+        let before = (pages.clone(), event_ui.page);
+        let button = |ui: &mut Ui, enabled: bool, text: &str, help: &str| {
+            let disabled = if on_page { help } else { "Select a page first" };
+            ui.add_enabled(on_page && enabled, egui::Button::new(text))
+                .on_hover_text(help)
+                .on_disabled_hover_text(disabled)
+                .clicked()
+        };
+        if button(ui, true, "Add page", "An empty page after this one") {
             pages.insert(at + 1, empty_page());
             event_ui.page = at + 1;
         }
-        if ui
-            .button("Duplicate")
-            .on_hover_text("A copy of the page, after it")
-            .clicked()
-        {
+        if button(ui, true, "Duplicate page", "A copy of this page, after it") {
             pages.insert(at + 1, pages[at].clone());
             event_ui.page = at + 1;
         }
-        if ui
-            .add_enabled(count > 1, egui::Button::new("Delete"))
-            .clicked()
-        {
-            pages.remove(at);
+        if button(
+            ui,
+            count > 1,
+            "Delete page",
+            "Delete this page and its commands",
+        ) {
+            let commands = pages.remove(at).commands.len();
+            if commands > 0 {
+                event_ui.notice = Some(format!(
+                    "Deleted page {} with {commands} commands. Undo brings it back.",
+                    at + 1
+                ));
+            }
             event_ui.page = at.min(count - 2);
         }
-        if ui
-            .add_enabled(at > 0, egui::Button::new("<"))
-            .on_hover_text("Earlier in the order")
-            .clicked()
-        {
+        if button(ui, at > 0, "Move earlier", "Earlier in the order") {
             pages.swap(at, at - 1);
             event_ui.page = at - 1;
         }
-        if ui
-            .add_enabled(at + 1 < count, egui::Button::new(">"))
-            .on_hover_text("Later: it wins over the pages before it")
-            .clicked()
-        {
+        let later = "Later in the order: it wins over the pages before it";
+        if button(ui, at + 1 < count, "Move later", later) {
             pages.swap(at, at + 1);
             event_ui.page = at + 1;
         }
@@ -1143,6 +1246,9 @@ fn pages(
             changed = true;
         }
     });
+    if !on_page {
+        return changed;
+    }
     let at = event_ui.page;
     let page = &mut pages[at];
 
@@ -1185,6 +1291,16 @@ fn pages(
     changed
 }
 
+/// The short name of a trigger, for the tab of a page.
+fn trigger_name(trigger: &Trigger) -> &'static str {
+    match trigger {
+        Trigger::Interact => "Interact",
+        Trigger::Touch => "Touch",
+        Trigger::Autorun => "Autorun",
+        Trigger::Parallel => "Parallel",
+    }
+}
+
 /// The wires of the object, as tabs under the pages: the output of the wire that
 /// shows, and buttons to add and delete one. The index of a wire in
 /// `EventUi::page` is after the pages.
@@ -1202,8 +1318,9 @@ fn wires(ui: &mut Ui, event: &mut EventPages, event_ui: &mut EventUi, lists: &Li
         }
     });
     let add = ui
-        .button("Add a wire")
-        .on_hover_text("When an output of this object is sent, the commands of the wire run");
+        .add_enabled(!lists.own_outputs.is_empty(), egui::Button::new("Add wire"))
+        .on_hover_text("When an output of this object is sent, the commands of the wire run")
+        .on_disabled_hover_text("This object has no outputs");
     if add.clicked() {
         let output = lists.own_outputs.first().cloned().unwrap_or_default();
         event.wires.push(Wire {
@@ -1224,8 +1341,13 @@ fn wires(ui: &mut Ui, event: &mut EventPages, event_ui: &mut EventUi, lists: &Li
         &mut event.wires[at].output,
         &lists.own_outputs,
     );
-    if ui.button("Delete the wire").clicked() {
-        event.wires.remove(at);
+    if ui.button("Delete wire").clicked() {
+        let commands = event.wires.remove(at).commands.len();
+        if commands > 0 {
+            event_ui.notice = Some(format!(
+                "Deleted a wire with {commands} commands. Undo brings it back."
+            ));
+        }
         (event_ui.page, event_ui.row) = (event_ui.page.saturating_sub(1), None);
         changed = true;
     }
@@ -1266,21 +1388,27 @@ pub(crate) fn command_rows(
     }
     let selected = event_ui.row.clone();
     let selected_command = selected.as_ref().filter(|row| row.kind == RowKind::Command);
-    // Where "Add" and "Paste" put a command: after the selected row, or at the end.
-    let place = selected.as_ref().map_or((Vec::new(), list.len()), |row| {
-        row.insert_place(list, registry)
-    });
+    let place = new_place(event_ui, list, registry);
     let mut changed = false;
     let mut insert: Vec<Command> = Vec::new();
     let mut row_command = None;
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Commands");
         let names: Vec<String> = registry.names().into_iter().map(str::to_owned).collect();
         let add = ui.make_persistent_id("add command");
         // The hover text of a name: the line of help of its module.
         let help = |name: &str| registry.help(name);
-        let picked = described_list(ui, add, "Add".into(), &names, &[], false, &help, None);
+        let picked = described_list(
+            ui,
+            add,
+            "Add command...".into(),
+            &names,
+            &[],
+            false,
+            &help,
+            None,
+        );
         if let Some(Picked::Name(name)) = picked {
             match new_command(&name, lists, registry, room) {
                 Some(command) => insert.push(command),
@@ -1308,7 +1436,21 @@ pub(crate) fn command_rows(
             ("Paste", buffer, RowCommand::Paste, paste),
         ] {
             let button = ui.add_enabled(enabled, egui::Button::new(text));
-            if button.on_hover_text(key.as_str()).clicked() {
+            let help = format!("{text} the selected commands  {key}");
+            if button.on_hover_text(help).clicked() {
+                row_command = Some(command);
+            }
+        }
+        for (text, command, key) in [
+            ("Move up", RowCommand::MoveUp, egui::Key::ArrowUp),
+            ("Move down", RowCommand::MoveDown, egui::Key::ArrowDown),
+        ] {
+            let button = ui.add_enabled(some, egui::Button::new(text));
+            let pressed = some
+                && event_ui.focused
+                && !ui.ctx().egui_wants_keyboard_input()
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::ALT, key));
+            if button.on_hover_text(format!("Alt+{key:?}")).clicked() || pressed {
                 row_command = Some(command);
             }
         }
@@ -1388,7 +1530,24 @@ pub(crate) fn command_rows(
         });
     }
     if all.is_empty() {
-        ui.weak("No command.");
+        ui.weak("No commands. Add one with \"Add command...\".");
+    }
+    // Below the last row: a drop there puts the command at the end of the page.
+    let mut drop_end = false;
+    if event_ui.dragged.is_some() {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(260.0, 18.0), egui::Sense::hover());
+        if ui.rect_contains_pointer(rect) {
+            let stroke = egui::Stroke::new(2.0, HINT);
+            ui.painter()
+                .hline(rect.left()..=rect.right(), rect.top() + 1.0, stroke);
+            drop_end = released;
+        }
+    }
+    if let (Some(from), true) = (event_ui.dragged.clone(), drop_end)
+        && move_command(list, &from, (Vec::new(), list.len()), registry)
+    {
+        event_ui.row = None;
+        changed = true;
     }
     if let (Some(from), Some(to)) = (event_ui.dragged.clone(), drop) {
         // Onto a command: before it. Onto `Else` or `End`: where a new command goes.

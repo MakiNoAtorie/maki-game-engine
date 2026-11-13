@@ -96,7 +96,16 @@ const LOG_ENV: &str = "MAKI_LOG";
 /// The log setup of a program: text to the terminal and to the log panel
 /// (`maki_devtools::LOG`), with the filter of `MAKI_LOG`.
 pub fn init_logging() {
-    let filter = || EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new("info"));
+    let spec = match std::env::var(LOG_ENV) {
+        Ok(spec) if EnvFilter::try_new(&spec).is_ok() => spec,
+        Ok(spec) => {
+            // Before the log setup: no log line can say it yet.
+            eprintln!("{LOG_ENV}={spec:?} is not a log filter: \"info\" is used");
+            "info".to_owned()
+        }
+        Err(_) => "info".to_owned(),
+    };
+    let filter = || EnvFilter::new(&spec);
     // The filter is on the text output only. The profiler gets the spans of the
     // schedules and passes (trace level) at each log level.
     let subscriber = tracing_subscriber::registry()

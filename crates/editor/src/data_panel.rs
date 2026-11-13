@@ -67,7 +67,10 @@ pub fn new_data_asset(
     let name = name.trim();
     let letters = |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ';
     if name.is_empty() || !name.chars().all(letters) {
-        return Err("A name of a data asset has letters, numbers, `_`, and `-`.".to_owned());
+        return Err(match name.chars().find(|&c| !letters(c)) {
+            Some(c) => format!("Use letters, numbers, spaces, `_` or `-`: `{c}` is not allowed."),
+            None => "Type a name.".to_owned(),
+        });
     }
     let data_type = types
         .get(type_name)
@@ -76,7 +79,10 @@ pub fn new_data_asset(
         .join(DATA_FOLDER)
         .join(format!("{name}.{}", DataTypes::extension(type_name)));
     if path.exists() {
-        return Err(format!("{} is there already.", path.display()));
+        return Err(format!(
+            "{} exists: choose another name, or open it with Open data asset.",
+            path.display()
+        ));
     }
     let written = std::fs::create_dir_all(directory.join(DATA_FOLDER))
         .and_then(|()| std::fs::write(&path, (data_type.default_text)()));
@@ -88,8 +94,13 @@ impl Editor {
     /// Opens a data file in the inspector.
     pub fn open_data(&mut self, path: &Path, types: &DataTypes) {
         match DataEdit::open(path, types) {
-            Ok(edit) => self.data = Some(edit),
-            Err(error) => self.error = Some(error),
+            Ok(edit) => {
+                self.status = format!("Opened {}.", path.display());
+                self.data = Some(edit);
+            }
+            Err(error) => {
+                self.error = Some(format!("Cannot open data asset: {error}"));
+            }
         }
     }
 }
@@ -102,20 +113,22 @@ pub(crate) struct NewData {
 }
 
 /// Under the commands of the "Assets" menu: "Open data asset", and "New data asset"
-/// with its type pick and its name field.
+/// with its type pick and its name row.
 pub(crate) fn data_menu(ui: &mut Ui, world: &World, editor: &mut Editor, new: &mut NewData) {
     let Some(types) = world.get_resource::<DataTypes>() else {
         return;
     };
-    ui.add_enabled_ui(!editor.playing(), |ui| {
+    let playing = editor.playing();
+    ui.add_enabled_ui(!playing, |ui| {
         let directory = editor.document.directory();
-        ui.menu_button("Open data asset", |ui| {
+        let open = ui.menu_button("Open data asset", |ui| {
             let files = types.files(&directory);
             if files.is_empty() {
-                ui.weak("No data file. \"New data asset\" writes one.");
+                ui.weak("No data assets. Use New data asset.");
             }
             for file in files {
-                let text = file.path.to_string_lossy();
+                let shown = file.path.strip_prefix(DATA_FOLDER).unwrap_or(&file.path);
+                let text = shown.to_string_lossy();
                 let button = ui.add_enabled(file.known, egui::Button::new(text));
                 let button = button.on_disabled_hover_text("No module registered this type.");
                 if button.clicked() {
@@ -124,40 +137,53 @@ pub(crate) fn data_menu(ui: &mut Ui, world: &World, editor: &mut Editor, new: &m
                 }
             }
         });
+        open.response.on_disabled_hover_text(STOP_PLAY);
         if types.get(&new.type_name).is_none() {
             let first = types.iter().next();
             new.type_name = first.map(|t| t.name.to_owned()).unwrap_or_default();
         }
-        ui.horizontal(|ui| {
-            // A submenu, not a combo box: the popup of a combo box closes the menu.
-            ui.menu_button(new.type_name.clone(), |ui| {
-                for data_type in types.iter() {
-                    let name = data_type.name.to_owned();
-                    ui.selectable_value(&mut new.type_name, name, data_type.name);
-                }
-            });
-            let field = egui::TextEdit::singleline(&mut new.name)
-                .desired_width(120.0)
-                .hint_text("name of the data asset");
-            ui.add(field);
-        });
-        let ready = !new.name.trim().is_empty() && !new.type_name.is_empty();
-        let button = ui
-            .add_enabled(ready, egui::Button::new("New data asset"))
-            .on_hover_text("Writes data/<name>.<type>.ron with the default value and opens it.");
-        if button.clicked() {
-            match new_data_asset(&directory, types, &new.type_name, &new.name) {
-                Ok(path) => {
-                    editor.open_data(&path, types);
-                    editor.status = format!("{} written.", path.display());
-                    new.name.clear();
-                }
-                Err(error) => editor.error = Some(error),
+        let create = ui.menu_button("New data asset", |ui| {
+            if types.iter().next().is_none() {
+                ui.weak("No module registered a data type.");
+                return;
             }
-            ui.close();
-        }
+            ui.weak("Type");
+            for data_type in types.iter() {
+                let name = data_type.name.to_owned();
+                ui.radio_value(&mut new.type_name, name, data_type.name);
+            }
+            ui.separator();
+            let shown = if new.name.trim().is_empty() {
+                "<name>"
+            } else {
+                new.name.trim()
+            };
+            let file = format!(
+                "{DATA_FOLDER}/{shown}.{}",
+                DataTypes::extension(&new.type_name)
+            );
+            if let Some(name) =
+                maki_ui::widgets::name_row(ui, &mut new.name, "Name", "Create", true)
+            {
+                match new_data_asset(&directory, types, &new.type_name, &name) {
+                    Ok(path) => {
+                        editor.open_data(&path, types);
+                        editor.status = format!("{} created.", path.display());
+                    }
+                    Err(error) => {
+                        // Keep the name, so the menu shows it again for a fix.
+                        new.name = name;
+                        editor.error = Some(error);
+                    }
+                }
+            }
+            ui.weak(file);
+        });
+        create.response.on_disabled_hover_text(STOP_PLAY);
     });
 }
+
+const STOP_PLAY: &str = "Stop play mode to edit data assets.";
 
 /// The inspector with a data file open. True: it showed the file.
 pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor) -> bool {
@@ -177,9 +203,21 @@ pub(crate) fn data_inspector(ui: &mut Ui, types: &DataTypes, editor: &mut Editor
     };
     let mut close = false;
     ui.horizontal(|ui| {
-        ui.strong(edit.path.file_name().unwrap_or_default().to_string_lossy());
-        close = ui.button("Close").clicked();
+        let name = edit.path.file_name().unwrap_or_default().to_string_lossy();
+        ui.strong(name)
+            .on_hover_text(edit.path.display().to_string());
+        ui.weak(&edit.type_name);
+        close = ui
+            .button("Close")
+            .on_hover_text("Close the data asset (Esc)")
+            .clicked();
     });
+    ui.weak("Changes are saved at once.");
+    if playing {
+        ui.weak(STOP_PLAY);
+    }
+    let escape = ui.ui_contains_pointer() && ui.input(|input| input.key_pressed(egui::Key::Escape));
+    close |= escape && ui.memory(|memory| memory.focused().is_none());
     let mut changed = false;
     if let Some(data_type) = types.get(&edit.type_name) {
         let tree = &mut edit.tree;

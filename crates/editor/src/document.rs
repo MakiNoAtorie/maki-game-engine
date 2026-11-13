@@ -133,7 +133,12 @@ impl Document {
 
     /// Writes the room file.
     pub fn save(&mut self) -> Result<()> {
-        std::fs::write(&self.path, self.text())
+        // A whole new file, then a rename: a crash in the write keeps the old room.
+        let temporary = self.path.with_extension("ron.tmp");
+        let folder = self.path.parent().unwrap_or(Path::new(""));
+        std::fs::create_dir_all(folder)
+            .and_then(|()| std::fs::write(&temporary, self.text()))
+            .and_then(|()| std::fs::rename(&temporary, &self.path))
             .with_context(|| format!("cannot write room file {}", self.path.display()))?;
         self.dirty = false;
         Ok(())
@@ -183,7 +188,9 @@ impl Document {
     ) -> Option<Result<Value, String>> {
         let text = self.room.objects.get(index)?.components.get(name)?;
         let Some(component_type) = types.get(name) else {
-            return Some(Err(format!("no module registered the type \"{name}\"")));
+            return Some(Err(format!(
+                "no module registered the type \"{name}\": build the scripts, or remove the component"
+            )));
         };
         Some((component_type.tree)(text))
     }
@@ -199,7 +206,9 @@ impl Document {
     ) -> Result<()> {
         let component_type = types
             .get(name)
-            .with_context(|| format!("no module registered the type \"{name}\""))?;
+            .with_context(|| format!(
+                "no module registered the type \"{name}\": build the scripts, or remove the component"
+            ))?;
         let object = self
             .room
             .objects

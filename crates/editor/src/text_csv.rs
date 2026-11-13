@@ -157,8 +157,12 @@ pub fn export(directory: &Path, fallback: &str) -> Result<PathBuf, String> {
 /// is removed. Only a table that changed is written.
 pub fn import(directory: &Path) -> Result<usize, String> {
     let path = directory.join(CSV_PATH);
-    let text = std::fs::read_to_string(&path)
-        .map_err(|error| format!("{} not read: {error}", path.display()))?;
+    let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("No file {CSV_PATH}. Use Assets > Export texts to make one.")
+        }
+        _ => format!("{} not read: {error}", path.display()),
+    })?;
     let rows = read_csv(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     let (header, rows) = rows.split_first().ok_or("The CSV file is empty.")?;
     if header.first().map(String::as_str) != Some("key") {
@@ -235,7 +239,7 @@ fn export_texts(world: &mut World) {
     let result = export(&directory, &fallback);
     let mut editor = world.resource_mut::<Editor>();
     match result {
-        Ok(path) => editor.status = format!("{} written.", path.display()),
+        Ok(_) => editor.status = format!("Texts exported to {CSV_PATH}."),
         Err(error) => editor.error = Some(error),
     }
 }
@@ -245,7 +249,9 @@ fn import_texts(world: &mut World) {
     let result = import(&directory);
     let mut editor = world.resource_mut::<Editor>();
     match result {
-        Ok(count) => editor.status = format!("{count} texts changed."),
+        Ok(count) => {
+            editor.status = format!("{count} texts imported from {CSV_PATH} (empty cells skipped).")
+        }
         Err(error) => editor.error = Some(error),
     }
 }

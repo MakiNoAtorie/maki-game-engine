@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use maki_core::Fields;
 use maki_core::fields::{Kind, Value, Variant, number, read, variant_of};
 use maki_scene::ObjectId;
-use maki_ui::egui::Ui;
+use maki_ui::egui::{self, Ui};
 use maki_ui::widgets::help;
 
 use crate::widgets::{
@@ -161,7 +161,11 @@ fn value(
                     crate::event_panel::pick_or_new(ui, list, &mut name, &known, &unset)
                 }),
                 // A panel with no text tables at hand: the key is typed.
-                None if *list == "texts" && known.is_empty() => text(ui, label, &mut name),
+                None if *list == "texts" && known.is_empty() => {
+                    let changed = text(ui, label, &mut name);
+                    ui.weak("No text table loaded: the key is not checked.");
+                    changed
+                }
                 None => pick(ui, label, &mut name, &known),
             };
             if changed {
@@ -173,6 +177,10 @@ fn value(
             let names = (lists.names)(list);
             let options: Vec<(&str, u64)> = names.iter().map(String::as_str).zip(0..).collect();
             let mut index = tree.as_u64().unwrap_or(0);
+            if names.is_empty() {
+                row(ui, label, |ui| ui.weak(format!("No {list} yet")));
+                return false;
+            }
             let changed = choice(ui, label, &mut index, &options, PartialEq::eq);
             if changed {
                 *tree = Value::from(index);
@@ -271,20 +279,44 @@ fn value(
                 row(ui, label, |_| {});
             }
             let rows = |ui: &mut Ui| {
-                let (mut changed, mut removed) = (false, None);
+                let (mut changed, mut removed, mut up) = (false, None, None);
+                let count = items.len();
+                if count == 0 {
+                    ui.weak("(empty)");
+                }
                 for (index, part) in items.iter_mut().enumerate() {
                     ui.push_id(index, |ui| {
-                        if ui.small_button("x").on_hover_text("Remove").clicked() {
-                            removed = Some(index);
-                        }
+                        ui.horizontal(|ui| {
+                            ui.weak(format!("{}", index + 1));
+                            let first = ui.add_enabled(index > 0, egui::Button::new("▲").small());
+                            if first.on_hover_text("Move up").clicked() {
+                                up = Some(index);
+                            }
+                            let last = index + 1 < count;
+                            let down = ui.add_enabled(last, egui::Button::new("▼").small());
+                            if down.on_hover_text("Move down").clicked() {
+                                up = Some(index + 1);
+                            }
+                            let remove = ui.small_button("x");
+                            if remove
+                                .on_hover_text(format!("Remove item {}", index + 1))
+                                .clicked()
+                            {
+                                removed = Some(index);
+                            }
+                        });
                         changed |= value(ui, "", "", &item, part, None, lists);
                     });
+                }
+                if let Some(index) = up {
+                    items.swap(index - 1, index);
+                    changed = true;
                 }
                 if let Some(index) = removed {
                     items.remove(index);
                     changed = true;
                 }
-                if ui.button("Add").clicked() {
+                if ui.button("Add").on_hover_text("Add an item").clicked() {
                     items.push(item.zero());
                     changed = true;
                 }

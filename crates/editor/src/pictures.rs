@@ -34,20 +34,40 @@ struct Made {
     frame: u64,
 }
 
-/// The picture of an image file or a model file. `None`: a file of another kind, a
-/// file that cannot be read, or a picture that a later frame makes.
+/// The state of the picture of a file.
+enum State {
+    /// A file of another kind, or no file.
+    None,
+    /// A later frame makes it.
+    Waiting,
+    /// The file cannot be read (the loader logged the reason).
+    Failed,
+    Ready(TextureHandle),
+}
+
+impl From<Option<TextureHandle>> for State {
+    fn from(picture: Option<TextureHandle>) -> Self {
+        picture.map_or(Self::Failed, Self::Ready)
+    }
+}
+
+/// The picture of an image file or a model file.
 // ponytail: a picture is made on the thread of the editor, one in each frame. On a
 // thread when a model takes longer than a frame that the user accepts.
-fn picture(ui: &Ui, path: &Path) -> Option<TextureHandle> {
-    let extension = path.extension()?.to_str()?.to_lowercase();
+fn picture(ui: &Ui, path: &Path) -> State {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
     let model = MODELS.contains(&extension.as_str());
     if !model && !PICTURES.contains(&extension.as_str()) {
-        return None;
+        return State::None;
     }
     // No file: no picture, and no try in each frame.
-    let changed = std::fs::metadata(path)
-        .and_then(|file| file.modified())
-        .ok()?;
+    let Ok(changed) = std::fs::metadata(path).and_then(|file| file.modified()) else {
+        return State::None;
+    };
     let pictures: Pictures = ui.data_mut(|data| {
         data.get_temp_mut_or_default::<Pictures>(egui::Id::NULL)
             .clone()
@@ -56,11 +76,13 @@ fn picture(ui: &Ui, path: &Path) -> Option<TextureHandle> {
     if let Some((time, picture)) = made.files.get(path)
         && *time == changed
     {
-        return picture.clone();
+        return picture.clone().into();
     }
     let frame = ui.ctx().cumulative_frame_nr();
     if made.frame == frame {
-        return None;
+        // The next frame makes it, with no wait for the mouse.
+        ui.ctx().request_repaint();
+        return State::Waiting;
     }
     made.frame = frame;
     // The pictures of the files that are gone are freed here.
@@ -77,18 +99,32 @@ fn picture(ui: &Ui, path: &Path) -> Option<TextureHandle> {
     tracing::debug!(path = %path.display(), time = ?start.elapsed(), "picture made");
     made.files
         .insert(path.to_owned(), (changed, picture.clone()));
-    picture
+    picture.into()
 }
 
-/// Shows the picture of a file, or an empty place of the same size: the names of a
-/// list stay in one column.
+/// Shows the picture of a file, or a place of the same size: the names of a list
+/// stay in one column. The pointer on a picture shows it at its full size.
 pub(crate) fn show(ui: &mut Ui, path: &Path) {
     let size = egui::Vec2::splat(SHOWN);
     match picture(ui, path) {
-        Some(picture) => {
-            ui.add(egui::Image::new(&picture).fit_to_exact_size(size));
+        State::Ready(picture) => {
+            ui.add(egui::Image::new(&picture).fit_to_exact_size(size))
+                .on_hover_ui(|ui| {
+                    ui.add(egui::Image::new(&picture).fit_to_exact_size(size * 2.0));
+                });
         }
-        None => {
+        State::Failed => {
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "?",
+                egui::FontId::proportional(20.0),
+                ui.visuals().weak_text_color(),
+            );
+            response.on_hover_text("No preview: the file does not read (see the Log)");
+        }
+        State::None | State::Waiting => {
             ui.allocate_space(size);
         }
     }

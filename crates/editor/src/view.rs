@@ -230,11 +230,13 @@ pub fn pick(world: &mut World, document: &Document, ray: &Ray) -> Option<Item> {
             hit(t, Some(item));
         }
     }
-    for index in 0..document.room.objects.len() {
-        let item = Item::Object(index);
-        let Some(area) = document.area(&item) else {
-            continue;
-        };
+    // The smallest area first: of areas that overlap, a click takes the inner one.
+    let mut areas: Vec<_> = (0..document.room.objects.len())
+        .map(Item::Object)
+        .filter_map(|item| Some((document.area(&item)?, item)))
+        .collect();
+    areas.sort_by(|a, b| (a.0.size[0] * a.0.size[1]).total_cmp(&(b.0.size[0] * b.0.size[1])));
+    for (area, item) in areas {
         // A little above the floor: the rectangle is in front of the floor.
         let on_floor = ray.height(0.02);
         let inside = |(at, _): &(Vec3, f32)| area.distance(at.x, at.z) == 0.0;

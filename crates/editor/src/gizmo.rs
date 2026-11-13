@@ -8,7 +8,8 @@
 //!   on the floor plane (the most used one: a room is laid out from above).
 //! - Rotate: one ring for each axis. The turn is the angle of the pointer around the
 //!   origin, on the screen.
-//! - Scale: one handle for each axis of the item itself.
+//! - Scale: one handle for each axis of the item itself, and a square at the origin
+//!   that scales all three axes.
 //! - Handles of the item itself, with each tool ([`Extra`]): where a cone light
 //!   points, the corners of an event area, the top corners of a doorway.
 //!
@@ -36,7 +37,8 @@ pub enum Tool {
 pub enum Handle {
     /// 0, 1, 2: X, Y, Z.
     Axis(usize),
-    /// The square at the origin: a move on the plane of the floor.
+    /// The square at the origin: with Move, a move on the plane of the floor; with
+    /// Scale, a scale of all axes.
     Floor,
     /// Where the middle of the cone of a light meets the floor.
     Aim,
@@ -98,7 +100,7 @@ impl Extra {
 /// Length of a handle on the screen, in pixels.
 const LENGTH: f32 = 90.0;
 /// The pointer takes a handle that is not farther away than this, in pixels.
-const REACH: f32 = 9.0;
+const REACH: f32 = 11.0;
 /// Half of the side of the floor square, in pixels.
 pub(crate) const SQUARE: f32 = 9.0;
 /// A scale snaps to steps of this.
@@ -202,7 +204,7 @@ impl Gizmo {
             return None;
         }
         let origin = view.project(self.origin)?;
-        if self.tool == Tool::Move
+        if matches!(self.tool, Tool::Move | Tool::Scale)
             && (0..2).all(|side| (pixel[side] - origin[side]).abs() <= SQUARE)
         {
             return Some(Handle::Floor);
@@ -280,6 +282,8 @@ impl Drag {
                 .project(gizmo.origin)
                 .map_or(0.0, |center| screen_angle(center, pixel)),
             (_, Handle::Axis(axis)) => ray.along(gizmo.origin, gizmo.axes[axis]),
+            // Right and up on the screen: larger.
+            (Tool::Scale, Handle::Floor) => pixel[0] - pixel[1],
             (_, Handle::Floor) => 0.0,
         };
         Self {
@@ -325,11 +329,16 @@ impl Drag {
                 let Some(item) = selection.last() else {
                     return;
                 };
-                let (light, floor) = (document.light(item), ray.height(0.0));
-                let (Some(mut light), Some((floor, _))) = (light, floor) else {
+                // The plane of the handle at the start: a light can aim up or sideways.
+                let height = match self.gizmo.extra {
+                    Extra::Aim(point) => point.y,
+                    _ => 0.0,
+                };
+                let (light, hit) = (document.light(item), ray.height(height));
+                let (Some(mut light), Some((hit, _))) = (light, hit) else {
                     return;
                 };
-                let target = Vec3::new(snap(floor.x, grid), 0.0, snap(floor.z, grid));
+                let target = Vec3::new(snap(hit.x, grid), height, snap(hit.z, grid));
                 let to = (target - Vec3::from(light.position)).try_normalize();
                 if let Some(to) = to {
                     // Thousandths: the direction is made to length 1 when it is read.
@@ -458,11 +467,23 @@ impl Drag {
                     }
                 }
             }
-            (Tool::Scale, Handle::Axis(axis)) => {
-                let factor = ray.along(origin, axes[axis]) / self.grab.max(1e-3);
+            (Tool::Scale, Handle::Axis(_) | Handle::Floor) => {
+                let (factor, scaled_axes) = match self.handle {
+                    Handle::Axis(axis) => {
+                        let factor = ray.along(origin, axes[axis]) / self.grab.max(1e-3);
+                        (factor, axis..axis + 1)
+                    }
+                    // One handle length of drag doubles the size.
+                    _ => {
+                        let way = pixel[0] - pixel[1] - self.grab;
+                        ((1.0 + way / LENGTH).max(0.0), 0..3)
+                    }
+                };
                 let step = if steps.is_some() { SCALE_STEP } else { 0.0 };
                 let scaled = |pose: &mut PoseDef| {
-                    pose.scale[axis] = snap(pose.scale[axis] * factor, step).max(0.01);
+                    for axis in scaled_axes.clone() {
+                        pose.scale[axis] = snap(pose.scale[axis] * factor, step).max(0.01);
+                    }
                 };
                 for item in selection {
                     if second && document.with_mover_b(item, |pose| scaled(pose)) {
@@ -761,5 +782,22 @@ mod tests {
         let to = |gizmo: &Gizmo, _: &View| gizmo.origin + (gizmo.handle(0)[1] - gizmo.origin) * 2.0;
         let scaled = drag(Tool::Scale, Handle::Axis(0), to, Some((0.25, 15.0)));
         assert_eq!(scaled.scale, [2.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_drag_of_the_scale_square_scales_all_axes() {
+        let (view, mut document, selection) = scene();
+        let gizmo = Gizmo::of(&document, &selection[0], false, false, Tool::Scale, &view).unwrap();
+        let from = view.project(gizmo.origin).unwrap();
+        assert_eq!(gizmo.handle_at(&view, from), Some(Handle::Floor));
+        let drag = Drag::start(gizmo, Handle::Floor, false, &view, from, &document);
+        // Half a handle length to the right.
+        let to = [from[0] + LENGTH / 2.0, from[1]];
+        drag.apply(&view, to, None, &mut document, &selection, false);
+        let scale = document.room.objects[2].pose.scale;
+        assert!(
+            scale.iter().all(|axis| (axis - 1.5).abs() < 1e-4),
+            "{scale:?}"
+        );
     }
 }

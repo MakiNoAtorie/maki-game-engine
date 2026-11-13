@@ -53,12 +53,12 @@ pub fn new_menu(directory: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     let letters = |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ';
     if name.is_empty() || !name.chars().all(letters) {
-        return Err("A name of a menu has letters, numbers, `_`, and `-`.".to_owned());
+        return Err("Use letters, numbers, spaces, `_`, and `-` in the name of a menu.".to_owned());
     }
     let folder = directory.join(DATA_FOLDER).join(FOLDER);
     let path = folder.join(format!("{name}.{EXTENSION}"));
     if path.exists() {
-        return Err(format!("{} is there already.", path.display()));
+        return Err(format!("The menu \"{name}\" exists already."));
     }
     let written = std::fs::create_dir_all(&folder)
         .and_then(|()| std::fs::write(&path, menu_text(&Menu::default())));
@@ -102,45 +102,40 @@ impl Editor {
 /// Under the commands of the "Assets" menu: the menu files to open, and "New menu"
 /// with its name field.
 pub(crate) fn menu_menu(ui: &mut Ui, editor: &mut Editor, name: &mut String) {
-    ui.add_enabled_ui(!editor.playing(), |ui| {
+    let playing = editor.playing();
+    ui.add_enabled_ui(!playing, |ui| {
         let directory = editor.document.directory();
+        let open = editor.menu.as_ref().map(|edit| edit.path.clone());
         ui.menu_button("Open menu", |ui| {
             let files = menu_files(&directory);
             if files.is_empty() {
-                ui.weak("No menu file at the room file. \"New menu\" writes one.");
+                ui.weak("No menus yet. Use New menu.");
             }
             for path in files {
                 let shown = path.strip_prefix(&directory).unwrap_or(&path);
-                if ui.button(shown.to_string_lossy()).clicked() {
+                let selected = open.as_ref() == Some(&path);
+                if ui
+                    .selectable_label(selected, shown.to_string_lossy())
+                    .clicked()
+                {
                     editor.open_menu(&path);
                     ui.close();
                 }
             }
         });
-        ui.horizontal(|ui| {
-            let field = egui::TextEdit::singleline(name)
-                .desired_width(120.0)
-                .hint_text("name of the menu");
-            ui.add(field);
-            let button = ui
-                .add_enabled(!name.trim().is_empty(), egui::Button::new("New menu"))
-                .on_hover_text(
-                    "Writes data/menus/<name>.menu.ron and opens it in the event panel. \
-                     A command OpenMenu shows it.",
-                );
-            if button.clicked() {
-                match new_menu(&directory, name) {
-                    Ok(path) => {
-                        editor.open_menu(&path);
-                        editor.status = format!("{} written.", path.display());
-                        name.clear();
-                    }
-                    Err(error) => editor.error = Some(error),
+        let made = maki_ui::widgets::name_row(ui, name, "Menu name", "New menu", !playing);
+        if let Some(made) = made {
+            match new_menu(&directory, &made) {
+                Ok(path) => {
+                    editor.open_menu(&path);
+                    editor.status = format!("Menu \"{made}\" created.");
                 }
-                ui.close();
+                Err(error) => editor.error = Some(error),
             }
-        });
-    });
+        }
+    })
+    .response
+    .on_disabled_hover_text("Stop the game to open or create a menu.");
 }
 
 /// The event panel with a menu file open. True: the panel showed it.
@@ -179,9 +174,11 @@ pub(crate) fn menu_panel(ui: &mut Ui, world: &mut World, editor: &mut Editor) ->
         .show(ui, |ui| {
             scroll("menu fields").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let file = edit.path.strip_prefix(&directory).unwrap_or(&edit.path);
-                    ui.strong(file.to_string_lossy());
                     close = ui.button("Close").clicked();
+                    let file = edit.path.strip_prefix(&directory).unwrap_or(&edit.path);
+                    let name = file.file_name().unwrap_or(file.as_os_str());
+                    ui.strong(name.to_string_lossy())
+                        .on_hover_text(file.to_string_lossy());
                 });
                 changed |= menu_fields(ui, &mut edit.menu, &lists);
                 ui.separator();
@@ -260,7 +257,7 @@ fn row_list(ui: &mut Ui, rows: &mut Vec<MenuRow>, select: &mut usize) -> bool {
         }
     }
     ui.horizontal(|ui| {
-        ui.menu_button("Add", |ui| {
+        ui.menu_button("Add row", |ui| {
             let kinds = [
                 ("A row with commands", "A pick runs its commands."),
                 ("The items", "A line for each item that the player has."),
@@ -286,6 +283,7 @@ fn row_list(ui: &mut Ui, rows: &mut Vec<MenuRow>, select: &mut usize) -> bool {
         let at = *select;
         if ui
             .add_enabled(at < rows.len(), egui::Button::new("Remove"))
+            .on_hover_text("Remove the selected row with its conditions and commands")
             .clicked()
         {
             rows.remove(at);
@@ -293,7 +291,7 @@ fn row_list(ui: &mut Ui, rows: &mut Vec<MenuRow>, select: &mut usize) -> bool {
             changed = true;
         }
         if ui
-            .add_enabled(0 < at && at < rows.len(), egui::Button::new("Up"))
+            .add_enabled(0 < at && at < rows.len(), egui::Button::new("Move up"))
             .clicked()
         {
             rows.swap(at, at - 1);
@@ -301,7 +299,7 @@ fn row_list(ui: &mut Ui, rows: &mut Vec<MenuRow>, select: &mut usize) -> bool {
             changed = true;
         }
         if ui
-            .add_enabled(at + 1 < rows.len(), egui::Button::new("Down"))
+            .add_enabled(at + 1 < rows.len(), egui::Button::new("Move down"))
             .clicked()
         {
             rows.swap(at, at + 1);
@@ -319,7 +317,7 @@ fn row_label(row: &MenuRow) -> String {
         }
         MenuRow::Commands { text, .. } => text.0.clone(),
         MenuRow::Text(text) => format!("text: {}", text.0),
-        MenuRow::Items => "(the items)".to_owned(),
+        MenuRow::Items => "items: (the items of the player)".to_owned(),
     }
 }
 
@@ -352,11 +350,11 @@ fn row_editor(
         Some(MenuRow::Items) => {
             ui.weak(
                 "A line for each item that the player has, with its count. A pick runs the \
-                 routine of the item kind (`use_routine`).",
+                 routine that the item kind sets in its \"use_routine\" field.",
             );
         }
         None => {
-            ui.weak("No row. \"Add\" makes one.");
+            ui.weak("No rows. Use Add row.");
         }
     }
     changed
@@ -384,7 +382,10 @@ mod tests {
             row_label(&MenuRow::Text(TextKey::default())),
             "(no text key)"
         );
-        assert_eq!(row_label(&MenuRow::Items), "(the items)");
+        assert_eq!(
+            row_label(&MenuRow::Items),
+            "items: (the items of the player)"
+        );
     }
 
     /// The texts that the event panel showed, with a menu open.

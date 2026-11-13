@@ -119,6 +119,16 @@ pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -
             if pictures { Some(&show) } else { None };
         let changed =
             crate::event_panel::picker_with(ui, text, &mut name, &known, &[], false, picture);
+        if known.is_empty() {
+            let kinds = extensions
+                .iter()
+                .map(|e| format!(".{e}"))
+                .collect::<Vec<_>>();
+            ui.weak("No files").on_hover_text(format!(
+                "No {} files in the project folder.",
+                kinds.join(" / ")
+            ));
+        }
         if changed {
             *value = PathBuf::from(name);
         }
@@ -165,7 +175,8 @@ pub fn object_ref(name: &str, objects: &[(ObjectId, String)]) -> ObjectId {
 
 /// Edits an object reference as the name of its object: `edit` gets the name (or
 /// "missing (id 7)", which no list has, so it shows in red) and picks another. The
-/// id of the picked object is stored.
+/// id of the picked object is stored. A text that names no object keeps the old
+/// reference; an empty text clears it.
 pub fn object_pick(
     object: &mut ObjectId,
     objects: &[(ObjectId, String)],
@@ -174,7 +185,8 @@ pub fn object_pick(
     let before = object_label(object, objects);
     let mut text = before.clone();
     let changed = edit(&mut text);
-    if text != before {
+    let names_one = text.is_empty() || objects.iter().any(|(_, name)| *name == text);
+    if text != before && names_one {
         *object = object_ref(&text, objects);
     }
     changed

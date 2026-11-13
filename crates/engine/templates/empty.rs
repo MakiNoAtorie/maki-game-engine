@@ -1,5 +1,5 @@
-//! ScriptName: a script with no behavior yet. Give an object the component
-//! `"script_name": ()` in the editor or in the room file.
+//! ScriptName: a script with no behavior yet. Add the component `script_name` to an
+//! object in the inspector (in a room file: `"script_name": ()`).
 
 use bevy_ecs::component::Component;
 use maki_engine::core::{App, Fields};

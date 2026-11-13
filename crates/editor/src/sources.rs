@@ -13,8 +13,9 @@
 //!   The result is written under a temporary name and then gets its name, so no
 //!   reader sees half of a file. The new result is a changed asset file: the watch
 //!   of `maki_assets` does the rest.
-//! - A source whose conversion failed is not tried again until it is saved again.
-//!   The old result stays.
+//! - A source whose conversion failed is not tried again until it is saved again,
+//!   or until the command "Convert sources again" (Assets menu), which also looks
+//!   for Blender again. The old result stays.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Res, ResMut};
 use maki_assets::FileId;
 use maki_core::App;
-use maki_ui::{Jobs, NoticeLevel, Notices};
+use maki_ui::{Jobs, NoticeLevel, Notices, ToolCommand};
 
 use crate::Editor;
 
@@ -269,17 +270,25 @@ pub fn scan(
     files_below(directory)
 }
 
-/// The thread of the converters: looks at the folder until `stop` is set.
+/// The thread of the converters: looks at the folder until `stop` is set. `retry`:
+/// set by the command "Convert sources again"; the thread forgets the failures and
+/// looks for Blender again (`blender`: the setting).
 fn run(
     directory: PathBuf,
     converters: Converters,
-    tools: Tools,
+    mut tools: Tools,
+    blender: String,
     reports: Sender<Report>,
-    stop: Arc<AtomicBool>,
+    flags: Flags,
 ) {
+    let Flags { stop, retry } = flags;
     let mut failed = HashMap::new();
     let mut known = Vec::new();
     while !stop.load(Ordering::Relaxed) {
+        if retry.swap(false, Ordering::Relaxed) {
+            failed.clear();
+            tools.blender = find_blender(&blender);
+        }
         // No receiver: the app has ended, and `stop` is set.
         let mut send = |report| drop(reports.send(report));
         let files = scan(
@@ -310,14 +319,23 @@ fn run(
 #[derive(Resource)]
 pub(crate) struct ConverterReports {
     reports: Mutex<Receiver<Report>>,
-    stop: Arc<AtomicBool>,
+    /// The asset folder: the names in the jobs and notices are relative to it.
+    directory: PathBuf,
+    flags: Flags,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// What the editor tells the thread.
+#[derive(Clone, Default)]
+struct Flags {
+    stop: Arc<AtomicBool>,
+    retry: Arc<AtomicBool>,
 }
 
 impl Drop for ConverterReports {
     // Waits for the thread: else it writes into the folder of the next app or a test.
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.flags.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -363,38 +381,71 @@ pub(crate) fn start(app: &mut App, directory: &Path, blender: &str) {
         Some(blender) => {
             tracing::info!(blender = %blender.display(), "converter of .blend and .obj files")
         }
-        None => tracing::warn!("Blender was not found: .blend and .obj files are not converted"),
+        None => {
+            let text = if blender.is_empty() {
+                "Blender was not found: .blend and .obj files are not converted. \
+                 Set [editor] blender to its program file"
+                    .to_owned()
+            } else {
+                format!("The Blender path of [editor] blender does not exist: {blender}")
+            };
+            tracing::warn!("{text}");
+            // A notice only when the folder has a file that needs Blender.
+            let needs = |path: &PathBuf| {
+                let extension = path.extension().unwrap_or_default().to_string_lossy();
+                ["blend", "obj"].contains(&extension.to_lowercase().as_str())
+            };
+            if files_below(directory).iter().any(needs) {
+                app.resource_mut::<Notices>()
+                    .push(NoticeLevel::Warning, text);
+            }
+        }
     }
     let (sender, receiver) = std::sync::mpsc::channel();
-    let stop = Arc::new(AtomicBool::new(false));
-    let (directory, stops) = (directory.to_owned(), stop.clone());
-    let thread = std::thread::spawn(move || run(directory, converters, tools, sender, stops));
+    let flags = Flags::default();
+    let (folder, thread_flags) = (directory.to_owned(), flags.clone());
+    let setting = blender.to_owned();
+    let thread =
+        std::thread::spawn(move || run(folder, converters, tools, setting, sender, thread_flags));
     app.insert_resource(ConverterReports {
         reports: Mutex::new(receiver),
-        stop,
+        directory: directory.to_owned(),
+        flags,
         thread: Some(thread),
     });
+    let again = ToolCommand {
+        menu: "Assets",
+        ..ToolCommand::new("assets.convert_again", "Convert sources again", |world| {
+            if let Some(reports) = world.get_resource::<ConverterReports>() {
+                reports.flags.retry.store(true, Ordering::Relaxed);
+            }
+        })
+    };
+    maki_ui::add_command(app, again);
 }
 
 /// Runs in `Update`: what the converter thread did goes to the status row, the jobs,
 /// and the log.
 pub(crate) fn tell_reports(
     reports: Res<ConverterReports>,
+    converters: Res<Converters>,
     mut editor: ResMut<Editor>,
     mut jobs: ResMut<Jobs>,
     mut notices: ResMut<Notices>,
 ) {
+    let directory = reports.directory.clone();
     let reports: Vec<Report> = {
         let receiver = reports.reports.lock().expect("no holder panics");
         receiver.try_iter().collect()
     };
+    // The path in the asset folder: two files of one name in two folders differ.
     let name = |path: &Path| {
-        path.file_name()
-            .unwrap_or_default()
+        path.strip_prefix(&directory)
+            .unwrap_or(path)
             .to_string_lossy()
-            .into_owned()
+            .replace('\\', "/")
     };
-    let job = |path: &Path| format!("convert {}", name(path));
+    let job = |path: &Path| format!("Convert {}", name(path));
     for report in reports {
         match report {
             // The table of ids is of the files before: a moved file is found again.
@@ -409,7 +460,10 @@ pub(crate) fn tell_reports(
             Report::Done(source, seconds) => {
                 jobs.0.retain(|other| *other != job(&source));
                 tracing::info!(source = %source.display(), seconds, "converted");
-                editor.status = format!("{}: converted", name(&source));
+                let result = converters.of(&source).map_or("", |row| row.result);
+                let text = format!("{} converted to .{result} ({seconds:.1} s)", name(&source));
+                notices.push(NoticeLevel::Info, text.clone());
+                editor.status = text;
             }
             Report::Failed(source, error) => {
                 jobs.0.retain(|other| *other != job(&source));
@@ -418,7 +472,8 @@ pub(crate) fn tell_reports(
                 let first = error.lines().next().unwrap_or_default();
                 let text = format!("{} was not converted: {first}", name(&source));
                 // The status row has one line, and the next file writes over it.
-                notices.push(NoticeLevel::Warning, format!("{text}. The log has more."));
+                let more = "See the Log. After a fix: Assets > Convert sources again";
+                notices.push(NoticeLevel::Warning, format!("{text}. {more}."));
                 editor.status = text;
             }
         }
@@ -471,8 +526,14 @@ fn blender(tools: &Tools, open: Option<&Path>, script: &str, arguments: &[&Path]
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+        // The first line names the cause: the Python error, else the last line.
+        let lines = || error.lines().chain(out.lines()).map(str::trim);
+        let cause = lines()
+            .find(|line| line.contains("Error"))
+            .or_else(|| lines().rfind(|line| !line.is_empty()))
+            .unwrap_or_default();
         bail!(
-            "Blender ended with an error ({})\n{out}\n{error}",
+            "Blender failed: {cause} ({})\n{out}\n{error}",
             output.status
         );
     }
@@ -545,13 +606,28 @@ fn read_psd(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let (depth, mode) = (number(take(2)?), number(take(2)?));
     ensure!(
         depth == 8 || depth == 16,
-        "{depth} bits for each channel are not read: use 8 or 16"
+        "{depth} bits for each channel are not read. In Photoshop use \
+         Image > Mode > 8 Bits/Channel, and save again"
     );
     // The channels of the color, by the color mode: 1 is gray, 3 is RGB.
     let color = match mode {
         1 => 1,
         3 => 3,
-        _ => anyhow::bail!("the color mode is not RGB or gray (mode {mode})"),
+        _ => {
+            let name = match mode {
+                0 => "Bitmap",
+                2 => "Indexed",
+                4 => "CMYK",
+                7 => "Multichannel",
+                8 => "Duotone",
+                9 => "Lab",
+                _ => "unknown",
+            };
+            anyhow::bail!(
+                "the color mode {name} is not read. In Photoshop use Image > Mode > \
+                 RGB Color, and save again"
+            )
+        }
     };
     ensure!(
         channels >= color && width > 0 && height > 0,

@@ -16,6 +16,9 @@ pub struct Theme {
     pub text: f32,
     pub small: f32,
     pub heading: f32,
+    /// Hints, placeholders, and notes: lighter than the egui default, to be read on
+    /// the dark background.
+    pub weak: Color32,
     /// The width of the label column of a property grid.
     pub label_width: f32,
     pub error: Color32,
@@ -32,8 +35,9 @@ pub const THEME: Theme = Theme {
     space: [6.0, 4.0],
     indent: 14.0,
     text: 13.0,
-    small: 10.5,
+    small: 11.5,
     heading: 16.0,
+    weak: Color32::from_gray(150),
     label_width: 118.0,
     error: Color32::from_rgb(255, 110, 90),
     warning: Color32::from_rgb(235, 190, 80),
@@ -80,7 +84,10 @@ pub mod icon {
 /// game keep the look that they had.
 pub(crate) fn apply(ctx: &egui::Context) {
     use egui::{FontFamily, FontId, TextStyle};
+    // The colors are for a dark background, also on a system in light mode.
+    ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(|style| {
+        style.visuals.weak_text_color = Some(THEME.weak);
         style.spacing.item_spacing = THEME.space.into();
         style.spacing.indent = THEME.indent;
         style.visuals.selection.bg_fill = THEME.selection;

@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 #[fields(default)]
 pub struct ScriptName {
-    /// The key of the text that the message box shows (a text table has it).
+    /// The key of the text that the message box shows. A key that no text table has
+    /// shows as it is, and the log warns.
     pub message: TextKey,
     /// True: only the first press shows it. The flag `flag` keeps that it was shown,
     /// also in the save file.

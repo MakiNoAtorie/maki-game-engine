@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::{COMMAND_SEARCH, ToolCommands, command_item, found};
 use crate::theme::icon;
-use crate::{Menu, Panel, Place};
+use crate::{MenuPart, Panel, Place};
 
 /// The tab with the picture. It cannot be closed, and it does not float.
 pub(crate) const PICTURE: &str = "picture";
@@ -473,11 +473,19 @@ fn command_search(
     };
     let rows = search_rows(shell, panels, world, &query);
     let key = |key| ctx.input(|input| input.key_pressed(key));
-    if key(egui::Key::ArrowDown) {
-        selected += 1;
+    let (down, up) = (key(egui::Key::ArrowDown), key(egui::Key::ArrowUp));
+    // The arrows skip the rows that cannot run now.
+    let can_run = |index: usize| rows.get(index).is_some_and(|row| row.can_run);
+    if down {
+        selected = (selected + 1..rows.len())
+            .find(|&i| can_run(i))
+            .unwrap_or(selected);
     }
-    if key(egui::Key::ArrowUp) {
-        selected = selected.saturating_sub(1);
+    if up {
+        selected = (0..selected)
+            .rev()
+            .find(|&i| can_run(i))
+            .unwrap_or(selected);
     }
     selected = selected.min(rows.len().saturating_sub(1));
     let mut run = key(egui::Key::Enter).then_some(selected);
@@ -504,12 +512,15 @@ fn command_search(
                         .selected(index == selected)
                         .shortcut_text(row.key.as_str());
                     let button = ui.add_enabled(row.can_run, button);
+                    if index == selected && (down || up) {
+                        button.scroll_to_me(None);
+                    }
                     if button.clicked() {
                         run = Some(index);
                     }
                 }
                 if rows.is_empty() {
-                    ui.weak("nothing has this text");
+                    ui.weak("No results");
                 }
             });
         });
@@ -527,14 +538,100 @@ fn command_search(
     shell.search = open.then_some((query, selected));
 }
 
+/// A row of a menu.
+pub(crate) enum MenuRow<'a> {
+    Command(&'a crate::ToolCommand),
+    Draw(&'a mut crate::PanelFn),
+    Line,
+}
+
+/// The rows of a menu: its commands and its parts, by their order (see
+/// `add_menu_item`). A line is kept only between two rows.
+pub(crate) fn menu_order<'a>(
+    commands: &'a ToolCommands,
+    name: &str,
+    parts: &'a mut [(&'static str, i32, MenuPart)],
+) -> Vec<MenuRow<'a>> {
+    let mut rows: Vec<(i32, MenuRow)> = commands
+        .iter()
+        .filter(|command| command.menu == name)
+        .map(|command| (command.order, MenuRow::Command(command)))
+        .chain(
+            parts
+                .iter_mut()
+                .filter(|(menu, ..)| *menu == name)
+                .map(|(_, order, part)| {
+                    let row = match part {
+                        MenuPart::Draw(draw) => MenuRow::Draw(draw),
+                        MenuPart::Separator => MenuRow::Line,
+                    };
+                    (*order, row)
+                }),
+        )
+        .collect();
+    // A stable sort: at an equal order the commands stay first.
+    rows.sort_by_key(|(order, _)| *order);
+    let mut kept: Vec<MenuRow> = Vec::new();
+    let mut line = false;
+    for (_, row) in rows {
+        if matches!(row, MenuRow::Line) {
+            line = !kept.is_empty();
+            continue;
+        }
+        if std::mem::take(&mut line) {
+            kept.push(MenuRow::Line);
+        }
+        kept.push(row);
+    }
+    kept
+}
+
+fn menu_rows(
+    ui: &mut egui::Ui,
+    world: &mut World,
+    commands: &ToolCommands,
+    name: &str,
+    parts: &mut [(&'static str, i32, MenuPart)],
+) {
+    for row in menu_order(commands, name, parts) {
+        match row {
+            MenuRow::Command(command) => command_item(ui, world, command),
+            MenuRow::Draw(draw) => draw(ui, world),
+            MenuRow::Line => {
+                ui.separator();
+            }
+        }
+    }
+}
+
+/// The keys of the zoom commands. egui reads them: the binding table has no key
+/// `=` or `-`.
+fn zoom_keys(ctx: &egui::Context, world: &mut World) {
+    use egui::gui_zoom::kb_shortcuts as keys;
+    for (shortcut, id) in [
+        (keys::ZOOM_IN, crate::ZOOM_IN),
+        (keys::ZOOM_IN_SECONDARY, crate::ZOOM_IN),
+        (keys::ZOOM_OUT, crate::ZOOM_OUT),
+        (keys::ZOOM_RESET, crate::ZOOM_RESET),
+    ] {
+        if ctx.input_mut(|input| input.consume_shortcut(&shortcut)) {
+            crate::queue_command(world, id);
+        }
+    }
+}
+
 /// The "Window" menu: each panel of a dock, and the layouts.
 fn window_menu(ui: &mut egui::Ui, shell: &mut Shell, panels: &mut [Panel]) {
     for panel in panels.iter_mut().filter(|panel| dock_of(panel).is_some()) {
-        ui.checkbox(&mut panel.open, format!("{} {}", panel.icon, panel.title));
+        let title = format!("{} {}", panel.icon, panel.title);
+        if ui.checkbox(&mut panel.open, title).changed() && panel.open {
+            // A new tab can join a dock behind its active tab: show it.
+            shell.focus = Some(panel.name.to_owned());
+        }
     }
     ui.separator();
     if ui.button("Reset layout").clicked() {
-        shell.request = Some(shell.layouts[0].name.to_owned());
+        shell.request = Some(shell.current.clone());
         ui.close();
     }
     ui.menu_button("Layout", |ui| {
@@ -562,7 +659,7 @@ fn draw(place: Place, panels: &mut [Panel], ui: &mut egui::Ui, world: &mut World
 pub(crate) fn show(
     shell: &mut Shell,
     panels: &mut [Panel],
-    menus: &mut [Menu],
+    (menus, parts): (&[&'static str], &mut [(&'static str, i32, MenuPart)]),
     root: &mut egui::Ui,
     world: &mut World,
 ) -> [f32; 4] {
@@ -592,6 +689,7 @@ pub(crate) fn show(
         shell.search = Some((String::new(), 0));
     }
 
+    zoom_keys(&ctx, world);
     let commands = world.get_resource::<ToolCommands>().cloned();
     let commands = commands.unwrap_or_default();
     egui::Panel::top("tool top").show(root, |ui| {
@@ -602,16 +700,8 @@ pub(crate) fn show(
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
             let menu =
                 |name: &str| egui::containers::menu::MenuButton::new(name).config(stay.clone());
-            for (name, extra) in menus.iter_mut() {
-                menu(name).ui(ui, |ui| {
-                    for command in commands.iter().filter(|command| command.menu == *name) {
-                        command_item(ui, world, command);
-                    }
-                    if let Some(extra) = extra {
-                        ui.separator();
-                        extra(ui, world);
-                    }
-                });
+            for name in menus {
+                menu(name).ui(ui, |ui| menu_rows(ui, world, &commands, name, parts));
             }
             menu("Window").ui(ui, |ui| window_menu(ui, shell, panels));
             if ui
