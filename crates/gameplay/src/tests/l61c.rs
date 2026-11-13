@@ -21,7 +21,7 @@ use crate::{ControlsModule, GridModule, PlayerModule};
 const WALL: &str = r#"(name: "wall", pose: (position: (1.5, 0, -1.5)), components: {"collider": (shape: Box(half: (0.5, 1.0, 0.5)))})"#;
 
 /// Center of cell (2, 2): where the player starts.
-const START: Vec3 = Vec3::new(-1.5, 0.0, -1.5);
+pub(super) const START: Vec3 = Vec3::new(-1.5, 0.0, -1.5);
 
 /// Puts the player at `START` once, facing +X.
 fn place(mut done: Local<bool>, mut players: Query<&mut Interpolated, With<Player>>) {
@@ -38,7 +38,7 @@ fn app(config: &str) -> App {
     app_in(config, &[WALL])
 }
 
-fn app_in(config: &str, objects: &[&str]) -> App {
+pub(super) fn app_in(config: &str, objects: &[&str]) -> App {
     let mut app = App::new(ConfigFile::from_text(&format!(
         "[time]\nfixed_hz = 50.0\n{config}"
     )))
@@ -67,7 +67,7 @@ fn app_in(config: &str, objects: &[&str]) -> App {
     })
 }
 
-fn steps(app: &mut App, count: usize) {
+pub(super) fn steps(app: &mut App, count: usize) {
     for _ in 0..count {
         app.advance(Duration::from_millis(20));
     }
@@ -90,12 +90,12 @@ fn player(app: &App) -> (Vec3, Quat) {
     (pose.translation, pose.rotation)
 }
 
-fn at(app: &App) -> Vec3 {
+pub(super) fn at(app: &App) -> Vec3 {
     player(app).0
 }
 
 /// The center of cell (column, row).
-fn center(column: f32, row: f32) -> Vec3 {
+pub(super) fn center(column: f32, row: f32) -> Vec3 {
     Vec3::new(column - 3.5, 0.0, row - 3.5)
 }
 

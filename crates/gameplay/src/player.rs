@@ -641,7 +641,8 @@ pub fn steer_player(
     mut players: Query<(Entity, &mut Walker, &PlayerDef, &mut Interpolated), With<Player>>,
     mut goals: ResMut<GridMoves>,
 ) {
-    let direction = if capture.0 || !controller.active {
+    // Its length is the tilt of a stick: 1 for a key.
+    let analog = if capture.0 || !controller.active {
         Vec3::ZERO
     } else {
         move_direction(&actions, cameras.iter().next())
@@ -650,9 +651,8 @@ pub fn steer_player(
         goals.0.clear();
     }
     // A half-tilted stick walks at half speed; the grid walk ignores the tilt.
-    let tilt = direction.length();
-    let stick = direction;
-    let direction = direction.normalize_or_zero();
+    let tilt = analog.length();
+    let direction = analog.normalize_or_zero();
     for (entity, mut walker, def, mut pose) in &mut players {
         let speed = if actions.pressed(RUN) {
             def.run_speed
@@ -668,7 +668,7 @@ pub fn steer_player(
                 &mut steered,
                 &mut current,
                 speed,
-                grid_input(stick),
+                grid_input(analog),
                 &mut goal,
                 (&grid, &physics, seconds),
             );

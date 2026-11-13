@@ -1,9 +1,9 @@
 //! The gamepad (gilrs), translated into `RawInput`. gilrs types stay in this file.
 //! One player: the first pad that is connected. Events of other pads are ignored.
 
-use gilrs::{Axis, Button, EventType, Gilrs};
+use gilrs::{Axis, Button, EventType, Gilrs, GilrsBuilder};
 
-use crate::input::{Key, RawInput, Stick};
+use crate::input::{self, Key, RawInput, Stick};
 
 /// A trigger is a button past this value.
 const TRIGGER_DOWN: f32 = 0.5;
@@ -17,7 +17,8 @@ pub(crate) struct Gamepads {
 impl Gamepads {
     /// `None` if gilrs cannot start: the game then runs without a pad.
     pub(crate) fn new() -> Option<Self> {
-        match Gilrs::new() {
+        // No filters of gilrs: the dead zone is that of `GamepadSettings`.
+        match GilrsBuilder::new().with_default_filters(false).build() {
             Ok(gilrs) => {
                 let player = Player {
                     id: gilrs.gamepads().next().map(|(id, _)| id.into()),
@@ -46,6 +47,11 @@ impl Gamepads {
             self.player.map(event.id.into(), pad, &mut send);
         }
     }
+
+    /// The window lost the focus: `update_actions` releases the pad inputs.
+    pub(crate) fn focus_lost(&mut self) {
+        self.player.release();
+    }
 }
 
 /// A gilrs event without its `Code`, which tests cannot make.
@@ -60,18 +66,22 @@ enum PadEvent {
     Other,
 }
 
-/// The state of player 1: which pad it is, and the last values of its axes.
+/// The state of player 1: which pad it is, and its triggers.
 #[derive(Default)]
 struct Player {
     /// The gilrs id of the pad. `None`: no pad, the next pad that sends an event is it.
     id: Option<usize>,
-    /// x and y of each stick: an axis event gives one of them, `PadAxis` needs both.
-    sticks: [[f32; 2]; 2],
     /// LT and RT: down past `TRIGGER_DOWN`.
     triggers: [bool; 2],
 }
 
 impl Player {
+    /// Without the focus no event comes: a trigger let go then would stay down
+    /// here, and its next press would send no key-down.
+    fn release(&mut self) {
+        self.triggers = [false; 2];
+    }
+
     fn map(&mut self, pad: usize, event: PadEvent, send: &mut impl FnMut(RawInput)) {
         if self.id.is_none() && event != PadEvent::Disconnected {
             self.id = Some(pad);
@@ -108,16 +118,14 @@ impl Player {
                 }
             }
             PadEvent::Axis(axis, value) => {
-                let (stick, i) = match axis {
-                    Axis::LeftStickX => (Stick::Left, 0),
-                    Axis::LeftStickY => (Stick::Left, 1),
-                    Axis::RightStickX => (Stick::Right, 0),
-                    Axis::RightStickY => (Stick::Right, 1),
+                let (stick, axis) = match axis {
+                    Axis::LeftStickX => (Stick::Left, input::Axis::X),
+                    Axis::LeftStickY => (Stick::Left, input::Axis::Y),
+                    Axis::RightStickX => (Stick::Right, input::Axis::X),
+                    Axis::RightStickY => (Stick::Right, input::Axis::Y),
                     _ => return,
                 };
-                let at = &mut self.sticks[stick as usize];
-                at[i] = value;
-                send(RawInput::PadAxis(stick, *at));
+                send(RawInput::PadAxis(stick, axis, value));
             }
             PadEvent::Disconnected => {
                 *self = Player::default();
@@ -176,7 +184,6 @@ mod tests {
                 (0, PadEvent::Changed(Button::LeftTrigger2, 0.6)),
                 (0, PadEvent::Changed(Button::LeftTrigger2, 0.9)),
                 (0, PadEvent::Changed(Button::LeftTrigger2, 0.1)),
-                // An axis keeps the other axis of its stick.
                 (0, PadEvent::Axis(Axis::LeftStickX, 0.5)),
                 (0, PadEvent::Axis(Axis::LeftStickY, -1.0)),
                 (0, PadEvent::Axis(Axis::RightStickY, 0.25)),
@@ -189,11 +196,22 @@ mod tests {
                 "KeyUp(PadA)",
                 "KeyDown(PadLT)",
                 "KeyUp(PadLT)",
-                "PadAxis(Left, [0.5, 0.0])",
-                "PadAxis(Left, [0.5, -1.0])",
-                "PadAxis(Right, [0.0, 0.25])",
+                "PadAxis(Left, X, 0.5)",
+                "PadAxis(Left, Y, -1.0)",
+                "PadAxis(Right, Y, 0.25)",
             ]
         );
+    }
+
+    #[test]
+    fn a_trigger_let_go_without_the_focus_presses_again() {
+        let mut player = Player::default();
+        let lt = |value| (0, PadEvent::Changed(Button::LeftTrigger2, value));
+        run(&mut player, &[lt(0.9)]);
+        // The trigger goes up while the window has no focus: no event.
+        player.release();
+        assert_eq!(run(&mut player, &[lt(0.9)]), ["KeyDown(PadLT)"]);
+        assert_eq!(player.id, Some(0));
     }
 
     #[test]

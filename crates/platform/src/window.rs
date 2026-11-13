@@ -435,6 +435,9 @@ impl ApplicationHandler for Runner {
             }
             WindowEvent::Focused(false) => {
                 app.write_message(RawInput::FocusLost);
+                if let Some(gamepads) = &mut self.gamepads {
+                    gamepads.focus_lost();
+                }
             }
             WindowEvent::RedrawRequested => {
                 // Windows repaints a window one time when it is restored, before the

@@ -30,7 +30,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::world::World;
 use maki_core::{App, Input, Module};
-use maki_platform::{Key, QuitHold, QuitRequested, RawInput, Stick, update_actions};
+use maki_platform::{Axis, Key, QuitHold, QuitRequested, RawInput, Stick, update_actions};
 use maki_render::{FrameGraph, RenderGpu};
 use maki_ui::{ScriptedUiInput, egui, run_command};
 
@@ -40,7 +40,7 @@ pub enum InputStep {
     Wait(u32),
     /// A key down (true) or up (false).
     Key(Key, bool),
-    /// A stick of the pad at this place, as `RawInput::PadAxis`.
+    /// A stick of the pad at this place: two `RawInput::PadAxis`.
     Stick(Stick, [f32; 2]),
     Text(String),
     /// The pointer goes to this place of the window, in physical pixels.
@@ -311,8 +311,9 @@ fn apply(world: &mut World, state: &mut ScriptState, step: InputStep) {
                 }
             }
         }
-        InputStep::Stick(stick, at) => {
-            world.write_message(RawInput::PadAxis(stick, at));
+        InputStep::Stick(stick, [x, y]) => {
+            world.write_message(RawInput::PadAxis(stick, Axis::X, x));
+            world.write_message(RawInput::PadAxis(stick, Axis::Y, y));
         }
         InputStep::Text(text) => ui.push(egui::Event::Text(text)),
         InputStep::Move(at) => {

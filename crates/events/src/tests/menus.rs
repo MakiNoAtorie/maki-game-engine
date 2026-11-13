@@ -210,6 +210,19 @@ fn a_menu_with_focus_blocks_the_walk_and_a_hud_does_not() {
 }
 
 #[test]
+fn the_pad_moves_down_and_picks() {
+    let app = menu_game("menu-pad", r#"OpenMenu("data/menus/main.menu.ron")"#);
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        tap(&mut app, Key::PadDown);
+        assert_eq!(rows(&app), ["First", "> Routine", "Script"]);
+        tap(&mut app, Key::PadA);
+        steps(&mut app, 1);
+        assert!(flag(&app, "routine"));
+    });
+}
+
+#[test]
 fn a_message_over_a_menu_takes_the_input() {
     let commands = r#"OpenMenu("data/menus/main.menu.ron"), Message("Over")"#;
     let app = menu_game("menu-message", commands);

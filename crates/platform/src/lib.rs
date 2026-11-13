@@ -9,9 +9,9 @@ use bevy_ecs::schedule::common_conditions::resource_exists;
 use maki_core::{App, FixedLast, Input, Module};
 
 pub use input::{
-    Action, ActionState, Binding, Bindings, Chord, FixedActionState, GamepadSettings, InputCapture,
-    InputMode, Key, Modifiers, Pointer, RawInput, ScriptedActions, Stick, add_bindings,
-    add_mode_bindings, update_actions,
+    Action, ActionState, Axis, Binding, Bindings, Chord, FixedActionState, GamepadSettings,
+    InputCapture, InputMode, Key, Modifiers, Pointer, RawInput, ScriptedActions, Stick,
+    add_bindings, add_mode_bindings, update_actions,
 };
 pub use window::{
     MakeApp, NextApp, Picture, PictureFit, QuitHold, QuitRequested, RawWindowEvent, Window,
@@ -195,9 +195,9 @@ mod tests {
         assert_eq!(value(&app, RUN), 0.0);
 
         // Under the dead zone: nothing. Past it: rescaled, (0.6 - 0.2) / 0.8.
-        frame(&mut app, &[PadAxis(Stick::Left, [0.0, 0.1])]);
+        frame(&mut app, &[PadAxis(Stick::Left, Axis::Y, 0.1)]);
         assert!(!app.world().resource::<ActionState>().pressed(FORWARD));
-        frame(&mut app, &[PadAxis(Stick::Left, [0.0, 0.6])]);
+        frame(&mut app, &[PadAxis(Stick::Left, Axis::Y, 0.6)]);
         assert!(app.world().resource::<ActionState>().just_pressed(FORWARD));
         assert!((value(&app, FORWARD) - 0.5).abs() < 1e-6);
         assert!((fixed(&app, FORWARD) - 0.5).abs() < 1e-6);
@@ -206,10 +206,15 @@ mod tests {
         assert_eq!(value(&app, FORWARD), 1.0);
         frame(
             &mut app,
-            &[KeyUp(Key::W), PadAxis(Stick::Right, [-1.0, 0.0])],
+            &[KeyUp(Key::W), PadAxis(Stick::Right, Axis::X, -1.0)],
         );
         assert!((value(&app, FORWARD) - 0.5).abs() < 1e-6);
         assert_eq!(value(&app, DOWN), 1.0);
+        // A stick direction also held by a key-down (a script `press`): 1.
+        frame(&mut app, &[KeyDown(Key::LeftStickUp)]);
+        assert_eq!(value(&app, FORWARD), 1.0);
+        frame(&mut app, &[KeyUp(Key::LeftStickUp)]);
+        assert!((value(&app, FORWARD) - 0.5).abs() < 1e-6);
 
         // A lost pad releases its buttons and sticks, not the keys.
         frame(&mut app, &[KeyDown(Key::PadA), KeyDown(Key::E)]);
@@ -219,6 +224,12 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0]
         );
         assert!(app.world().resource::<ActionState>().just_released(RUN));
+
+        // A lost focus releases the sticks: no stale axis comes back after it.
+        frame(&mut app, &[PadAxis(Stick::Right, Axis::X, -1.0)]);
+        frame(&mut app, &[FocusLost, PadAxis(Stick::Left, Axis::Y, 0.6)]);
+        assert_eq!(value(&app, DOWN), 0.0);
+        assert!((value(&app, FORWARD) - 0.5).abs() < 1e-6);
     }
 
     #[derive(bevy_ecs::message::Message, Clone, Copy)]
