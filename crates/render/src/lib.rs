@@ -110,6 +110,15 @@ impl RenderWorld {
         self.0.resource_mut::<Accumulation>().request_soft_reset();
     }
 
+    /// In the next frame the indirect light keeps at most the samples of the last
+    /// `frames` frames. Call from an `Extract` system in each frame in which older
+    /// samples are too old: the lighting changed by a known part over the last frames.
+    pub fn limit_accumulation(&mut self, frames: u32) {
+        self.0
+            .resource_mut::<Accumulation>()
+            .request_history_limit(frames);
+    }
+
     /// A soft reset, and in that frame the TAA drops the history of a pixel at rest
     /// whose surface changed. Call from an `Extract` system when an object jumped to
     /// another pose: the pixels that it left are at rest and show it no more.

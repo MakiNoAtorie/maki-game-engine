@@ -4,6 +4,8 @@
 run      Builds the release binary, runs each scenario, and appends one row for each
          measured column to tools/bench_history.csv (median, p95, p99, min, max over
          the frames after the warmup). Appends the environment to tools/bench_env.csv.
+         `--serial`: one GPU frame at a time, so two runs give the same picture (the
+         gate uses it; the CPU times are then not those of the game).
 compare  Prints a CSV with the medians of two stored runs and the change in percent.
          A run is named by a part of its run_id (the label); the newest match is used.
          `--total`: the GPU total of each scenario only.
@@ -136,6 +138,8 @@ SCENARIOS = {
     # (`SKIN_JUMP_ROOM` below), at the place of the cube of `jump_720p`; camera and light
     # at rest. The gate of stage 63: `bench.py skinjump`.
     "skin_jump_720p": ((1280, 720), "skin_jump", {}),
+    # 16 figures that swing an arm in each frame: the skin pass and a BLAS build of each (`SKIN_CROWD_ROOM`).
+    "skin_crowd_720p": ((1280, 720), "skin_crowd", {}),
     # A red lamp pulses (`LIGHT_ANIM_ROOM` below: each fixed step changes the light, a soft
     # reset of the denoiser); camera, cube, and first light at rest. `bench.py lightanim`.
     "light_anim_720p": ((1280, 720), "light_anim", {}),
@@ -207,6 +211,16 @@ SKIN_JUMP_ROOM = JUMP_ROOM.replace(
     """(pose: (position: (-1.0, 0.0, 0.5)), components: {"prop": (mesh: File("figure.glb")),
             "animator": (clip: "skin_jump.clip.ron", looping: false)}),""")
 assert SKIN_JUMP_ROOM != JUMP_ROOM, "the cube of jump_720p moved: update SKIN_JUMP_ROOM"
+# `skin_crowd_720p`: 16 figures in a 4 x 4 grid, each arm up and down in 1 s, looping.
+SKIN_CROWD_CLIP = """(mode: Linear, length: 1.0, tracks: [(channel: Rotation, target: "arm_r", keys: [
+    (time: 0.0, value: Vector((0.0, 0.0, 0.0))), (time: 0.5, value: Vector((0.0, 0.0, 150.0))), (time: 1.0, value: Vector((0.0, 0.0, 0.0)))])])
+"""
+SKIN_CROWD_ROOM = JUMP_ROOM.replace(
+    """(pose: (position: (-1.0, 0.3, 0.5)), components: {"prop": (mesh: Cube(0.6), look: (color: (0.8, 0.3, 0.2))),
+            "animator": (clip: "jump.clip.ron", looping: false)}),""",
+    "\n        ".join(
+        f"""(pose: (position: ({x * 1.2 - 1.8:.1f}, 0.0, {z * 1.2 - 2.0:.1f})), components: {{"prop": (mesh: File("figure.glb"), collider: false), "animator": (clip: "crowd.clip.ron", looping: true)}}),"""
+        for x in range(4) for z in range(4)))
 # The place that the arm left, in pixels of the 1280 x 720 picture.
 SKIN_JUMP_CROP = "604,264,32,64"
 
@@ -365,6 +379,12 @@ def run_scenario(name, frames, warmup, label, overrides=None, arguments=(), dump
         (work / "skin_jump.clip.ron").write_text(SKIN_JUMP_CLIP)
         (work / "figure.glb").write_bytes((ROOT / "game" / "assets" / "rooms" / "models" / "figure.glb").read_bytes())
         params += ";skin_jump"
+    elif scene == "skin_crowd":
+        room_path = work / "room.ron"
+        room_path.write_text(SKIN_CROWD_ROOM)
+        (work / "crowd.clip.ron").write_text(SKIN_CROWD_CLIP)
+        (work / "figure.glb").write_bytes((ROOT / "game" / "assets" / "rooms" / "models" / "figure.glb").read_bytes())
+        params += ";skin_crowd"
     elif scene:
         scene_text = ";".join(f"{key}={value}" for key, value in scene.items())
         # The generator is seeded: a file with these arguments in its name has this content.
@@ -422,7 +442,9 @@ def command_run(args):
     for name in names:
         # `--behind`: the window opens behind the others and takes no focus.
         overrides = {"window.focus": False} if args.behind else None
-        params, columns = run_scenario(name, args.frames, args.warmup, args.label, overrides)
+        # `--serial`: one GPU frame at a time, for a picture that is the same in each run.
+        arguments = ["--bench-serial"] if getattr(args, "serial", False) else []
+        params, columns = run_scenario(name, args.frames, args.warmup, args.label, overrides, arguments)
         for column, values in columns.items():
             stats = (f"{value:.3f}" for value in summarize(values))
             rows.append([run_id, commit, f"{name}/{column}", params, len(values), "ms", *stats])
@@ -485,6 +507,9 @@ def command_base(args):
     command = [sys.executable, str(base / "tools" / "bench.py"), "run", "--label", args.label]
     command += ["--only", *args.only] if args.only else []
     command += ["--behind"] if args.behind else []
+    # A commit from before `--bench-serial` has no such option.
+    if getattr(args, "serial", False) and "--bench-serial" in (base / "tools" / "bench.py").read_text(encoding="utf-8"):
+        command += ["--serial"]
     subprocess.run(command, cwd=base, check=True)
     for name, path in (("bench_history.csv", HISTORY), ("bench_env.csv", ENVIRONMENT)):
         source = base / "tools" / name
@@ -802,7 +827,9 @@ NOISE = 0.001
 def command_gate(args):
     """The picture gate: the build of the merge-base with main and this tree, back to back."""
     commit = args.commit or git("merge-base", "origin/main", "HEAD")
-    common = {"only": args.scenarios, "behind": True}
+    # Serial GPU frames: with frames in flight the driver changes a hot shader at a
+    # frame that differs from run to run (`docs/part6/quality-1.md`).
+    common = {"only": args.scenarios, "behind": True, "serial": True}
     command_base(argparse.Namespace(commit=commit, label="gatebase", **common))
     command_run(argparse.Namespace(label="gatethis", frames=700, warmup=100, **common))
     writer = csv.writer(sys.stdout, lineterminator="\n")
@@ -858,6 +885,7 @@ if __name__ == "__main__":
     run.add_argument("--warmup", type=int, default=100, help="first frames that are not measured")
     run.add_argument("--only", nargs="+", metavar="SCENARIO")
     run.add_argument("--behind", action="store_true", help="the window behind the others, with no focus")
+    run.add_argument("--serial", action="store_true", help="one GPU frame at a time: the same picture in each run")
     run.set_defaults(function=command_run)
     compare = commands.add_parser("compare")
     compare.add_argument("a")
@@ -869,6 +897,7 @@ if __name__ == "__main__":
     base.add_argument("--label", required=True)
     base.add_argument("--only", nargs="+", metavar="SCENARIO")
     base.add_argument("--behind", action="store_true")
+    base.add_argument("--serial", action="store_true")
     base.set_defaults(function=command_base)
     drop = commands.add_parser("drop", help="remove each run whose run_id ends with -LABEL")
     drop.add_argument("label")
