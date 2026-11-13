@@ -987,6 +987,12 @@ impl Editor {
         let playing = self.playing();
         let mode = if playing { InputMode::GAME } else { MODE };
         world.resource_mut::<InputMode>().set_if_neq(mode);
+        if world
+            .get_resource::<maki_core::ConsoleGame>()
+            .is_none_or(|game| game.0 != playing)
+        {
+            world.insert_resource(maki_core::ConsoleGame(playing));
+        }
         let paused = !playing || self.paused;
         if world.resource::<Time>().paused != paused {
             world.resource_mut::<Time>().paused = paused;

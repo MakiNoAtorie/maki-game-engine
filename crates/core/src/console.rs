@@ -25,6 +25,17 @@ pub struct ConsoleCommand {
 #[derive(Resource, Default, Clone)]
 pub struct ConsoleCommands(pub Arc<BTreeMap<&'static str, Arc<ConsoleCommand>>>);
 
+/// False: no game runs (a tool edits its document), and each command but `help` is
+/// refused: a command changes the game. A tool sets it; a game leaves it true.
+#[derive(Resource)]
+pub struct ConsoleGame(pub bool);
+
+impl Default for ConsoleGame {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// Adds a command. A name added two times is a bug of a module.
 pub fn add_console_command(
     app: &mut App,
@@ -64,6 +75,12 @@ pub fn run_line(world: &mut World, line: &str) -> Result<String, String> {
         .0
         .get(name)
         .ok_or_else(|| format!("no command `{name}`: `help` lists them"))?;
+    if world
+        .get_resource::<ConsoleGame>()
+        .is_some_and(|game| !game.0)
+    {
+        return Err("no game runs: play it first".to_owned());
+    }
     (command.run)(world, args).map_err(|error| format!("{error} (usage: {name} {})", command.usage))
 }
 
@@ -96,6 +113,8 @@ mod tests {
             Err("one number (usage: set N)".into())
         );
         assert!(run_line(world, "nope").unwrap_err().contains("no command"));
+        world.insert_resource(ConsoleGame(false));
+        assert!(run_line(world, "set 1").unwrap_err().contains("no game"));
         assert!(
             run_line(world, "help")
                 .unwrap()

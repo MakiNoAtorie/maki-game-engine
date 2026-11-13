@@ -139,7 +139,7 @@ pub fn file(ui: &mut Ui, text: &str, value: &mut PathBuf, extensions: &[&str]) -
     // A file of the asset panel dropped on the field.
     match crate::assets_panel::take_drop(ui, shown.response.rect, extensions) {
         Some(dropped) => {
-            *value = dropped;
+            *value = crate::assets_panel::from_folder(&directory, &dropped);
             true
         }
         None => shown.inner,

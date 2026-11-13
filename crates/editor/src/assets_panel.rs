@@ -21,7 +21,8 @@ use maki_ui::theme::icon;
 use crate::widgets::{MODELS, PICTURES, SOUNDS};
 use crate::{Command, Editor, Item, Kind};
 
-/// What a drag of the panel carries: a file, from the asset folder, with `/`.
+/// What a drag of the panel carries: a file, as the panel found it (the asset folder
+/// joined with the path in it).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AssetDrag(pub PathBuf);
 
@@ -447,7 +448,7 @@ fn drop_into_folder(
         }
         return;
     };
-    let from = root.join(&drag.0);
+    let from = drag.0.clone();
     let to = folder.join(from.file_name().unwrap_or_default());
     if from == to {
         return;
@@ -558,7 +559,7 @@ fn cell(
         );
     }
     if response.drag_started() && path.is_file() {
-        egui::DragAndDrop::set_payload(ui.ctx(), AssetDrag(rel.clone()));
+        egui::DragAndDrop::set_payload(ui.ctx(), AssetDrag(path.to_owned()));
     }
     if path.is_dir() {
         drop_into_folder(&response, root, path, status);
@@ -600,8 +601,29 @@ fn cell(
     });
 }
 
-/// A file of the panel dropped on a field with these extensions: its path, from the
-/// asset folder. `rect`: the place of the field.
+/// The path of `file` from `folder`, with `/`, as a room file in `folder` names it:
+/// `../models/chair.glb` from a room in a subfolder. Both start at the same place.
+pub(crate) fn from_folder(folder: &Path, file: &Path) -> PathBuf {
+    use std::path::Component;
+    fn normal(path: &Path) -> Vec<Component<'_>> {
+        let parts = path.components();
+        parts.filter(|part| *part != Component::CurDir).collect()
+    }
+    let (folder, file_parts) = (normal(folder), normal(file));
+    let same = folder
+        .iter()
+        .zip(&file_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let up = std::iter::repeat_n("..".to_owned(), folder.len() - same);
+    let down = file_parts[same..]
+        .iter()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned());
+    PathBuf::from(up.chain(down).collect::<Vec<_>>().join("/"))
+}
+
+/// A file of the panel dropped on a field with these extensions: its path as the panel
+/// found it. `rect`: the place of the field.
 pub(crate) fn take_drop(ui: &Ui, rect: egui::Rect, extensions: &[&str]) -> Option<PathBuf> {
     let drag = egui::DragAndDrop::payload::<AssetDrag>(ui.ctx())?;
     if !has_end(&drag.0.to_string_lossy(), extensions) {
@@ -640,6 +662,14 @@ pub(crate) fn drop_on_picture(ui: &Ui, world: &mut World) {
         return;
     };
     world.resource_scope(|world, mut editor: Mut<Editor>| {
+        // As the open room names it.
+        let room_folder = editor
+            .document
+            .path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_owned();
+        let file = from_folder(&room_folder, &file);
         if editor.playing() {
             editor.status = "Stop the game to add a file".to_owned();
             return;
@@ -740,6 +770,18 @@ mod tests {
         delete_file(&moved).unwrap();
         assert!(!FileId::file_of(&moved).exists());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_dropped_file_is_named_from_the_folder_of_the_room() {
+        let file = Path::new("game/assets/rooms/models/chair.glb");
+        let from = |folder: &str| from_folder(Path::new(folder), file);
+        assert_eq!(from("game/assets/rooms"), Path::new("models/chair.glb"));
+        assert_eq!(
+            from("./game/assets/rooms/cellar"),
+            Path::new("../models/chair.glb")
+        );
+        assert_eq!(from("game/assets/rooms/models"), Path::new("chair.glb"));
     }
 
     #[test]

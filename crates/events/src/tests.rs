@@ -902,6 +902,47 @@ fn a_tool_catches_the_panic_of_a_script_and_stops_the_hooks() {
     });
 }
 
+/// A script that panics while a resource is out of the world.
+#[derive(
+    bevy_ecs::component::Component,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    maki_core::Fields,
+)]
+struct ScopeBomb {}
+
+impl Script for ScopeBomb {
+    fn step(&mut self, context: &mut ScriptContext) {
+        context
+            .world
+            .resource_scope(|_, _: bevy_ecs::world::Mut<GameState>| panic!("boom"));
+    }
+}
+
+#[test]
+fn a_resource_out_of_the_world_at_a_caught_panic_comes_back() {
+    let directory = directory("panic_scope");
+    let room = counter_room(0.0, "").replacen(
+        "objects: [",
+        r#"objects: [(id: 11, name: "bomb", components: {"bomb": ()}),"#,
+        1,
+    );
+    std::fs::write(directory.join("a.ron"), room).unwrap();
+    let mut app = game(&directory);
+    add_script::<ScopeBomb>(&mut app, "bomb");
+    app.resource_mut::<ScriptPanics>().catch = true;
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        assert!(app.world().resource::<ScriptPanics>().caught.is_some());
+        // bevy puts a scoped resource back when the scope unwinds.
+        assert!(app.world().get_resource::<GameState>().is_some());
+        steps(&mut app, 2);
+    });
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
 #[test]
 #[should_panic(expected = "boom")]
 fn the_game_panics_at_the_panic_of_a_script() {
