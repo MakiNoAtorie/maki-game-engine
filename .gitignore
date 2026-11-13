@@ -10,6 +10,8 @@
 /bench.dump
 # Written by a save point of the game.
 /game/save.ron
+# The log files of the game and the editor.
+/game/logs/
 # Backup of the owner. Not part of the repository.
 /maki-renderer-*.zip
 

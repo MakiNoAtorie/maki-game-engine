@@ -8,6 +8,7 @@ extern crate self as maki_core;
 
 pub mod app;
 pub mod config;
+pub mod console;
 pub mod fields;
 pub mod interpolation;
 pub mod play_state;
@@ -19,6 +20,7 @@ pub use app::{
     Startup, Update,
 };
 pub use config::{ConfigFile, Settings, TimeSettings};
+pub use console::{ConsoleCommands, add_console_command, run_line};
 // The trait and its derive have one name, as `Serialize` of serde.
 pub use fields::{FieldTypes, Fields, add_field_type};
 pub use interpolation::{Interpolated, PoseJumps, interpolate_transforms};

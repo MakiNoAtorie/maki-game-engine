@@ -148,12 +148,39 @@ impl Module for LogPanelModule {
         };
         let open = self.open;
         let mut filter = LogFilter::default();
+        let mut command = String::new();
         add_tool_panel(app, panel, move |ui, world| {
+            console(ui, world, &mut command);
             if let Some((file, line)) = log_panel(ui, &mut filter) {
                 open(world, &file, line);
             }
         });
     }
+}
+
+/// The line of the console: Enter runs it (`maki_core::run_line`); the result is a
+/// log line of the source `console`.
+fn console(ui: &mut egui::Ui, world: &mut World, command: &mut String) {
+    ui.horizontal(|ui| {
+        ui.label(">");
+        let field = egui::TextEdit::singleline(command)
+            .hint_text("console: help lists the commands")
+            .desired_width(f32::INFINITY);
+        let field = ui.add(field);
+        if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            let line = std::mem::take(command);
+            match maki_core::run_line(world, &line) {
+                Ok(done) => {
+                    tracing::info!(target: "console", "> {line}");
+                    for text in done.lines() {
+                        tracing::info!(target: "console", "{text}");
+                    }
+                }
+                Err(error) => tracing::warn!(target: "console", "> {line}: {error}"),
+            }
+            field.request_focus();
+        }
+    });
 }
 
 /// The filters, and the lines. `Some`: the place of a line that was clicked.

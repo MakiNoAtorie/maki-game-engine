@@ -70,7 +70,48 @@ impl Module for RoomsModule {
         })
         .add_systems(Startup, request_start_room)
         .add_systems(Update, reload_on_action.before(load_requested_room));
+        add_console_commands(app);
     }
+}
+
+/// The console commands of the rooms.
+fn add_console_commands(app: &mut App) {
+    use maki_core::add_console_command;
+    let help = "Goes to a room: its file, from the folder of the room, and a spawn id";
+    add_console_command(app, "room", "ROOM_FILE [SPAWN_ID]", help, |world, args| {
+        let (file, spawn) = match args {
+            [file] => (file, None),
+            [file, spawn] => {
+                let id: u32 = spawn
+                    .parse()
+                    .map_err(|_| format!("`{spawn}` is not an id"))?;
+                (file, Some(ObjectId(id)))
+            }
+            _ => return Err("a room file".into()),
+        };
+        let room = &world.resource::<CurrentRoom>().path;
+        let path = room.parent().unwrap_or(std::path::Path::new("")).join(file);
+        if !path.is_file() {
+            return Err(format!("no room file {}", path.display()));
+        }
+        let text = format!("room {}", path.display());
+        world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+            path,
+            spawn,
+            text: None,
+        });
+        Ok(text)
+    });
+    add_console_command(app, "reload", "", "Loads the room again", |world, _| {
+        let path = world.resource::<CurrentRoom>().path.clone();
+        let text = format!("reload {}", path.display());
+        world.resource_mut::<RoomRequest>().0 = Some(RoomTarget {
+            path,
+            spawn: None,
+            text: None,
+        });
+        Ok(text)
+    });
 }
 
 /// Reads and checks the start room, with the checks of all modules (the events).

@@ -1659,3 +1659,19 @@ fn the_sensor_of_an_area_does_not_turn_with_its_object() {
         assert_eq!((variable(&app, "entered"), variable(&app, "left")), (1, 1));
     });
 }
+
+#[test]
+fn the_console_sets_flags_and_variables() {
+    let directory = directory("console");
+    let app = game(&directory);
+    let mut world = World::new();
+    world.insert_resource(app.world().resource::<maki_core::ConsoleCommands>().clone());
+    world.init_resource::<GameState>();
+    assert!(maki_core::run_line(&mut world, "flag door on").is_ok());
+    assert!(maki_core::run_line(&mut world, "var tries 4").is_ok());
+    assert!(maki_core::run_line(&mut world, "var tries four").is_err());
+    let state = world.resource::<GameState>();
+    assert!(state.flag("door"));
+    assert_eq!(state.variable("tries"), 4);
+    std::fs::remove_dir_all(&directory).unwrap();
+}

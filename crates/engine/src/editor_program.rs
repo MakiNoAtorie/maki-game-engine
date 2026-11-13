@@ -172,6 +172,7 @@ pub fn run_editor() -> Result {
     }
     let config_path = config_path(rest.collect()).context(USAGE)?;
     let project = Project::load(dir.as_ref())?;
+    crate::open_log_file(&project.dir, "editor");
     let setup = Setup {
         workspace: workspace_of(&project),
         project,

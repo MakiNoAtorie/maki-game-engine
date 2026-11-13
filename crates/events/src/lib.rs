@@ -113,6 +113,55 @@ impl GameState {
     }
 }
 
+/// The console commands of the game state and the inventory.
+fn add_console_commands(app: &mut App) {
+    use maki_core::add_console_command;
+    add_console_command(app, "flag", "NAME on|off", "Sets a flag", |world, args| {
+        let (name, value) = match args {
+            [name, "on"] => (name, true),
+            [name, "off"] => (name, false),
+            _ => return Err("a name and on or off".into()),
+        };
+        world.resource_mut::<GameState>().set_flag(name, value);
+        Ok(format!("flag {name} {}", if value { "on" } else { "off" }))
+    });
+    add_console_command(
+        app,
+        "var",
+        "NAME NUMBER",
+        "Sets a variable",
+        |world, args| {
+            let [name, value] = args else {
+                return Err("a name and a number".into());
+            };
+            let value: i32 = value
+                .parse()
+                .map_err(|_| format!("`{value}` is not a number"))?;
+            world.resource_mut::<GameState>().set_variable(name, value);
+            Ok(format!("var {name} = {value}"))
+        },
+    );
+    let help = "Gives the player an item: its file, from the folder of the room";
+    add_console_command(app, "give", "ITEM_FILE [COUNT]", help, |world, args| {
+        let (file, count) = match args {
+            [file] => (file, 1),
+            [file, count] => (
+                file,
+                count
+                    .parse()
+                    .map_err(|_| format!("`{count}` is not a number"))?,
+            ),
+            _ => return Err("an item file".into()),
+        };
+        let room = &world.resource::<maki_scene::CurrentRoom>().path;
+        let path = room.parent().unwrap_or(std::path::Path::new("")).join(file);
+        let id = maki_assets::FileId::read(&path)
+            .ok_or_else(|| format!("{} has no file id", path.display()))?;
+        world.resource_mut::<Inventory>().add(id, count);
+        Ok(format!("gave {count} of {}", path.display()))
+    });
+}
+
 /// Adds the game state and the event interpreter. Needs `maki_scene::SceneModule` and
 /// `maki_platform::PlatformModule`.
 pub struct EventsModule;
@@ -127,6 +176,7 @@ impl Module for EventsModule {
         flow::add(&registry);
         numbers::add(app, &registry);
         routine::add(app, &registry);
+        add_console_commands(app);
         add_bindings(
             app,
             &[

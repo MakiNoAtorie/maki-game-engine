@@ -108,12 +108,69 @@ pub fn init_logging() {
     let filter = || EnvFilter::new(&spec);
     // The filter is on the text output only. The profiler gets the spans of the
     // schedules and passes (trace level) at each log level.
+    let file = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(|| LogFile);
     let subscriber = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(filter()))
+        .with(file.with_filter(filter()))
         .with(LogPanelLayer.with_filter(filter()));
     #[cfg(feature = "profile")]
     let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
     subscriber.init();
+}
+
+/// The log file of the session: lines before [`open_log_file`] wait in `Buffer`.
+enum LogTarget {
+    Buffer(Vec<u8>),
+    File(std::fs::File),
+}
+
+static LOG_FILE: std::sync::Mutex<LogTarget> = std::sync::Mutex::new(LogTarget::Buffer(Vec::new()));
+
+/// The writer of the file layer of the log.
+struct LogFile;
+
+impl std::io::Write for LogFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut target = LOG_FILE.lock().unwrap_or_else(|poison| poison.into_inner());
+        match &mut *target {
+            LogTarget::Buffer(lines) => lines.extend_from_slice(bytes),
+            LogTarget::File(file) => file.write_all(bytes)?,
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Opens `<project>/logs/<program>.log` for the log lines of this session. The file of
+/// the session before becomes `<program>.previous.log`.
+pub fn open_log_file(project: &Path, program: &str) {
+    use std::io::Write;
+    let dir = project.join("logs");
+    let path = dir.join(format!("{program}.log"));
+    let previous = dir.join(format!("{program}.previous.log"));
+    let opened = std::fs::create_dir_all(&dir).and_then(|()| {
+        if path.exists() {
+            std::fs::rename(&path, &previous)?;
+        }
+        std::fs::File::create(&path)
+    });
+    let mut file = match opened {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "no log file");
+            return;
+        }
+    };
+    let mut target = LOG_FILE.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let LogTarget::Buffer(lines) = &*target {
+        let _ = file.write_all(lines);
+    }
+    *target = LogTarget::File(file);
 }
 
 /// Writes each log line into the store of the log panel.
@@ -225,6 +282,7 @@ pub fn run_game(project: &str, entry: Entry) -> Result {
     let (bench, args) = maki_devtools::parse_args(args).with_context(usage)?;
     let config_path = config_path(args).with_context(usage)?;
     let project = Project::load(Path::new(project))?;
+    open_log_file(&project.dir, "game");
 
     let mut app = App::new(ConfigFile::load(&config_path)?)?;
     add_modules(&mut app, &project, false, entry);
@@ -249,6 +307,46 @@ pub fn run_game(project: &str, entry: Entry) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_log_file_keeps_the_file_of_the_session_before() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("maki_log_file_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        LogFile
+            .write_all(
+                b"before the project
+",
+            )
+            .unwrap();
+        open_log_file(&dir, "test");
+        LogFile
+            .write_all(
+                b"one
+",
+            )
+            .unwrap();
+        open_log_file(&dir, "test");
+        LogFile
+            .write_all(
+                b"two
+",
+            )
+            .unwrap();
+        *LOG_FILE.lock().unwrap() = LogTarget::Buffer(Vec::new());
+        let read = |name: &str| std::fs::read_to_string(dir.join("logs").join(name)).unwrap();
+        assert_eq!(
+            read("test.previous.log"),
+            "before the project
+one
+"
+        );
+        assert_eq!(
+            read("test.log"),
+            "two
+"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_command_line_gives_the_config_path() {
