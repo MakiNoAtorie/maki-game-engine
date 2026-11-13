@@ -216,7 +216,11 @@ pub(crate) fn run(command: &Builtin, step: &mut Step, world: &mut World) -> bool
             let function = world.resource::<CommandRegistry>().function(name);
             match (function, step.entity) {
                 (Some(function), Some(entity)) => {
-                    step.open(ScriptContext::call_function(function, world, entity));
+                    let mut commands = Vec::new();
+                    crate::script::guard(world, |world| {
+                        commands = ScriptContext::call_function(function, world, entity);
+                    });
+                    step.open(commands);
                 }
                 (None, _) => tracing::warn!(event = step.event, name, "no such script function"),
                 (_, None) => tracing::warn!(name, "a script function needs the object of an event"),

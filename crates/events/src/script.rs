@@ -503,6 +503,59 @@ impl Default for TriggerArea {
     }
 }
 
+/// A panic of the code of a project. In a tool (`catch`), a hook or a script function
+/// that panics is stopped: the message is kept in `caught`, no hook runs while it is
+/// there, and the tool stops the play and takes it. In the game (`catch` off) a panic
+/// ends the program, as each panic.
+#[derive(Resource, Default)]
+pub struct ScriptPanics {
+    pub catch: bool,
+    /// The panic message and its place, `file:line`.
+    pub caught: Option<String>,
+}
+
+thread_local! {
+    /// The place of the last panic of this thread, from the panic hook.
+    static PANIC_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs code of the project. False: it panicked, and `ScriptPanics::caught` has it.
+pub(crate) fn guard(world: &mut World, run: impl FnOnce(&mut World)) -> bool {
+    if !world.resource::<ScriptPanics>().catch {
+        run(world);
+        return true;
+    }
+    // The payload has no place: a hook keeps it, then the hook before (the print) runs.
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let before = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let at = info
+                .location()
+                .map(|at| format!("{}:{}", at.file(), at.line()));
+            PANIC_AT.with(|place| *place.borrow_mut() = at);
+            before(info);
+        }));
+    });
+    // The world may be half changed: the tool drops the play and loads the room again.
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(world))) else {
+        return true;
+    };
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".to_owned());
+    let at = PANIC_AT.with(|place| place.borrow_mut().take());
+    let message = match at {
+        Some(at) => format!("{message} ({at})"),
+        None => message,
+    };
+    tracing::error!("a script panicked: {message}");
+    world.resource_mut::<ScriptPanics>().caught = Some(message);
+    false
+}
+
 /// What the system of a script type keeps of each entity.
 #[derive(Component)]
 struct Hooked<T: Send + Sync + 'static> {
@@ -546,6 +599,9 @@ pub fn add_script<T: Script>(app: &mut App, name: &'static str) {
 
 /// The hooks of each entity of a type. `player`: position and view direction.
 fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
+    if world.resource::<ScriptPanics>().caught.is_some() {
+        return;
+    }
     let mut scripts = world.query_filtered::<(Entity, Option<&Hooked<T>>), With<T>>();
     let entities: Vec<(Entity, Option<bool>)> = scripts
         .iter(world)
@@ -573,32 +629,38 @@ fn run_scripts<T: Script>(world: &mut World, player: Option<(Vec3, Vec3)>) {
         };
         let mut script = std::mem::take(&mut *value);
         let reach = in_reach(world, player.map(|(at, _)| at)).contains(&entity);
-        let mut context = ScriptContext::new(world, entity);
-        match before {
-            None => script.start(&mut context),
-            Some(before) => {
-                let runner = context.world.resource::<EventRunner>();
-                let blocked = runner.blocks_player() || runner.starting_room();
-                if inside && !before && !blocked {
-                    script.enter_area(&mut context);
-                }
-                if before && !inside {
-                    script.leave_area(&mut context);
+        let ran = guard(world, |world| {
+            let mut context = ScriptContext::new(world, entity);
+            match before {
+                None => script.start(&mut context),
+                Some(before) => {
+                    let runner = context.world.resource::<EventRunner>();
+                    let blocked = runner.blocks_player() || runner.starting_room();
+                    if inside && !before && !blocked {
+                        script.enter_area(&mut context);
+                    }
+                    if before && !inside {
+                        script.leave_area(&mut context);
+                    }
                 }
             }
+            let runner = context.world.resource::<EventRunner>();
+            let faced = area
+                .zip(player)
+                .is_some_and(|(area, player)| reach && faces(player, area));
+            // Not in the first step, as the events.
+            if before.is_some() && faced && runner.interact_free && !runner.blocks_player() {
+                // One press starts one thing.
+                let mut runner = context.world.resource_mut::<EventRunner>();
+                runner.bypass_change_detection().interact_free = false;
+                script.interact(&mut context);
+            }
+            script.step(&mut context);
+        });
+        // The tool stops the play and loads the room again: the value stays out.
+        if !ran {
+            return;
         }
-        let runner = context.world.resource::<EventRunner>();
-        let faced = area
-            .zip(player)
-            .is_some_and(|(area, player)| reach && faces(player, area));
-        // Not in the first step, as the events.
-        if before.is_some() && faced && runner.interact_free && !runner.blocks_player() {
-            // One press starts one thing.
-            let mut runner = context.world.resource_mut::<EventRunner>();
-            runner.bypass_change_detection().interact_free = false;
-            script.interact(&mut context);
-        }
-        script.step(&mut context);
 
         let Ok(mut entity) = world.get_entity_mut(entity) else {
             continue;

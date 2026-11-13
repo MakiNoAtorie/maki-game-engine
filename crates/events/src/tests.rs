@@ -854,6 +854,60 @@ fn each_hook_of_a_script_runs_at_its_time() {
     });
 }
 
+/// A script whose step panics.
+#[derive(
+    bevy_ecs::component::Component,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    maki_core::Fields,
+)]
+struct Bomb {}
+
+impl Script for Bomb {
+    fn step(&mut self, _context: &mut ScriptContext) {
+        panic!("boom");
+    }
+}
+
+fn bomb_game(test: &str) -> App {
+    let room = counter_room(0.0, "").replacen(
+        "objects: [",
+        r#"objects: [(id: 11, name: "bomb", components: {"bomb": ()}),"#,
+        1,
+    );
+    let mut app = counter_game(test, &room);
+    add_script::<Bomb>(&mut app, "bomb");
+    app
+}
+
+#[test]
+fn a_tool_catches_the_panic_of_a_script_and_stops_the_hooks() {
+    let mut app = bomb_game("panic_caught");
+    app.resource_mut::<ScriptPanics>().catch = true;
+    app.run(|mut app| {
+        steps(&mut app, 3);
+        let caught = app.world().resource::<ScriptPanics>().caught.clone();
+        let caught = caught.expect("the panic is kept");
+        assert!(caught.starts_with("boom ("), "{caught}");
+        assert!(caught.contains("tests.rs:"), "{caught}");
+        // No hook runs until the tool takes the panic.
+        let step = variable(&app, "step");
+        steps(&mut app, 2);
+        assert_eq!(variable(&app, "step"), step);
+        app.resource_mut::<ScriptPanics>().caught = None;
+        steps(&mut app, 1);
+        assert!(variable(&app, "step") > step);
+    });
+}
+
+#[test]
+#[should_panic(expected = "boom")]
+fn the_game_panics_at_the_panic_of_a_script() {
+    bomb_game("panic_game").run(|mut app| steps(&mut app, 3));
+}
+
 /// Where the player goes at the start of the next step.
 #[derive(bevy_ecs::resource::Resource, Default)]
 struct PlaceAt(Option<[f32; 3]>);

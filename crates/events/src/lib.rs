@@ -63,8 +63,8 @@ pub use routine::{
     Arguments, ROUTINE_EXTENSION, RoutineCommand, RoutineDef, Routines, read_routine, routine_text,
 };
 pub use script::{
-    EYE_HEIGHT, Script, ScriptContext, TriggerArea, WalkGoal, add_outputs, add_script,
-    add_script_function, object_entity,
+    EYE_HEIGHT, Script, ScriptContext, ScriptPanics, TriggerArea, WalkGoal, add_outputs,
+    add_script, add_script_function, object_entity,
 };
 pub use state::{
     NamedNumber, NamedSwitch, ObjectState, ObjectStates, RoomStates, StateCommand, StateValues,
@@ -158,6 +158,7 @@ impl Module for EventsModule {
             .init_resource::<ChoiceBox>()
             .init_resource::<RoomValidators>()
             .init_resource::<script::ScriptRunners>()
+            .init_resource::<ScriptPanics>()
             // Areas need `PhysicsModule`; with no module the world is empty.
             .init_resource::<maki_physics::Physics>()
             .add_systems(

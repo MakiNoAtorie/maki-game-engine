@@ -66,7 +66,7 @@ use maki_assets::{AssetChanged, AssetFailed, AssetWatch};
 use maki_core::{
     App, ConfigFile, Input, Interpolated, Module, ResetPlay, Settings, Startup, Time, Update,
 };
-use maki_events::{CommandRegistry, EventRunner, GameState, Problem};
+use maki_events::{CommandRegistry, EventRunner, GameState, Problem, ScriptPanics};
 use maki_gameplay::StartRoom;
 use maki_platform::{
     Action, ActionState, Bindings, Chord, InputMode, Key, Picture, PictureFit, Pointer, QuitHold,
@@ -1392,6 +1392,8 @@ impl Module for EditorModule {
         app.add_saved_settings::<EditorSettings>();
         // The layout of the docks is in a file beside the config file.
         let layout = app.world().resource::<ConfigFile>().beside("layout.ron");
+        // A panic of a script stops the play, not the editor.
+        app.resource_mut::<ScriptPanics>().catch = true;
         app.init_resource::<Panels>();
         let mut panels = app.resource_mut::<Panels>();
         panels.set_tool_layout(panels::LAYOUTS.to_vec(), layout);
@@ -1623,6 +1625,11 @@ pub fn run_commands(world: &mut World) {
                 ids::correct_paths(document);
             }
             history.track(document, selection, busy);
+        }
+        if let Some(message) = world.resource_mut::<ScriptPanics>().caught.take() {
+            editor.stop(world);
+            editor.status = "Stopped: a script panicked".to_owned();
+            editor.error = Some(format!("A script panicked: {message}"));
         }
         editor.sync(world);
         editor.apply_mode(world);
