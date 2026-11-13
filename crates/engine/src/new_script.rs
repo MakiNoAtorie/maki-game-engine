@@ -201,7 +201,9 @@ pub fn create(crate_dir: &Path, input: &str, template: &str) -> Result<Created, 
     let src = crate_dir.join("src");
     let file = src.join(format!("{snake}.rs"));
     if file.exists() {
-        return Err(format!("{} is there already.", file.display()));
+        return Err(format!(
+            "src/{snake}.rs exists already. Choose another name."
+        ));
     }
     std::fs::write(&file, fill(template, &snake, &pascal))
         .map_err(|error| format!("{} not written: {error}", file.display()))?;
@@ -221,7 +223,7 @@ pub fn create(crate_dir: &Path, input: &str, template: &str) -> Result<Created, 
     let to_add = match registered {
         Some(()) => String::new(),
         None => format!(
-            "add `mod {snake};` and `{snake}::add(app);` to {}",
+            "add `mod {snake};` at the top of {} and `{snake}::add(app);` in its `add_modules`",
             lib_path.display()
         ),
     };
@@ -234,7 +236,7 @@ pub(crate) use panel::NewScriptModule;
 
 #[cfg(feature = "dynamic")]
 mod panel {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use bevy_ecs::resource::Resource;
     use bevy_ecs::world::World;
@@ -246,7 +248,7 @@ mod panel {
         notify,
     };
 
-    use super::{create, names, templates};
+    use super::{Created, create, names, templates};
     use crate::reload::open_after_build;
 
     const PANEL: &str = "new_script";
@@ -269,6 +271,8 @@ mod panel {
         templates: Vec<(String, String)>,
         /// What the last "Create" did, and if it was an error.
         result: Option<(String, bool)>,
+        /// The name field takes the keyboard in the next frame.
+        focus: bool,
     }
 
     impl Module for NewScriptModule {
@@ -288,7 +292,10 @@ mod panel {
             let open = |world: &mut World| {
                 let mut form = world.resource_mut::<Form>();
                 form.templates = templates(&form.project);
+                // A template file of the project can be gone since the last time.
+                form.template = form.template.min(form.templates.len().saturating_sub(1));
                 form.result = None;
+                form.focus = true;
                 world.resource_mut::<Panels>().show(PANEL);
             };
             add_command(
@@ -315,58 +322,105 @@ mod panel {
         if form.templates.is_empty() {
             form.templates = templates(&form.project);
         }
-        ui.horizontal(|ui| {
-            ui.label("Name");
-            ui.add(egui::TextEdit::singleline(&mut form.name).hint_text("door bell"));
-            let chosen = form
-                .templates
-                .get(form.template)
-                .map_or("", |t| t.0.as_str());
-            egui::ComboBox::from_id_salt("new_script_template")
-                .selected_text(chosen)
-                // The default height hides the tenth template behind a scroll.
-                .height(f32::INFINITY)
-                .show_ui(ui, |ui| {
-                    for (index, (name, _)) in form.templates.iter().enumerate() {
-                        ui.selectable_value(&mut form.template, index, name);
-                    }
-                });
-        });
-        let named =
-            names(&form.name).and_then(|(snake, pascal)| match taken.contains(&snake.as_str()) {
-                true => Err(format!("A component `{snake}` is there already.")),
-                false => Ok((snake, pascal)),
+        let before = (form.name.clone(), form.template);
+        let mut entered = false;
+        egui::Grid::new("new_script_form")
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.label("Name");
+                let field = egui::TextEdit::singleline(&mut form.name)
+                    .hint_text("e.g. door bell")
+                    .desired_width(240.0);
+                let field = ui.add(field);
+                if std::mem::take(&mut form.focus) {
+                    field.request_focus();
+                }
+                entered =
+                    field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                ui.end_row();
+
+                ui.label("Template");
+                let chosen = form
+                    .templates
+                    .get(form.template)
+                    .map_or("", |t| t.0.as_str());
+                egui::ComboBox::from_id_salt("new_script_template")
+                    .selected_text(chosen)
+                    .width(240.0)
+                    // The default height hides the tenth template behind a scroll.
+                    .height(f32::INFINITY)
+                    .show_ui(ui, |ui| {
+                        for (index, (name, text)) in form.templates.iter().enumerate() {
+                            ui.selectable_value(&mut form.template, index, name)
+                                .on_hover_text(about(text));
+                        }
+                    });
+                ui.end_row();
             });
+        let template = form.templates.get(form.template);
+        if let Some((_, text)) = template {
+            ui.add(egui::Label::new(egui::RichText::new(about(text)).weak()).wrap());
+        }
+        // Only a template that adds a script makes a component.
+        let component = template.is_some_and(|(_, text)| text.contains("add_script::<ScriptName>"));
+        let named = names(&form.name).and_then(|(snake, pascal)| {
+            match component && taken.contains(&snake.as_str()) {
+                true => Err(format!("A component `{snake}` exists already.")),
+                false => Ok((snake, pascal)),
+            }
+        });
+        let reason = match (&named, template) {
+            (_, None) => Some("Choose a template.".to_owned()),
+            (Err(_), _) if form.name.trim().is_empty() => Some("Type a name.".to_owned()),
+            (Err(why), _) => Some(why.clone()),
+            (Ok(_), Some(_)) => None,
+        };
         match &named {
-            Ok((snake, pascal)) => ui.weak(format!(
-                "src/{snake}.rs, the component `{snake}`, the type `{pascal}`"
+            Ok((snake, pascal)) if component => ui.weak(format!(
+                "Makes src/{snake}.rs with the component `{snake}` (type `{pascal}`)."
             )),
+            Ok((snake, pascal)) => {
+                ui.weak(format!("Makes src/{snake}.rs with the type `{pascal}`."))
+            }
             Err(why) if !form.name.trim().is_empty() => ui.colored_label(THEME.warning, why),
             Err(_) => ui.weak("A name of letters and numbers."),
         };
         let mut done = None;
-        if ui
-            .add_enabled(named.is_ok(), egui::Button::new("Create"))
-            .clicked()
-            && let Some((_, text)) = form.templates.get(form.template)
+        let create = ui
+            .add_enabled(reason.is_none(), egui::Button::new("Create"))
+            .on_disabled_hover_text(reason.clone().unwrap_or_default());
+        if (create.clicked() || (entered && reason.is_none()))
+            && let Some((_, text)) = template
         {
             let crate_dir = form.project.join(SCRIPT_CRATE);
-            done = Some(create(&crate_dir, &form.name, text));
+            done = Some(create_file(&crate_dir, &form.name, text, component));
+        }
+        // A result belongs to the name and the template that made it.
+        if (form.name.clone(), form.template) != before {
+            form.result = None;
         }
         match &form.result {
-            Some((text, true)) => ui.colored_label(THEME.error, text),
-            Some((text, false)) => ui.label(text),
-            None => ui.weak(""),
-        };
+            Some((text, true)) => {
+                ui.horizontal(|ui| {
+                    ui.colored_label(THEME.error, text);
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                });
+            }
+            Some((text, false)) => {
+                ui.label(text);
+            }
+            None => {}
+        }
         match done {
-            Some(Ok(created)) => {
-                let text = match created.to_add.is_empty() {
-                    true => format!("{} written and registered.", created.file.display()),
-                    false => format!("{} written: {}.", created.file.display(), created.to_add),
-                };
+            Some(Ok((created, text))) => {
                 tracing::info!("{text}");
                 form.result = Some((text, !created.to_add.is_empty()));
                 form.name.clear();
+                let name = created.file.file_name().unwrap_or_default().display();
+                let text = format!("Created {name}. Building the scripts...");
+                notify(world, NoticeLevel::Info, text);
                 open_after_build(world, created.file);
             }
             Some(Err(text)) => {
@@ -375,6 +429,46 @@ mod panel {
             }
             None => {}
         }
+    }
+
+    /// [`create`], and the text of its result for the panel.
+    fn create_file(
+        crate_dir: &Path,
+        name: &str,
+        template: &str,
+        component: bool,
+    ) -> Result<(Created, String), String> {
+        let created = create(crate_dir, name, template)?;
+        let file = created
+            .file
+            .strip_prefix(crate_dir)
+            .unwrap_or(&created.file);
+        let file = file.display();
+        let text = match (created.to_add.is_empty(), component) {
+            (false, _) => format!("{file} written, but {}.", created.to_add),
+            (true, true) => {
+                let (snake, _) = names(name)?;
+                format!(
+                    "{file} written and registered. After the build, add the component \
+                     `{snake}` to an object in the inspector."
+                )
+            }
+            (true, false) => format!("{file} written and registered."),
+        };
+        Ok((created, text))
+    }
+
+    /// The doc lines at the top of a template, without the name in front.
+    fn about(template: &str) -> String {
+        let lines = template.lines().map_while(|line| line.strip_prefix("//!"));
+        let text: Vec<&str> = lines
+            .map(str::trim)
+            .take_while(|line| !line.is_empty())
+            .collect();
+        let text = text.join(" ");
+        text.strip_prefix("ScriptName: ")
+            .unwrap_or(&text)
+            .to_owned()
     }
 }
 

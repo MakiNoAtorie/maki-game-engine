@@ -316,10 +316,10 @@ impl Names {
                     }
                     match command.get() {
                         Some(Builtin::SetFlag(name, _)) => {
-                            place(false, name, format!("{command:?}"), true);
+                            place(false, name, command_text(command, registry), true);
                         }
                         Some(Builtin::SetVariable(name, _) | Builtin::AddVariable(name, _)) => {
-                            place(true, name, format!("{command:?}"), true);
+                            place(true, name, command_text(command, registry), true);
                         }
                         _ => {}
                     }

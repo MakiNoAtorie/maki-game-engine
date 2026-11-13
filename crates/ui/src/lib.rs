@@ -73,8 +73,13 @@ pub use widgets::{Jobs, NoticeLevel, Notices, notify};
 /// change, all game state. The [`Panels`] resource is not in the world during the call.
 pub type PanelFn = Box<dyn FnMut(&mut egui::Ui, &mut World) + Send + Sync>;
 
-/// What is in a menu of the menu row of a tool, under its commands.
-type Menu = (&'static str, Option<PanelFn>);
+/// A part of a menu that is not a command.
+pub(crate) enum MenuPart {
+    /// A submenu, a list of files, a name field.
+    Draw(PanelFn),
+    /// A line, drawn only between two drawn rows.
+    Separator,
+}
 
 struct Panel {
     /// The id: unique, and the same in each version (the layout file has it).
@@ -191,7 +196,9 @@ pub struct Panels {
     /// `Some`: the layout of a tool.
     tool: Option<shell::Shell>,
     /// The menus of the menu row of a tool, in the order of `add_menu`.
-    menus: Vec<Menu>,
+    menus: Vec<&'static str>,
+    /// The rows of the menus that are not commands: menu, order, part.
+    menu_parts: Vec<(&'static str, i32, MenuPart)>,
 }
 
 impl Panel {
@@ -383,10 +390,40 @@ pub fn add_tool_panel(
 /// Adds a menu to the menu row of a tool, after the menus that were added before
 /// it. It lists each command of the command list with this name as its
 /// `ToolCommand::menu`, and under them what `extra` draws (a list of files, a text
-/// field). The "Window" menu is the last one, and is not added.
+/// field). To put a row between the commands, use [`add_menu_item`]. The "Window"
+/// menu is the last one, and is not added.
 pub fn add_menu(app: &mut App, name: &'static str, extra: Option<PanelFn>) {
     app.init_resource::<Panels>();
-    app.resource_mut::<Panels>().menus.push((name, extra));
+    app.resource_mut::<Panels>().menus.push(name);
+    if let Some(extra) = extra {
+        add_menu_separator(app, name, 0);
+        add_menu_part(app, name, 0, MenuPart::Draw(extra));
+    }
+}
+
+/// Adds rows to a menu at a place among its commands: the rows (commands and parts)
+/// are sorted by their `order`, and at an equal order the commands come first, then
+/// the parts in the order in which they were added. It can be called before
+/// [`add_menu`].
+pub fn add_menu_item(
+    app: &mut App,
+    menu: &'static str,
+    order: i32,
+    draw: impl FnMut(&mut egui::Ui, &mut World) + Send + Sync + 'static,
+) {
+    add_menu_part(app, menu, order, MenuPart::Draw(Box::new(draw)));
+}
+
+/// Adds a line to a menu at a place among its rows (see [`add_menu_item`]). It shows
+/// only between two rows, so a group with nothing in it leaves no double line.
+pub fn add_menu_separator(app: &mut App, menu: &'static str, order: i32) {
+    add_menu_part(app, menu, order, MenuPart::Separator);
+}
+
+fn add_menu_part(app: &mut App, menu: &'static str, order: i32, part: MenuPart) {
+    app.init_resource::<Panels>();
+    let mut panels = app.resource_mut::<Panels>();
+    panels.menu_parts.push((menu, order, part));
 }
 
 /// Adds a small readout in the top left corner of the picture, with no window around
@@ -502,6 +539,10 @@ impl Module for UiModule {
         let scale = app.world().resource::<UiSettings>().scale;
         let mut context = UiContext::default();
         context.ctx.set_zoom_factor(scale);
+        // The tool zooms with its View commands; a game has no zoom key.
+        context
+            .ctx
+            .options_mut(|options| options.zoom_with_keyboard = false);
         // egui takes a new zoom at the start of its next frame. An empty frame now:
         // the first frame of the app then has the size of the window in the points
         // of the zoom (the docks of a tool get their sizes from it).
@@ -527,9 +568,47 @@ impl Module for UiModule {
             // The commands of a menu or the search: `Panels` is back in the world.
             .add_systems(Update, run_queued.after(run_ui).ambiguous_with_all())
             .add_systems(Extract, extract_ui.run_if(resource_exists::<RenderWorld>));
+        add_zoom_commands(app);
         help::build(app);
     }
 }
+
+/// The step of a zoom command, in the scale of `[ui] scale`.
+const ZOOM_STEP: f32 = 0.1;
+
+/// View > Zoom in, Zoom out, Reset zoom: the size of the text and the panels until
+/// the program ends. Reset goes back to `[ui] scale`. The shell reads their keys
+/// (`shell::zoom_keys`): the binding table has no key `=` or `-`.
+fn add_zoom_commands(app: &mut App) {
+    let zoom = |id, name, shortcut, order, step: Option<f32>| ToolCommand {
+        menu: "View",
+        order,
+        shortcut,
+        ..ToolCommand::new(id, name, move |world: &mut World| {
+            let scale = world.resource::<UiSettings>().scale;
+            let ctx = &world.resource::<UiContext>().ctx;
+            let zoom = step.map_or(scale, |step| {
+                ((ctx.zoom_factor() + step) * 10.0).round() / 10.0
+            });
+            ctx.set_zoom_factor(zoom.clamp(0.5, 3.0));
+        })
+    };
+    // After the other commands of View.
+    let order = 100;
+    add_menu_separator(app, "View", order);
+    for command in [
+        zoom(ZOOM_IN, "Zoom in", "Ctrl+=", order, Some(ZOOM_STEP)),
+        zoom(ZOOM_OUT, "Zoom out", "Ctrl+-", order, Some(-ZOOM_STEP)),
+        zoom(ZOOM_RESET, "Reset zoom", "Ctrl+0", order, None),
+    ] {
+        add_command(app, command);
+    }
+}
+
+/// The ids of the zoom commands.
+pub(crate) const ZOOM_IN: &str = "ui.zoom_in";
+pub(crate) const ZOOM_OUT: &str = "ui.zoom_out";
+pub(crate) const ZOOM_RESET: &str = "ui.zoom_reset";
 
 fn feed_events(
     mut events: MessageReader<RawWindowEvent>,
@@ -592,6 +671,7 @@ fn run_ui(world: &mut World) {
                 hidden,
                 tool,
                 menus,
+                menu_parts,
             } = panels;
             // The look of a tool. The panels of a game keep the look of egui.
             if let Some(shell) = tool.as_mut().filter(|shell| !shell.themed) {
@@ -614,7 +694,7 @@ fn run_ui(world: &mut World) {
                     egui::vec2(place.width as f32, place.height as f32) * points,
                 );
                 if let Some(shell) = tool.as_mut().filter(|_| !*hidden) {
-                    room = shell::show(shell, panels, menus, root, world);
+                    room = shell::show(shell, panels, (menus, menu_parts), root, world);
                 } else if left {
                     egui::Panel::left("left panels")
                         .exact_size(LEFT_WIDTH)
@@ -986,5 +1066,38 @@ mod tests {
             assert!(!app.resource_mut::<Panels>().read_layout("not a layout"));
             assert_eq!(app.world().resource::<Panels>().layout_text(), again);
         });
+    }
+
+    /// Rows by order, commands first at an equal order, and a line only between
+    /// two rows.
+    #[test]
+    fn a_menu_sorts_its_rows_and_keeps_lines_between_rows() {
+        let mut app = App::new(ConfigFile::default()).unwrap();
+        let command = |id, order| ToolCommand {
+            menu: "File",
+            order,
+            ..ToolCommand::new(id, id, |_| {})
+        };
+        add_command(&mut app, command("save", 20));
+        add_command(&mut app, command("new", 0));
+        add_command(&mut app, command("quit", 100));
+        add_menu_separator(&mut app, "File", -5);
+        add_menu_item(&mut app, "File", 20, |_, _| {});
+        add_menu_separator(&mut app, "File", 40);
+        add_menu_separator(&mut app, "File", 90);
+        add_menu(&mut app, "File", None);
+        let commands = app.world().resource::<ToolCommands>().clone();
+        let mut panels = app.resource_mut::<Panels>();
+        assert_eq!(panels.menus, ["File"]);
+        let rows = shell::menu_order(&commands, "File", &mut panels.menu_parts);
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|row| match row {
+                shell::MenuRow::Command(command) => command.id,
+                shell::MenuRow::Draw(_) => "draw",
+                shell::MenuRow::Line => "line",
+            })
+            .collect();
+        assert_eq!(names, ["new", "save", "draw", "line", "quit"]);
     }
 }

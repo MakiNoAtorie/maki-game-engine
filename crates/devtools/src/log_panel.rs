@@ -63,6 +63,18 @@ impl LogStore {
             .clear();
     }
 
+    /// The number of lines of each level, in the order of [`LogFilter::levels`].
+    pub fn counts(&self) -> [usize; 5] {
+        let mut counts = [0; 5];
+        let lines = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        for line in lines.iter() {
+            if let Some(level) = LEVELS.iter().position(|level| level.0 == line.level) {
+                counts[level] += 1;
+            }
+        }
+        counts
+    }
+
     /// The lines that pass a filter, oldest first.
     // ponytail: a copy of the lines in each frame that the panel shows; a cache by
     // the number of pushes if it shows in a profile.
@@ -146,27 +158,46 @@ impl Module for LogPanelModule {
 
 /// The filters, and the lines. `Some`: the place of a line that was clicked.
 fn log_panel(ui: &mut egui::Ui, filter: &mut LogFilter) -> Option<(PathBuf, u32)> {
+    let counts = LOG.counts();
     ui.horizontal(|ui| {
-        for (shown, (_, name)) in filter.levels.iter_mut().zip(LEVELS) {
-            ui.toggle_value(shown, name);
+        for ((shown, (_, name)), count) in filter.levels.iter_mut().zip(LEVELS).zip(counts) {
+            ui.toggle_value(shown, format!("{name} {count}"));
         }
         ui.separator();
         ui.add(
             egui::TextEdit::singleline(&mut filter.source)
-                .hint_text("source")
+                .hint_text("module")
                 .desired_width(140.0),
-        );
+        )
+        .on_hover_text("Only lines of modules that start with this, e.g. maki_scene");
         ui.label(icon::SEARCH);
-        ui.add(
+        let search = ui.add(
             egui::TextEdit::singleline(&mut filter.search)
                 .hint_text("search")
                 .desired_width(180.0),
         );
-        if ui.button("Clear").clicked() {
+        if search.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            filter.search.clear();
+        }
+        if *filter != LogFilter::default() && ui.button("Reset filters").clicked() {
+            *filter = LogFilter::default();
+        }
+        let clear = ui.button("Clear");
+        if clear
+            .on_hover_text("Delete all lines, also hidden ones")
+            .clicked()
+        {
             LOG.clear();
         }
     });
     let lines = LOG.lines(filter);
+    if lines.is_empty() {
+        ui.weak(match counts.iter().sum::<usize>() {
+            0 => "No log lines.",
+            _ => "No lines match the filters.",
+        });
+        return None;
+    }
     let mut open = None;
     let height = ui.text_style_height(&egui::TextStyle::Body);
     egui::ScrollArea::vertical()
@@ -180,7 +211,8 @@ fn log_panel(ui: &mut egui::Ui, filter: &mut LogFilter) -> Option<(PathBuf, u32)
                         Level::WARN => (icon::WARNING, THEME.warning),
                         _ => (icon::INFO, ui.visuals().weak_text_color()),
                     };
-                    ui.colored_label(color, mark);
+                    ui.colored_label(color, mark)
+                        .on_hover_text(line.level.as_str());
                     ui.weak(line.target.as_str());
                     if let Some((file, number)) = &line.place {
                         let name = file.file_name().unwrap_or_default().to_string_lossy();
@@ -189,10 +221,21 @@ fn log_panel(ui: &mut egui::Ui, filter: &mut LogFilter) -> Option<(PathBuf, u32)
                             open = Some((file.clone(), *number));
                         }
                     }
+                    // Truncated: the full text shows on hover.
+                    let text = egui::Label::new(line.text.as_str()).truncate();
+                    ui.add(text).context_menu(|ui| {
+                        if ui.button("Copy line").clicked() {
+                            ui.ctx().copy_text(line.text.clone());
+                        }
+                        if ui.button("Copy all").clicked() {
+                            let all: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+                            ui.ctx().copy_text(all.join("\n"));
+                        }
+                    });
                     if line.count > 1 {
-                        ui.strong(format!("×{}", line.count));
+                        let count = ui.strong(format!("×{}", line.count));
+                        count.on_hover_text(format!("Repeated {} times in a row", line.count));
                     }
-                    ui.label(line.text.as_str());
                 });
             }
         });

@@ -61,8 +61,14 @@ impl Project {
     /// Reads `project.toml` of a project folder.
     pub fn load(dir: &Path) -> Result<Self> {
         let path = dir.join(FILE);
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("cannot read the project file {}", path.display()))?;
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            let full = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+            format!(
+                "cannot read the project file {}. Give the project folder as the first \
+                     argument, or start from the folder above it",
+                full.display()
+            )
+        })?;
         Self::parse(dir, &text).with_context(|| format!("project file {}", path.display()))
     }
 

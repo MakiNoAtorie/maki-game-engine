@@ -121,32 +121,32 @@ pub const CANCEL: Action = Action("editor_cancel");
 pub const RENAME: Action = Action("editor_rename");
 
 const BINDINGS: [(Key, Action, &str); 12] = [
-    (Key::F5, PLAY, "Play the room"),
+    (Key::F5, PLAY, "Play"),
     (Key::MouseLeft, SELECT, "Select, or drag a handle"),
     (
         Key::Shift,
         ADD_TO_SELECTION,
-        "Add to the selection (with a click)",
+        "Add to selection (with a click)",
     ),
     (Key::Control, SNAP_SWITCH, "No snap (in a drag)"),
-    (Key::W, TOOL_MOVE, "Tool: move"),
-    (Key::E, TOOL_ROTATE, "Tool: rotate"),
-    (Key::R, TOOL_SCALE, "Tool: scale"),
-    (Key::Q, TOGGLE_LOCAL, "Handles of the item / of the room"),
-    (Key::Delete, DELETE, "Delete the selection"),
-    (Key::F, FRAME, "Frame the selection in the view"),
-    (Key::F2, RENAME, "Rename the selected item"),
-    (Key::Escape, CANCEL, "Cancel a drag, or select nothing"),
+    (Key::W, TOOL_MOVE, "Move tool"),
+    (Key::E, TOOL_ROTATE, "Rotate tool"),
+    (Key::R, TOOL_SCALE, "Scale tool"),
+    (Key::Q, TOGGLE_LOCAL, "Local / global axes"),
+    (Key::Delete, DELETE, "Delete"),
+    (Key::F, FRAME, "Frame selection"),
+    (Key::F2, RENAME, "Rename"),
+    (Key::Escape, CANCEL, "Cancel drag / deselect"),
 ];
 
 const CHORDS: [(Chord, Action, &str); 8] = [
-    (Chord::ctrl(Key::P), COMMAND_SEARCH, "Search a command"),
+    (Chord::ctrl(Key::P), COMMAND_SEARCH, "Command search"),
     (Chord::ctrl(Key::Z), UNDO, "Undo"),
     (Chord::ctrl(Key::Y), REDO, "Redo"),
     (Chord::ctrl(Key::D), DUPLICATE, "Duplicate"),
-    (Chord::ctrl(Key::C), COPY, "Copy the selected command rows"),
-    (Chord::ctrl(Key::V), PASTE, "Paste command rows"),
-    (Chord::ctrl(Key::X), CUT, "Cut the selected items"),
+    (Chord::ctrl(Key::C), COPY, "Copy"),
+    (Chord::ctrl(Key::V), PASTE, "Paste"),
+    (Chord::ctrl(Key::X), CUT, "Cut"),
     (Chord::ctrl(Key::S), SAVE, "Save"),
 ];
 
@@ -524,11 +524,20 @@ impl Editor {
         let Some(commands) = event.list_mut(self.event_ui.page) else {
             return;
         };
-        if row_command(commands, &mut self.event_ui, &self.registry, command) {
+        let changed = row_command(commands, &mut self.event_ui, &self.registry, command);
+        if changed {
             self.document.set_event(index, &event);
             self.document.dirty = true;
         }
-        self.status = format!("{command:?}: command rows");
+        self.status = match (command, changed) {
+            (RowCommand::Copy, _) => "Commands copied",
+            (RowCommand::Delete, true) => "Commands deleted",
+            (RowCommand::Paste, true) => "Commands pasted",
+            (RowCommand::Duplicate, true) => "Commands duplicated",
+            (RowCommand::MoveUp | RowCommand::MoveDown, true) => "Commands moved",
+            (_, false) => "No change",
+        }
+        .to_owned();
     }
 
     /// The object of the primary item, if it has an event.
@@ -583,7 +592,13 @@ impl Editor {
                         self.status = "Opened".to_owned();
                         self.error = None;
                     }
-                    Err(error) => self.fail(format!("{error:#}")),
+                    Err(error) => {
+                        self.fail(format!("{error:#}"));
+                        self.status = format!(
+                            "Could not open {}: the current room stays open",
+                            file_name(&path)
+                        );
+                    }
                 }
             }
             Command::Restore(session) => {
@@ -636,19 +651,20 @@ impl Editor {
                         self.selection = vec![item];
                         self.status = "Added".to_owned();
                     }
-                    Err(reason) => self.status = reason,
+                    Err(reason) => self.warn(world, reason),
                 }
             }
             Command::Delete => {
+                let count = self.selection.len();
                 self.document.delete(&self.selection);
                 self.selection.clear();
-                self.status = "Deleted".to_owned();
+                self.status = format!("Deleted {} (Undo brings it back)", items(count));
             }
             Command::Duplicate => {
                 let copies = self.document.duplicate(&self.selection);
                 if !copies.is_empty() {
                     self.selection = copies;
-                    self.status = "Duplicated".to_owned();
+                    self.status = format!("Duplicated {}", items(self.selection.len()));
                 }
             }
             Command::Undo | Command::Redo => {
@@ -663,20 +679,24 @@ impl Editor {
                     "Redo"
                 };
                 self.status = match done {
-                    true => format!("{name}: {undo} steps back, {redo} forward"),
-                    false => format!("{name}: no step"),
+                    true => format!("{name}: {undo} more to undo, {redo} to redo"),
+                    false => format!("{name}: nothing to {}", name.to_lowercase()),
                 };
             }
+            // An empty selection keeps the buffer.
+            Command::Copy | Command::Cut if self.selection.is_empty() => {
+                self.status = "Nothing selected".to_owned();
+            }
             Command::Copy => {
-                let items = self.selection.clone();
-                self.status = format!("{} items copied", items.len());
-                self.item_buffer = Some((self.document.clone(), items, false));
+                let selected = self.selection.clone();
+                self.status = format!("Copied {}", items(selected.len()));
+                self.item_buffer = Some((self.document.clone(), selected, false));
             }
             Command::Cut => {
-                let items = self.selection.clone();
-                self.status = format!("{} items cut", items.len());
-                self.item_buffer = Some((self.document.clone(), items.clone(), true));
-                self.document.delete(&items);
+                let selected = self.selection.clone();
+                self.status = format!("Cut {}", items(selected.len()));
+                self.item_buffer = Some((self.document.clone(), selected.clone(), true));
+                self.document.delete(&selected);
             }
             Command::Paste => match &mut self.item_buffer {
                 Some((source, items, cut)) => {
@@ -690,12 +710,12 @@ impl Editor {
                     let copies = self.document.copy_from(source, items, offset, *cut);
                     // Only the first paste of a cut keeps the ids.
                     *cut &= !same;
-                    self.status = format!("{} items pasted", copies.len());
+                    self.status = format!("Pasted {}", crate::items(copies.len()));
                     if !copies.is_empty() {
                         self.selection = copies;
                     }
                 }
-                None => self.status = "Paste: copy items or command rows first".to_owned(),
+                None => self.status = "Nothing to paste: copy something first".to_owned(),
             },
             Command::MakePrefab(name) => {
                 let file = Path::new("prefabs").join(&name).with_extension("prefab");
@@ -713,7 +733,7 @@ impl Editor {
                         // The world shows the file, not the document: load again.
                         self.shown = None;
                     }
-                    Err(reason) => self.status = reason,
+                    Err(reason) => self.warn(world, reason),
                 }
             }
             Command::UnpackPrefab => {
@@ -727,7 +747,7 @@ impl Editor {
                         self.selection = items;
                         self.status = "Unpacked".to_owned();
                     }
-                    Err(reason) => self.status = reason,
+                    Err(reason) => self.warn(world, reason),
                 }
             }
             Command::Frame => {
@@ -797,13 +817,21 @@ impl Editor {
                 // A "Save as" is a new file among the others.
                 self.others = None;
                 self.error = None;
+                let file = file_name(&self.document.path);
                 self.status = match self.problems().len() {
-                    0 => "Saved".to_owned(),
-                    count => format!("Saved, with {count} problems in the events"),
+                    0 => format!("Saved {file}"),
+                    1 => format!("Saved {file}, with 1 problem in the events"),
+                    count => format!("Saved {file}, with {count} problems in the events"),
                 };
             }
             Err(error) => self.fail(format!("{error:#}")),
         }
+    }
+
+    /// A command that could not be done: the reason in the status row and a notice.
+    fn warn(&mut self, world: &mut World, reason: String) {
+        notify(world, NoticeLevel::Warning, reason.clone());
+        self.status = reason;
     }
 
     fn fail(&mut self, error: String) {
@@ -860,6 +888,7 @@ impl Editor {
         let spawns = spawn_points(&self.document.room);
         let spawn = play_spawn(&spawns, self.play_from.as_ref()).map(|(spawn, _)| *spawn);
         if spawn.is_none() {
+            self.status = "No spawn point: the player starts at the view centre".to_owned();
             // A room with no spawn point: the player starts where the editor looks.
             let mut cameras = world.query::<&EditorCamera>();
             let target = cameras.iter(world).next().map_or(Vec3::ZERO, |c| c.target);
@@ -1006,9 +1035,26 @@ fn add_commands(app: &mut App) {
     type CanRun = fn(&World) -> bool;
     let again = ToolCommand {
         menu: "Assets",
-        ..ToolCommand::new("assets.load_again", "Load all again", load_assets_again)
+        ..ToolCommand::new("assets.load_again", "Reload all", load_assets_again)
     };
     maki_ui::add_command(app, again);
+    // File order: room rows negative, project rows of other modules 0, Quit last.
+    let file = [
+        ("editor.new", "New room", None, -100, Command::New),
+        ("editor.save", "Save", Some(SAVE), -80, Command::Save),
+        ("editor.quit", "Quit", None, 100, Command::Quit),
+    ];
+    for (id, name, action, order, command) in file {
+        let run = move |world: &mut World| world.resource_mut::<Editor>().request(command.clone());
+        let command = ToolCommand {
+            menu: "File",
+            order,
+            action,
+            can_run: editing,
+            ..ToolCommand::new(id, name, run)
+        };
+        maki_ui::add_command(app, command);
+    }
     let mut add = |id, name, menu, action: Option<Action>, can_run: CanRun, command: Command| {
         let run = move |world: &mut World| world.resource_mut::<Editor>().request(command.clone());
         maki_ui::add_command(
@@ -1032,23 +1078,6 @@ fn add_commands(app: &mut App) {
     };
     // The press of the cancel key that stopped a game is not a cancel.
     let can_cancel: CanRun = |world| editing(world) && !world.resource::<Editor>().ignore_cancel;
-    add(
-        "editor.new",
-        "New room",
-        "File",
-        None,
-        editing,
-        Command::New,
-    );
-    add(
-        "editor.save",
-        "Save",
-        "File",
-        Some(SAVE),
-        editing,
-        Command::Save,
-    );
-    add("editor.quit", "Quit", "File", None, editing, Command::Quit);
     add(
         "editor.undo",
         "Undo",
@@ -1130,7 +1159,7 @@ fn add_commands(app: &mut App) {
     }
     add(
         "editor.frame",
-        "Frame in the view",
+        "Frame selection",
         "View",
         Some(FRAME),
         editing,
@@ -1153,7 +1182,7 @@ fn add_commands(app: &mut App) {
         playing,
         Command::Stop,
     );
-    let cancel = "Cancel a drag, or select nothing";
+    let cancel = "Cancel drag / deselect";
     add(
         "editor.cancel",
         cancel,
@@ -1178,13 +1207,13 @@ fn add_commands(app: &mut App) {
     };
     add(
         "editor.view_top",
-        "View from the top",
+        "Top view",
         "View",
         Some(VIEW_TOP),
         editing,
         camera::view_top,
     );
-    let game = "View of the game camera";
+    let game = "Game camera view";
     add(
         "editor.view_game",
         game,
@@ -1195,7 +1224,7 @@ fn add_commands(app: &mut App) {
     );
     add(
         "editor.tool_move",
-        "Tool: move",
+        "Move tool",
         "",
         Some(TOOL_MOVE),
         editing,
@@ -1205,7 +1234,7 @@ fn add_commands(app: &mut App) {
     );
     add(
         "editor.tool_rotate",
-        "Tool: rotate",
+        "Rotate tool",
         "",
         Some(TOOL_ROTATE),
         editing,
@@ -1215,7 +1244,7 @@ fn add_commands(app: &mut App) {
     );
     add(
         "editor.tool_scale",
-        "Tool: scale",
+        "Scale tool",
         "",
         Some(TOOL_SCALE),
         editing,
@@ -1223,7 +1252,7 @@ fn add_commands(app: &mut App) {
             world.resource_mut::<Editor>().tool = Tool::Scale;
         },
     );
-    let local = "Handles along the axes of the item, not of the room";
+    let local = "Local axes (off: global)";
     add(
         "editor.local",
         local,
@@ -1235,13 +1264,13 @@ fn add_commands(app: &mut App) {
             editor.local = !editor.local;
         },
     );
-    let step = "Step: the next command of the event";
+    let step = "Step (next command)";
     add("editor.step", step, "", None, stepping, |world| {
         world.resource_mut::<EventRunner>().step_command();
     });
     add(
         "editor.run",
-        "Run: no more steps",
+        "Run (stop stepping)",
         "",
         None,
         stepping,
@@ -1479,6 +1508,7 @@ fn tell_asset_changes(
     mut changed: MessageReader<AssetChanged>,
     mut failed: MessageReader<AssetFailed>,
     mut editor: ResMut<Editor>,
+    mut notices: Option<ResMut<maki_ui::Notices>>,
 ) {
     let name = |path: &Path| {
         path.file_name()
@@ -1494,8 +1524,11 @@ fn tell_asset_changes(
     }
     for AssetFailed { path, error } in failed.read() {
         let file = name(path);
-        editor.status =
-            format!("{file} changed, but it does not read: {error}. The old content stays");
+        let text = format!("{file} changed, but it does not read: {error}. The old content stays");
+        if let Some(notices) = notices.as_mut() {
+            notices.push(NoticeLevel::Warning, text.clone());
+        }
+        editor.status = text;
     }
 }
 
@@ -1514,7 +1547,20 @@ fn load_assets_again(world: &mut World) {
     if !editor.playing() {
         editor.shown = None;
     }
-    editor.status = format!("{count} asset files are loaded again");
+    editor.status = format!("Reloaded {count} asset files");
+}
+
+/// "1 item", "3 items".
+fn items(count: usize) -> String {
+    match count {
+        1 => "1 item".to_owned(),
+        count => format!("{count} items"),
+    }
+}
+
+fn file_name(path: &Path) -> String {
+    let name = path.file_name().unwrap_or(path.as_os_str());
+    name.to_string_lossy().into_owned()
 }
 
 /// Runs in `Input`: a quit request of the frame before (the close button of the

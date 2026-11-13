@@ -124,6 +124,11 @@ const GRID: Color32 = Color32::from_rgba_premultiplied(70, 70, 70, 70);
 const MARK: Color32 = Color32::from_rgb(120, 200, 255);
 const AREA: Color32 = Color32::from_rgb(255, 170, 60);
 const SELECTED: Color32 = Color32::from_rgb(255, 235, 60);
+const ERROR: Color32 = Color32::from_rgb(255, 90, 90);
+/// The caption of the game frame: readable on the picture, unlike the grid.
+const CAPTION: Color32 = Color32::from_rgba_premultiplied(180, 180, 180, 180);
+/// The radius of the mark of a light, in meters.
+const LIGHT_MARK: f32 = 0.12;
 const AXES: [Color32; 3] = maki_ui::THEME.axes;
 /// Points of a circle.
 const CIRCLE_POINTS: usize = 32;
@@ -210,17 +215,25 @@ impl Pen<'_> {
     }
 }
 
-/// While the view is that of the game camera: the frame of the picture of the game.
+/// While the view is near that of the game camera: the frame of the picture of the game.
 /// The view of the editor has the shape of its place in the window, so it shows
 /// more or less of the room at the sides than the game does.
 fn game_frame(world: &mut World, pen: &Pen, picture: egui::Rect, stroke: Stroke) {
     let game = world.resource::<maki_platform::WindowSettings>();
     let aspect = game.width.max(1) as f32 / game.height.max(1) as f32;
-    let label = format!("picture of the game, {} x {}", game.width, game.height);
+    let label = format!("Game view, {} x {}", game.width, game.height);
     let settings = world.get_resource::<maki_gameplay::CameraSettings>();
     let game_view = crate::camera::EditorCamera::game_view(&settings.cloned().unwrap_or_default());
+    // A small orbit, pan, or zoom keeps the frame.
+    let near = |view: &crate::camera::EditorCamera| {
+        view.target.distance(game_view.target) < 0.02 * game_view.distance
+            && (view.yaw - game_view.yaw).abs() < 0.02
+            && (view.pitch - game_view.pitch).abs() < 0.02
+            && (view.distance / game_view.distance - 1.0).abs() < 0.05
+            && view.fov_y_degrees == game_view.fov_y_degrees
+    };
     let mut cameras = world.query::<&crate::camera::EditorCamera>();
-    if cameras.iter(world).next() != Some(&game_view) {
+    if !cameras.iter(world).next().is_some_and(near) {
         return;
     }
     // The same angle from top to bottom: the same height, another width.
@@ -230,7 +243,7 @@ fn game_frame(world: &mut World, pen: &Pen, picture: egui::Rect, stroke: Stroke)
     pen.painter.rect_stroke(frame, 0.0, stroke, kind);
     let (text, at) = if frame.width() > picture.width() {
         (
-            format!("{label}: wider than this view"),
+            format!("{label} (wider than this view)"),
             picture.center_top(),
         )
     } else {
@@ -239,7 +252,7 @@ fn game_frame(world: &mut World, pen: &Pen, picture: egui::Rect, stroke: Stroke)
     let font = egui::FontId::proportional(12.0);
     let anchor = egui::Align2::CENTER_TOP;
     pen.painter
-        .text(at + egui::vec2(0.0, 4.0), anchor, text, font, stroke.color);
+        .text(at + egui::vec2(0.0, 4.0), anchor, text, font, CAPTION);
 }
 
 /// The panel function of the overlay.
@@ -250,6 +263,17 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
         let stroke = egui::Stroke::new(2.0, maki_ui::THEME.play);
         let kind = egui::StrokeKind::Inside;
         ui.painter().rect_stroke(picture, 0.0, stroke, kind);
+        let key = maki_ui::key_label(world, crate::PLAY);
+        let text = if key.is_empty() {
+            "Playing".to_owned()
+        } else {
+            format!("Playing: {key} to stop")
+        };
+        let at = picture.left_top() + egui::vec2(8.0, 6.0);
+        let font = egui::FontId::proportional(13.0);
+        let anchor = egui::Align2::LEFT_TOP;
+        ui.painter()
+            .text(at, anchor, text, font, maki_ui::THEME.play);
         return;
     }
     let Some(view) = crate::editor_view(world) else {
@@ -321,13 +345,21 @@ fn marks(
         );
     }
 
+    // The label of an object: its name, or its number as the pickers show it.
+    let name_of = |index: usize| {
+        room.objects[index]
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("object {index}"))
+    };
+
     // The areas of the objects: of their events and their scripts.
-    for (index, object) in room.objects.iter().enumerate() {
+    for index in 0..room.objects.len() {
         let item = Item::Object(index);
         let Some(area) = editor.document.area(&item) else {
             continue;
         };
-        let name = object.name.as_deref().unwrap_or("");
+        let name = name_of(index);
         let corner = |x: f32, z: f32| {
             let [center_x, center_z] = area.center;
             Vec3::new(
@@ -345,21 +377,39 @@ fn marks(
         ];
         let pen = pen_of(&item);
         pen.path(&corners.map(|(x, z)| corner(x, z)), stroke(&item, AREA));
-        pen.text(corner(-1.0, -1.0), name, AREA);
+        pen.text(corner(-1.0, -1.0), &name, AREA);
     }
 
     let objects = room.objects.iter().enumerate();
     let spawns = objects.filter(|(_, object)| object.is_spawn());
-    let spawns = spawns.map(|(index, object)| {
-        let name = object.name.as_deref().unwrap_or("");
-        (name, Item::Object(index), object.pose.position)
-    });
-    for (name, item, position) in spawns {
-        let at = Vec3::from(position);
+    let spawns = spawns.map(|(index, object)| (index, object.pose.position));
+    for (index, position) in spawns {
+        let (item, at) = (Item::Object(index), Vec3::from(position));
         let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         pen.circle(at, Vec3::X, Vec3::Z, MARK_RADIUS, stroke);
         pen.line(at, at + Vec3::Y * 2.0 * MARK_RADIUS, stroke);
-        pen.text(at + Vec3::Y * 2.0 * MARK_RADIUS, name, MARK);
+        pen.text(at + Vec3::Y * 2.0 * MARK_RADIUS, &name_of(index), MARK);
+    }
+
+    // The lights: a small ring, so that a light with no mesh can be seen and clicked.
+    for index in 0..room.objects.len() {
+        let item = Item::Object(index);
+        let Some(light) = editor.document.light(&item) else {
+            continue;
+        };
+        let at = Vec3::from(light.position);
+        let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
+        pen.circle(at, Vec3::X, Vec3::Z, LIGHT_MARK, stroke);
+        pen.circle(at, Vec3::X, Vec3::Y, LIGHT_MARK, stroke);
+        pen.text(at, &name_of(index), MARK);
+    }
+
+    // A doorway that does not read: no door mark, so the error is the mark.
+    for (index, object) in room.objects.iter().enumerate() {
+        if let Some(Err(error)) = object.doorway() {
+            let at = Vec3::from(object.pose.position);
+            pen.text(at, &format!("{}: doorway: {error}", name_of(index)), ERROR);
+        }
     }
 
     let objects = room.objects.iter().enumerate();
@@ -388,9 +438,18 @@ fn marks(
         // The mesh shows at pose `a`: the box of the mesh at pose `b`, and the way.
         let (stroke, pen) = (stroke(&item, MARK), pen_of(&item));
         pen.line(mover.a.position.into(), mover.b.position.into(), stroke);
+        // Pose B is dimmer than the marks of the room, and named.
+        let dim = Stroke::new(stroke.width, stroke.color.gamma_multiply(0.6));
         let boxes = of_mesh(&item).map_or(Vec::new(), |item| mesh_boxes(world, item));
         for (_, low, high) in boxes {
-            pen.cuboid(mover.b.transform().matrix(), low, high, stroke);
+            pen.cuboid(mover.b.transform().matrix(), low, high, dim);
+        }
+        if let Item::Object(index) = item {
+            pen.text(
+                mover.b.position.into(),
+                &format!("{} B", name_of(index)),
+                MARK,
+            );
         }
     }
 
@@ -503,7 +562,8 @@ fn marks(
             }
         }
     }
-    if let (Tool::Move, Some(origin)) = (gizmo.tool, view.project(gizmo.origin)) {
+    let square_tool = matches!(gizmo.tool, Tool::Move | Tool::Scale);
+    if let (true, Some(origin)) = (square_tool, view.project(gizmo.origin)) {
         let side = 2.0 * SQUARE * pen.points;
         let square = egui::Rect::from_center_size(pen.pos(origin), egui::Vec2::splat(side));
         let color = if active == Some(Handle::Floor) {

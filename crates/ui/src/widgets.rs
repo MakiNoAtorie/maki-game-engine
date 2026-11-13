@@ -6,6 +6,7 @@
 //!   user changed the value. [`help`] gives the next row a hover text.
 //! - The tree: [`tree_filter`], [`tree_group`], [`tree_row`].
 //! - The tool button: [`tool_button`], for a command of the command list.
+//! - The name row of a menu: [`name_row`].
 //! - The notice: [`notify`]. It shows over a corner of the window and stops no work.
 //! - The parts of a status row: [`jobs_label`], [`frame_time_label`].
 
@@ -17,6 +18,40 @@ use egui::{Color32, DragValue, Response, Ui};
 
 use crate::theme::{THEME, icon};
 use crate::{FrameTime, ToolCommands};
+
+// ---- The name row of a menu ----
+
+/// A text field and a button in one row, for a menu item that makes or names a
+/// thing ("Save as", "Make prefab", "New routine"). Enter in the field or a click
+/// on the button gives the trimmed name; the button is disabled while the name is
+/// empty or `enabled` is false. Returns the name in the frame of the action, and
+/// closes the menu then.
+pub fn name_row(
+    ui: &mut Ui,
+    name: &mut String,
+    hint: &str,
+    button: &str,
+    enabled: bool,
+) -> Option<String> {
+    ui.horizontal(|ui| {
+        let field = egui::TextEdit::singleline(name)
+            .desired_width(140.0)
+            .hint_text(hint);
+        let field = ui.add_enabled(enabled, field);
+        let trimmed = name.trim().to_owned();
+        let ready = enabled && !trimmed.is_empty();
+        let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let clicked = ui.add_enabled(ready, egui::Button::new(button)).clicked();
+        if ready && (entered || clicked) {
+            name.clear();
+            ui.close();
+            Some(trimmed)
+        } else {
+            None
+        }
+    })
+    .inner
+}
 
 // ---- The property grid ----
 
@@ -168,9 +203,12 @@ pub fn color(ui: &mut Ui, label: &str, value: &mut [f32; 3]) -> bool {
         if changed {
             *value = picked;
         }
-        for part in value {
-            let drag = drag(part).speed(0.01).range(0.0..=1000.0);
-            changed |= ui.add(drag).changed();
+        for (part, channel) in value.iter_mut().zip(["R ", "G ", "B "]) {
+            let drag = drag(part).speed(0.01).range(0.0..=1000.0).prefix(channel);
+            changed |= ui
+                .add(drag)
+                .on_hover_text("Linear RGB. Above 1: the surface glows")
+                .changed();
         }
         changed
     })
@@ -191,7 +229,9 @@ pub fn text(ui: &mut Ui, label: &str, value: &mut String) -> bool {
             return false;
         }
         ui.ctx().data_mut(|data| data.remove::<String>(id));
-        let changed = response.lost_focus() && buffer != *value;
+        // Escape ends the edit with the old value.
+        let cancelled = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        let changed = response.lost_focus() && !cancelled && buffer != *value;
         if changed {
             *value = buffer;
         }
@@ -219,7 +259,7 @@ pub fn choice<T: Clone>(
         let current = options.iter().find(|(_, option)| same(option, value));
         let mut changed = false;
         egui::ComboBox::from_id_salt(label)
-            .selected_text(current.map_or("?", |(name, _)| name))
+            .selected_text(current.map_or("Unknown", |(name, _)| name))
             .show_ui(ui, |ui| {
                 for (name, option) in options {
                     let selected = same(option, value);
@@ -264,15 +304,29 @@ pub fn optional<T>(
 
 /// The filter field of a tree.
 pub fn tree_filter(ui: &mut Ui, filter: &mut String) {
-    let field = egui::TextEdit::singleline(filter)
-        .hint_text(format!("{} filter", icon::SEARCH))
-        .desired_width(f32::INFINITY);
-    ui.add(field);
+    ui.horizontal(|ui| {
+        let clear = !filter.is_empty();
+        // Room for the clear button at the right.
+        let width = ui.available_width() - if clear { 28.0 } else { 0.0 };
+        let field = egui::TextEdit::singleline(filter)
+            .hint_text(format!("{} Filter", icon::SEARCH))
+            .desired_width(width);
+        let field = ui.add(field);
+        let escape = field.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape));
+        let button = clear
+            && ui
+                .small_button(icon::CLOSE)
+                .on_hover_text("Clear")
+                .clicked();
+        if escape || button {
+            filter.clear();
+        }
+    });
 }
 
 /// True: the row with this label shows with this filter.
 pub fn tree_shows(filter: &str, label: &str) -> bool {
-    label.to_lowercase().contains(&filter.to_lowercase())
+    label.to_lowercase().contains(&filter.trim().to_lowercase())
 }
 
 /// A group of rows with a title and the count of its rows. It can be folded.
@@ -352,7 +406,9 @@ pub fn tree_row(
     });
     TreeRowResponse {
         response,
-        renamed: (done && !cancelled && buffer != row.label).then_some(buffer),
+        // An empty name ends the rename with no name, as Escape.
+        renamed: (done && !cancelled && !buffer.trim().is_empty() && buffer.trim() != row.label)
+            .then(|| buffer.trim().to_owned()),
     }
 }
 
@@ -374,9 +430,11 @@ pub fn tool_button(
         return ui.colored_label(THEME.error, format!("no command `{id}`"));
     };
     let button = egui::Button::new(text).selected(selected);
+    let hover = command.hover(world);
     let response = ui
         .add_enabled((command.can_run)(world), button)
-        .on_hover_text(command.hover(world));
+        .on_hover_text(&hover)
+        .on_disabled_hover_text(format!("{hover}: not available now"));
     if response.clicked() {
         crate::queue_command(world, command.id);
     }
@@ -489,7 +547,7 @@ pub struct Jobs(pub Vec<String>);
 pub fn jobs_label(ui: &mut Ui, world: &World) {
     let jobs = world.get_resource::<Jobs>();
     match jobs.map_or(&[][..], |jobs| &jobs.0) {
-        [] => ui.weak("no job"),
+        [] => ui.weak("Idle"),
         jobs => {
             ui.spinner();
             ui.label(jobs.join(", "))

@@ -24,18 +24,20 @@ pub const VIEW_TOP: Action = Action("editor_view_top");
 pub const VIEW_GAME: Action = Action("editor_view_game");
 
 pub(crate) const BINDINGS: [(Key, Action, &str); 6] = [
-    (Key::MouseRight, ORBIT, "Turn the view (drag)"),
-    (Key::MouseMiddle, PAN, "Move the view (drag)"),
-    (Key::WheelUp, ZOOM_IN, "Nearer"),
-    (Key::WheelDown, ZOOM_OUT, "Farther"),
-    (Key::T, VIEW_TOP, "View from the top"),
-    (Key::G, VIEW_GAME, "View of the game camera"),
+    (Key::MouseRight, ORBIT, "Orbit view (drag)"),
+    (Key::MouseMiddle, PAN, "Pan view (drag)"),
+    (Key::WheelUp, ZOOM_IN, "Zoom in"),
+    (Key::WheelDown, ZOOM_OUT, "Zoom out"),
+    (Key::T, VIEW_TOP, "Top view"),
+    (Key::G, VIEW_GAME, "Game camera view"),
 ];
 
 /// Radians of turn for one pixel of a drag.
 const TURN_SPEED: f32 = 0.005;
 /// One wheel step multiplies or divides the distance by this.
 const ZOOM_STEP: f32 = 1.15;
+/// The lowest angle above the floor, for an orbit and for the game camera view.
+const MIN_PITCH: f32 = 0.0;
 /// Not straight down: the view then keeps its "up" (see `maki_render::ray_basis`).
 const MAX_PITCH: f32 = 1.55;
 
@@ -60,7 +62,7 @@ impl EditorCamera {
         Self {
             target,
             yaw: offset.x.atan2(offset.z),
-            pitch: (offset.y / distance).asin().clamp(0.0, MAX_PITCH),
+            pitch: (offset.y / distance).asin().clamp(MIN_PITCH, MAX_PITCH),
             distance,
             fov_y_degrees: settings.fov_degrees,
         }
@@ -100,7 +102,7 @@ pub(crate) fn move_camera(
         let mut new = *view;
         if actions.pressed(ORBIT) {
             new.yaw -= dx * TURN_SPEED;
-            new.pitch = (new.pitch + dy * TURN_SPEED).clamp(0.05, MAX_PITCH);
+            new.pitch = (new.pitch + dy * TURN_SPEED).clamp(MIN_PITCH, MAX_PITCH);
         }
         if actions.pressed(PAN) {
             // The point under the pointer stays under it: meters for one pixel at
@@ -115,14 +117,14 @@ pub(crate) fn move_camera(
         }
         let steps =
             f32::from(actions.just_pressed(ZOOM_OUT)) - f32::from(actions.just_pressed(ZOOM_IN));
-        new.distance = (new.distance * ZOOM_STEP.powf(steps)).clamp(0.5, 200.0);
+        new.distance = (new.distance * ZOOM_STEP.powf(steps)).clamp(0.1, 200.0);
         // Only a different value is a write: a camera at rest keeps the picture.
         view.set_if_neq(new);
         camera.set_if_neq(new.camera());
     }
 }
 
-/// The command "View of the game camera".
+/// The command "Game camera view".
 pub(crate) fn view_game(world: &mut World) {
     let settings = world.get_resource::<CameraSettings>().cloned();
     let new = EditorCamera::game_view(&settings.unwrap_or_default());
@@ -131,7 +133,7 @@ pub(crate) fn view_game(world: &mut World) {
     }
 }
 
-/// The command "View from the top": the full room is in the picture, with the top
+/// The command "Top view": the full room is in the picture, with the top
 /// of its walls.
 pub(crate) fn view_top(world: &mut World) {
     let room = &world.resource::<Editor>().document.room;

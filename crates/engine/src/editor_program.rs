@@ -28,8 +28,14 @@ pub const BUILD: [&str; 5] = ["build", "--profile", "dynamic", "-p", "maki-edito
 /// The project folder if the command line names none.
 const DEFAULT_PROJECT: &str = "game";
 
-const USAGE: &str = "usage: maki-editor [PROJECT [CONFIG]] [--resave ROOM]...     [--input-script FILE [--input-shots DIR]]
-    --input-script: a file of input steps (keys, text, clicks, commands, shots),     one on each line; see `maki_devtools::InputScriptModule`. Shots go to DIR     (default: the working directory).";
+const USAGE: &str = "\
+usage: maki-editor [PROJECT [CONFIG]] [OPTIONS]
+  PROJECT                 the project folder (default: game)
+  CONFIG                  the config file (default: config.toml)
+  --resave ROOM           read and write a room file again, then quit (can repeat)
+  --input-script FILE     feed the input steps of FILE to the editor
+  --input-shots DIR       the folder of the screenshots of --input-script (default: .)
+  -h, --help              show this text";
 
 /// What each app of one run of the editor is made from.
 #[derive(Debug, Clone)]
@@ -56,8 +62,14 @@ fn workspace_of(project: &Project) -> PathBuf {
     let output = output.ok().filter(|output| output.status.success());
     let manifest = output.map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
     let folder = manifest.and_then(|manifest| Some(PathBuf::from(manifest).parent()?.to_owned()));
-    // No cargo: the build fails too, and its error says so.
-    folder.unwrap_or_default()
+    folder.unwrap_or_else(|| {
+        tracing::error!(
+            "`cargo locate-project` failed in {}: is cargo on PATH, and is the folder in a \
+             cargo workspace?",
+            project.dir.display()
+        );
+        project.dir.clone()
+    })
 }
 
 /// An editor app with the modules of the script DLL as the last build wrote it, not
@@ -129,10 +141,13 @@ pub(crate) fn editor_app(
 pub fn run_editor() -> Result {
     init_logging();
     let (mut resave, mut rest) = (Vec::new(), Vec::new());
-    let (mut script, mut shots) = (None, PathBuf::from("."));
+    let (mut script, mut shots) = (None, None);
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--resave" {
+        if arg == "-h" || arg == "--help" {
+            println!("{USAGE}");
+            return Ok(());
+        } else if arg == "--resave" {
             let path = args.next().context("--resave needs a room file");
             resave.push(PathBuf::from(path.context(USAGE)?));
         } else if arg == "--input-script" {
@@ -142,15 +157,18 @@ pub fn run_editor() -> Result {
             )?);
         } else if arg == "--input-shots" {
             let dir = args.next().context("--input-shots needs a folder");
-            shots = PathBuf::from(dir.context(USAGE)?);
+            shots = Some(PathBuf::from(dir.context(USAGE)?));
         } else {
             rest.push(arg);
         }
     }
     let mut rest = rest.into_iter();
     let dir = rest.next().unwrap_or_else(|| DEFAULT_PROJECT.into());
-    if dir.to_string_lossy().starts_with("--") {
+    if dir.to_string_lossy().starts_with('-') {
         bail!("unknown option {dir:?}\n{USAGE}");
+    }
+    if shots.is_some() && script.is_none() {
+        bail!("--input-shots needs --input-script\n{USAGE}");
     }
     let config_path = config_path(rest.collect()).context(USAGE)?;
     let project = Project::load(dir.as_ref())?;
@@ -161,10 +179,17 @@ pub fn run_editor() -> Result {
     };
 
     // The first build, before the window: the first app has the code of the project.
+    tracing::info!(
+        "building the script crate `{}`: the first build can take some minutes",
+        setup.project.scripts
+    );
     let (mut app, failure) = editor_app(&setup, None, build(&setup))?;
     if let Some(failure) = failure {
         tracing::error!("{failure}");
-        let text = format!("{failure}\nThe rooms open with no command of the project.");
+        let text = format!(
+            "{failure}\nThe rooms open without the scripts of the project. Fix the errors: \
+             a save builds the scripts again (or File > Build scripts, Ctrl+B)."
+        );
         app.init_resource::<Notices>();
         let mut notices = app.resource_mut::<Notices>();
         notices.push(NoticeLevel::Error, text);
@@ -174,6 +199,7 @@ pub fn run_editor() -> Result {
     }
     // The first app only: an app after a new build of the scripts starts with no script.
     if let Some(steps) = script {
+        let shots = shots.unwrap_or_else(|| PathBuf::from("."));
         app.add_module(maki_devtools::InputScriptModule { steps, shots });
     }
     let (project, config) = (&setup.project.name, setup.config_path.display());

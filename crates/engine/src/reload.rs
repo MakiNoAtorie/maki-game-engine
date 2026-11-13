@@ -25,7 +25,7 @@ use bevy_ecs::world::{Mut, World};
 use maki_core::{App, Module, Update};
 use maki_editor::{Document, Editor, EditorSettings};
 use maki_events::CommandRegistry;
-use maki_platform::NextApp;
+use maki_platform::{Action, Chord, Key, NextApp, add_mode_bindings};
 use maki_ui::egui;
 use maki_ui::theme::icon;
 use maki_ui::{
@@ -39,6 +39,8 @@ use crate::editor_program::{BUILD, Setup, editor_app, script_dll};
 const PANEL: &str = "build";
 /// The name of the build in the jobs part of the status row.
 const JOB: &str = "build of the scripts";
+/// The key of the command "Build scripts".
+const BUILD_KEY: Action = Action("project_build");
 /// The time between two looks at the files of the project.
 const SCAN: Duration = Duration::from_millis(300);
 
@@ -85,7 +87,7 @@ impl BuildRow {
 
 /// The rows of the text that `cargo build --message-format short` writes: a line
 /// for each error and warning, `FILE:LINE:COLUMN: error[CODE]: TEXT`, and lines
-/// with no place (`error: could not compile ...`).
+/// with no place (`error: linking with ...`).
 pub(crate) fn rows(text: &str) -> Vec<BuildRow> {
     let row = |line: &str| -> Option<BuildRow> {
         let (at, error) = match (line.find("error"), line.find("warning")) {
@@ -94,8 +96,9 @@ pub(crate) fn rows(text: &str) -> Vec<BuildRow> {
             (None, Some(warning)) => (warning, false),
             (None, None) => return None,
         };
-        // The count of the warnings of a crate is not a warning.
-        if line.contains("generated") && !error {
+        // Warning counts and cargo summary lines repeat the rows: not rows.
+        let summary = ["error: could not compile", "warning: build failed"];
+        if (line.contains("generated") && !error) || summary.iter().any(|s| line.starts_with(s)) {
             return None;
         }
         // `FILE:LINE:COLUMN: ` before the word. A file can have a `:` (a drive).
@@ -194,8 +197,9 @@ struct ProjectBuild {
     next_scan: Instant,
     /// A build is asked for: a file changed, or the user asked.
     request: bool,
-    /// The build that runs, on its thread.
+    /// The build that runs, on its thread, and when it started.
     running: Option<Mutex<Receiver<BuildReport>>>,
+    build_start: Instant,
     /// The last build that ended.
     report: BuildReport,
     /// The file time of the script DLL that this app loaded.
@@ -244,6 +248,7 @@ impl Module for ProjectModule {
             setup: self.setup.clone(),
             request: false,
             running: None,
+            build_start: Instant::now(),
             report: self.report.clone(),
             loaded: dll.as_deref().and_then(written),
             load: false,
@@ -262,20 +267,25 @@ impl Module for ProjectModule {
             open: false,
         };
         add_tool_panel(app, panel, build_panel);
+        add_mode_bindings(
+            app,
+            maki_editor::MODE,
+            &[(Chord::ctrl(Key::B), BUILD_KEY, "Build scripts")],
+        );
         let build = |world: &mut World| world.resource_mut::<ProjectBuild>().request = true;
         add_command(
             app,
             ToolCommand {
                 menu: "File",
-                ..ToolCommand::new("project.build", "Build the scripts", build)
+                action: Some(BUILD_KEY),
+                ..ToolCommand::new("project.build", "Build scripts", build)
             },
         );
-        let name = "Open the project in the code editor";
         add_command(
             app,
             ToolCommand {
                 menu: "File",
-                ..ToolCommand::new("project.open_code", name, open_project)
+                ..ToolCommand::new("project.open_code", "Open in code editor", open_project)
             },
         );
     }
@@ -304,6 +314,7 @@ fn watch_build_load(world: &mut World) {
             let setup = build.setup.clone();
             std::thread::spawn(move || sender.send(self::build(&setup)));
             build.running = Some(Mutex::new(receiver));
+            build.build_start = Instant::now();
             world.resource_mut::<Jobs>().0.push(JOB.to_owned());
         }
         let ended = build.running.as_ref().and_then(|receiver| {
@@ -331,9 +342,16 @@ fn watch_build_load(world: &mut World) {
                 // A change of another file of the project writes no new DLL.
                 let dll = script_dll(&build.setup.project).ok();
                 build.load = dll.as_deref().and_then(written) != build.loaded;
+                if build.load && world.resource::<Editor>().playing() {
+                    let text = "Scripts built: they load when you stop the game.";
+                    notify(world, NoticeLevel::Info, text);
+                }
             } else {
-                world.resource_mut::<Panels>().show(PANEL);
-                let text = "The build of the script crate failed: see the panel \"Build\"";
+                // Only the first failure opens the panel: a closed panel stays closed.
+                if build.report.ok {
+                    world.resource_mut::<Panels>().show(PANEL);
+                }
+                let text = "Script build failed: see the Build panel.";
                 notify(world, NoticeLevel::Warning, text);
             }
             build.report = report;
@@ -362,6 +380,7 @@ fn watch_build_load(world: &mut World) {
 /// the new copy does not load, or the open document does not read with it.
 fn next_app(old: &mut App, setup: &Setup, report: BuildReport) -> Option<App> {
     let session = maki_editor::session(old.world());
+    let seconds = report.seconds;
     let made = editor_app(setup, session.clone(), report).map_err(|error| format!("{error:#}"));
     let checked = made.and_then(|(new, failure)| {
         if let Some(failure) = failure {
@@ -376,12 +395,18 @@ fn next_app(old: &mut App, setup: &Setup, report: BuildReport) -> Option<App> {
         Ok(new)
     });
     match checked {
-        Ok(new) => {
+        Ok(mut new) => {
             tracing::info!("the new code of the project is loaded: a new app");
+            let text = format!("Scripts reloaded (built in {seconds:.1} s).");
+            new.init_resource::<Notices>();
+            new.resource_mut::<Notices>().push(NoticeLevel::Info, text);
             Some(new)
         }
         Err(why) => {
-            let text = format!("The new code of the project was not loaded: {why}");
+            let text = format!(
+                "The new scripts were not loaded: {why}\nThe old scripts still run. Fix the \
+                 script and save to build again."
+            );
             tracing::error!("{text}");
             old.init_resource::<Notices>();
             old.resource_mut::<Notices>().push(NoticeLevel::Error, text);
@@ -390,7 +415,8 @@ fn next_app(old: &mut App, setup: &Setup, report: BuildReport) -> Option<App> {
     }
 }
 
-/// Runs a command line with the shell of the system, and does not wait for it.
+/// Runs a command line with the shell of the system. A thread waits for it: a
+/// command that fails (no such program) writes an error line to the log.
 fn shell(line: &str) -> std::io::Result<()> {
     #[cfg(windows)]
     let mut command = {
@@ -406,7 +432,19 @@ fn shell(line: &str) -> std::io::Result<()> {
         command.args(["-c", line]);
         command
     };
-    command.spawn().map(|_| ())
+    let mut child = command.spawn()?;
+    let line = line.to_owned();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait()
+            && !status.success()
+        {
+            tracing::error!(
+                "the code editor command failed ({status}): `{line}`. Set `code_editor` in \
+                 the [editor] table of the config file"
+            );
+        }
+    });
+    Ok(())
 }
 
 /// "Open in editor": runs the command of the `[editor] code_editor` setting for a
@@ -424,7 +462,7 @@ pub(crate) fn open_in_code_editor(world: &mut World, file: &Path, line: u32) {
     }
 }
 
-/// The command "Open the project in the code editor": the program of the setting,
+/// The command "Open in code editor": the program of the setting,
 /// with the project folder.
 fn open_project(world: &mut World) {
     let template = world.resource::<EditorSettings>().code_editor.clone();
@@ -442,23 +480,29 @@ fn open_project(world: &mut World) {
 fn build_panel(ui: &mut egui::Ui, world: &mut World) {
     let build = world.resource::<ProjectBuild>();
     let (report, running, waits) = (build.report.clone(), build.running.is_some(), build.load);
+    let elapsed = build.build_start.elapsed().as_secs();
     ui.horizontal(|ui| {
-        if running {
-            ui.spinner();
-            ui.label("The build runs.");
-        } else if report.ok {
-            ui.label(format!("The last build: ok, {:.1} s.", report.seconds));
-        } else {
-            ui.colored_label(THEME.error, "The last build failed.");
-        }
-        if waits {
-            ui.colored_label(THEME.warning, "The new code waits for the game to stop.");
-        }
         if ui
-            .add_enabled(!running, egui::Button::new("Build now"))
+            .add_enabled(!running, egui::Button::new("Build"))
+            .on_hover_text("Build the scripts (Ctrl+B). A save of a script also builds.")
             .clicked()
         {
             world.resource_mut::<ProjectBuild>().request = true;
+        }
+        if running {
+            ui.spinner();
+            ui.label(format!("Building... {elapsed} s"));
+        } else if report.ok {
+            ui.label(format!("Build succeeded ({:.1} s).", report.seconds));
+        } else {
+            ui.colored_label(THEME.error, "Build failed.");
+        }
+        if waits {
+            ui.colored_label(THEME.warning, "The new scripts load when the game stops.");
+        }
+        if !report.rows.is_empty() && ui.button("Copy all").clicked() {
+            let lines: Vec<String> = report.rows.iter().map(BuildRow::line).collect();
+            ui.ctx().copy_text(lines.join("\n"));
         }
     });
     if !report.failure.is_empty() {
@@ -476,15 +520,18 @@ fn build_panel(ui: &mut egui::Ui, world: &mut World) {
                 ui.colored_label(color, mark);
                 if let Some((file, line)) = &row.place {
                     let link = ui.link(format!("{}:{line}", file.display()));
-                    if link.on_hover_text("Open in the code editor").clicked() {
+                    if link.on_hover_text("Open in code editor").clicked() {
                         open = Some((file.clone(), *line));
                     }
                 }
-                ui.label(row.text.as_str());
+                ui.add(egui::Label::new(row.text.as_str()).wrap());
             });
         }
-        if report.rows.is_empty() && report.ok {
-            ui.weak("No error and no warning.");
+        if report.rows.is_empty() {
+            match report.ok {
+                true => ui.weak("No errors or warnings."),
+                false => ui.weak("No error rows: the full cargo output is in the Log panel."),
+            };
         }
     });
     if let Some((file, line)) = open {
@@ -518,6 +565,8 @@ mod tests {
 game\\scripts\\src\\shake.rs:190:21: error[E0308]: mismatched types: expected `u32`, found `&str`
 C:\\repo\\game\\scripts\\src\\shake.rs:189:25: warning: unused variable: `x`: help: prefix it
 warning: `maki-game-scripts` (lib) generated 1 warning
+error: linking with `link.exe` failed: exit code: 1120
+warning: build failed, waiting for other jobs to finish...
 error: could not compile `maki-game-scripts` (lib) due to 1 previous error; 1 warning emitted
 ";
         let found = rows(text);
@@ -533,7 +582,8 @@ error: could not compile `maki-game-scripts` (lib) due to 1 previous error; 1 wa
         );
         assert!(found[0].error && !found[1].error && found[2].error);
         assert!(found[0].text.starts_with("error[E0308]: mismatched types"));
-        assert!(found[2].text.starts_with("error: could not compile"));
+        // A line with no place is a row; the summary lines of cargo are not.
+        assert!(found[2].text.starts_with("error: linking with"));
         // A build with no error has no row, also with these words in a path.
         assert!(rows("   Compiling error-kit v1.0.0\n    Finished `dynamic` profile").is_empty());
     }

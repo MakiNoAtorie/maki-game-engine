@@ -24,8 +24,14 @@ pub struct ToolCommand {
     /// The menu of the menu row that lists it ([`crate::add_menu`]). Empty: the
     /// command search only.
     pub menu: &'static str,
+    /// The place in its menu: a smaller one is higher. Equal: in the order of
+    /// `add_command`. See [`crate::add_menu_item`].
+    pub order: i32,
     /// The action whose key starts the command.
     pub action: Option<Action>,
+    /// The key text of a command whose key the shell reads itself, not through an
+    /// action (zoom: the binding table has no key `=`). Shown when `action` is `None`.
+    pub shortcut: &'static str,
     /// "Can run now". False: its menu row and its button are grey, and its key
     /// does nothing.
     pub can_run: fn(&World) -> bool,
@@ -44,7 +50,9 @@ impl ToolCommand {
             id,
             name,
             menu: "",
+            order: 0,
             action: None,
+            shortcut: "",
             can_run: |_| true,
             run: Arc::new(run),
         }
@@ -53,7 +61,7 @@ impl ToolCommand {
     /// The key of the command in the input mode of now. Empty: no key.
     pub fn key(&self, world: &World) -> String {
         self.action
-            .map_or(String::new(), |action| key_label(world, action))
+            .map_or(self.shortcut.to_owned(), |action| key_label(world, action))
     }
 
     /// The hover text of a button of the command: its name and its key.

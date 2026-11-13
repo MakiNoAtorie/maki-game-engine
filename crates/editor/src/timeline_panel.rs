@@ -7,7 +7,8 @@
 //!   values of the tracks at the play head (`patch_room`: lights and poses); the
 //!   document does not change.
 //! - A click on a key selects it; a drag moves its time. "Delete key" removes it.
-//! - "Key" adds a key to the selected track at the play head, with the value that the
+//! - "Delete track" removes the selected track.
+//! - "Add key" adds a key to the selected track at the play head, with the value that the
 //!   document has (a field), or that the track gives there (a pose).
 //! - "Add track": an object and a channel (a pose, or a live field of a component).
 //!
@@ -221,7 +222,10 @@ fn timeline_ui(
         }
         _ => {
             if timelines.is_empty() {
-                ui.weak("No timeline in the room. Add the component \"timeline\" to an object.");
+                ui.weak(
+                    "No timeline in the room. Select an object and add the component \
+                     \"timeline\" in the Inspector.",
+                );
                 state.stop_scrub();
                 return false;
             }
@@ -256,7 +260,9 @@ fn timeline_ui(
     let before = match timeline_of(document, own, types) {
         Some(Ok(timeline)) => timeline,
         Some(Err(error)) => {
-            ui.colored_label(THEME.error, error);
+            let text = format!("The timeline component is invalid: {error}");
+            ui.colored_label(THEME.error, text);
+            ui.weak("Fix it in the Inspector, or undo (Ctrl+Z).");
             return false;
         }
         None => return false,
@@ -269,8 +275,14 @@ fn timeline_ui(
         .key
         .filter(|key| state.track.is_some_and(|t| *key < keys(t)));
 
+    let track = state.track;
     tool_row(ui, state, document, own, &mut timeline, types);
-    ruler(ui, state, &mut timeline, document, own);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        .show(ui, |ui| ruler(ui, state, &mut timeline, document, own));
+    if state.track != track {
+        state.note.clear();
+    }
 
     if timeline == before {
         return false;
@@ -280,7 +292,7 @@ fn timeline_ui(
         .is_ok()
 }
 
-/// "Key", "Delete key", the time of the play head, and "Add track".
+/// "Add key", "Delete key", "Delete track", the play head time, and "Add track".
 fn tool_row(
     ui: &mut Ui,
     state: &mut TimelineUi,
@@ -291,8 +303,12 @@ fn tool_row(
 ) {
     ui.horizontal(|ui| {
         let key = ui
-            .add_enabled(state.track.is_some(), egui::Button::new("Key"))
-            .on_hover_text("A key at the play head on the selected track, with the value of now");
+            .add_enabled(state.track.is_some(), egui::Button::new("Add key"))
+            .on_hover_text(
+                "Add a key at the play head on the selected track, with the value of now. \
+                 A key at the same time gets the new value.",
+            )
+            .on_disabled_hover_text("Select a track first.");
         if key.clicked()
             && let Some(track) = state.track
         {
@@ -305,16 +321,38 @@ fn tool_row(
                     ));
                     state.note.clear();
                 }
-                None => state.note = "The object has no such value.".to_owned(),
+                None => {
+                    state.note = "The object of the track has no such value. Check that it \
+                                  has the component."
+                        .to_owned()
+                }
             }
         }
-        let delete = ui.add_enabled(state.key.is_some(), egui::Button::new("Delete key"));
+        let delete = ui
+            .add_enabled(state.key.is_some(), egui::Button::new("Delete key"))
+            .on_hover_text("Delete the selected key");
         if delete.clicked()
             && let (Some(track), Some(key)) = (state.track, state.key.take())
         {
             timeline.tracks[track].track.keys.remove(key);
         }
-        ui.label(format!("{:.2} s", state.head));
+        let delete = ui
+            .add_enabled(state.track.is_some(), egui::Button::new("Delete track"))
+            .on_hover_text("Delete the selected track with its keys");
+        if delete.clicked()
+            && let Some(track) = state.track.take()
+        {
+            timeline.tracks.remove(track);
+            state.key = None;
+        }
+        let head = egui::DragValue::new(&mut state.head)
+            .range(0.0..=timeline.duration().max(1.0))
+            .speed(0.01)
+            .max_decimals(2)
+            .suffix(" s");
+        if ui.add(head).on_hover_text("Play head time").changed() {
+            state.scrubbed = true;
+        }
         if !state.note.is_empty() {
             ui.colored_label(THEME.warning, &state.note);
         }
@@ -323,12 +361,20 @@ fn tool_row(
         let mut objects = vec![(ObjectId(0), "this object".to_owned())];
         objects.extend(object_names(&document.room.objects));
         let names: Vec<String> = objects.iter().map(|(_, name)| name.clone()).collect();
+        ui.label("Object");
         object_pick(&mut state.add_object, &objects, |text| {
             picker(ui, "timeline object", text, &names, &[], false)
         });
         let channels = object_index(&document.room, own, state.add_object)
             .map(|index| channels(document, index, types))
             .unwrap_or_default();
+        // A channel of the object picked before: the first one of this object.
+        if !channels.contains(&state.add_channel)
+            && let Some(first) = channels.first()
+        {
+            state.add_channel = first.clone();
+        }
+        ui.label("Channel");
         picker(
             ui,
             "timeline channel",
@@ -340,6 +386,7 @@ fn tool_row(
         let can_add = channels.contains(&state.add_channel);
         if ui
             .add_enabled(can_add, egui::Button::new("Add track"))
+            .on_hover_text("Add a track that animates the channel of the object")
             .clicked()
         {
             timeline.tracks.push(TimelineTrack {
@@ -370,6 +417,8 @@ fn ruler(
     let (area, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let duration = timeline.duration();
     let span = if duration > 0.0 { duration } else { 1.0 };
+    // A deleted or moved last key shortens the span: the play head stays in view.
+    state.head = state.head.min(span);
     let ruler = Ruler { area, span };
     state.ruler = Some(ruler);
 
@@ -459,6 +508,20 @@ fn draw(
             text_color,
         );
     }
+    if timeline.tracks.is_empty() {
+        painter.text(
+            pos2(area.center().x, area.top() + RULER + ROW / 2.0),
+            egui::Align2::CENTER_CENTER,
+            "No tracks. Pick an object and a channel, then press Add track.",
+            font.clone(),
+            visuals.weak_text_color(),
+        );
+    }
+    // The names stay in their column: a long one does not run over the keys.
+    let names_painter = painter.with_clip_rect(Rect::from_min_max(
+        area.min,
+        pos2(ruler.left() - 4.0, area.bottom()),
+    ));
     let names = object_names(&document.room.objects);
     for (index, of) in timeline.tracks.iter().enumerate() {
         let y = ruler.row_y(index);
@@ -474,7 +537,7 @@ fn draw(
         let object = object.unwrap_or_else(|| crate::widgets::object_label(&of.object, &names));
         let label = format!("{object} {}", channel_label(&of.track));
         let at = pos2(area.left() + 4.0, y);
-        painter.text(
+        names_painter.text(
             at,
             egui::Align2::LEFT_CENTER,
             label,
@@ -852,7 +915,7 @@ mod tests {
         assert_eq!(rig.history.steps(), (0, 0));
 
         // "Key": the intensity of the lamp in the document, at the play head.
-        rig.click_text("Key");
+        rig.click_text("Add key");
         let keys = rig.timeline().tracks[0].track.keys.clone();
         assert_eq!(keys.len(), 3);
         assert_eq!(keys[2].value, KeyValue::Number(5.0));

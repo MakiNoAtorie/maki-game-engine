@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use bevy_ecs::world::World;
 use maki_events::{CommandRegistry, ROUTINE_EXTENSION, RoutineDef, read_routine, routine_text};
 use maki_ui::egui::{self, Ui};
+use maki_ui::theme::icon;
 
 use crate::Editor;
 use crate::event_panel::{
@@ -43,13 +44,15 @@ pub fn new_routine(directory: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     let letters = |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ';
     if name.is_empty() || !name.chars().all(letters) {
-        return Err("A name of a routine has letters, numbers, `_`, and `-`.".to_owned());
+        return Err(
+            "Use letters, numbers, spaces, `_`, and `-` in the name of a routine.".to_owned(),
+        );
     }
     let path = directory
         .join(FOLDER)
         .join(format!("{name}.{ROUTINE_EXTENSION}"));
     if path.exists() {
-        return Err(format!("{} is there already.", path.display()));
+        return Err(format!("The routine \"{name}\" exists already."));
     }
     let written = std::fs::create_dir_all(directory.join(FOLDER))
         .and_then(|()| std::fs::write(&path, routine_text(&RoutineDef::default())));
@@ -63,6 +66,7 @@ impl Editor {
         match RoutineEdit::open(path, &self.registry) {
             Ok(edit) => {
                 self.routine = Some(edit);
+                self.menu = None;
                 self.event_ui.row = None;
             }
             Err(error) => self.error = Some(error),
@@ -73,45 +77,41 @@ impl Editor {
 /// Under the commands of the "Assets" menu: the routine files to open, and "New
 /// routine" with its name field.
 pub(crate) fn routine_menu(ui: &mut Ui, editor: &mut Editor, name: &mut String) {
-    ui.add_enabled_ui(!editor.playing(), |ui| {
+    let playing = editor.playing();
+    ui.add_enabled_ui(!playing, |ui| {
         let directory = editor.document.directory();
+        let open = editor.routine.as_ref().map(|edit| edit.path.clone());
         ui.menu_button("Open routine", |ui| {
             let files =
                 crate::widgets::files(&directory, &crate::widgets::ROUTINES, &editor.converters);
             if files.is_empty() {
-                ui.weak("No routine file at the room file. \"New routine\" writes one.");
+                ui.weak("No routines yet. Use New routine.");
             }
             for path in files {
-                if ui.button(path.to_string_lossy()).clicked() {
-                    editor.open_routine(&directory.join(&path));
+                let full = directory.join(&path);
+                let selected = open.as_ref() == Some(&full);
+                if ui
+                    .selectable_label(selected, path.to_string_lossy())
+                    .clicked()
+                {
+                    editor.open_routine(&full);
                     ui.close();
                 }
             }
         });
-        ui.horizontal(|ui| {
-            let field = egui::TextEdit::singleline(name)
-                .desired_width(120.0)
-                .hint_text("name of the routine");
-            ui.add(field);
-            let button = ui
-                .add_enabled(!name.trim().is_empty(), egui::Button::new("New routine"))
-                .on_hover_text(
-                    "Writes routines/<name>.routine.ron and opens it in the event panel. \
-                     A row CallRoutine runs it.",
-                );
-            if button.clicked() {
-                match new_routine(&directory, name) {
-                    Ok(path) => {
-                        editor.open_routine(&path);
-                        editor.status = format!("{} written.", path.display());
-                        name.clear();
-                    }
-                    Err(error) => editor.error = Some(error),
+        let made = maki_ui::widgets::name_row(ui, name, "Routine name", "New routine", !playing);
+        if let Some(made) = made {
+            match new_routine(&directory, &made) {
+                Ok(path) => {
+                    editor.open_routine(&path);
+                    editor.status = format!("Routine \"{made}\" created.");
                 }
-                ui.close();
+                Err(error) => editor.error = Some(error),
             }
-        });
-    });
+        }
+    })
+    .response
+    .on_disabled_hover_text("Stop the game to open or create a routine.");
 }
 
 /// The event panel with a routine file open. True: the panel showed it.
@@ -148,16 +148,23 @@ pub(crate) fn routine_panel(ui: &mut Ui, world: &mut World, editor: &mut Editor)
         .show(ui, |ui| {
             scroll("routine names").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let file = edit.path.strip_prefix(&directory).unwrap_or(&edit.path);
-                    ui.strong(file.to_string_lossy());
                     close = ui.button("Close").clicked();
+                    let file = edit.path.strip_prefix(&directory).unwrap_or(&edit.path);
+                    let name = file.file_name().unwrap_or(file.as_os_str());
+                    ui.strong(name.to_string_lossy())
+                        .on_hover_text(file.to_string_lossy());
                 });
-                ui.label("Arguments: whole numbers. In the routine, each hides the variable of its name.");
+                ui.strong("Arguments");
+                ui.weak("Whole numbers. Each one hides the variable of the same name.");
                 let mut removed = None;
                 for (index, name) in edit.routine.arguments.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         changed |= ui.text_edit_singleline(name).changed();
-                        if ui.button("Remove").clicked() {
+                        if ui
+                            .button(icon::CLOSE)
+                            .on_hover_text("Remove argument")
+                            .clicked()
+                        {
                             removed = Some(index);
                         }
                     });
@@ -166,7 +173,7 @@ pub(crate) fn routine_panel(ui: &mut Ui, world: &mut World, editor: &mut Editor)
                     edit.routine.arguments.remove(index);
                     changed = true;
                 }
-                if ui.button("Add an argument").clicked() {
+                if ui.button("Add argument").clicked() {
                     let count = edit.routine.arguments.len() + 1;
                     edit.routine.arguments.push(format!("argument{count}"));
                     changed = true;

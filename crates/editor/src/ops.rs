@@ -148,10 +148,15 @@ impl Document {
         let Some(typed) = self.room.objects[*index].name.take() else {
             return String::new();
         };
+        // An empty name is no name: the outliner shows the default label.
+        let typed = typed.trim().to_owned();
+        if typed.is_empty() {
+            return String::new();
+        }
         let new = self.unique_name(item, &typed);
         let status = match new == typed {
             true => String::new(),
-            false => "The name was in use: a number was added.".to_owned(),
+            false => format!("Name '{typed}' is in use: renamed to '{new}'."),
         };
         self.room.objects[*index].name = Some(new);
         status
@@ -263,14 +268,22 @@ impl Document {
                     },
                 );
                 room.objects.push(object);
-                Item::Object(room.objects.len() - 1)
+                let item = Item::Object(room.objects.len() - 1);
+                let name = self.unique_name(&item, "doorway");
+                self.room.objects.last_mut().expect("pushed above").name = Some(name);
+                item
             }
             Kind::Door => {
                 // A door is in the doorway of its object.
                 let free =
                     |object: &ObjectDef| object.doorway().is_some() && object.door().is_none();
                 let Some(index) = room.objects.iter().position(free) else {
-                    return Err("Each doorway has a door: add a doorway first".to_owned());
+                    let any = room.objects.iter().any(|object| object.doorway().is_some());
+                    return Err(match any {
+                        true => "All doorways have a door: add a doorway first.",
+                        false => "This room has no doorway: add a doorway first.",
+                    }
+                    .to_owned());
                 };
                 let door = DoorLeaf {
                     seconds: 1.2,
@@ -350,9 +363,11 @@ impl Document {
                 );
                 // The text of the event: the commands of a wire need the registry to be
                 // made as values.
-                let door = door.unwrap_or_default();
+                // No door or mover: no command, not one that opens "no object".
+                let command = door.map(|door| format!("OpenDoor({door:?})"));
+                let command = command.unwrap_or_default();
                 let used = TriggerArea::USED;
-                let wire = format!("(wires: [(output: {used:?}, commands: [OpenDoor({door:?})])])");
+                let wire = format!("(wires: [(output: {used:?}, commands: [{command}])])");
                 let wire = ComponentText::parse(&wire).expect("the text is RON");
                 object.components.insert("event".to_owned(), wire);
                 let item = Item::Object(room.objects.len());
@@ -465,12 +480,32 @@ impl Document {
         file: &Path,
         outer: Option<PoseDef>,
     ) -> Result<Item, String> {
-        // No prefab in a prefab yet: an instance is left out.
-        let is_part = |item: &&Item| {
-            let object = self.object(item);
-            object.is_some_and(|object| !object.components.contains_key("prefab"))
+        // The file stays in the folder of the room: no `..`, no root.
+        let inside = file
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !inside || file.file_stem().is_none_or(|stem| stem.is_empty()) {
+            return Err(format!("{} is not a prefab name", file.display()));
+        }
+        // No prefab in a prefab yet: say so, not a prefab with fewer parts.
+        let is_prefab = |item: &Item| {
+            self.object(item)
+                .map(|o| o.components.contains_key("prefab"))
         };
-        let parts: Vec<Item> = items.iter().filter(is_part).cloned().collect();
+        let parts: Vec<Item> = items
+            .iter()
+            .filter(|item| is_prefab(item) == Some(false))
+            .cloned()
+            .collect();
+        let instances = items
+            .iter()
+            .filter(|item| is_prefab(item) == Some(true))
+            .count();
+        if instances > 0 && !parts.is_empty() {
+            return Err(format!(
+                "{instances} selected objects are prefabs: a prefab cannot hold a prefab"
+            ));
+        }
         let Some(first) = parts.first() else {
             return Err(
                 "A prefab is made of objects that are not prefabs: select some first".to_owned(),
@@ -791,7 +826,7 @@ mod tests {
         // A door with the name of the other door gets a number.
         document.room.objects[1].name = Some("door".to_owned());
         let status = document.keep_name_unique(&Item::Object(1));
-        assert!(status.contains("a number was added"), "{status}");
+        assert!(status.contains("renamed to 'door_2'"), "{status}");
         assert_eq!(document.room.objects[1].name.as_deref(), Some("door_2"));
         assert!(document.text().contains("OpenDoor(2)"));
 
@@ -940,7 +975,7 @@ mod tests {
         assert_eq!(doorway, Item::Object(4));
         assert_eq!(document.add(Kind::Door, Vec3::ZERO), Ok(Item::Object(4)));
         assert!(document.room.objects[4].door().is_some());
-        assert_eq!(document.room.objects[4].name.as_deref(), Some("door"));
+        assert_eq!(document.room.objects[4].name.as_deref(), Some("doorway"));
     }
 
     #[test]
