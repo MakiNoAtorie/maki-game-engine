@@ -78,6 +78,12 @@ impl Project {
         // system (a path of the project shows in the log and in the editor).
         let current = std::env::current_dir().unwrap_or_default();
         let dir = dir.strip_prefix(&current).unwrap_or(dir);
+        // The working directory itself strips to "", which is no directory for a command.
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
         let slashes = |path: PathBuf| PathBuf::from(path.to_string_lossy().replace('\\', "/"));
         let below = |path: &Path| slashes(dir.join(path));
         let rooms = below(&file.rooms);
@@ -117,6 +123,9 @@ mod tests {
         // A project folder in the working directory, by its full path: the same.
         let full = std::env::current_dir().unwrap().join("game");
         assert_eq!(Project::parse(&full, text).unwrap(), project);
+        // The working directory by its full path: ".", not "".
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(Project::parse(&here, text).unwrap().dir, Path::new("."));
         // A key that the engine does not know is an error, with its name.
         let error = Project::parse(Path::new("game"), &format!("{text}\nrom = 1"));
         assert!(format!("{:#}", error.unwrap_err()).contains("rom"));

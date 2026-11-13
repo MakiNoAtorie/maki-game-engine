@@ -240,6 +240,8 @@ impl Panels {
 
     /// Shows a hidden panel, hides a shown one. Does nothing if no panel has the name.
     pub fn toggle(&mut self, name: &str) {
+        // A key press after `close_all` brings the shell back.
+        self.hidden = false;
         self.named(name).for_each(|panel| panel.open = !panel.open);
     }
 
@@ -259,6 +261,7 @@ impl Panels {
 
     /// Opens a panel of a tool and makes its tab the one that its dock shows.
     pub fn show(&mut self, name: &str) {
+        self.hidden = false;
         self.set_open(name, true);
         if let Some(shell) = &mut self.tool {
             shell.focus = Some(name.to_owned());

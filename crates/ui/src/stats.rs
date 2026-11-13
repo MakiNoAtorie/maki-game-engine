@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::system::{Res, ResMut};
-use maki_core::{App, Module, Time, Transform, Update};
+use maki_core::{App, Module, Transform, Update};
 use maki_render::{Accumulation, ExtractedFrame, FrameGraph, RenderGpu, RenderWorld};
 use maki_scene::{Light, Player};
 
@@ -74,19 +74,9 @@ impl Module for StatsPanelModule {
             ui.label(green(format!("{mean_ms:.2} ms")));
         });
 
-        // State of the panel: the mean frame time in milliseconds.
-        let mut frame_ms = 0.0_f32;
-        add_panel(app, "Stats", true, move |ui, world| {
-            // `Time::delta` has an upper limit (`max_fixed_steps` fixed steps), so a
-            // very slow frame shows as that limit.
-            let delta_ms = world.resource::<Time>().delta.as_secs_f32() * 1000.0;
-            // A moving mean: the time of one frame changes too fast to read.
-            frame_ms = if frame_ms == 0.0 {
-                delta_ms
-            } else {
-                frame_ms + (delta_ms - frame_ms) * 0.05
-            };
-
+        add_panel(app, "Stats", true, |ui, world| {
+            // The mean of the resource: the corner counter shows the same number.
+            let frame_ms = world.resource::<FrameTime>().mean_ms;
             let mut rows = vec![
                 // As the display shows them: with vsync, the rate of the display.
                 ("Frame time", format!("{frame_ms:.2} ms")),

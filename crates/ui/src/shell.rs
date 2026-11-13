@@ -66,6 +66,8 @@ pub(crate) struct Shell {
     pub(crate) request: Option<String>,
     /// The command search, while it is open: its text and the selected row.
     search: Option<(String, usize)>,
+    /// The button opened the search in this frame: its click is not a click elsewhere.
+    search_fresh: bool,
     /// The place of the picture tab in the last frame that showed it, in points.
     pub(crate) picture: Option<egui::Rect>,
     pub(crate) themed: bool,
@@ -90,6 +92,7 @@ impl Shell {
             focus: None,
             request: None,
             search: None,
+            search_fresh: false,
             picture: None,
             themed: false,
             windows: Vec::new(),
@@ -525,7 +528,7 @@ fn command_search(
             });
         });
     });
-    if response.response.clicked_elsewhere() {
+    if !std::mem::take(&mut shell.search_fresh) && response.response.clicked_elsewhere() {
         open = false;
     }
     if let Some(row) = run
@@ -704,15 +707,14 @@ pub(crate) fn show(
                 menu(name).ui(ui, |ui| menu_rows(ui, world, &commands, name, parts));
             }
             menu("Window").ui(ui, |ui| window_menu(ui, shell, panels));
-            if ui
-                .button(icon::SEARCH)
-                .on_hover_text(format!(
-                    "Search a command ({})",
-                    crate::key_label(world, COMMAND_SEARCH)
-                ))
-                .clicked()
-            {
+            let key = crate::key_label(world, COMMAND_SEARCH);
+            let tip = match key.is_empty() {
+                true => "Search a command".to_owned(),
+                false => format!("Search a command ({key})"),
+            };
+            if ui.button(icon::SEARCH).on_hover_text(tip).clicked() {
                 shell.search = Some((String::new(), 0));
+                shell.search_fresh = true;
             }
         });
         // The tool row: the tools at the left, the layout list at the right, and

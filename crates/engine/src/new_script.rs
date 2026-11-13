@@ -83,6 +83,16 @@ pub fn templates(project: &Path) -> Vec<(String, String)> {
 /// what the user wrote: "door bell", "DoorBell", "door-bell". `Err`: why it cannot
 /// be a name.
 pub fn names(input: &str) -> Result<(String, String), String> {
+    // A letter with a mark would be dropped silently, so it is refused.
+    if let Some(c) = input
+        .trim()
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || " -_".contains(*c)))
+    {
+        return Err(format!(
+            "`{c}` is not allowed. Use only a-z, 0-9, space, - or _."
+        ));
+    }
     let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
     let mut last_lower = false;
@@ -106,10 +116,65 @@ pub fn names(input: &str) -> Result<(String, String), String> {
     }
     // ponytail: the keywords that a word of a name can be; `r#` names are not made.
     const KEYWORDS: &[&str] = &[
-        "as", "async", "await", "box", "break", "const", "continue", "crate", "dyn", "else",
-        "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
-        "move", "mut", "pub", "ref", "return", "self", "static", "struct", "super", "trait",
-        "true", "type", "unsafe", "use", "where", "while", "yield", "lib", "main",
+        "as",
+        "async",
+        "await",
+        "box",
+        "break",
+        "const",
+        "continue",
+        "crate",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "fn",
+        "for",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "pub",
+        "ref",
+        "return",
+        "self",
+        "static",
+        "struct",
+        "super",
+        "trait",
+        "true",
+        "type",
+        "unsafe",
+        "use",
+        "where",
+        "while",
+        "yield",
+        "lib",
+        "main",
+        "abstract",
+        "become",
+        "do",
+        "final",
+        "macro",
+        "override",
+        "priv",
+        "try",
+        "typeof",
+        "unsized",
+        "virtual",
+        "std",
+        "core",
+        "alloc",
+        "serde",
+        "glam",
+        "bevy_ecs",
+        "maki_engine",
     ];
     if KEYWORDS.contains(&snake.as_str()) {
         return Err(format!(
@@ -487,6 +552,8 @@ mod tests {
         assert!(names("2 doors").is_err());
         assert!(names("match").is_err());
         assert!(names("lib").is_err());
+        assert!(names("Türschloss").unwrap_err().contains('ü'));
+        assert!(names("bevy ecs").is_err() && names("serde").is_err() && names("try").is_err());
     }
 
     #[test]
