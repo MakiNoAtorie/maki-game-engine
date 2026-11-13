@@ -4,7 +4,7 @@ Build, test and delegation rules that bind future work. Keep under 8 KB. Add a l
 
 ## Quiet output
 Never pull full logs into context. Filter to errors and failures.
-- All checks: `sh tools/check.sh` (format, clippy and tests of the static and the dynamic build, errors only). `sh tools/check.sh fast` is the pre-commit hook (`.githooks`; once per clone: `git config core.hooksPath .githooks`). CI (`.github/workflows/ci.yml`, Windows) runs `tools/check.sh` on each pull request and each push to `main`; the GPU checks stay local. Read a red job with `gh run view --log-failed | rg -e '^(error|FAIL)' -A 5 | head -60`.
+- All checks: `sh tools/check.sh` (format, clippy and tests of the static and the dynamic build, errors only). `sh tools/check.sh fast` is the pre-commit hook (`.githooks`; once per clone: `git config core.hooksPath .githooks`). It is the only CI: no GitHub Actions. Run it before each push.
 - One build: `cargo build 2>&1 | rg -e '^(error|warning)' -A 5 | head -60`. Tests: `cargo test -q` runs the default members; `--workspace` also links the engine DLL in the dev profile, which passes the symbol limit.
 - Benchmark: `tools/bench.py` writes CSV. `compare A B --total` gives one row per scenario.
 - A step of the GPU time with equal pictures: `bench.py confirm COMMIT SCENARIO...` runs the build of the commit before and this tree back to back (two rounds) and drops its runs. Equal within a few percent: the machine.
