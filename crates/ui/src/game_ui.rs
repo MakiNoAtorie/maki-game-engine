@@ -73,14 +73,16 @@ pub struct GameUiModule;
 impl Module for GameUiModule {
     fn build(&self, app: &mut App) {
         app.add_settings::<GameUiSettings>();
-        let scale = app.world().resource::<GameUiSettings>().scale;
-        add_overlay(app, MENUS, false, move |ui, world| {
+        // The scale is read in each frame: a change of the settings shows at once.
+        add_overlay(app, MENUS, false, |ui, world| {
+            let scale = world.resource::<GameUiSettings>().scale;
             for (index, menu) in world.resource::<ShownMenus>().0.iter().enumerate() {
                 menu_box(ui, index, menu, scale);
             }
         });
         // The text of a `Message` or a `Choice` command, on the picture.
-        add_overlay(app, MESSAGE, false, move |ui, world| {
+        add_overlay(app, MESSAGE, false, |ui, world| {
+            let scale = world.resource::<GameUiSettings>().scale;
             let Some(text) = world.resource::<MessageBox>().0.clone() else {
                 return;
             };
@@ -182,16 +184,17 @@ fn text_box(ui: &mut egui::Ui, text: &str, choices: Option<&Choices>, hint: &str
     let font = |size: f32| game_font(size, scale);
     // The picture: the UI gives it to an overlay as its clip rectangle.
     let picture = ui.clip_rect();
-    let width = (picture.width() - 2.0 * MARGIN).clamp(120.0, 760.0);
+    let width = (picture.width() - 2.0 * MARGIN).clamp(0.0, 760.0);
     let frame = box_frame();
     let shown = egui::Area::new(egui::Id::new("text box of the game"))
         .pivot(egui::Align2::CENTER_BOTTOM)
         .fixed_pos(picture.center_bottom() - egui::vec2(0.0, MARGIN))
         .interactable(false)
+        .constrain_to(picture)
         .show(ui.ctx(), |ui| {
             frame.show(ui, |ui| {
                 // Less than the full width: the frame has its margin.
-                ui.set_width(width - 32.0);
+                ui.set_width((width - 32.0).max(0.0));
                 ui.label(egui::RichText::new(text).font(font(20.0)).color(TEXT));
                 if let Some(choices) = choices {
                     ui.add_space(8.0);

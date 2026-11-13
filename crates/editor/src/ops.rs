@@ -256,12 +256,14 @@ impl Document {
                 item
             }
             Kind::Doorway => {
+                // A room narrower than 2 m has no 1 m margin: clamp(min > max) would panic.
+                let reach = (room.width / 2.0 - 1.0).max(0.0);
                 let mut object = ObjectDef::default();
                 object.set_component(
                     "doorway",
                     &Doorway {
                         wall: Wall::NegZ,
-                        offset: at.x.clamp(-room.width / 2.0 + 1.0, room.width / 2.0 - 1.0),
+                        offset: at.x.clamp(-reach, reach),
                         width: 1.0,
                         height: 2.1,
                         depth: 1.0,
@@ -656,6 +658,8 @@ type Step = (Content, Vec<Item>);
 pub struct History {
     /// The document after the last step.
     base: Option<Step>,
+    /// The content that the file holds, as far as the document was seen clean.
+    saved: Option<Content>,
     undo: Vec<Step>,
     redo: Vec<Step>,
     /// The highest `next_id` of the room: undo and redo keep it, so that an id that
@@ -671,6 +675,7 @@ impl History {
     pub fn reset(&mut self, document: &Document) {
         *self = Self {
             base: Some((document.content(), Vec::new())),
+            saved: (!document.dirty).then(|| document.content()),
             next_id: document.room.next_id,
             ..Self::default()
         };
@@ -688,6 +693,10 @@ impl History {
         self.next_id = self.next_id.max(document.room.next_id);
         if busy {
             return;
+        }
+        // A clean document is what the file holds: undo to it clears `dirty`.
+        if !document.dirty && !self.saved.as_ref().is_some_and(|saved| document.is(saved)) {
+            self.saved = Some(document.content());
         }
         if document.is(&base.0) {
             // The same state: its selection is the last one that it had.
@@ -712,26 +721,40 @@ impl History {
     /// The document goes one step back. False: no step to undo.
     pub fn undo(&mut self, document: &mut Document, selection: &mut Vec<Item>) -> bool {
         self.track(document, selection, false);
-        Self::step(
+        let moved = Self::step(
             &mut self.base,
             &mut self.undo,
             &mut self.redo,
             document,
             selection,
             self.next_id,
-        )
+        );
+        self.update_dirty(document, moved)
     }
 
     pub fn redo(&mut self, document: &mut Document, selection: &mut Vec<Item>) -> bool {
         self.track(document, selection, false);
-        Self::step(
+        let moved = Self::step(
             &mut self.base,
             &mut self.redo,
             &mut self.undo,
             document,
             selection,
             self.next_id,
-        )
+        );
+        self.update_dirty(document, moved)
+    }
+
+    /// After a step: the document is clean when it is the saved content again.
+    fn update_dirty(&mut self, document: &mut Document, moved: bool) -> bool {
+        if moved {
+            if let Some(saved) = &mut self.saved {
+                // Undo keeps `next_id` high, so it is no part of the comparison.
+                saved.0.next_id = document.room.next_id;
+            }
+            document.dirty = !self.saved.as_ref().is_some_and(|saved| document.is(saved));
+        }
+        moved
     }
 
     fn step(
@@ -1066,5 +1089,34 @@ mod tests {
         assert_eq!(output(&document).as_deref(), Some("entered"));
         assert!(history.undo(&mut document, &mut selection));
         assert_eq!(output(&document).as_deref(), Some("used"));
+    }
+
+    #[test]
+    fn a_doorway_in_a_narrow_room_does_not_panic() {
+        let registry = registry();
+        let mut document = document(&registry);
+        document.room.width = 1.5;
+        assert!(
+            document
+                .add(Kind::Doorway, Vec3::new(3.0, 0.0, 0.0))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn undo_to_the_saved_state_is_clean() {
+        let registry = registry();
+        let mut document = document(&registry);
+        document.dirty = false;
+        let mut history = History::default();
+        history.reset(&document);
+        let mut selection = Vec::new();
+        document.room.objects[2].name = Some("bulb".to_owned());
+        document.dirty = true;
+        history.track(&document, &selection, false);
+        assert!(history.undo(&mut document, &mut selection));
+        assert!(!document.dirty);
+        assert!(history.redo(&mut document, &mut selection));
+        assert!(document.dirty);
     }
 }

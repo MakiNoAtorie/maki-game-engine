@@ -93,23 +93,27 @@ fn with_help(ui: &Ui, label: Response) {
 /// One row: the label in the label column, and what `add` draws in the value
 /// column. An empty label takes no room.
 pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        if !label.is_empty() {
-            // Not in a grid: the column starts where this row starts.
-            let start = ui.cursor().left();
-            let left = ui.data(|data| data.get_temp(egui::Id::new(GRID_LEFT)));
-            let width = (left.unwrap_or(start) + THEME.label_width - start).max(40.0);
-            let size = egui::vec2(width, ui.spacing().interact_size.y);
-            let layout = egui::Layout::left_to_right(egui::Align::Center);
-            ui.allocate_ui_with_layout(size, layout, |ui| {
-                ui.set_min_width(width);
-                let label = ui.add(egui::Label::new(label).truncate());
-                with_help(ui, label);
-            });
-        }
-        add(ui)
-    })
-    .inner
+    let result = ui
+        .horizontal(|ui| {
+            if !label.is_empty() {
+                // Not in a grid: the column starts where this row starts.
+                let start = ui.cursor().left();
+                let left = ui.data(|data| data.get_temp(egui::Id::new(GRID_LEFT)));
+                let width = (left.unwrap_or(start) + THEME.label_width - start).max(40.0);
+                let size = egui::vec2(width, ui.spacing().interact_size.y);
+                let layout = egui::Layout::left_to_right(egui::Align::Center);
+                ui.allocate_ui_with_layout(size, layout, |ui| {
+                    ui.set_min_width(width);
+                    let label = ui.add(egui::Label::new(label).truncate());
+                    with_help(ui, label);
+                });
+            }
+            add(ui)
+        })
+        .inner;
+    // A help text for a row with no label must not go to the next row.
+    ui.data_mut(|data| data.remove_temp::<String>(egui::Id::new(HELP)));
+    result
 }
 
 /// "Back to default", at the end of a row, while the value is not the default.
@@ -139,7 +143,10 @@ pub fn drag<Num: egui::emath::Numeric>(value: &mut Num) -> DragValue<'_> {
 // ponytail: by the words of the labels. A parameter of each widget call if a label
 // gets the wrong unit.
 fn unit(label: &str) -> &'static str {
-    let has = |words: &[&str]| words.iter().any(|word| label.contains(word));
+    // Whole words: "Bottom" and "Batch size" are not "to" and "size" of a length.
+    let lower = label.to_lowercase();
+    let label_words: Vec<&str> = lower.split(|c: char| !c.is_alphabetic()).collect();
+    let has = |words: &[&str]| words.iter().any(|word| label_words.contains(word));
     if has(&["seconds"]) {
         " s"
     } else if has(&["degrees", "rotation"]) {
@@ -220,9 +227,9 @@ pub fn text(ui: &mut Ui, label: &str, value: &mut String) -> bool {
     row(ui, label, |ui| {
         let id = ui.make_persistent_id(label);
         // The text while it is typed.
-        let typed = ui.ctx().memory(|memory| memory.has_focus(id));
-        let typed = typed.then(|| ui.ctx().data(|data| data.get_temp::<String>(id)));
-        let mut buffer = typed.flatten().unwrap_or_else(|| value.clone());
+        // The kept text lives until the frame the focus ends in (a click elsewhere).
+        let typed = ui.ctx().data(|data| data.get_temp::<String>(id));
+        let mut buffer = typed.unwrap_or_else(|| value.clone());
         let response = ui.add(egui::TextEdit::singleline(&mut buffer).id(id));
         if response.has_focus() {
             ui.ctx().data_mut(|data| data.insert_temp(id, buffer));
@@ -502,6 +509,14 @@ pub(crate) fn show_notices(ctx: &egui::Context, world: &mut World, corner: egui:
     }
     if notices.0.is_empty() {
         return;
+    }
+    // Reactive loop: a frame must run when the soonest notice ends.
+    let soonest = notices.0.iter().filter(|n| n.level != NoticeLevel::Error);
+    if let Some(left) = soonest
+        .map(|n| NOTICE_TIME.saturating_sub(n.since.elapsed()))
+        .min()
+    {
+        ctx.request_repaint_after(left);
     }
     let mut closed = None;
     egui::Area::new(egui::Id::new("notices"))

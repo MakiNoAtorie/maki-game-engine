@@ -153,10 +153,18 @@ pub fn object_names(objects: &[ObjectDef]) -> Vec<(ObjectId, String)> {
             .clone()
             .unwrap_or_else(|| format!("object {}", id.0))
     };
-    objects
+    let mut list: Vec<(ObjectId, String)> = objects
         .iter()
         .filter_map(|object| Some((object.id?, name(object, object.id?))))
-        .collect()
+        .collect();
+    // A name is no key: two objects with one name get their ids, so a pick is exact.
+    let names: Vec<String> = list.iter().map(|(_, name)| name.clone()).collect();
+    for (id, label) in &mut list {
+        if names.iter().filter(|other| *other == label).count() > 1 {
+            *label = format!("{label} (id {})", id.0);
+        }
+    }
+    list
 }
 
 /// The text of a reference: the name of its object, or "missing (id 7)".
@@ -244,5 +252,16 @@ mod tests {
             ]
         );
         assert_eq!(object_label(&ObjectId(4), &names), "object 4");
+    }
+
+    #[test]
+    fn two_objects_with_one_name_get_two_labels() {
+        let objects: Vec<ObjectDef> = maki_scene::ron_options()
+            .from_str(r#"[(id: 1, name: "Door"), (id: 2, name: "Door"), (id: 3)]"#)
+            .unwrap();
+        let names = object_names(&objects);
+        assert_eq!(names[0].1, "Door (id 1)");
+        assert_eq!(names[1].1, "Door (id 2)");
+        assert_eq!(object_ref("Door (id 2)", &names), ObjectId(2));
     }
 }

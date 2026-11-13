@@ -165,8 +165,16 @@ pub fn import(directory: &Path) -> Result<usize, String> {
     })?;
     let rows = read_csv(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     let (header, rows) = rows.split_first().ok_or("The CSV file is empty.")?;
-    if header.first().map(String::as_str) != Some("key") {
-        return Err("The first column of the CSV file must be \"key\".".to_owned());
+    // A spreadsheet may add spaces, a capital, or empty cells at the end of the header.
+    let mut header: Vec<String> = header.iter().map(|cell| cell.trim().to_owned()).collect();
+    while header.len() > 1 && header.last().is_some_and(String::is_empty) {
+        header.pop();
+    }
+    if !header[0].eq_ignore_ascii_case("key") {
+        return Err(format!(
+            "The first column of the CSV file must be \"key\", not \"{}\".",
+            header[0]
+        ));
     }
     // A language name is a file name: no path in it.
     let valid = |l: &String| {
@@ -222,11 +230,17 @@ pub fn import(directory: &Path) -> Result<usize, String> {
             count += 1;
         }
     }
-    for index in changed {
+    let total = changed.len();
+    for (written, index) in changed.into_iter().enumerate() {
         let (path, table) = &tables[index];
         std::fs::create_dir_all(path.parent().unwrap_or(directory))
             .and_then(|()| std::fs::write(path, data_text(table)))
-            .map_err(|error| format!("{} not written: {error}", path.display()))?;
+            .map_err(|error| {
+                format!(
+                    "{} not written: {error} ({written} of {total} tables written)",
+                    path.display()
+                )
+            })?;
     }
     Ok(count)
 }
@@ -396,5 +410,26 @@ mod tests {
         assert!(error.starts_with("line 3:"), "{error}");
         let error = read_csv("key,en\na,\"x\"y\n").unwrap_err();
         assert!(error.starts_with("line 2:"), "{error}");
+    }
+
+    #[test]
+    fn a_header_with_spaces_a_capital_and_empty_cells_reads() {
+        let dir = project("header", &[("a", "A")], &[]);
+        std::fs::write(
+            dir.join(CSV_PATH),
+            " Key , en ,,
+a,B,,
+",
+        )
+        .unwrap();
+        assert_eq!(import(&dir), Ok(1));
+        std::fs::write(
+            dir.join(CSV_PATH),
+            "id,en
+a,B
+",
+        )
+        .unwrap();
+        assert!(import(&dir).unwrap_err().contains("not \"id\""));
     }
 }

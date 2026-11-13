@@ -60,6 +60,14 @@ pub fn new_routine(directory: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The first `argumentN` that no argument has.
+fn new_argument_name(arguments: &[String]) -> String {
+    (1..)
+        .map(|number| format!("argument{number}"))
+        .find(|name| !arguments.contains(name))
+        .expect("an endless range")
+}
+
 impl Editor {
     /// Opens a routine file in the event panel.
     pub fn open_routine(&mut self, path: &Path) {
@@ -157,9 +165,16 @@ pub(crate) fn routine_panel(ui: &mut Ui, world: &mut World, editor: &mut Editor)
                 ui.strong("Arguments");
                 ui.weak("Whole numbers. Each one hides the variable of the same name.");
                 let mut removed = None;
+                let names = edit.routine.arguments.clone();
                 for (index, name) in edit.routine.arguments.iter_mut().enumerate() {
+                    let taken =
+                        name.is_empty() || names.iter().filter(|other| *other == name).count() > 1;
                     ui.horizontal(|ui| {
                         changed |= ui.text_edit_singleline(name).changed();
+                        if taken {
+                            ui.colored_label(ui.visuals().error_fg_color, "!")
+                                .on_hover_text("The name is empty or used twice.");
+                        }
                         if ui
                             .button(icon::CLOSE)
                             .on_hover_text("Remove argument")
@@ -174,8 +189,8 @@ pub(crate) fn routine_panel(ui: &mut Ui, world: &mut World, editor: &mut Editor)
                     changed = true;
                 }
                 if ui.button("Add argument").clicked() {
-                    let count = edit.routine.arguments.len() + 1;
-                    edit.routine.arguments.push(format!("argument{count}"));
+                    let name = new_argument_name(&edit.routine.arguments);
+                    edit.routine.arguments.push(name);
                     changed = true;
                 }
             });
@@ -309,5 +324,21 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         });
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_new_argument_name_is_not_used_twice() {
+        let list = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(new_argument_name(&[]), "argument1");
+        assert_eq!(new_argument_name(&list(&["argument2"])), "argument1");
+        assert_eq!(
+            new_argument_name(&list(&["argument1", "argument2", "argument4"])),
+            "argument3"
+        );
     }
 }

@@ -23,6 +23,8 @@ struct Table {
     path: PathBuf,
     time: Option<SystemTime>,
     data: Option<TextTable>,
+    /// Why the file is not read: the table has no column in the grid.
+    problem: Option<String>,
 }
 
 fn time_of(path: &Path) -> Option<SystemTime> {
@@ -34,8 +36,11 @@ fn time_of(path: &Path) -> Option<SystemTime> {
 impl Table {
     fn save(&mut self) -> Result<(), String> {
         let data = self.data.as_ref().ok_or("The table is not read.")?;
-        std::fs::write(&self.path, data_text(data))
-            .map_err(|error| format!("{} not written: {error}", self.path.display()))?;
+        if let Err(error) = std::fs::write(&self.path, data_text(data)) {
+            // No time: the next refresh reads the file again, so the grid shows the disk.
+            self.time = None;
+            return Err(format!("{} not written: {error}", self.path.display()));
+        }
         self.time = time_of(&self.path);
         Ok(())
     }
@@ -50,8 +55,9 @@ struct Grid {
 }
 
 /// Keys in the order of the first table that has them, languages in the order of the
-/// tables. Only the rows whose key or a text has `search` (no case) stay.
-fn grid(tables: &[Table], search: &str) -> Grid {
+/// tables. Only the rows whose key or a text has `search` (no case) stay, and the
+/// row of `keep` (the key that the user touched last): it must not vanish under the cursor.
+fn grid(tables: &[Table], search: &str, keep: Option<&str>) -> Grid {
     let tables: Vec<&TextTable> = tables.iter().filter_map(|t| t.data.as_ref()).collect();
     let mut languages: Vec<String> = Vec::new();
     for table in &tables {
@@ -71,7 +77,10 @@ fn grid(tables: &[Table], search: &str) -> Grid {
             .iter()
             .map(|language| text_of(&tables, language, &entry.key).map(str::to_owned))
             .collect();
-        if found(&entry.key) || cells.iter().flatten().any(|text| found(text)) {
+        if found(&entry.key)
+            || keep == Some(entry.key.as_str())
+            || cells.iter().flatten().any(|text| found(text))
+        {
             rows.push((entry.key.clone(), cells));
         }
     }
@@ -156,6 +165,7 @@ fn add_language(directory: &Path, tables: &mut Vec<Table>, code: &str) -> Result
         path: path.clone(),
         time,
         data: Some(table),
+        problem: None,
     };
     // In the order of the paths, as a read of the folder gives them.
     let at = tables.partition_point(|other| other.path < path);
@@ -172,6 +182,8 @@ pub(crate) struct TextPanel {
     folder_time: [Option<SystemTime>; 2],
     tables: Vec<Table>,
     search: String,
+    /// The key that was added or edited last: the search keeps its row.
+    touched: Option<String>,
     new_key: String,
     new_language: String,
 }
@@ -195,9 +207,19 @@ impl TextPanel {
         for path in maki_events::table_files(directory) {
             let path = directory.join(path);
             let time = time_of(&path);
-            let data = read_data::<TextTable>(&path);
-            let data = data.map_err(|message| *error = Some(message)).ok();
-            self.tables.push(Table { path, time, data });
+            let (data, problem) = match read_data::<TextTable>(&path) {
+                Ok(data) => (Some(data), None),
+                Err(message) => {
+                    *error = Some(message.clone());
+                    (None, Some(message))
+                }
+            };
+            self.tables.push(Table {
+                path,
+                time,
+                data,
+                problem,
+            });
         }
     }
 }
@@ -224,8 +246,9 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
     let directory = editor.document.directory();
     state.refresh(&directory, &mut editor.error);
 
-    let Grid { languages, rows } = grid(&state.tables, &state.search);
-    let total = grid(&state.tables, "").rows.len();
+    let keep = state.touched.as_deref();
+    let Grid { languages, rows } = grid(&state.tables, &state.search, keep);
+    let total = grid(&state.tables, "", None).rows.len();
     ui.horizontal(|ui| {
         ui.label(icon::SEARCH);
         let search = ui
@@ -250,7 +273,10 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
             maki_ui::widgets::name_row(ui, &mut state.new_key, "Key", "Add key", languages_there);
         if let Some(key) = key {
             match add_key(&mut state.tables, &key) {
-                Ok(()) => editor.status = format!("Key \"{key}\" added."),
+                Ok(()) => {
+                    editor.status = format!("Key \"{key}\" added.");
+                    state.touched = Some(key);
+                }
                 Err(error) => editor.error = Some(error),
             }
         }
@@ -270,6 +296,10 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
         }
     });
     ui.separator();
+    for table in state.tables.iter().filter(|table| table.problem.is_some()) {
+        let problem = table.problem.as_deref().unwrap_or_default();
+        ui.colored_label(THEME.error, format!("Not read, no column: {problem}"));
+    }
 
     if languages.is_empty() {
         ui.weak("No languages yet. Type a language code above and press Add language.");
@@ -325,10 +355,11 @@ fn text_panel(ui: &mut Ui, editor: &mut Editor, state: &mut TextPanel) {
             }
         });
     });
-    if let Some((key, language, text)) = change
-        && let Err(error) = set_cell(&mut state.tables, &key, &language, &text)
-    {
-        editor.error = Some(error);
+    if let Some((key, language, text)) = change {
+        state.touched = Some(key.clone());
+        if let Err(error) = set_cell(&mut state.tables, &key, &language, &text) {
+            editor.error = Some(error);
+        }
     }
 }
 
@@ -376,7 +407,7 @@ mod tests {
     fn the_grid_has_a_cell_for_each_language_and_none_for_a_missing_one() {
         let directory = directory("grid");
         let state = loaded(&directory);
-        let grid = grid(&state.tables, "");
+        let grid = grid(&state.tables, "", None);
         assert_eq!(grid.languages, ["en", "ja"]);
         let some = |text: &str| Some(text.to_owned());
         assert_eq!(grid.rows[0], ("a".to_owned(), vec![some("Door"), None]));
@@ -392,7 +423,7 @@ mod tests {
         let directory = directory("search");
         let state = loaded(&directory);
         let keys = |search: &str| -> Vec<String> {
-            grid(&state.tables, search)
+            grid(&state.tables, search, None)
                 .rows
                 .into_iter()
                 .map(|r| r.0)
@@ -403,6 +434,28 @@ mod tests {
         assert_eq!(keys("b"), ["b"]);
         assert_eq!(keys(" "), ["a", "b"]);
         assert!(keys("zzz").is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_search_keeps_the_row_that_was_touched() {
+        let directory = directory("keep");
+        let state = loaded(&directory);
+        let rows = grid(&state.tables, "kag", Some("a")).rows;
+        assert_eq!(rows.len(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_makes_the_next_refresh_read_the_file() {
+        let directory = directory("fail");
+        let mut state = loaded(&directory);
+        // A folder with the name of the file: the write fails.
+        let path = directory.join("data/text/ja.text.ron");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(set_cell(&mut state.tables, "b", "ja", "x").is_err());
+        assert!(state.tables.iter().any(|table| table.time.is_none()));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -451,7 +504,7 @@ mod tests {
         assert!(add_language(&directory, &mut state.tables, "../x").is_err());
 
         // The new table is in the panel at once, with no wait for the folder time.
-        assert_eq!(grid(&state.tables, "").languages, ["en", "fr", "ja"]);
+        assert_eq!(grid(&state.tables, "", None).languages, ["en", "fr", "ja"]);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

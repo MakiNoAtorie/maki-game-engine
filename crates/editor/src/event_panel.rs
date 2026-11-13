@@ -522,12 +522,27 @@ pub(crate) fn pick_key(ui: &mut Ui, salt: &str, key: &mut TextKey, lists: &Lists
     let picture = |ui: &mut Ui, key: &str| {
         ui.weak(text_of(key).unwrap_or_default());
     };
-    let changed = picker_with(ui, salt, &mut key.0, &keys, &[], true, Some(&picture));
+    // The error of the last write stays under the pick until the next change.
+    let error_id = ui.make_persistent_id(("key_error", salt));
+    let old = key.0.clone();
+    let mut changed = picker_with(ui, salt, &mut key.0, &keys, &[], true, Some(&picture));
+    if changed {
+        ui.data_mut(|data| data.remove_temp::<String>(error_id));
+    }
     if changed && !keys.contains(&key.0) {
         match add_key(&lists.directory, &lists.texts, &key.0) {
             Ok(()) => return true,
-            Err(error) => tracing::error!("a new text key: {error}"),
+            Err(error) => {
+                // No key without a text: the old key stays.
+                tracing::error!("a new text key: {error}");
+                ui.data_mut(|data| data.insert_temp(error_id, format!("Key not added: {error}")));
+                key.0 = old;
+                changed = false;
+            }
         }
+    }
+    if let Some(error) = ui.data(|data| data.get_temp::<String>(error_id)) {
+        ui.colored_label(ERROR, error);
     }
     match text_of(&key.0) {
         Some("") => ui.colored_label(HINT, "Empty text: write it in the Texts panel."),
@@ -854,19 +869,25 @@ fn condition_row<T: Fields + DeserializeOwned>(
     condition: &mut T,
     lists: &Lists,
 ) -> bool {
+    let error_id = ui.next_auto_id();
     let mut tree = condition.tree();
-    if !with_picks(lists, |picks| {
+    let changed = with_picks(lists, |picks| {
         crate::fields::show(ui, &T::kind(), &mut tree, picks)
-    }) {
-        return false;
-    }
-    match maki_core::fields::read::<T>(tree) {
-        Ok(changed) => {
-            *condition = changed;
-            true
+    });
+    if changed {
+        // A value that does not read keeps the old condition and shows why.
+        let read = maki_core::fields::read::<T>(tree);
+        let error = read.as_ref().err().map(|error| error.to_string());
+        ui.data_mut(|data| data.insert_temp(error_id, error.clone()));
+        if let Ok(new) = read {
+            *condition = new;
+            return true;
         }
-        Err(_) => false,
     }
+    if let Some(Some(error)) = ui.data(|data| data.get_temp::<Option<String>>(error_id)) {
+        ui.colored_label(ERROR, error);
+    }
+    false
 }
 
 /// Calls `draw` with what the picks of the field rows offer: the flags and the
@@ -1417,6 +1438,8 @@ pub(crate) fn command_rows(
                 None => {
                     let (list, index) = place.clone();
                     let text = format!("{name}(");
+                    // No selected row, so the panel shows this draft, not the row.
+                    (event_ui.row, event_ui.anchor) = (None, None);
                     event_ui.draft = Some(Draft {
                         list,
                         index,

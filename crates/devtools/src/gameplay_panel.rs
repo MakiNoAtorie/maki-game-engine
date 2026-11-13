@@ -1,6 +1,7 @@
 //! The debug panel of the gameplay modules: their settings that have an effect during
 //! a run. Nothing is written to the config file.
 
+use bevy_ecs::entity::Entity;
 use maki_core::{App, Module};
 use maki_gameplay::{CameraSettings, PlayerDef};
 use maki_ui::{add_panel, egui};
@@ -49,23 +50,27 @@ impl Module for GameplayPanelModule {
                 }
             }
             // The values of the player entity (from its prefab file), not of a file.
-            let mut players = world.query::<&mut PlayerDef>();
-            if let Some(old) = players.iter(world).next().cloned() {
+            let mut players = world.query::<(Entity, &mut PlayerDef)>();
+            if let Some((entity, old)) = players.iter(world).next().map(|(e, d)| (e, d.clone())) {
                 shown = true;
                 let mut player = old.clone();
                 section(ui, "Player", |ui| {
+                    // The range holds the current value, so a prefab value above 10 is not clamped.
+                    let walk_max = old.walk_speed.max(10.0);
                     ui.add(
-                        egui::Slider::new(&mut player.walk_speed, 0.0..=10.0)
+                        egui::Slider::new(&mut player.walk_speed, 0.0..=walk_max)
                             .text("Walk speed, m/s"),
                     );
+                    let run_max = old.run_speed.max(10.0).max(player.walk_speed);
                     ui.add(
-                        egui::Slider::new(&mut player.run_speed, 0.0..=10.0).text("Run speed, m/s"),
+                        egui::Slider::new(&mut player.run_speed, 0.0..=run_max)
+                            .text("Run speed, m/s"),
                     );
+                    player.run_speed = player.run_speed.max(player.walk_speed);
                 });
-                if player != old {
-                    for mut def in players.iter_mut(world) {
-                        *def = player.clone();
-                    }
+                // Only the player that is shown is written.
+                if let (true, Ok((_, mut def))) = (player != old, players.get_mut(world, entity)) {
+                    *def = player;
                 }
             }
             if !shown {

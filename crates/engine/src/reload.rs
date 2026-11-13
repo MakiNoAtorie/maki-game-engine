@@ -90,7 +90,12 @@ impl BuildRow {
 /// with no place (`error: linking with ...`).
 pub(crate) fn rows(text: &str) -> Vec<BuildRow> {
     let row = |line: &str| -> Option<BuildRow> {
-        let (at, error) = match (line.find("error"), line.find("warning")) {
+        // The word starts the line or follows `: `, not a part of the file path.
+        let word = |w: &str| {
+            let mut found = line.match_indices(w).map(|(at, _)| at);
+            found.find(|&at| at == 0 || line[..at].ends_with(": "))
+        };
+        let (at, error) = match (word("error"), word("warning")) {
             (Some(error), Some(warning)) => (error.min(warning), error < warning),
             (Some(error), None) => (error, true),
             (None, Some(warning)) => (warning, false),
@@ -447,14 +452,37 @@ fn shell(line: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The code editor template with the file and the line. A path with a space gets quotes,
+/// unless the template quotes already.
+fn fill_command(template: &str, file: &str, line: u32) -> String {
+    let quote = file.contains(char::is_whitespace) && !template.contains('"');
+    let file = if quote {
+        format!("\"{file}\"")
+    } else {
+        file.to_owned()
+    };
+    template
+        .replace("{file}", &file)
+        .replace("{line}", &line.to_string())
+}
+
+/// The program of a template: its first word, or the text in the first quotes (with them).
+fn program_of(template: &str) -> &str {
+    let template = template.trim_start();
+    let end = match template.strip_prefix('"') {
+        Some(rest) => rest.find('"').map(|close| close + 2),
+        None => template.find(char::is_whitespace),
+    };
+    let program = &template[..end.unwrap_or(template.len())];
+    if program.is_empty() { "code" } else { program }
+}
+
 /// "Open in editor": runs the command of the `[editor] code_editor` setting for a
 /// file and a line. `file`: as cargo names it, from the workspace folder.
 pub(crate) fn open_in_code_editor(world: &mut World, file: &Path, line: u32) {
     let template = world.resource::<EditorSettings>().code_editor.clone();
     let file = world.resource::<ProjectBuild>().setup.workspace.join(file);
-    let command = template
-        .replace("{file}", &file.display().to_string())
-        .replace("{line}", &line.to_string());
+    let command = fill_command(&template, &file.display().to_string(), line);
     tracing::info!(command, "open in the code editor");
     if let Err(error) = shell(&command) {
         let text = format!("The code editor did not start (`{command}`): {error}");
@@ -466,7 +494,7 @@ pub(crate) fn open_in_code_editor(world: &mut World, file: &Path, line: u32) {
 /// with the project folder.
 fn open_project(world: &mut World) {
     let template = world.resource::<EditorSettings>().code_editor.clone();
-    let program = template.split_whitespace().next().unwrap_or("code");
+    let program = program_of(&template);
     let dir = &world.resource::<ProjectBuild>().setup.project.dir;
     let command = format!("{program} \"{}\"", dir.display());
     if let Err(error) = shell(&command) {
@@ -584,8 +612,32 @@ error: could not compile `maki-game-scripts` (lib) due to 1 previous error; 1 wa
         assert!(found[0].text.starts_with("error[E0308]: mismatched types"));
         // A line with no place is a row; the summary lines of cargo are not.
         assert!(found[2].text.starts_with("error: linking with"));
+        // A word in the file name is not the word of the row.
+        let named = rows(
+            "src/error.rs:3:5: error[E0425]: cannot find value `x`
+warning: unused",
+        );
+        assert_eq!(named.len(), 2);
+        assert_eq!(named[0].place, Some((PathBuf::from("src/error.rs"), 3)));
         // A build with no error has no row, also with these words in a path.
         assert!(rows("   Compiling error-kit v1.0.0\n    Finished `dynamic` profile").is_empty());
+    }
+
+    #[test]
+    fn the_code_editor_command_has_the_program_and_the_quoted_path() {
+        let fill = |template, file| fill_command(template, file, 7);
+        assert_eq!(
+            fill("code -g {file}:{line}", "C:/My Games/a.rs"),
+            "code -g \"C:/My Games/a.rs\":7"
+        );
+        assert_eq!(fill("code -g {file}:{line}", "a.rs"), "code -g a.rs:7");
+        assert_eq!(fill("ed \"{file}\"", "My a.rs"), "ed \"My a.rs\"");
+        assert_eq!(program_of("code -g {file}"), "code");
+        assert_eq!(
+            program_of("\"C:/Program Files/code.exe\" -g {file}"),
+            "\"C:/Program Files/code.exe\""
+        );
+        assert_eq!(program_of("  "), "code");
     }
 
     #[test]

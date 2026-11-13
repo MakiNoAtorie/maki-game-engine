@@ -52,6 +52,12 @@ pub fn game_state_panel(
         let field = ui.add(field);
         let name = new_name.trim().to_owned();
         let filled = !name.is_empty();
+        // An existing name keeps its value: Add does not reset it.
+        let exists = state.flags.contains_key(&name) || state.variables.contains_key(&name);
+        if filled && exists {
+            ui.weak(format!("{name} exists"));
+        }
+        let filled = filled && !exists;
         // Enter adds a flag.
         let enter = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
         if (ui
