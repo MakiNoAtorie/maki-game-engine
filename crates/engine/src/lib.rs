@@ -124,6 +124,8 @@ pub fn init_logging() {
 enum LogTarget {
     Buffer(Vec<u8>),
     File(std::fs::File),
+    /// No file could be opened: the lines go, so the buffer does not grow for the session.
+    Off,
 }
 
 static LOG_FILE: std::sync::Mutex<LogTarget> = std::sync::Mutex::new(LogTarget::Buffer(Vec::new()));
@@ -137,6 +139,7 @@ impl std::io::Write for LogFile {
         match &mut *target {
             LogTarget::Buffer(lines) => lines.extend_from_slice(bytes),
             LogTarget::File(file) => file.write_all(bytes)?,
+            LogTarget::Off => {}
         }
         Ok(bytes.len())
     }
@@ -163,6 +166,7 @@ pub fn open_log_file(project: &Path, program: &str) {
         Ok(file) => file,
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "no log file");
+            *LOG_FILE.lock().unwrap_or_else(|poison| poison.into_inner()) = LogTarget::Off;
             return;
         }
     };

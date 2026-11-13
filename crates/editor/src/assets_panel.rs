@@ -74,6 +74,13 @@ fn of_kind(name: &str, kind: usize) -> bool {
     }
 }
 
+/// A typed name as one file name. `None`: empty, or with a path in it (it would leave the folder).
+fn plain_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    let bad = name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..");
+    (!bad).then_some(name)
+}
+
 /// The path from the asset folder, with `/`.
 fn relative(root: &Path, path: &Path) -> PathBuf {
     let path = path.strip_prefix(root).unwrap_or(path);
@@ -318,10 +325,15 @@ fn question_rows(ui: &mut Ui, root: &Path, state: &mut AssetPanel, status: &mut 
             let field = ui.text_edit_singleline(name);
             field.request_focus();
             if (ui.button("Make").clicked() || enter(ui)) && !name.trim().is_empty() {
-                let path = root.join(&state.folder).join(name.trim());
-                *status = Some(match std::fs::create_dir(&path) {
-                    Ok(()) => format!("New folder {}", relative(root, &path).display()),
-                    Err(error) => format!("No new folder: {error}"),
+                *status = Some(match plain_name(name) {
+                    Some(name) => {
+                        let path = root.join(&state.folder).join(name);
+                        match std::fs::create_dir(&path) {
+                            Ok(()) => format!("New folder {}", relative(root, &path).display()),
+                            Err(error) => format!("No new folder: {error}"),
+                        }
+                    }
+                    None => format!("\"{name}\" is not a folder name: use no / \\ : or .."),
                 });
                 done = true;
             }
@@ -338,10 +350,15 @@ fn question_rows(ui: &mut Ui, root: &Path, state: &mut AssetPanel, status: &mut 
             ui.text_edit_singleline(name).request_focus();
             if (ui.button("Rename").clicked() || enter(ui)) && !name.trim().is_empty() {
                 let from = root.join(&*file);
-                let to = from.with_file_name(name.trim());
-                *status = Some(match move_file(&from, &to) {
-                    Ok(()) => format!("Renamed to {}", relative(root, &to).display()),
-                    Err(error) => format!("Not renamed: {error}"),
+                *status = Some(match plain_name(name) {
+                    Some(name) => {
+                        let to = from.with_file_name(name);
+                        match move_file(&from, &to) {
+                            Ok(()) => format!("Renamed to {}", relative(root, &to).display()),
+                            Err(error) => format!("Not renamed: {error}"),
+                        }
+                    }
+                    None => format!("\"{name}\" is not a file name: use no / \\ : or .."),
                 });
                 done = true;
             }
@@ -591,7 +608,8 @@ pub(crate) fn take_drop(ui: &Ui, rect: egui::Rect, extensions: &[&str]) -> Optio
         return None;
     }
     let pointer = ui.ctx().pointer_latest_pos()?;
-    if !rect.contains(pointer) {
+    // Only the shown part: a field scrolled out of view lies under another panel.
+    if !rect.intersect(ui.clip_rect()).contains(pointer) {
         return None;
     }
     ui.painter().rect_stroke(
@@ -732,6 +750,10 @@ mod tests {
         assert!(of_kind("key.item.ron", kind("Data")));
         assert!(of_kind("chair.GLB", kind("Models")));
         assert!(of_kind("anything", kind("All")));
+        assert_eq!(plain_name(" chair.glb "), Some("chair.glb"));
+        for bad in ["", "../x", "a/b", r"a\b", "C:x", ".."] {
+            assert_eq!(plain_name(bad), None, "{bad}");
+        }
         assert_eq!(
             free_path(Path::new("no/such/key.item.ron")),
             Path::new("no/such/key.item.ron")

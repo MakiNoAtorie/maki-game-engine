@@ -1673,5 +1673,18 @@ fn the_console_sets_flags_and_variables() {
     let state = world.resource::<GameState>();
     assert!(state.flag("door"));
     assert_eq!(state.variable("tries"), 4);
+
+    // An item file is named from the folder of the room.
+    std::fs::create_dir_all(directory.join("items")).unwrap();
+    let key = directory.join("items/key.item.ron");
+    maki_assets::FileId(7).write(&key).unwrap();
+    world.init_resource::<Inventory>();
+    let mut room = CurrentRoom::default();
+    room.path = directory.join("a.ron");
+    world.insert_resource(room);
+    assert!(maki_core::run_line(&mut world, "give items/key.item.ron 2").is_ok());
+    assert!(maki_core::run_line(&mut world, "give key.item.ron").is_err());
+    let inventory = world.resource::<Inventory>();
+    assert_eq!(inventory.count(maki_assets::FileId(7)), 2);
     std::fs::remove_dir_all(&directory).unwrap();
 }

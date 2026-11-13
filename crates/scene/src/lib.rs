@@ -83,6 +83,8 @@ impl Module for SceneModule {
             .init_resource::<ScreenFade>()
             .init_resource::<DebugShapes>()
             .add_systems(maki_core::FixedFirst, debug::clear)
+            // A stop of the editor runs no fixed step: the shapes of the game go at the reset.
+            .add_systems(ResetPlay, debug::clear)
             // Each writer asks for a room; the loader takes the last request.
             .allow_ambiguous_resource::<RoomRequest>()
             // The watch of the asset files, if `AssetsModule` is there.
