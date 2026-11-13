@@ -5,7 +5,7 @@ Plan: [README.md](README.md), 3.2 item 10 ("Buttons and sticks as keys of the bi
 Goal: a gamepad plays the game. Its buttons and the directions of its sticks are inputs of the binding tables beside the keys; each module gives its actions their default pad inputs with `add_bindings`, as it gives keys. A stick gives a direction with a magnitude: the free walk walks slower with a small tilt; the grid walk takes the dominant axis. The menus of the game move by the pad through the actions. A pad plugged in or out while the game runs is found or released.
 Gate: a test in code: a pad button press starts its action and its release ends it; a stick under the dead zone starts no action, past it starts the action with a value from 0 to 1; half a tilt walks the free walk at half the speed; on the grid a diagonal tilt moves one cell along its dominant axis; a menu moves down and picks by the pad; a lost pad releases its held inputs. The game plays as before with keys: the trip run, `bench.py gate`, the GPU time against `s64`.
 
-State: written by the session from the plan and the code at commit `05f84bd`; a proposal: taken as given if the owner does not change it.
+State: written by the session from the plan and the code at commit `05f84bd`; a proposal: taken as given if the owner does not change it. Done (2026-11-12): report `stage-65.md`.
 
 ## Now (the code at stage 64)
 

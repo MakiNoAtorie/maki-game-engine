@@ -6,8 +6,8 @@ Written 2026-10-12, at commit `0a371b5`; the state was brought up to date after 
 
 - The plan after the object model is decided: `README.md` 2.15 (a vertical slice of the owner, made with the tools that the stages build; all before the slice) and the stage table 3.1 (stages 54 to 65, an editor lane, a renderer lane).
 - `GLOSSARY.md` and `docs/adr/` exist (the interview `/grill-with-docs`). ADR 0001: objects are named by a fixed id.
-- Stages 54 to 64 and the symbol limit (#23, `symbol-limit.md`) are done.
-- Next: stages 62 to 65 in order (the owner, 2026-11-12). Each: the session writes its stage file and tickets, then builds it.
+- Stages 54 to 65 and the symbol limit (#23, `symbol-limit.md`) are done.
+- Next: the stage table (README 3.1) ends at 65. The plan of what comes after (the vertical slice of 2.15, the quality and optimization session) is the owner's.
 - No optimization in the stages: it is a session of its own after the whole program is built (the owner, 2026-11-12). A GPU-time step goes into the report; a picture change still stops.
 - For the quality session (deferred by the owner): the lighting of a pose jump fades over about 8 frames (`stage-62.md`, the gate of the picture; `bench.py jump`).
 - For the quality session: `test_1080p` changes in some runs (4 pixels up to 0.70) since before stage 63; a `queue_wait_idle` after each submit makes it equal: an overlap of CPU and GPU between frames (`stage-63.md`, section 6).
