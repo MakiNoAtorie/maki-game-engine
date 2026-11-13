@@ -294,6 +294,15 @@ pub(crate) fn draw(ui: &mut Ui, world: &mut World, editor: &Editor) {
     world.insert_resource(depth);
 }
 
+/// Meters between grid lines: 1, 10, 100, ... so that a half side has at most 100.
+fn grid_spacing(half: f32) -> f32 {
+    let mut spacing = 1.0;
+    while half / spacing > 100.0 {
+        spacing *= 10.0;
+    }
+    spacing
+}
+
 fn marks(
     world: &mut World,
     editor: &Editor,
@@ -328,8 +337,12 @@ fn marks(
     let room = &editor.document.room;
     let (half_width, half_depth) = (room.width / 2.0, room.depth / 2.0);
 
-    // The floor grid: one line for each meter, from the center of the room.
-    let lines = |half: f32| (-(half.floor() as i32)..=half.floor() as i32).map(|line| line as f32);
+    // The floor grid: a line each meter from the center; 10 m or 100 m in a big room.
+    let spacing = grid_spacing(half_width.max(half_depth));
+    let lines = |half: f32| {
+        let count = (half / spacing).floor() as i32;
+        (-count..=count).map(move |line| line as f32 * spacing)
+    };
     for x in lines(half_width) {
         under.line(
             Vec3::new(x, 0.0, -half_depth),

@@ -858,8 +858,15 @@ fn properties(ui: &mut Ui, world: &mut World, editor: &mut Editor) {
         ui.weak("Select an item in the Outliner to edit it.");
         return;
     };
+    // A name is made unique when the field lets go of the focus, not under the cursor.
+    let pending = egui::Id::new("name to keep unique");
     if renamed {
-        let more = editor.document.keep_name_unique(&item);
+        ui.data_mut(|data| data.insert_temp(pending, item.clone()));
+    }
+    if ui.memory(|memory| memory.focused().is_none())
+        && let Some(named) = ui.data_mut(|data| data.remove_temp::<Item>(pending))
+    {
+        let more = editor.document.keep_name_unique(&named);
         if !more.is_empty() {
             editor.status = more;
         }
